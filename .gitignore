@@ -1,3 +1,7 @@
 *.DS_Store
 */.agent-memory.json
 prompts/
+.env
+*/.env
+.out-of-code-insights*
+mvp1/minagent
