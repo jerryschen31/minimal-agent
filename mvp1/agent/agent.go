@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,6 +193,12 @@ func (a *Agent) callTool(ctx context.Context, c ToolCall) Message {
 	var err error
 	if t, ok := a.Tools[c.Name]; !ok {
 		err = fmt.Errorf("unknown tool %q", c.Name)
+	} else if !isObject(c.Args) {
+		// [agent] Args must be a JSON object (that is what every ToolSpec.Schema
+		// describes). Adapters store unparseable model output as a JSON *string*
+		// so it persists and replays; rejecting it here means a tool never
+		// decodes zero-valued arguments from garbage (e.g. shell running "").
+		err = fmt.Errorf("invalid arguments for %s: not a JSON object: %s", c.Name, c.Args)
 	} else if err = a.Hooks.BeforeTool(ctx, c); err == nil { // [agent] authorization gate
 		content, err = t.Call(ctx, c.Args)
 	}
@@ -201,6 +208,12 @@ func (a *Agent) callTool(ctx context.Context, c ToolCall) Message {
 	}
 	a.Hooks.AfterTool(ctx, c, res)
 	return res
+}
+
+// isObject reports whether raw is empty/null (treated as {}) or a JSON object.
+func isObject(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || string(t) == "null" || (t[0] == '{' && json.Valid(t))
 }
 
 // specs returns tool specs in a stable order (keeps the prompt prefix cacheable).

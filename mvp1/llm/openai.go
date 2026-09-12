@@ -19,10 +19,11 @@ import (
 // most hosted APIs (OpenAI, Groq, Together, OpenRouter, Mistral, Gemini-compat).
 // One adapter therefore covers "any local or remote model" for most users.
 type OpenAI struct {
-	BaseURL string // e.g. http://localhost:11434/v1 or https://api.openai.com/v1
-	APIKey  string // may be empty for local servers
-	Model   string
-	HTTP    *http.Client // nil → http.DefaultClient
+	BaseURL   string // e.g. http://localhost:11434/v1 or https://api.openai.com/v1
+	APIKey    string // may be empty for local servers
+	Model     string
+	MaxTokens int64        // 0 → server default
+	HTTP      *http.Client // nil → http.DefaultClient
 }
 
 type oaCall struct {
@@ -54,6 +55,9 @@ func (p *OpenAI) Chat(ctx context.Context, msgs []agent.Message, tools []agent.T
 		wire = append(wire, w)
 	}
 	body := map[string]any{"model": p.Model, "messages": wire}
+	if p.MaxTokens > 0 {
+		body["max_tokens"] = p.MaxTokens
+	}
 	if len(tools) > 0 {
 		ts := make([]map[string]any, 0, len(tools))
 		for _, t := range tools {
@@ -83,8 +87,11 @@ func (p *OpenAI) Chat(ctx context.Context, msgs []agent.Message, tools []agent.T
 	res := agent.Message{Role: agent.RoleAssistant, Content: m.Content}
 	for _, c := range m.ToolCalls {
 		args := json.RawMessage(c.Function.Arguments)
-		if !json.Valid(args) { // [agent] some local models emit sloppy JSON; surface it as an error observation
-			args, _ = json.Marshal(map[string]string{"_invalid_json": c.Function.Arguments})
+		if !json.Valid(args) {
+			// [agent] some local models emit sloppy JSON. Keep the raw text as a JSON
+			// *string* so the transcript still marshals and replays verbatim; the
+			// kernel rejects any non-object Args before the tool runs.
+			args, _ = json.Marshal(c.Function.Arguments)
 		}
 		res.ToolCalls = append(res.ToolCalls, agent.ToolCall{ID: c.ID, Name: c.Function.Name, Args: orEmpty(args)})
 	}
@@ -92,7 +99,10 @@ func (p *OpenAI) Chat(ctx context.Context, msgs []agent.Message, tools []agent.T
 }
 
 func (p *OpenAI) post(ctx context.Context, path string, body any) ([]byte, error) {
-	b, _ := json.Marshal(body)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("openai: encode request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(p.BaseURL, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return nil, err

@@ -92,14 +92,24 @@ type Approval struct {
 	mu    sync.Mutex
 }
 
-func (a *Approval) BeforeTool(_ context.Context, c agent.ToolCall) error {
+func (a *Approval) BeforeTool(ctx context.Context, c agent.ToolCall) error {
 	if len(a.Tools) > 0 && !a.Tools[c.Name] {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	fmt.Fprintf(a.Out, "\n⚠ allow %s %s ? [y/N] ", c.Name, c.Args)
-	line, _ := a.In.ReadString('\n')
+	// [agent] read on a goroutine so a cancelled run (Ctrl-C) denies instead of
+	// blocking the tool goroutine forever. The reader goroutine may outlive us,
+	// which is fine: cancellation here means the process is shutting down.
+	lines := make(chan string, 1)
+	go func() { line, _ := a.In.ReadString('\n'); lines <- line }()
+	var line string
+	select {
+	case line = <-lines:
+	case <-ctx.Done():
+		return fmt.Errorf("%s not approved: %w", c.Name, ctx.Err())
+	}
 	if s := strings.ToLower(strings.TrimSpace(line)); s != "y" && s != "yes" {
 		return fmt.Errorf("user denied %s", c.Name)
 	}

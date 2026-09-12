@@ -18,3 +18,13 @@ func TestWindowCutsAtUserTurn(t *testing.T) {
 		t.Fatalf("got %+v", out)
 	}
 }
+
+func TestWindowNonPositiveLimitIsUnlimited(t *testing.T) {
+	h := []agent.Message{{Role: agent.RoleUser}, {Role: agent.RoleAssistant}, {Role: agent.RoleUser}}
+	for _, n := range []int{0, -1} {
+		out, err := Window{MaxMessages: n}.Build(context.Background(), "sys", h) // used to panic: history[len(history)]
+		if err != nil || len(out) != len(h)+1 {
+			t.Fatalf("MaxMessages=%d: got %d msgs, %v", n, len(out), err)
+		}
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"mvp1/agent"
 )
@@ -27,7 +28,9 @@ type MCP struct {
 	in      io.WriteCloser
 	mu      sync.Mutex // serialises writes; tools may be called concurrently
 	seq     atomic.Int64
-	pending sync.Map // id → chan rpcMsg
+	pending sync.Map      // id → chan rpcMsg
+	done    chan struct{} // closed when the server's stdout ends (exit/crash)
+	readErr error         // why, valid after done
 }
 
 type rpcMsg struct {
@@ -44,7 +47,8 @@ type rpcMsg struct {
 
 // ConnectMCP starts the server process and completes the initialize handshake.
 func ConnectMCP(ctx context.Context, name, command string, args ...string) (*MCP, error) {
-	cmd := exec.Command(command, args...)
+	cmd := exec.CommandContext(ctx, command, args...) // [agent] a cancelled agent never orphans its server
+	cmd.WaitDelay = time.Second
 	cmd.Stderr = os.Stderr
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -57,7 +61,7 @@ func ConnectMCP(ctx context.Context, name, command string, args ...string) (*MCP
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("mcp %s: %w", name, err)
 	}
-	c := &MCP{Name: name, cmd: cmd, in: in}
+	c := &MCP{Name: name, cmd: cmd, in: in, done: make(chan struct{})}
 	go c.readLoop(out)
 	if _, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
@@ -65,7 +69,11 @@ func ConnectMCP(ctx context.Context, name, command string, args ...string) (*MCP
 		_ = c.Close()
 		return nil, err
 	}
-	return c, c.send(rpcMsg{JSONRPC: "2.0", Method: "notifications/initialized"})
+	if err := c.send(rpcMsg{JSONRPC: "2.0", Method: "notifications/initialized"}); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
 }
 
 // Tools lists the server's tools, namespaced as <server>_<tool>.
@@ -99,6 +107,12 @@ func (c *MCP) Close() error {
 func (c *MCP) readLoop(r io.Reader) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	defer func() {
+		// [agent] stdout closed: the server exited or crashed. Fail every in-flight
+		// and future call instead of leaving them blocked forever.
+		c.readErr = fmt.Errorf("mcp %s: server closed connection (%v)", c.Name, orEOF(sc.Err()))
+		close(c.done)
+	}()
 	for sc.Scan() {
 		var m rpcMsg
 		// [agent] only responses to our requests matter here; notifications and
@@ -126,10 +140,20 @@ func (c *MCP) call(ctx context.Context, method string, params any) (json.RawMess
 			return nil, fmt.Errorf("mcp %s %s: %s (%d)", c.Name, method, m.Error.Message, m.Error.Code)
 		}
 		return m.Result, nil
+	case <-c.done:
+		c.pending.Delete(id)
+		return nil, c.readErr
 	case <-ctx.Done():
 		c.pending.Delete(id)
 		return nil, ctx.Err()
 	}
+}
+
+func orEOF(err error) error {
+	if err == nil {
+		return io.EOF
+	}
+	return err
 }
 
 func (c *MCP) send(m rpcMsg) error {

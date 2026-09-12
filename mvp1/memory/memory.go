@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"mvp1/agent"
@@ -52,15 +53,32 @@ func OpenFile(path string) (*File, error) {
 	return f, json.Unmarshal(b, &f.msgs)
 }
 
-func (f *File) Append(ctx context.Context, msgs ...agent.Message) error {
-	if err := f.InMemory.Append(ctx, msgs...); err != nil {
-		return err
-	}
+func (f *File) Append(_ context.Context, msgs ...agent.Message) error {
+	// [agent] Snapshot and write under one lock so two concurrent appends can't
+	// persist an older snapshot after a newer one. Write via temp file + rename so
+	// an interrupted write never leaves a truncated transcript that OpenFile rejects.
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.msgs = append(f.msgs, msgs...)
 	b, err := json.MarshalIndent(f.msgs, "", " ")
-	f.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(f.Path, b, 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(f.Path), "."+filepath.Base(f.Path)+".*")
+	if err != nil {
+		return err
+	}
+	if _, err = tmp.Write(b); err == nil {
+		err = tmp.Chmod(0o600)
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), f.Path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }

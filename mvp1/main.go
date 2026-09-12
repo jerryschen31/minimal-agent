@@ -59,13 +59,23 @@ func main() {
 		System:   "You are a helpful agent. Use tools when they help; answer plainly when done.",
 		MaxSteps: 25, Workdir: ".", Memory: "inmemory", Context: "full", Window: 40}
 	if b, err := os.ReadFile(*cfgPath); err == nil {
-		must(json.Unmarshal(b, &cfg))
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			fatal(err)
+		}
 	} else if *cfgPath != "config.json" {
-		must(err)
+		fatal(err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	// [agent] errors return through run so deferred cleanup (MCP servers) executes;
+	// os.Exit would skip it and orphan every child process.
+	if err := run(ctx, cfg, *q); err != nil {
+		fatal(err)
+	}
+}
+
+func run(ctx context.Context, cfg Config, q string) error {
 	stdin := bufio.NewReader(os.Stdin) // [agent] shared by REPL and approval prompts
 
 	// [agent] 1. LLM provider ------------------------------------------------
@@ -77,7 +87,7 @@ func main() {
 		if cfg.BaseURL == "" { // [agent] default to a local Ollama server
 			cfg.BaseURL = "http://localhost:11434/v1"
 		}
-		provider = &llm.OpenAI{BaseURL: cfg.BaseURL, APIKey: os.Getenv(cfg.APIKeyEnv), Model: cfg.Model}
+		provider = &llm.OpenAI{BaseURL: cfg.BaseURL, APIKey: os.Getenv(cfg.APIKeyEnv), Model: cfg.Model, MaxTokens: cfg.MaxTokens}
 	}
 
 	// [agent] 2. Tools: builtins by name, then every tool from every MCP server -
@@ -87,23 +97,29 @@ func main() {
 	for _, name := range cfg.Tools {
 		t, ok := builtins[name]
 		if !ok {
-			must(fmt.Errorf("unknown builtin tool %q", name))
+			return fmt.Errorf("unknown builtin tool %q", name)
 		}
 		tools[name] = t
 	}
 	for _, s := range cfg.MCPServers {
 		c, err := tool.ConnectMCP(ctx, s.Name, s.Command, s.Args...)
-		must(err)
+		if err != nil {
+			return err
+		}
 		defer c.Close()
 		ts, err := c.Tools(ctx)
-		must(err)
+		if err != nil {
+			return err
+		}
 		for _, t := range ts {
 			tools[t.Spec().Name] = t
 		}
 	}
 
 	// [agent] 3. Hooks: logging always; approval when configured ---------------
-	hs := agent.Hooks{&hooks.Logger{W: os.Stderr}}
+	// Policy hooks are built once and shared with subagents (below) so delegation
+	// is never a way around approval; only the logger differs per agent.
+	var policy agent.Hooks
 	if len(cfg.Approve) > 0 {
 		ap := &hooks.Approval{In: stdin, Out: os.Stderr, Tools: map[string]bool{}}
 		for _, n := range cfg.Approve {
@@ -111,14 +127,17 @@ func main() {
 				ap.Tools[n] = true
 			}
 		}
-		hs = append(hs, ap)
+		policy = append(policy, ap)
 	}
+	hs := append(agent.Hooks{&hooks.Logger{W: os.Stderr}}, policy...)
 
 	// [agent] 4. Memory + context harness --------------------------------------
 	var mem agent.Memory = &memory.InMemory{}
 	if cfg.Memory == "file" {
 		f, err := memory.OpenFile(cfg.MemoryPath)
-		must(err)
+		if err != nil {
+			return err
+		}
 		mem = f
 	}
 	var cb agent.ContextBuilder = harness.Full{}
@@ -136,24 +155,27 @@ func main() {
 			Description: "Delegate a self-contained sub-task to a fresh agent with the same tools; returns its final answer.",
 			Spawn: func() *agent.Agent {
 				return &agent.Agent{LLM: provider, Tools: subTools, Memory: &memory.InMemory{}, Context: harness.Full{},
-					Hooks: agent.Hooks{&hooks.Logger{W: os.Stderr, Prefix: "    [sub] "}}, System: cfg.System, MaxSteps: cfg.MaxSteps}
+					Hooks:  append(agent.Hooks{&hooks.Logger{W: os.Stderr, Prefix: "    [sub] "}}, policy...),
+					System: cfg.System, MaxSteps: cfg.MaxSteps}
 			}}
 	}
 
 	a := &agent.Agent{LLM: provider, Tools: tools, Memory: mem, Context: cb, Hooks: hs, System: cfg.System, MaxSteps: cfg.MaxSteps}
 
 	// [agent] 6. Run: one-shot or REPL (memory persists across REPL turns) -----
-	if *q != "" {
-		out, err := a.Run(ctx, *q)
-		must(err)
+	if q != "" {
+		out, err := a.Run(ctx, q)
+		if err != nil {
+			return err
+		}
 		fmt.Println(out)
-		return
+		return nil
 	}
 	for {
 		fmt.Fprint(os.Stderr, "\n> ")
 		line, err := stdin.ReadString('\n')
 		if err != nil || strings.TrimSpace(line) == "exit" {
-			return
+			return nil
 		}
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -167,9 +189,7 @@ func main() {
 	}
 }
 
-func must(err error) {
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "fatal:", err)
-		os.Exit(1)
-	}
+func fatal(err error) {
+	fmt.Fprintln(os.Stderr, "fatal:", err)
+	os.Exit(1)
 }

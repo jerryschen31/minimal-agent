@@ -42,3 +42,13 @@ func TestMCPFilesystemServer(t *testing.T) {
 	}
 	t.Fatalf("no read tool found among %d tools", len(tools))
 }
+
+// [agent] a server that exits without answering must fail the call, not hang it.
+func TestMCPCrashedServerFailsPendingCalls(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := ConnectMCP(ctx, "dead", "sh", "-c", "read line; exit 1")
+	if err == nil || ctx.Err() != nil || !strings.Contains(err.Error(), "closed connection") {
+		t.Fatalf("want closed-connection error before the test deadline, got %v (ctx %v)", err, ctx.Err())
+	}
+}

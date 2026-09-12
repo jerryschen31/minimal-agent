@@ -95,3 +95,30 @@ func TestMaxSteps(t *testing.T) {
 		t.Fatalf("want ErrMaxSteps, got %v", err)
 	}
 }
+
+func TestNonObjectArgsRejectedBeforeTool(t *testing.T) {
+	llm := &fakeLLM{script: []Message{
+		// [agent] what an adapter stores when the model emitted unparseable JSON: a JSON string
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "1", Name: "echo", Args: json.RawMessage(`"{S: hi"`)}}},
+		{Role: RoleAssistant, Content: "ok"},
+	}}
+	called := false
+	a, mem := newAgent(llm)
+	a.Tools["echo"] = spy{echo{}, &called}
+	if _, err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if called || !mem.msgs[2].IsError {
+		t.Fatalf("tool ran on non-object args; observation %+v", mem.msgs[2])
+	}
+}
+
+type spy struct {
+	Tool
+	called *bool
+}
+
+func (s spy) Call(ctx context.Context, a json.RawMessage) (string, error) {
+	*s.called = true
+	return s.Tool.Call(ctx, a)
+}
