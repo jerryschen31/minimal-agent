@@ -1,0 +1,17 @@
+{
+  "provider": "openai",
+  "model": "qwen2.5:7b",
+  "base_url": "http://localhost:11434/v1",
+  "api_key_env": "",
+  "system_prompt": "You are a helpful coding agent working in the current directory. Use tools when they help; when finished, answer in plain text.",
+  "max_steps": 25,
+  "workdir": ".",
+  "memory": "file",
+  "memory_path": ".agent-memory.json",
+  "context": "window",
+  "context_window": 40,
+  "tools": ["shell", "read_file", "write_file"],
+  "mcp_servers": [],
+  "subagents": true,
+  "approve": ["shell", "write_file"]
+}
