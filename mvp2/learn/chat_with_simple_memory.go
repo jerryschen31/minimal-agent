@@ -1,3 +1,8 @@
+//
+// This builds on chat_simple.go by adding simple memory functionality
+// Memory is implemented as a running chat history slice that stores all previous messages between the user and the assistant.
+//
+
 package main
 
 import (
@@ -11,10 +16,14 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 )
 
+const ResponseTimeout = 30 * time.Second
+const WelcomeMsg = "Running agent with configuration: %+v\n\nType /clear to clear chat history.\nType /exit to exit\n"
+
 type Provider interface {
-	Chat(ctx context.Context, prompt string) (string, error)
+	Chat(ctx context.Context, chatHistory []ChatMessage) (string, error)
 }
 
 type OpenAICompat struct {
@@ -29,6 +38,9 @@ type Config struct {
 	Model      string `json:"model"`
 	BaseURL    string `json:"base_url"`
 	ApiKeyName string `json:"api_key_name"`
+
+	// system prompt
+	SystemPrompt string `json:"system_prompt"`
 
 	// tools and MCP servers configuration
 	Tools []string `json:"tools"`
@@ -50,27 +62,24 @@ type ChatResponse struct {
 	} `json:"choices"`
 }
 
-func (p OpenAICompat) Chat(ctx context.Context, prompt string) (string, error) {
+func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
 	// make a request to the OpenAI-compatible server
-	// 1. build a chatRequest with p.Model and one user message containing prompt
-	req := ChatRequest{
-		Model: p.Model,
-		Messages: []ChatMessage{
-			{
-				Role:    "user",
-				Content: prompt,
-			},
-		},
+	// 1. build a chatRequest with p.Model and the provided chat history
+	reqRaw := ChatRequest{
+		Model:    p.Model,
+		Messages: chatHistory,
 	}
 
 	// 2. json.Marshal it into a []byte body
-	body, err := json.Marshal(req)
+	reqBody, err := json.Marshal(reqRaw)
 	if err != nil {
 		return "", err
 	}
 
 	// 3. build an *http.Request with http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", ...)
-	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(ctx, ResponseTimeout)
+	defer cancel()
+	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
 		return "", err
 	}
@@ -81,7 +90,7 @@ func (p OpenAICompat) Chat(ctx context.Context, prompt string) (string, error) {
 		reqHttp.Header.Set("Authorization", "Bearer "+p.ApiKey)
 	}
 
-	// 5. do the request with http.DefaultClient.Do(req)
+	// 5. do the request with a http.DefaultClient.Do(req) and TIMEOUT
 	resp, err := http.DefaultClient.Do(reqHttp)
 	if err != nil {
 		return "", err
@@ -114,10 +123,11 @@ func fatal(err error) {
 
 func getDefaultConfig() Config {
 	return Config{
-		Provider:   "openai", // Ollama exposes an OpenAI-compatible endpoint
-		Model:      "qwen2.5:0.5b",
-		BaseURL:    "http://localhost:11434/v1",
-		ApiKeyName: "", // no auth needed for a local Ollama server
+		Provider:     "openai", // Ollama exposes an OpenAI-compatible endpoint
+		Model:        "qwen2.5:0.5b",
+		BaseURL:      "http://127.0.0.1:11434/v1",
+		ApiKeyName:   "", // no auth needed for a local Ollama server
+		SystemPrompt: "You are a helpful assistant. Keep your responses concise and relevant.",
 	}
 }
 
@@ -134,8 +144,17 @@ func setupProvider(cfg Config) (Provider, error) {
 	}
 }
 
-func runLoop(ctx context.Context, provider Provider) {
+func runLoop(ctx context.Context, provider Provider, systemPrompt string) {
+	// initialize a buffered read for user input from stdin
 	stdin := bufio.NewReader(os.Stdin)
+	// initialize a slice to store the chat history (the last message is the most recent one)
+	var chatHistory []ChatMessage
+	// append the system prompt as the first message in the chat history
+	chatHistory = append(chatHistory, ChatMessage{
+		Role:    "system",
+		Content: systemPrompt,
+	})
+
 	for {
 		// read user input from stdin - /exit to quit
 		fmt.Print("\n> ")
@@ -148,16 +167,44 @@ func runLoop(ctx context.Context, provider Provider) {
 		if line == "" {
 			continue
 		}
+		// user wants to clear the chat history
+		if strings.HasPrefix(line, "/clear") {
+			chatHistory = chatHistory[:0]
+			chatHistory = append(chatHistory, ChatMessage{
+				Role:    "system",
+				Content: systemPrompt,
+			})
+			fmt.Println("Chat history cleared.")
+
+			line = strings.TrimSpace(line[6:])
+			if line == "" {
+				continue
+			}
+		}
+
+		// append the user message to the chat history
+		chatHistory = append(chatHistory, ChatMessage{
+			Role:    "user",
+			Content: line,
+		})
 
 		// send the prompt to the chat provider
-		response, err := provider.Chat(ctx, line)
+		response, err := provider.Chat(ctx, chatHistory)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
+			// remove the last user message since there was an error (response not saved)
+			chatHistory = chatHistory[:len(chatHistory)-1]
 			continue
 		}
 
 		// get the response content from the chat provider
 		fmt.Printf("Chat response: %+v\n", response)
+
+		// append the assistant's response to the chat history
+		chatHistory = append(chatHistory, ChatMessage{
+			Role:    "assistant",
+			Content: response,
+		})
 	}
 }
 
@@ -177,10 +224,10 @@ func runAgent(ctx context.Context, cfg Config) error {
 	// 3. setup tools and MCP servers (if applicable)
 
 	// print the configuration for debugging purposes
-	fmt.Printf("Running agent with configuration: %+v\n\nType /exit to exit\n\n", cfg)
+	fmt.Printf(WelcomeMsg, cfg)
 
 	// 4. chat with the LLM provider in a loop
-	runLoop(ctx, provider)
+	runLoop(ctx, provider, cfg.SystemPrompt)
 
 	return nil
 }
