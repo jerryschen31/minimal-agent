@@ -1,10 +1,14 @@
 //
 // This builds on chat_with_simple_memory.go by adding a sliding context window memory mechanism for the chat history.
 // We also future-proof our ChatMessage by adding an ID and Timestamp and a few other updates
-// Note that this naive implementation completely loses older messages once the sliding window moves forward.
+// Note that this naive implementation completely loses older messages once the sliding window moves forward (no persistence)
 //
 // Future improvements could include persisting older messages to disk or a database,
 // and/or implementing a more sophisticated memory management strategy like summarization.
+//
+// Also here the chat history is a slice, we have two strategies for keeping a sliding context window in memory:
+// 1. slide the window forward, making older messages unreachable in the slice and eventually discarded - this is best for larger context windows
+// 2. copy the current context window in-place to the chat history slice, overwriting older messages but keeping the slice length = max context window - this is best for smaller context windows
 //
 
 package main
