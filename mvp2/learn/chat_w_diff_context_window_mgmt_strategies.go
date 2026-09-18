@@ -3,7 +3,7 @@
 // 1. Sliding window strategy on a slice
 // 2. "Slide back" strategy on a slice, essentially keeping the context window slice in-place
 // 3. Ring-buffer strategy on a slice (where the slice functions to loop back around), allowing efficient use of a fixed-size buffer
-// 4. A circular linked list data structure (using container/list in Go's native stdlib package) to manage the context window, allowing dynamic context window sizes and O(1) removal of old messages
+// 4. A doubly linked list data structure (using container/list in Go's native stdlib package) to manage the context window, allowing dynamic context window sizes and O(1) removal of old messages
 //
 // Again, future improvements could include persisting older messages to disk or a database,
 // and/or implementing a more sophisticated memory management strategy like summarization.
@@ -31,7 +31,7 @@ import (
 
 const ResponseTimeout = 30 * time.Second
 const WelcomeMsg = "Running agent with configuration: %+v\n\nType /clear to clear chat history.\nType /exit to exit\n"
-const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "circular-linked-list"
+const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
 
 type Provider interface {
 	Chat(ctx context.Context, chatHistory []ChatMessage) (string, error)
