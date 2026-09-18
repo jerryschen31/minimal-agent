@@ -14,6 +14,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -81,34 +82,6 @@ type ContextWindow interface {
 	RemoveLast(n int)
 }
 
-// func NewRingBufferWindow(contextWindowSize int) *RingBufferWindow {
-// 	return &RingBufferWindow{
-// 		messages: make([]ChatMessage, 0, contextWindowSize),
-// 		maxSize:  contextWindowSize,
-// 	}
-// }
-
-// // RingBufferWindow is a context window strategy that uses a ring buffer to store messages.
-// type RingBufferWindow struct {
-// 	mu       sync.Mutex
-// 	messages []ChatMessage
-// 	maxSize  int
-// }
-
-// func NewCircularLLWindow(contextWindowSize int) *CircularLLWindow {
-// 	return &CircularLLWindow{
-// 		messages: make([]ChatMessage, 0, contextWindowSize),
-// 		maxSize:  contextWindowSize,
-// 	}
-// }
-
-// // CircularLLWindow is a context window strategy that uses a circular linked list to store messages.
-// type CircularLLWindow struct {
-// 	mu       sync.Mutex
-// 	messages []ChatMessage
-// 	maxSize  int
-// }
-
 // OffsetWindow is a context window strategy that stores messages as a slice and just shifts the window,
 // making the oldest messages at the beginning of the slice unreachable, when the maximum size is exceeded.
 type OffsetWindow struct {
@@ -154,7 +127,7 @@ func (w *OffsetWindow) GetMessages() []ChatMessage {
 func (w *OffsetWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.messages) > n {
+	if len(w.messages) >= n {
 		w.messages = w.messages[:len(w.messages)-n]
 	}
 }
@@ -201,8 +174,108 @@ func (w *InPlaceWindow) GetMessages() []ChatMessage {
 func (w *InPlaceWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.messages) > n {
+	if len(w.messages) >= n {
 		w.messages = w.messages[:len(w.messages)-n]
+	}
+}
+
+// RingBufferWindow is a context window strategy that uses a ring buffer to store messages.
+type RingBufferWindow struct {
+	mu       sync.Mutex
+	messages []ChatMessage // fixed size backing array (size = maxSize)
+	maxSize  int
+	head     int // index where the next message should be stored
+	count    int // number of messages currently in the buffer
+}
+
+func NewRingBufferWindow(contextWindowSize int) *RingBufferWindow {
+	return &RingBufferWindow{
+		messages: make([]ChatMessage, contextWindowSize, contextWindowSize),
+		maxSize:  contextWindowSize,
+		head:     0,
+		count:    0,
+	}
+}
+
+func (w *RingBufferWindow) AddMessages(msgs []ChatMessage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, msg := range msgs {
+		w.messages[w.head] = msg
+		w.head = (w.head + 1) % w.maxSize // if index exceed maxSize this will wrap around
+		if w.count < w.maxSize {
+			w.count++
+		}
+	}
+}
+
+func (w *RingBufferWindow) GetMessages() []ChatMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	newMessages := make([]ChatMessage, w.count)
+	for i := 0; i < w.count; i++ {
+		newMessages[i] = w.messages[((w.head-w.count)+w.maxSize+i)%w.maxSize]
+	}
+	return newMessages
+}
+
+func (w *RingBufferWindow) RemoveLast(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.count >= n {
+		w.count -= n
+		w.head = (w.head - n + w.maxSize) % w.maxSize
+	}
+}
+
+// LLWindow is a context window strategy that uses a doubly linked list to store messages.
+// A doubly linked list has head and tail pointers, so add and remove can happen from the front or back in O(1) time
+// This is useful for when we reach the context max and the new message needs to wrap around to the front (requiring us to remove the current head node and inserting new message in the front)
+type LLWindow struct {
+	mu       sync.Mutex
+	messages *list.List
+	maxSize  int
+}
+
+// initialize an empty linked list
+func NewLLWindow(contextWindowSize int) *LLWindow {
+	return &LLWindow{
+		messages: list.New(),
+		maxSize:  contextWindowSize,
+	}
+}
+
+func (w *LLWindow) AddMessages(msgs []ChatMessage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// add nodes to the linked list
+	for _, msg := range msgs {
+		if w.messages.Len() >= w.maxSize {
+			w.messages.Remove(w.messages.Front())
+		}
+		w.messages.PushBack(msg)
+	}
+}
+
+func (w *LLWindow) GetMessages() []ChatMessage {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	messages := make([]ChatMessage, w.messages.Len())
+	i := 0
+	for e := w.messages.Front(); e != nil; e = e.Next() {
+		messages[i] = e.Value.(ChatMessage)
+		i++
+	}
+	return messages
+}
+
+func (w *LLWindow) RemoveLast(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := 0; i < n && w.messages.Len() > 0; i++ {
+		w.messages.Remove(w.messages.Back())
 	}
 }
 
@@ -313,10 +386,10 @@ func createNewChatHistory(maxContextWindow int, windowStrategy string) (ContextW
 		return NewOffsetWindow(maxContextWindow - buffer), nil
 	case "in-place":
 		return NewInPlaceWindow(maxContextWindow - buffer), nil
-	//case "ring-buffer":
-	//	return NewRingBufferWindow(maxContextWindow - buffer), nil
-	//case "linked-list":
-	//	return NewCircularLLWindow(maxContextWindow - buffer), nil
+	case "ring-buffer":
+		return NewRingBufferWindow(maxContextWindow - buffer), nil
+	case "linked-list":
+		return NewLLWindow(maxContextWindow - buffer), nil
 	default:
 		return nil, fmt.Errorf("unsupported window strategy: %s", windowStrategy)
 	}
