@@ -4,6 +4,14 @@
 // Note that we are still measuring the context window using number of messages as the unit. This does not differentiate long messages from short ones.
 // Measuring context window by token count is the correct approach, which we will tackle later. This will require a tokenizer or a way to know or estimate the number of tokens for a given message.
 //
+// The tricky part of this implementation of compaction (i.e. chat history summarization + replacement of summarized messages with summary message) is that
+// it can run in the background (and not block the main chat flow), so we need to account for any new messages that might arrive before summarization is complete.
+// This implementation keeps IDs of the messages that have been summarized, so after a new chat history is created that includes only the summarized messages,
+// any new messages that arrived during summarization are appended to the context.
+//
+// We also need to account for edge cases such as new messages filling the entire context window WHILE summarization is still in progress, which is the purpose of clampToMax() below.
+// Another edge case is multiple compactions being triggered concurrently, which is handled by the compactInProgress atomic Bool flag check.
+//
 
 package main
 
@@ -21,6 +29,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -29,6 +38,8 @@ const ResponseTimeout = 5 * time.Minute
 const WelcomeMsg = "Running agent with configuration: %+v\n\nType /clear to clear chat history.\nType /exit to exit\n"
 const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
+const MaxContextWindow = 20          // maximum number of messages to keep in the sliding context window
+const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
 
 type Provider interface {
 	Chat(ctx context.Context, chatHistory []ChatMessage) (string, error)
@@ -80,6 +91,8 @@ type ContextWindow interface {
 	Snapshot() ContextState // gets a snapshot of metadata for the current context window - for now this includes the chat history and the generation counter
 	Compact(state ContextState, summaryMsg ChatMessage) bool
 	Clear()
+	GetSize() int    // gets the current number of messages in the context window
+	GetMaxSize() int // gets the maximum number of messages the context window can hold
 }
 
 // This is a snapshot of the context window's state, including the current chat history and the generation counter.
@@ -216,6 +229,18 @@ func (w *OffsetWindow) Compact(state ContextState, summaryMsg ChatMessage) bool 
 	return true
 }
 
+func (w *OffsetWindow) GetSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.messages)
+}
+
+func (w *OffsetWindow) GetMaxSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxSize
+}
+
 // InPlaceWindow is a context window strategy that stores messages in place and overwrites the oldest messages when the maximum size is exceeded.
 type InPlaceWindow struct {
 	mu       sync.Mutex
@@ -305,6 +330,18 @@ func (w *InPlaceWindow) Clear() {
 	defer w.mu.Unlock()
 	w.messages = w.messages[:0]
 	w.gen++
+}
+
+func (w *InPlaceWindow) GetSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.messages)
+}
+
+func (w *InPlaceWindow) GetMaxSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxSize
 }
 
 // RingBufferWindow is a context window strategy that uses a ring buffer to store messages.
@@ -422,6 +459,18 @@ func (w *RingBufferWindow) Clear() {
 	w.gen++
 }
 
+func (w *RingBufferWindow) GetSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.count
+}
+
+func (w *RingBufferWindow) GetMaxSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxSize
+}
+
 // LLWindow is a context window strategy that uses a doubly linked list to store messages.
 // A doubly linked list has head and tail pointers, so add and remove can happen from the front or back in O(1) time
 // This is useful for when we reach the context max and the new message needs to wrap around to the front (requiring us to remove the current head node and inserting new message in the front)
@@ -528,6 +577,18 @@ func (w *LLWindow) Clear() {
 	defer w.mu.Unlock()
 	w.messages.Init()
 	w.gen++
+}
+
+func (w *LLWindow) GetSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.messages.Len()
+}
+
+func (w *LLWindow) GetMaxSize() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.maxSize
 }
 
 // makes a call to the provider to summarize the given chat messages
@@ -725,17 +786,15 @@ func debugChatHistory(chatHistory ContextWindow) {
 	fmt.Println("[debug] --- end ---")
 }
 
-func runLoop(ctx context.Context, provider Provider, systemPrompt string) {
-	// maximum context window size
-	const maxContextWindow = 10 // maximum number of messages to keep in the sliding context window
+func runLoop(ctx context.Context, provider Provider, chatHistory ContextWindow, systemPrompt string) {
+
+	var compactInProgress atomic.Bool
+
+	// calculate a message count threshold for auto-compaction
+	autoCompactThreshold := int(float64(chatHistory.GetMaxSize()) * AutoCompactThresholdFrac)
 
 	// initialize a buffered read for user input from stdin
 	stdin := bufio.NewReader(os.Stdin)
-	// initialize a sliding context window for managing chat history efficiently
-	chatHistory, err := createNewChatHistory(maxContextWindow, WindowStrategy)
-	if err != nil {
-		fatal(err)
-	}
 
 	// the system prompt should ALWAYS be the first message in the chat history. For chat agents, this would be an AGENTS.md, CLAUDE.md, etc.
 	systemMsg := ChatMessage{
@@ -775,7 +834,13 @@ func runLoop(ctx context.Context, provider Provider, systemPrompt string) {
 				}
 				fmt.Println("Chat summary:", summaryString)
 			case "/compact":
+				// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
+				if !compactInProgress.CompareAndSwap(false, true) {
+					fmt.Println("Compaction already in progress. Skipping this compaction request.")
+					continue
+				}
 				summaryMsg, err := compactChatHistory(ctx, provider, chatHistory)
+				compactInProgress.Store(false) // mark compaction as no longer in progress (release the lock on compactInProgress)
 				if err != nil {
 					fmt.Fprintln(os.Stderr, "error:", err)
 					continue
@@ -826,6 +891,18 @@ func runLoop(ctx context.Context, provider Provider, systemPrompt string) {
 		}
 
 		chatHistory.AddMessages([]ChatMessage{userMsg, responseMsg})
+
+		// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
+		if chatHistory.GetSize() >= autoCompactThreshold && compactInProgress.CompareAndSwap(false, true) {
+			go func() {
+				defer compactInProgress.Store(false) // ensure the compaction lock is released when the goroutine exits
+				fmt.Println("Auto-compaction triggered...")
+				_, err := compactChatHistory(ctx, provider, chatHistory)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "error during auto-compaction:", err)
+				}
+			}()
+		}
 	}
 }
 
@@ -841,14 +918,19 @@ func runAgent(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	// 2. setup memory and context (if applicable)
+	// 2. setup memory and context (if applicable) - here, initialize a sliding context window for managing chat history efficiently
+	chatHistory, err := createNewChatHistory(MaxContextWindow, WindowStrategy)
+	if err != nil {
+		return err
+	}
+
 	// 3. setup tools and MCP servers (if applicable)
 
 	// print the configuration for debugging purposes
 	fmt.Printf(WelcomeMsg, cfg)
 
 	// 4. chat with the LLM provider in a loop
-	runLoop(ctx, provider, cfg.SystemPrompt)
+	runLoop(ctx, provider, chatHistory, cfg.SystemPrompt)
 
 	return nil
 }

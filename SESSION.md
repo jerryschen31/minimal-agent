@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-17)
+# SESSION.md — mvp2 progress (last updated 2026-09-19)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself`). Jerry writes the code;
 teach-then-let-him-type.
@@ -9,9 +9,9 @@ Two tracks live under `mvp2/` right now — don't conflate them:
    following mvp1's architecture. Last touched 2026-09-12; see "Track 1" below.
 2. **`mvp2/learn/`** — a separate, standalone sandbox of incremental one-file programs
    building up an OpenAI-compatible chat loop from scratch (no `agent/` package, no
-   shared module structure). This is where the last few sessions (2026-09-14 → 09-17)
-   actually happened. See "Track 2" below. Full transcripts:
-   `mvp2/learn/prompts/20260917-session-1.md`, `20260917-session-2.md`.
+   shared module structure). This is where the recent sessions (2026-09-14 → 09-19)
+   happened. See "Track 2" below. Full transcripts in `mvp2/learn/prompts/`
+   (latest: `20260919-session-2.md`).
 
 ## Track 2 — `mvp2/learn/` (most recent work)
 
@@ -21,72 +21,112 @@ mvp2/learn/
   chat_with_simple_memory.go                        gen 2: full history in a slice
   chat_with_sliding_context_window_memory.go         gen 3: fixed-size sliding window
   chat_w_diff_context_window_mgmt_strategies.go      gen 4: pluggable ContextWindow interface
+  chat_w_memory_compaction.go                        gen 5: summarize + compact (CURRENT)
 ```
 
-Each file is a standalone `package main` snapshot of that learning stage — they all
-redeclare the same top-level names (`Provider`, `Config`, `fatal`, etc.), so
-**`go build ./...` in `mvp2/learn/` fails on purpose** (redeclaration errors across
-files). Build/run one file at a time. Not a bug to fix — it's the point (each file is
-a complete, readable stage).
+Each file is a standalone `package main` snapshot of one learning stage — they all
+redeclare the same top-level names, so **`go build ./...` in `mvp2/learn/` fails on
+purpose**, and the IDE shows a wall of "redeclared" errors. Build/vet/run one file at a
+time: `go vet chat_w_memory_compaction.go`, `go run chat_w_memory_compaction.go`.
+(Terminology covered: file = source file/program; package = files in one directory
+sharing a `package` line; module = versioned set of packages via `go.mod`.)
 
-### Current file: `chat_w_diff_context_window_mgmt_strategies.go`
+### Current file: `chat_w_memory_compaction.go` (gen 5)
 
-Defines `ContextWindow` interface (`AddMessages`, `GetMessages`, `RemoveLast`) with
-four interchangeable strategies, selected via the `WindowStrategy` const and
-`createNewChatHistory`'s switch — all four cases are wired up:
+State at end of session: `go vet` and `gofmt` clean. **Not run interactively, no tests
+yet.** Everything below was checked by reading + tracing, not execution.
 
-- **`OffsetWindow`** — slice, re-slices from the tail when over `maxSize`
-  (`messages[len-maxSize:]`). Simplest, but each trim keeps the old backing array
-  alive (no realloc needed here since it's a sub-slice, cheap).
-- **`InPlaceWindow`** — slice, `copy()`s remaining elements down to index 0 in place
-  when over `maxSize`, avoiding letting the backing array grow unbounded across many
-  trims.
-- **`RingBufferWindow`** — fixed backing array (`messages []ChatMessage`, `maxSize`
-  len), `head` = index of *next write slot*, `count` = live message count. O(1)
-  writes via `head = (head+1) % maxSize`, no shifting.
-- **`LLWindow`** — `container/list.List` (doubly linked). `AddMessages` evicts
-  `Front()` before each push once at `maxSize`. O(1) push/evict, no pre-sized backing
-  array, but per-node heap allocation vs. contiguous memory.
+`ContextWindow` interface now: `AddMessages`, `GetMessages`, `RemoveLast`,
+`Snapshot() ContextState`, `Compact(state ContextState, summaryMsg ChatMessage) bool`,
+`Clear()`. `ContextState{Messages, Gen}`. All four window types implement it
+(Offset, InPlace, RingBuffer, LL), each with a `gen` counter.
 
-All four guarded by `sync.Mutex`; `GetMessages` returns a defensive copy.
+**Compaction flow** (`compactChatHistory(ctx, p, w)`): `Snapshot()` → summarize
+`state.Messages` via the provider (slow LLM call, outside any lock) → wrap the summary
+text in a `ChatMessage` (role `user`, fresh `ID`, `Timestamp`) → `w.Compact(state, msg)`.
+`Compact` returns `false` if the window was cleared/compacted since the snapshot; the
+caller turns that into an error.
+
+**Design decisions made this session (and why):**
+
+- **ID set, not a per-message "replace" flag.** Jerry's idea: mark the messages being
+  compacted; anything unmarked is new and survives. Refined to: every `ChatMessage`
+  already has a unique `ID`, so build a `map[string]bool` from the snapshot and keep
+  window messages whose ID isn't in it. Same semantics, but nothing is mutated on the
+  shared state, so a failed summary needs no cleanup and overlapping compactions can't
+  confuse each other.
+- **ID set is built inside `Compact` from `state.Messages`** (helper `getMessageIDs`),
+  not inside `Snapshot()` (keeps `Snapshot` a generic view). Must come from the frozen
+  snapshot, never from live `GetMessages()`, or new messages would be dropped.
+- **`Gen` is kept.** IDs alone can't tell "cleared mid-summary" from "every compacted
+  message was legitimately evicted"; `Gen` can. It also rejects a stale second
+  compaction. Cost: one int. Only matters once compaction goes async (loop is
+  synchronous today).
+- **`Compact` is per-window mechanics only; policy stays in `compactChatHistory`.** The
+  window can't call the LLM and must not hold its mutex across a network call. Smarter
+  policies (keep last N verbatim, tiers) = a different message/ID subset chosen by the
+  caller. Downside noted: passing a subset `ContextState` stops it being a literal
+  snapshot.
+- **`Compact` takes `ContextState`** (Jerry's call) rather than separate ids + gen args,
+  so Messages and Gen can't come from different snapshots.
+- **`Snapshot()` returns no error** — in-memory copy can't fail. Revisit only for a
+  file/DB-backed window.
+- **`clampToMax(msgs, maxSize)`** shared helper, called in all four `Compact`s. Keeps
+  summary at `[0]` + the newest `maxSize-1` survivors. Guards the overflow case: window
+  full, all compacted messages evicted during the summary call → `1 + maxSize` messages
+  (would panic the ring buffer, and leave the LL stuck at `maxSize+1`).
+- **Summary role is `user`**, not `system`, for portability (a second `system` message
+  mid-history breaks Anthropic/some Ollama templates). Cost: consecutive `user`
+  messages after compaction — fine for OpenAI/Ollama, needs merging for Anthropic.
+
+**Slash-command parsing in `runLoop`** (reviewed, correct): `TrimSpace` the line, then
+`strings.Cut(line, " ")` → `lineFirst`/`lineRest`; `switch lineFirst` for `/exit`,
+`/clear`, `/summary`|`/summarize` (read-only, prints summary), `/compact` (rewrites
+history), `default` → "Unrecognized command" + `continue`. After the switch, one shared
+tail trims `lineRest` and sends it as a normal prompt if non-empty (`/clear hi` works).
+`/clearing` no longer matches as `/clear` (old `HasPrefix` did).
 
 ### Bugs found and fixed this session (don't re-explain unless asked)
 
-- **`RingBufferWindow.GetMessages`** had two candidate index formulas
-  (`(head+i)%maxSize` vs. `(head-count+i+maxSize)%maxSize`) — only the second is
-  correct. `head` means "next write slot," which only equals "oldest message slot"
-  once the buffer has wrapped (`count == maxSize`). Before wrapping, `head` points at
-  an empty slot and the oldest live message is still at index 0 — the first formula
-  reads garbage during fill-up. Confirmed fixed (commented/dead alternative removed).
-- **`RingBufferWindow.RemoveLast`** uses `count >= n` (not `>`) — correctly empties
-  the buffer when `n == count`. Flagged as an inconsistency (not a bug) vs.
-  `OffsetWindow`/`InPlaceWindow`'s `RemoveLast`, which both use strict `>` and
-  silently no-op when `n == len(messages)` — arguably an off-by-one bug in *those*
-  two, left unfixed pending Jerry's call.
-- **`LLWindow`** (container/list version) reviewed end-to-end, no bugs found:
-  evict-before-push keeps the maxSize invariant per-message even across a batch;
-  `RemoveLast` guards `Len() > 0` so it can't panic calling `Remove` on nil past the
-  front, and (unlike the two slice strategies) correctly empties on `n == Len()`.
+- `map[int]struct{}` for string IDs; `Compact` with no `Gen` check; `InPlaceWindow`
+  signature left half-updated; interface method with mixed named/unnamed params.
+- Clamp attempts: `newMessages[:maxSize]` (panics when shorter, drops newest) →
+  `newMessages[len-maxSize:]` (drops the summary) → correct summary-first version.
+- Parsing: `lineFirst[0] == "/"` (byte vs string), unused `lineHasSpace`, normal chat
+  lines sent untrimmed with `\n`, `default:` falling through to the LLM,
+  `summarizeChatHistory` given the window instead of `GetMessages()`.
 
-### Concepts covered this session (don't re-teach unless asked)
+### Concepts covered (don't re-teach unless asked)
 
-- Ring buffer mental model: fixed array + `head`/`count` instead of shifting data;
-  O(1) writes/removal vs. O(n) slice shifting once full.
-- `container/list`: doubly linked, sentinel-root internally but behaves as a linear
-  list externally (`PushBack`/`PushFront`/`Remove`/`Front`/`Back`, O(1) each).
-  `Len()` is O(1) (stored counter, not a walk). `Element.Value` is `any` — needs a
-  type assertion (`e.Value.(ChatMessage)`) to get the concrete type back.
-- Trade-off named explicitly: ring buffer = fixed size known upfront, contiguous
-  memory, best cache locality; linked list = dynamic size, no upfront allocation,
-  but per-node heap allocation and pointer-chasing on traversal.
+- Go hash set: `map[K]struct{}` (zero-byte value; `struct{}{}` = the type + a value of
+  it) vs `map[K]bool`; two-value lookup `_, ok := m[k]`.
+- "Missing field" in Go = zero value (`m.ID == ""`); options: skip / error / panic.
+- `strings.Cut` (first separator; not found → `(s, "", false)`), `strings.Fields`
+  (any whitespace run; empty slice on blank), `strings.TrimSpace` (both ends).
+- `continue` inside a `switch` targets the enclosing `for`; `break` would not.
+- Passing an interface value (`w ContextWindow`), not a pointer to it.
 
-### Next steps for Track 2
+### Open items / next steps for Track 2
 
-- Decide whether to fix the `>` vs `>=` inconsistency in `OffsetWindow`/`InPlaceWindow`.
-- `CircularLLWindow` dead code block (commented out near top of file, an earlier
-  abandoned attempt) can probably be deleted now that `LLWindow` supersedes it.
-- No tests yet for any `ContextWindow` implementation — worth adding before moving on,
-  especially for the ring buffer's wraparound edge cases.
+1. **Tests first.** For `Compact`: normal (snapshot, add 2, compact → `[summary, m5,
+   m6]`), stale `Gen` after `Clear()`, overlapping compactions (second returns false),
+   and the overflow case (full window, all compacted messages evicted) — run with
+   `-race`. Plus a table test for `clampToMax` (under max, exactly max, max+1 with
+   summary still `[0]`, `maxSize == 1`). Run each of the four window types.
+2. **Nothing triggers compaction automatically** — only `/compact`. File header still
+   says "background and manual". Trigger must fire *before* the window is full (~70-80%
+   of `maxSize`): `AddMessages` evicts the oldest the instant it fills, so compacting a
+   full window summarizes only what survived.
+3. **Wire format.** `ChatMessage`'s JSON tags send `id`/`timestamp` to the API. Ollama
+   ignores them; I believe OpenAI rejects unknown message fields (unverified — default
+   config is OpenAI). Fix = small `{role, content}` wire struct converted just before
+   the request. Non-2xx errors also drop the response body, which hides this.
+4. Sentinel error (`ErrCompactionStale`) instead of a bare `fmt.Errorf` once callers
+   need to distinguish "discarded, retry" from real failures.
+5. Stale comment above `compactChatHistory` ("single system message" — it's `user` now);
+   it also prints from inside the function.
+6. Carried over: `>` vs `>=` in `OffsetWindow`/`InPlaceWindow.RemoveLast` (silently
+   no-ops when `n == len`); dead `CircularLLWindow` block in gen 4 if still present.
 
 ## Track 1 — `mvp2/` root (agent build, last touched 2026-09-12)
 
