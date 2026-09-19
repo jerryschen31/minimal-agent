@@ -749,35 +749,45 @@ func runLoop(ctx context.Context, provider Provider, systemPrompt string) {
 		// read user input from stdin - /exit to quit
 		fmt.Print("\n> ")
 		line, err := stdin.ReadString('\n')
-		if err != nil || strings.TrimSpace(line) == "/exit" {
+		if err != nil {
 			return
 		}
-		// skip empty lines (user just pushes enter)
+
 		line = strings.TrimSpace(line)
-		if line == "" {
+		lineFirst, lineRest, _ := strings.Cut(line, " ")
+		// skip empty lines (user just pushes enter or just has spaces)
+		if lineFirst == "" {
 			continue
 		}
-		// user wants to clear the chat history
-		if strings.HasPrefix(line, "/clear") {
-			chatHistory.Clear()
-			fmt.Println("Chat history cleared.")
-
-			line = strings.TrimSpace(line[6:])
-			if line == "" {
+		// parse slash commands
+		if strings.HasPrefix(lineFirst, "/") {
+			switch lineFirst {
+			case "/exit":
+				return
+			case "/clear":
+				chatHistory.Clear()
+				fmt.Println("Chat history cleared.")
+			case "/summary", "/summarize":
+				summaryString, err := summarizeChatHistory(ctx, provider, chatHistory.GetMessages())
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "error:", err)
+					continue
+				}
+				fmt.Println("Chat summary:", summaryString)
+			case "/compact":
+				summaryMsg, err := compactChatHistory(ctx, provider, chatHistory)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "error:", err)
+					continue
+				}
+				fmt.Println("Chat summary:", summaryMsg.Content)
+			default:
+				// if the command is not recognized, print an error message
+				fmt.Println("Unrecognized command:", lineFirst)
 				continue
 			}
-		}
-
-		// user wants a summary of the current chat history
-		if strings.HasPrefix(line, "/summary") {
-			summaryMsg, err := compactChatHistory(ctx, provider, chatHistory)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				continue
-			}
-			fmt.Println("Chat summary:", summaryMsg.Content)
-
-			line = strings.TrimSpace(line[8:])
+			// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
+			line = strings.TrimSpace(lineRest)
 			if line == "" {
 				continue
 			}
