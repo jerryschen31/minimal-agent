@@ -11,7 +11,7 @@ Two tracks live under `mvp2/` right now — don't conflate them:
    building up an OpenAI-compatible chat loop from scratch (no `agent/` package, no
    shared module structure). This is where the recent sessions (2026-09-14 → 09-19)
    happened. See "Track 2" below. Full transcripts in `mvp2/learn/prompts/`
-   (latest: `20260919-session-2.md`).
+   (latest: `20260919-session-3.md`).
 
 ## Track 2 — `mvp2/learn/` (most recent work)
 
@@ -33,8 +33,9 @@ sharing a `package` line; module = versioned set of packages via `go.mod`.)
 
 ### Current file: `chat_w_memory_compaction.go` (gen 5)
 
-State at end of session: `go vet` and `gofmt` clean. **Not run interactively, no tests
-yet.** Everything below was checked by reading + tracing, not execution.
+State at end of session 3: `go vet` and `gofmt` clean. **Not run interactively, no tests
+yet.** Everything below was checked by reading + tracing, not execution. Auto-compaction
+(below) is now wired in; the guard has never been exercised under `-race`.
 
 `ContextWindow` interface now: `AddMessages`, `GetMessages`, `RemoveLast`,
 `Snapshot() ContextState`, `Compact(state ContextState, summaryMsg ChatMessage) bool`,
@@ -86,7 +87,47 @@ history), `default` → "Unrecognized command" + `continue`. After the switch, o
 tail trims `lineRest` and sends it as a normal prompt if non-empty (`/clear hi` works).
 `/clearing` no longer matches as `/clear` (old `HasPrefix` did).
 
+### Auto-compaction (session 3)
+
+`runLoop` now compacts in the background when the window nears full. Pieces:
+
+- **Window setup moved to `runAgent`** (step 2, "setup memory and context") and passed into
+  `runLoop`. `MaxContextWindow` is a package const. `runAgent` should `return err` rather
+  than `fatal(err)` (defers) — Jerry said he fixed this; re-verify.
+- **`ContextWindow` gained `GetSize()` and `GetMaxSize()`** (Jerry's call: "size" is generic,
+  so a token-based window can implement it later). Computed on demand, not cached in a
+  field — `len(w.messages)` / `w.count` (ring buffer; its backing array is always `maxSize`
+  long so `len()` would be wrong) / `w.messages.Len()` (list, O(1)). A cached counter would
+  duplicate state the four `AddMessages`/`Compact` paths must keep in sync.
+  `GetMessages()` copy was never the concern (≤ ~20 structs, next to a multi-second LLM call).
+- **Threshold** = `int(float64(chatHistory.GetMaxSize()) * AutoCompactThresholdFrac)`,
+  frac currently 0.9 (earlier note said 0.8 — deliberate choice either way). Based on the
+  window's real max size, not `MaxContextWindow`, because `buffer` is **kept** in
+  `createNewChatHistory` (Jerry's decision; headroom for system prompt + pending user
+  message), so the window is smaller than the const.
+- **Fire-on-demand, not a ticker**: after `AddMessages` each turn, check
+  `GetSize() >= threshold && compactInProgress.CompareAndSwap(false, true)`, then `go func`
+  with `defer compactInProgress.Store(false)` as its first line. Size check first so the
+  flag is only claimed when work will start.
+- **`compactInProgress atomic.Bool`** is a local in `runLoop` (not global, not per-window),
+  shared by the auto path and `/compact`. Must not be copied (pass `*atomic.Bool`).
+  Per-window flag rejected: repeated 4x, and "a compaction is running" is policy, which
+  stays out of the windows.
+- **`/compact` claims the same flag**: on `CompareAndSwap` failure prints "already in
+  progress" and `continue`s (skip, not wait — waiting needs a WaitGroup/channel). Release
+  is an explicit `Store(false)` right after `compactChatHistory` and *before* the error
+  check; `defer` can't be used in a `case` because it fires when `runLoop` returns.
+  Fragile if anything is later inserted between claim and release.
+- `Gen` still rejects the loser if `/clear` or a second compaction lands mid-summary.
+
 ### Bugs found and fixed this session (don't re-explain unless asked)
+
+Session 3: `GetSize`/`GetMaxSize` pasted onto the wrong receivers (duplicate on
+`InPlaceWindow`/`LLWindow`, none on Offset/RingBuffer) → compile error; `int(intVal *
+0.9)` doesn't compile (convert to `float64` first); threshold equal to real capacity
+(fired only when full); no single-flight guard (every turn re-launched a compaction).
+
+Session 2:
 
 - `map[int]struct{}` for string IDs; `Compact` with no `Gen` check; `InPlaceWindow`
   signature left half-updated; interface method with mixed named/unnamed params.
@@ -98,6 +139,11 @@ tail trims `lineRest` and sends it as a normal prompt if non-empty (`/clear hi` 
 
 ### Concepts covered (don't re-teach unless asked)
 
+- `sync/atomic`: why check-then-set on a plain `bool` races (two steps + data race);
+  `atomic.Bool` (Go 1.19+, zero value usable) with `Load`/`Store`/`Swap`/`CompareAndSwap`;
+  CAS = one indivisible "flip false→true, tell me if I won"; `Load` is for display, never
+  for deciding to start work; `defer` inside a goroutine's func literal fires when the
+  goroutine ends, `defer` in a `switch case` fires at function end.
 - Go hash set: `map[K]struct{}` (zero-byte value; `struct{}{}` = the type + a value of
   it) vs `map[K]bool`; two-value lookup `_, ok := m[k]`.
 - "Missing field" in Go = zero value (`m.ID == ""`); options: skip / error / panic.
@@ -113,10 +159,14 @@ tail trims `lineRest` and sends it as a normal prompt if non-empty (`/clear hi` 
    and the overflow case (full window, all compacted messages evicted) — run with
    `-race`. Plus a table test for `clampToMax` (under max, exactly max, max+1 with
    summary still `[0]`, `maxSize == 1`). Run each of the four window types.
-2. **Nothing triggers compaction automatically** — only `/compact`. File header still
-   says "background and manual". Trigger must fire *before* the window is full (~70-80%
-   of `maxSize`): `AddMessages` evicts the oldest the instant it fills, so compacting a
-   full window summarizes only what survived.
+2. ~~Nothing triggers compaction automatically~~ — **done in session 3** (see above).
+   Still to do: a `-race` test proving the guard. Fake `Provider` (a struct whose `Chat`
+   sleeps and bumps an `atomic` counter), fill window to threshold, fire the trigger twice,
+   assert one provider call. Also `/compact` while auto is running → "in progress".
+   Small polish left: the auto path doesn't print when skipped (good); goroutine prints
+   can land mid-line over the `> ` prompt (cosmetic; a channel drained by `runLoop` is the
+   later fix); a failing provider retries every turn while over threshold (add backoff if
+   annoying); `/clear` mid-compaction prints "compaction failed" (use the sentinel below).
 3. **Wire format.** `ChatMessage`'s JSON tags send `id`/`timestamp` to the API. Ollama
    ignores them; I believe OpenAI rejects unknown message fields (unverified — default
    config is OpenAI). Fix = small `{role, content}` wire struct converted just before
