@@ -4,7 +4,7 @@
 // 1. Support for unit and behavior testing with a variety of inputs and expected outputs
 // 2. Create separate context from chat history. Up until now I have been confounding the two concepts.
 //    Chat history is an append-only list of messages, while the context window manages the active conversation context.
-//    ChatStore (append-only chat history interface) and ChatContext (context window and associated metadata struct) will be created.
+//    ChatHistory (append-only chat history interface) and ChatContext (context window and associated metadata struct) will be created.
 // 3. Chat session information is maintained with a ChatSession struct.
 //    Contains the information needed to manage an ongoing chat, including the provider, system message, context window, I/O streams, and compaction state.
 //
@@ -53,18 +53,56 @@ type OpenAICompat struct {
 }
 
 type Config struct {
+	// User configuration
+	UserID string `json:"user_id"`
+
 	// LLM service provider configuration
 	Provider   string `json:"provider"` // "openai" (any OpenAI-compatible server) | "anthropic"
 	Model      string `json:"model"`
 	BaseURL    string `json:"base_url"`
 	ApiKeyName string `json:"api_key_name"`
 
+	// I/O configuration for the chat session
+	InBuffer  io.Reader `json:"in_buffer"`
+	OutBuffer io.Writer `json:"out_buffer"`
+
 	// system prompt
 	SystemPrompt string `json:"system_prompt"`
+
+	// memory configuration
+	ChatStoreType string `json:"chat_store_type"` // "in-memory" | "persistent"
 
 	// tools and MCP servers configuration
 	Tools []string `json:"tools"`
 }
+
+func getDefaultConfig() Config {
+	return Config{
+		UserID:        "default_user",
+		Provider:      "openai", // Ollama exposes an OpenAI-compatible endpoint
+		Model:         "gpt-4o-mini",
+		BaseURL:       "https://api.openai.com/v1",
+		ApiKeyName:    "OPENAI_API_KEY", // no auth needed for a local Ollama server
+		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
+		ChatStoreType: "in-memory",
+		InBuffer:      os.Stdin,
+		OutBuffer:     os.Stdout,
+	}
+}
+
+// func getDefaultConfig() Config {
+// 	return Config{
+// 		UserID:        "default_user",
+// 		Provider:     "openai", // Ollama exposes an OpenAI-compatible endpoint
+// 		Model:        "qwen2.5:0.5b",
+// 		BaseURL:      "http://127.0.0.1:11434/v1",
+// 		ApiKeyName:   "", // no auth needed for a local Ollama server
+// 		SystemPrompt: "You are a helpful assistant. Keep your responses concise and relevant.",
+// 		ChatStoreType: "in-memory",
+// 		InBuffer:      os.Stdin,
+// 		OutBuffer:     os.Stdout,
+// 	}
+// }
 
 type ChatMessage struct {
 	ID        string    `json:"id"`
@@ -94,19 +132,26 @@ type ContextWindow interface {
 	GetMaxSize() int // gets the maximum number of messages the context window can hold
 }
 
+func NewContextWindow(maxContextWindow int, windowStrategy string) (ContextWindow, error) {
+	const buffer = 2 // leave headroom for the system prompt + pending user message added outside window
+	switch windowStrategy {
+	case "offset":
+		return NewOffsetWindow(maxContextWindow - buffer), nil
+	case "in-place":
+		return NewInPlaceWindow(maxContextWindow - buffer), nil
+	case "ring-buffer":
+		return NewRingBufferWindow(maxContextWindow - buffer), nil
+	case "linked-list":
+		return NewLLWindow(maxContextWindow - buffer), nil
+	default:
+		return nil, fmt.Errorf("unsupported window strategy: %s", windowStrategy)
+	}
+}
+
 // This is a snapshot of the context window's state, including the current chat history and the generation counter.
 type ContextState struct {
 	Messages []ChatMessage
 	Gen      int
-}
-
-// chatSession holds the state and configuration for an ongoing chat session
-type chatSession struct {
-	provider             string
-	systemMsg            ChatMessage
-	context              ContextWindow
-	compactInProgress    atomic.Bool
-	autoCompactThreshold float64
 }
 
 // ChatHistory interface for managing running chat history storage and retrieval.
@@ -120,10 +165,10 @@ type InMemoryChatHistory struct {
 	messages []ChatMessage
 }
 
-func NewInMemoryChatHistory() *InMemoryChatHistory {
+func NewInMemoryChatHistory() (*InMemoryChatHistory, error) {
 	return &InMemoryChatHistory{
 		messages: make([]ChatMessage, 0),
-	}
+	}, nil
 }
 
 // gets a full copy of the chat history
@@ -141,14 +186,36 @@ func (h *InMemoryChatHistory) Append(msgs []ChatMessage) {
 	h.messages = append(h.messages, msgs...)
 }
 
+// chatSession holds the state and configuration for an ongoing chat session
 type ChatSession struct {
-	Provider     Provider
-	History      ChatHistory
-	Context      ChatContext
-	SystemPrompt string
-	UserID       string
-	InBuffer     io.Reader
-	OutBuffer    io.Writer
+	Provider   Provider
+	MsgHistory ChatHistory
+	MsgContext *ChatContext
+	SystemMsg  ChatMessage
+	UserID     string
+	InBuffer   io.Reader
+	OutBuffer  io.Writer
+}
+
+func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
+	return &ChatSession{
+		Provider:   provider,
+		MsgHistory: chatHistory,
+		MsgContext: chatContext,
+		SystemMsg:  createSystemMessage(cfg.SystemPrompt),
+		UserID:     cfg.UserID,
+		InBuffer:   cfg.InBuffer,
+		OutBuffer:  cfg.OutBuffer,
+	}, nil
+}
+
+func createSystemMessage(systemPrompt string) ChatMessage {
+	return ChatMessage{
+		Role:      "system",
+		Content:   systemPrompt,
+		ID:        createID(),
+		Timestamp: time.Now().UTC(),
+	}
 }
 
 // Context for a chat session
@@ -160,20 +227,20 @@ type ChatContext struct {
 	compactInProgress    atomic.Bool
 }
 
-func NewChatContext(w ContextWindow, autoCompactThreshold int) *ChatContext {
+func NewChatContext(w ContextWindow, autoCompactThreshold int) (*ChatContext, error) {
 	return &ChatContext{
 		window:               w,
 		gen:                  0,
 		autoCompactThreshold: autoCompactThreshold,
 		compactInProgress:    atomic.Bool{},
-	}
+	}, nil
 }
 
 func (c *ChatContext) GetWindow() ContextWindow {
 	return c.window
 }
 
-func (c *ChatContext) StartCompaction() bool {
+func (c *ChatContext) ShouldStartCompaction() bool {
 	return c.compactInProgress.CompareAndSwap(false, true)
 }
 
@@ -288,6 +355,62 @@ func clampToMax(msgs []ChatMessage, maxSize int) []ChatMessage {
 	trimmed := make([]ChatMessage, 0, maxSize)
 	trimmed = append(trimmed, msgs[0])
 	return append(trimmed, msgs[len(msgs)-(maxSize-1):]...)
+}
+
+//////////////////////////////////////////////
+// Setup Functions
+//////////////////////////////////////////////
+
+// setup provider
+func setupProvider(cfg Config) (Provider, error) {
+	if cfg.Provider == "openai" {
+		return &OpenAICompat{
+			Model:   cfg.Model,
+			BaseURL: cfg.BaseURL,
+			ApiKey:  os.Getenv(cfg.ApiKeyName),
+		}, nil
+	} else {
+		// provider not supported
+		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
+	}
+}
+
+// creates and returns a new chat history instance
+func setupMemoryStore(cfg Config) (ChatHistory, error) {
+	if cfg.ChatStoreType == "in-memory" {
+		c, err := NewInMemoryChatHistory()
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	return nil, fmt.Errorf("unsupported chat store type: %s", cfg.ChatStoreType)
+}
+
+// creates a new chat context instance
+func setupChatContext(cfg Config) (*ChatContext, error) {
+	// create context window data structure
+	w, err := NewContextWindow(MaxContextWindow, WindowStrategy)
+	if err != nil {
+		return nil, err
+	}
+
+	// create chat context using context window
+	threshold := int(float64(w.GetMaxSize()) * AutoCompactThresholdFrac)
+	cc, err := NewChatContext(w, threshold)
+	if err != nil {
+		return nil, err
+	}
+	return cc, nil
+}
+
+// creates a new chat session instance
+func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
+	cs, err := NewChatSession(provider, chatHistory, chatContext, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return cs, nil
 }
 
 /////////////////////////////////////////////////////////////
@@ -582,7 +705,7 @@ func (w *LLWindow) GetMaxSize() int {
 //////////////////////////////////////////////
 
 // makes a call to the provider to summarize the given chat messages
-func summarizeChatHistory(ctx context.Context, p Provider, msgs []ChatMessage) (string, error) {
+func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage) (string, error) {
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("no messages to summarize")
 	}
@@ -611,14 +734,28 @@ func summarizeChatHistory(ctx context.Context, p Provider, msgs []ChatMessage) (
 	return summary, nil
 }
 
-// compacts the chat history by summarizing the current messages and replacing them with a single system message containing the summary.
+// compacts the chat context by summarizing the current messages and replacing them with a single system message containing the summary.
 // in the future, the compaction could be more sophisticated (compacting a subset of messages, merging similar messages, having categories for messages, etc.)
-func compactChatHistory(ctx context.Context, p Provider, w ContextWindow) (ChatMessage, error) {
+// compactionType values for compactChatContext, distinguishing a manual /compact from an
+// auto-triggered one (only affects the "triggered..." message printed to the user).
+const (
+	CompactionManual = "manual"
+	CompactionAuto   = "auto"
+)
+
+func compactChatContext(ctx context.Context, cs *ChatSession, compactionType string) (ChatMessage, error) {
+	defer cs.MsgContext.EndCompaction() // ensure the compaction lock is released after compaction is done
+	if compactionType == CompactionAuto {
+		fmt.Fprintln(cs.OutBuffer, "Auto-compaction triggered...")
+	} else {
+		fmt.Fprintln(cs.OutBuffer, "Compaction triggered...")
+	}
+
 	// take a snapshot of the current chat history
-	state := w.Snapshot()
+	state := cs.MsgContext.Snapshot()
 
 	// summarize the chat history
-	summary, err := summarizeChatHistory(ctx, p, state.Messages)
+	summary, err := summarizeChatContext(ctx, cs.Provider, state.Messages)
 	if err != nil {
 		return ChatMessage{}, err
 	}
@@ -630,15 +767,23 @@ func compactChatHistory(ctx context.Context, p Provider, w ContextWindow) (ChatM
 		Timestamp: time.Now().UTC(), // .Format(time.RFC3339),
 		ID:        createID(),       // uuid.New().String(),
 	}
-	isCompacted := w.Compact(state, summaryMsg)
+	isCompacted := cs.MsgContext.Compact(state, summaryMsg)
 	if isCompacted {
 		// optionally, you could log or perform some action when compaction succeeds
-		fmt.Println("Chat history compacted successfully.")
+		fmt.Fprintln(cs.OutBuffer, "Chat context compacted successfully.")
 		return summaryMsg, nil
 	} else {
-		fmt.Println("Chat history compaction failed.")
-		return ChatMessage{}, fmt.Errorf("chat history compaction failed")
+		return ChatMessage{}, fmt.Errorf("chat context compaction failed")
 	}
+}
+
+// print the current chat context, just for debugging purposes - prints to the standard output (console)
+func debugChatContext(msgContext []ChatMessage) {
+	fmt.Println("[debug] --- context window ---")
+	for i, msg := range msgContext {
+		fmt.Printf("[%d] %s: %s\n", i, msg.Role, msg.Content)
+	}
+	fmt.Println("[debug] --- end ---")
 }
 
 //////////////////////////////////////////////
@@ -712,95 +857,122 @@ func createID() string {
 	return hex.EncodeToString(b)
 }
 
-func getDefaultConfig() Config {
-	return Config{
-		Provider:     "openai", // Ollama exposes an OpenAI-compatible endpoint
-		Model:        "gpt-4o-mini",
-		BaseURL:      "https://api.openai.com/v1",
-		ApiKeyName:   "OPENAI_API_KEY", // no auth needed for a local Ollama server
-		SystemPrompt: "You are a helpful assistant. Keep your responses concise and relevant.",
-	}
-}
-
-// func getDefaultConfig() Config {
-// 	return Config{
-// 		Provider:     "openai", // Ollama exposes an OpenAI-compatible endpoint
-// 		Model:        "qwen2.5:0.5b",
-// 		BaseURL:      "http://127.0.0.1:11434/v1",
-// 		ApiKeyName:   "", // no auth needed for a local Ollama server
-// 		SystemPrompt: "You are a helpful assistant. Keep your responses concise and relevant.",
-// 	}
-// }
-
-func setupProvider(cfg Config) (Provider, error) {
-	if cfg.Provider == "openai" {
-		return &OpenAICompat{
-			Model:   cfg.Model,
-			BaseURL: cfg.BaseURL,
-			ApiKey:  os.Getenv(cfg.ApiKeyName),
-		}, nil
-	} else {
-		// provider not supported
-		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
-	}
-}
-
-func createNewChatHistory(maxContextWindow int, windowStrategy string) (ContextWindow, error) {
-	const buffer = 2 // leave headroom for the system prompt + pending user message added outside window
-	switch windowStrategy {
-	case "offset":
-		return NewOffsetWindow(maxContextWindow - buffer), nil
-	case "in-place":
-		return NewInPlaceWindow(maxContextWindow - buffer), nil
-	case "ring-buffer":
-		return NewRingBufferWindow(maxContextWindow - buffer), nil
-	case "linked-list":
-		return NewLLWindow(maxContextWindow - buffer), nil
-	default:
-		return nil, fmt.Errorf("unsupported window strategy: %s", windowStrategy)
-	}
-}
-
 // prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the chat history, and the user's message into a single slice of ChatMessage.
-func prepareChatRequest(chatHistory ContextWindow, systemMsg, userMsg ChatMessage) []ChatMessage {
-	msgs := chatHistory.GetMessages()
-	chat2send := make([]ChatMessage, len(msgs)+2)
+func prepareChatRequest(msgContext []ChatMessage, systemMsg, userMsg ChatMessage) []ChatMessage {
+	chat2send := make([]ChatMessage, len(msgContext)+2)
 	chat2send[0] = systemMsg
-	copy(chat2send[1:], msgs)
+	copy(chat2send[1:], msgContext)
 	chat2send[len(chat2send)-1] = userMsg
 	return chat2send
 }
 
-func debugChatHistory(chatHistory ContextWindow) {
-	fmt.Println("[debug] --- context window ---")
-	chatMsgs := chatHistory.GetMessages()
-	for i, msg := range chatMsgs {
-		fmt.Printf("[%d] %s: %s\n", i, msg.Role, msg.Content)
+//////////////////////////////////////////////
+// Parse and handle user input
+//////////////////////////////////////////////
+
+func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
+	// Implementation for handling user input goes here
+	msgContext := cs.MsgContext.GetMessages()
+	line = strings.TrimSpace(line)
+	lineFirst, lineRest, _ := strings.Cut(line, " ")
+	// skip empty lines (user just pushes enter or just has spaces)
+	if lineFirst == "" {
+		return false
 	}
-	fmt.Println("[debug] --- end ---")
+	// parse slash commands
+	if strings.HasPrefix(lineFirst, "/") {
+		switch lineFirst {
+		case "/exit":
+			return true
+		case "/clear":
+			cs.MsgContext.Clear()
+			fmt.Fprintln(cs.OutBuffer, "Chat history cleared.")
+		case "/summary", "/summarize":
+			summaryString, err := summarizeChatContext(ctx, cs.Provider, msgContext)
+			if err != nil {
+				fmt.Fprintln(cs.OutBuffer, "Summarization error:", err)
+				return false
+			}
+			fmt.Fprintln(cs.OutBuffer, "Chat summary:", summaryString)
+		case "/compact":
+			// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
+			if !cs.MsgContext.ShouldStartCompaction() {
+				fmt.Fprintln(cs.OutBuffer, "Compaction already in progress. Skipping this compaction request.")
+				return false
+			}
+			summaryMsg, err := compactChatContext(ctx, cs, CompactionManual)
+			if err != nil {
+				fmt.Fprintln(cs.OutBuffer, "Compaction error:", err)
+				return false
+			}
+			fmt.Fprintln(cs.OutBuffer, "Chat summary:", summaryMsg.Content)
+		default:
+			// if the command is not recognized, print an error message
+			fmt.Fprintln(cs.OutBuffer, "Unrecognized command:", lineFirst)
+			return false
+		}
+		// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
+		line = strings.TrimSpace(lineRest)
+		if line == "" {
+			return false
+		}
+	}
+
+	// append the user message to the chat history
+	userMsg := ChatMessage{
+		Role:      "user",
+		Content:   line,
+		ID:        createID(),
+		Timestamp: time.Now().UTC(),
+	}
+
+	// [debug] print the current chat history before sending the prompt to the chat provider
+	debugChatContext(msgContext)
+
+	// prepare the request to send to the chat provider - includes the system message, the chat history, and the user's message
+	chat2send := prepareChatRequest(msgContext, cs.SystemMsg, userMsg)
+
+	// send the chat request to the LLM provider
+	response, err := cs.Provider.Chat(ctx, chat2send)
+	if err != nil {
+		fmt.Fprintln(cs.OutBuffer, "error:", err)
+		return false
+	}
+
+	// get the response content from the chat provider
+	fmt.Fprintln(cs.OutBuffer, "Chat response:", response)
+
+	// append the user prompt and AI assistant's response to the chat history
+	responseMsg := ChatMessage{
+		Role:      "assistant",
+		Content:   response,
+		ID:        createID(),
+		Timestamp: time.Now().UTC(),
+	}
+
+	// add new messages to history and context
+	cs.MsgHistory.Append([]ChatMessage{userMsg, responseMsg})
+	cs.MsgContext.AddMessages([]ChatMessage{userMsg, responseMsg})
+
+	// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
+	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
+		go func() {
+			_, err := compactChatContext(ctx, cs, CompactionAuto)
+			if err != nil {
+				fmt.Fprintln(cs.OutBuffer, "Auto-compaction error:", err)
+			}
+		}()
+	}
+	return false
 }
 
 //////////////////////////////////////////////
 // Run loop for handling chat session
 //////////////////////////////////////////////
 
-func runLoop(ctx context.Context, provider Provider, chatHistory ContextWindow, systemPrompt string) {
+func runLoop(ctx context.Context, chatSession *ChatSession) {
 
-	var compactInProgress atomic.Bool
-
-	// calculate a message count threshold for auto-compaction
-	autoCompactThreshold := int(float64(chatHistory.GetMaxSize()) * AutoCompactThresholdFrac)
-
-	// initialize a buffered read for user input from stdin
-	stdin := bufio.NewReader(os.Stdin)
-
-	// the system prompt should ALWAYS be the first message in the chat history. For chat agents, this would be an AGENTS.md, CLAUDE.md, etc.
-	systemMsg := ChatMessage{
-		Role:      "system",
-		Content:   systemPrompt,
-		ID:        createID(),
-		Timestamp: time.Now().UTC(),
-	}
+	stdin := bufio.NewReader(chatSession.InBuffer)
 
 	for {
 		// read user input from stdin - /exit to quit
@@ -810,97 +982,11 @@ func runLoop(ctx context.Context, provider Provider, chatHistory ContextWindow, 
 			return
 		}
 
-		line = strings.TrimSpace(line)
-		lineFirst, lineRest, _ := strings.Cut(line, " ")
-		// skip empty lines (user just pushes enter or just has spaces)
-		if lineFirst == "" {
-			continue
-		}
-		// parse slash commands
-		if strings.HasPrefix(lineFirst, "/") {
-			switch lineFirst {
-			case "/exit":
-				return
-			case "/clear":
-				chatHistory.Clear()
-				fmt.Println("Chat history cleared.")
-			case "/summary", "/summarize":
-				summaryString, err := summarizeChatHistory(ctx, provider, chatHistory.GetMessages())
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "error:", err)
-					continue
-				}
-				fmt.Println("Chat summary:", summaryString)
-			case "/compact":
-				// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
-				if !compactInProgress.CompareAndSwap(false, true) {
-					fmt.Println("Compaction already in progress. Skipping this compaction request.")
-					continue
-				}
-				summaryMsg, err := compactChatHistory(ctx, provider, chatHistory)
-				compactInProgress.Store(false) // mark compaction as no longer in progress (release the lock on compactInProgress)
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "error:", err)
-					continue
-				}
-				fmt.Println("Chat summary:", summaryMsg.Content)
-			default:
-				// if the command is not recognized, print an error message
-				fmt.Println("Unrecognized command:", lineFirst)
-				continue
-			}
-			// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
-			line = strings.TrimSpace(lineRest)
-			if line == "" {
-				continue
-			}
+		quitSignal := handleUserInput(ctx, chatSession, line)
+		if quitSignal {
+			return
 		}
 
-		// append the user message to the chat history
-		userMsg := ChatMessage{
-			Role:      "user",
-			Content:   line,
-			ID:        createID(),
-			Timestamp: time.Now().UTC(),
-		}
-
-		// [debug] print the current chat history before sending the prompt to the chat provider
-		debugChatHistory(chatHistory)
-
-		// prepare the request to send to the chat provider - includes the system message, the chat history, and the user's message
-		chat2send := prepareChatRequest(chatHistory, systemMsg, userMsg)
-
-		// send the chat request to the LLM provider
-		response, err := provider.Chat(ctx, chat2send)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			continue
-		}
-
-		// get the response content from the chat provider
-		fmt.Printf("Chat response: %+v\n", response)
-
-		// append the user prompt and AI assistant's response to the chat history
-		responseMsg := ChatMessage{
-			Role:      "assistant",
-			Content:   response,
-			ID:        createID(),
-			Timestamp: time.Now().UTC(),
-		}
-
-		chatHistory.AddMessages([]ChatMessage{userMsg, responseMsg})
-
-		// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
-		if chatHistory.GetSize() >= autoCompactThreshold && compactInProgress.CompareAndSwap(false, true) {
-			go func() {
-				defer compactInProgress.Store(false) // ensure the compaction lock is released when the goroutine exits
-				fmt.Println("Auto-compaction triggered...")
-				_, err := compactChatHistory(ctx, provider, chatHistory)
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "error during auto-compaction:", err)
-				}
-			}()
-		}
 	}
 }
 
@@ -921,26 +1007,21 @@ func runAgent(ctx context.Context, cfg Config) error {
 	}
 
 	// 2. setup memory store for chat history
-	chatStore, err := setupMemoryStore(cfg)
+	chatHistory, err := setupMemoryStore(cfg)
 	if err != nil {
 		return err
 	}
 
-	// 3. setup context builder for managing active conversation context
-	contextBuilder, err := setupContextBuilder(cfg)
+	// 3. setup context struct for managing active conversation context
+	chatContext, err := setupChatContext(cfg)
 	if err != nil {
 		return err
 	}
-
-	// chatHistory, err := createNewChatHistory(MaxContextWindow, WindowStrategy)
-	// if err != nil {
-	// 	return err
-	// }
 
 	// 4. setup tools and MCP servers (if applicable)
 
-	// setup this chat session
-	chatSession, err := setupChatSession(chatStore, cfg)
+	// 5. setup this chat session
+	chatSession, err := setupChatSession(provider, chatHistory, chatContext, cfg)
 	if err != nil {
 		return err
 	}
@@ -948,8 +1029,8 @@ func runAgent(ctx context.Context, cfg Config) error {
 	// print the configuration for debugging purposes
 	fmt.Printf(WelcomeMsg, cfg)
 
-	// 5. chat with the LLM provider in a loop
-	runLoop(ctx, provider, chatStore, contextBuilder)
+	// 6. chat with the LLM provider in a loop
+	runLoop(ctx, chatSession)
 
 	return nil
 }

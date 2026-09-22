@@ -1,366 +1,337 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-21)
+# SESSION.md — mvp2 progress (last updated 2026-09-22)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself`). Jerry writes the code;
-teach-then-let-him-type.
+teach-then-let-him-type. This file is written so a **fresh session with no memory of prior
+conversations** can pick up exactly where things left off — read top to bottom before doing
+anything. A full transcript of the session that produced this file:
+`mvp2/learn/prompts/20260921-session-refactoring.md`.
 
-## Current to-dos (session 4, 2026-09-21): test plan for `chat_w_memory_compaction.go`
+## How to work in this session (interaction style — read this first)
 
-Source: 3 independent sub-agent reviews of `chat_w_memory_compaction_test.go` (the outline of
-test cases) against `chat_w_memory_compaction.go`. "Majority" = at least 2 of 3 agreed.
-Work through in order; Jerry types, Claude reviews. Walk through Go testing step by step
-(Jerry is new to Go testing).
+Jerry asked explicitly that this be captured, not just the code state. This is how the last
+several sessions have worked well; keep doing it this way.
 
-### A. Refactor `runLoop` so it can be tested (do first)
-**Superseded 2026-09-21**: the flat `chatSession` struct below split into three types once Jerry
-decided to separate history from context (see section B). Work is happening in
-`mvp2/learn/chat_w_memory_compaction_refactor.go` (new file, in flux, does not compile yet —
-`setupMemoryStore`/`setupContextBuilder`/`setupChatSession` and the updated `runLoop`/`handleLine`
-are stubs/TODO). Current three-way split:
-  - `ChatHistory` (interface) — durable append-only log, single session scope (see B1).
-  - [x] `ChatContext` struct — **done 2026-09-21**: `Window ContextWindow` (not `*ContextWindow`),
-    `autoCompactThreshold int`, `compactInProgress atomic.Bool`; `NewChatContext(window, threshold)
-    *ChatContext`; `StartCompaction() bool` / `EndCompaction()` wrap the CompareAndSwap/Store pair
-    so callers never touch `compactInProgress` directly. `GetWindow()` getter removed as redundant
-    (field is already exported). Open, non-blocking: whether `NewChatContext` should compute
-    `autoCompactThreshold` internally from `window.GetMaxSize() * AutoCompactThresholdFrac` instead
-    of taking it as a caller-supplied param; whether to add `ShouldAutoCompact() bool` so the
-    threshold check lives next to the field instead of inline in `handleLine`.
-  - **Open 2026-09-21**: Jerry asked whether `Snapshot`/`Compact`/`Clear` should move from
-    `ContextWindow` to `ChatContext` (keep `ContextWindow` pure data-structure, `ChatContext` pure
-    "context state"). `Snapshot`'s `Messages` field is provably redundant with `GetMessages()`
-    (verified against `RingBufferWindow` — identical loop) so that half is sound. But `Compact`
-    can't be safely decomposed into separate `GetMessages`+`Clear`+`AddMessages` calls on `Window`:
-    it breaks the atomicity that prevents a concurrent `AddMessages` (main loop) from being silently
-    wiped by an in-flight `Compact`'s stale read — a real race, not hypothetical, since background
-    auto-compact + concurrent user messages is the exact scenario this file's compaction design
-    exists to handle. Root cause: splitting `Gen` onto `ChatContext`'s lock while messages stay
-    under the window's lock means two pieces of state that must move together are protected by two
-    different locks. Two safe options on the table, not mutually exclusive: (1) thin `ChatContext`
-    wrapper methods that delegate to `c.window.Compact/Snapshot/Clear` (ergonomics only, interface
-    unchanged); (2) split `ContextWindow` into composed `MessageStore` + `Compactable` interfaces,
-    zero behavior change, pure documentation of the same split at the type level. Also reopens
-    whether to hide `Window` after all, now for a correctness reason rather than just tidiness
-    (declined earlier in the session for lack of a concrete reason).
-  - **Resolved 2026-09-21**: Jerry agreed to hide `Window` behind `ChatContext`. Mechanism: once
-    nothing can reach the window except through `ChatContext`'s own methods, a `ChatContext`-level
-    `sync.Mutex` (new, separate from `compactInProgress`) serializes every access, so the
-    read-filter-write in `Compact` can no longer be interleaved by a concurrent `AddMessages` — the
-    race is closed. This lets `Gen` move off each window type onto `ChatContext`, and lets
-    `Snapshot`/`Compact` be written **once**, generically, using only `GetMessages`/`Clear`/
-    `AddMessages`/`GetMaxSize` — deletes ~100 lines of 4x-duplicated logic. `ContextWindow` shrinks
-    to `AddMessages`, `GetMessages`, `RemoveLast`, `Clear`, `GetSize`, `GetMaxSize` (`Clear` stays
-    per-type for efficiency/performance-comparison reasons). Each window type **keeps its own
-    internal `mu`** (not redundant — needed for standalone per-window-type testing per the test
-    outline, and cheap defense-in-depth; nests harmlessly under `ChatContext`'s lock).
-  - Plan, in order (not yet started beyond the struct):
-    1. [x] `ChatContext` struct + `NewChatContext` — **done 2026-09-21**.
-    2. [x] Pass-through methods (`AddMessages`, `GetMessages`, `RemoveLast`, `GetSize`,
-       `GetMaxSize`) — **done 2026-09-21**. `GetMaxSize` deliberately skips `c.mu` (maxSize is
-       immutable post-construction, and `window.GetMaxSize()` is independently safe via the
-       window's own lock) — fine, just inconsistent with the other four on purpose.
-    3. [x] `ChatContext.Snapshot()` — **done 2026-09-21**, correct. Interface already trimmed to the
-       6-method target shape ahead of schedule (Jerry removed `Snapshot`/`Compact` from the
-       `ContextWindow` interface early). Expected, not-yet-fixed compile errors: `compactChatHistory`
-       still calls `w.Snapshot()`/`w.Compact()` on a raw `ContextWindow` (fixed in step 7). The 4
-       window types' own `Compact()` methods are still intact (correctly not yet removed — that's
-       step 6, after this step lands).
-    4. `ChatContext.Compact(state, summaryMsg) bool` — **in progress 2026-09-22**. Logic correct
-       (staleness check, `getMessageIDs`/filter, `clampToMax`-before-replace ordering). Two fixes
-       pending: (a) no `SetMessages` on `ContextWindow` — "replace contents" is `c.window.Clear()` +
-       `c.window.AddMessages(newMessages)`, safe here specifically because the whole method holds
-       `c.mu`, so nothing can interleave between the two calls; (b) `clampToMax(newMessages,
-       c.GetMaxSize())` should be `c.window.GetMaxSize()` — `c.GetMaxSize()` only avoids deadlocking
-       here because it happens to skip locking `c.mu` (a prior deliberate choice); relying on that is
-       fragile if it's ever changed to lock. **(fix, then confirm)**
-    5. `ChatContext.Clear()` — `c.window.Clear()` then `c.gen++`, under `c.mu`.
-    6. Remove `Snapshot`/`Compact` from the `ContextWindow` interface and delete their
-       implementations (and the `gen` field) from `OffsetWindow`/`InPlaceWindow`/`RingBufferWindow`/
-       `LLWindow`.
-    7. Update `compactChatHistory` (currently takes `w ContextWindow`) to take `*ChatContext` instead,
-       since `Snapshot`/`Compact` no longer exist on `ContextWindow`.
-  - `ChatSession` struct — `Provider`, `History ChatHistory`, `Context *ChatContext` (must be a
-    *pointer* here: `ChatContext` holds `atomic.Bool`, so a value field would copy the lock on
-    every copy of `ChatSession` — same hazard as below, different guarded field), `SystemMsg`,
-    `In io.Reader`, `Out io.Writer`. Consider adding `SessionID string` (generated like message
-    IDs) now — cheap today, becomes the thread that ties a running session to which file/DB row
-    a persistent `ChatHistory` should open later (B2).
-- [ ] A1. Old plan (flat `chatSession` struct, pointer receiver, never copied): `provider`, `window`,
-      `systemMsg`, `compactInProgress atomic.Bool`, `autoCompactThreshold`. `ctx` stays a parameter,
-      not a field. **Superseded by the 3-struct split above — do not build this flat version.**
-- [ ] A2. Extract `handleLine(ctx, s *ChatSession, line string) (quit bool)` (Jerry's chosen shape;
-      type updated from `*chatSession` to `*ChatSession`).
-      Loop-body `continue` becomes `return false`; `/exit` becomes `return true`; the stdin read
-      error stays in `runLoop`. Check every `continue` inside the `switch` was replaced.
-- [ ] A3. Output to an `io.Writer` instead of `fmt.Println` (incl. the print in `compactChatHistory`).
-      Wide but mechanical diff.
-- [ ] A4. Make auto-compaction awaitable (`sync.WaitGroup` or a done channel), so tests don't need
-      `time.Sleep` and the goroutine can't outlive a test under `-race`.
-- [ ] A5. Extract `parseCommand(line) (cmd, rest string, isCmd bool)` (pure, table-testable).
-- Skip clock/ID injection for now (majority: tests can set their own IDs).
-- Downside: A2 edits the most-edited function, so do it as one small commit.
+- **Teach-then-let-him-type is the default.** Explain the concept, give the smallest next
+  slice (a struct shape, a method signature, an old→new translation table), then stop and
+  wait for Jerry to write it and share it back for review. Don't write whole functions/files
+  unless he explicitly says "fix this for me" / "do this for me" — that's the exception, not
+  the norm, and it happened rarely (e.g. a batch of small, already-agreed-upon fixes).
+- **Verify against the actual file before reviewing anything — don't trust memory of what a
+  struct/function looked like a few turns ago.** The code changes fast, often in ways not
+  narrated. Use Read/Grep/Bash to check current signatures. Before claiming something compiles
+  or is broken, actually run it and quote the real output:
+  ```sh
+  cd mvp2/learn
+  go build -o /dev/null chat_w_memory_compaction_refactor.go
+  go vet chat_w_memory_compaction_refactor.go
+  gofmt -l chat_w_memory_compaction_refactor.go
+  ```
+  **Never `go build ./...` or trust the IDE's whole-directory diagnostics** — every file in
+  `mvp2/learn/` is a standalone `package main` snapshot that intentionally redeclares the same
+  top-level names (see "Two tracks" below), so a directory-wide build/lint always fails with a
+  wall of `redeclared` errors. That's expected noise, not a signal. Only single-file builds are
+  meaningful here.
+- **Separate "expected, not-yet-due" build errors from genuinely new bugs when reporting.**
+  Mid-refactor, most build errors are just downstream code that hasn't been rewired yet (a
+  planned later step). Naming which errors are already-tracked and which are new keeps Jerry
+  from re-chasing something that's already on the list.
+- **For multi-call-site renames/refactors, give an old→new mapping table, not prose.** This
+  scaled well for translating whole functions (e.g. moving `runLoop`'s body into
+  `handleUserInput`) — a table of exact old code → exact new code, one row per change.
+- **Every design recommendation comes with the honest trade-off, and where relevant, the
+  concrete trigger that would flip the recommendation.** Never a bare "do X." E.g.: "don't
+  extract the window types into a package yet, but here's exactly what would make that the
+  right call" (Track 1 resuming and needing them).
+- **When something sounds appealing but has a subtle correctness problem, trace it through
+  concretely** — don't hand-wave "that could be risky." Walking the actual index arithmetic
+  of `RingBufferWindow`'s wraparound, or the exact interleaving that loses a message during a
+  decomposed `Compact()`, is what caught real bugs and built trust. Do the same level of rigor
+  before recommending a design change.
+- **`AskUserQuestion` (the structured multi-choice tool) was tried once for a real
+  architecture fork; Jerry declined it in favor of free-form discussion.** Default to laying
+  out options with trade-offs in prose and asking an open question at the end; only reach for
+  the structured tool again for a genuinely blocking multi-way decision, and expect it may be
+  declined.
+- **Update this file continuously, right after each resolved decision or completed step** —
+  not saved up for the end of a session.
+- **When reviewing code Jerry wrote:** read the whole relevant function, not just a pasted
+  excerpt (excerpts can be stale relative to the file on disk). Check the build. List
+  correctness/compile-breaking bugs before style/consistency notes. Compliment genuine
+  improvements Jerry makes beyond what was suggested — several of his own design choices in
+  this refactor (e.g. centralizing the compaction "announce + release lock" logic inside
+  `compactChatContext` itself) were better than the original suggestion; say so specifically.
+- **Tone/format:** concise, headers and small tables over long prose, avoid unnecessary
+  jargon (per `CLAUDE.md`). The `[agent]` comment prefix convention is for comments *inside
+  code Claude writes*, not for chat responses or this file.
 
-### B. Separate chat history from the context window (Jerry's design call, 2026-09-21)
-Chat history = the running log of every request/response (truth, append-only, later persistent).
-Context window = the current view sent to the model (compacted, evicted, trimmed). Matches
-mvp1's principle: memory is the truth, context is a view over it. Messages already have unique
-IDs, so the window can always be rebuilt from the history.
-- [x] B1a. Named `ChatHistory` (not `ChatStore`/`History`) — matches the file's own header comment
-      ("chat history is an append-only list of messages") and the `<Strategy>Window` naming pattern
-      already used for `ContextWindow` impls (parallel: `InMemoryHistory`/`FileHistory`, not
-      `InMemoryChatHistory` — TBD, Jerry's actual code below uses the longer form, both are fine).
-      **Reminder**: old `chatHistory` variable names that actually hold a `ContextWindow`
-      (`runLoop`, `prepareChatRequest`, `debugChatHistory`, `createNewChatHistory`) must be renamed
-      to something window-flavored when `runLoop` is rewritten (A2), or the old ambiguity comes back.
-- [x] B1b. Scope decided: **single session per `ChatHistory` instance**, no session-ID parameter on
-      any method — matches `mvp1`'s `Memory` (fresh instance per agent/subagent, never ID-keyed).
-      Persistence carries the session ID at *construction* time (`NewFileChatHistory(sessionID)`
-      opens/scopes to that session internally), not on every `Append`/`GetMessages` call. If a
-      "list/resume past sessions" feature is ever built, that's a separate small interface
-      (e.g. `SessionIndex`: `List()`, `Open(id)`), not an ID param bolted onto `ChatHistory`.
-- [ ] B1c. Skeleton drafted (interface + `InMemoryChatHistory` struct + `NewInMemoryChatHistory`
-      constructor returning `*InMemoryChatHistory`), methods (`GetMessages`, `Append`, `Clear`) not
-      yet written. Current signature:
-      `type ChatHistory interface { GetMessages() []ChatMessage; Append(msg ChatMessage); Clear() }`.
-      **Open, tied to B-d1 below**: should `Clear()` even be on this interface? Recommendation is
-      no — putting it here commits every future backing store (file/DB) to supporting hard delete,
-      which cuts against "history is the truth that survives compaction". Jerry to decide.
-      Secondary, non-blocking: `Append(msg ChatMessage)` (singular) vs. `Append(msgs []ChatMessage)`
-      — plural would let `handleLine` build one slice and pass the *same* slice to both
-      `History.Append` and `Context.Window.AddMessages`, so the two can't drift apart.
-      **Forward note for the methods**: pointer receivers required (`func (h *InMemoryChatHistory)
-      ...`) — a value receiver copies the mutex, same class of bug as the `atomic.Bool` hazard above.
-- [ ] B2. Later: a persistent implementation (flat file first, then DB / vector store) behind the
-      same interface. Don't design the storage format until the query is known (vector search
-      wants "find similar", not "give me everything").
-- [ ] B3. Test that every message in the window is also in the history (guards the double-write).
-- Suggested order: A1, then A2, then B1 (history is one more field and a couple of lines).
-- Honest downside: one more struct/field, and each turn writes to two places. If they ever
-  disagree you have a new class of bug. **Open question (Jerry): real production chat agents
-  and the double write. Answer pending / see next session's notes.**
+## Current state
 
-Decisions forced by the split:
-- [ ] B-d1. What does `/clear` do: window only (keep the log; suggested) or both?
-- [ ] B-d2. What does `RemoveLast` (undo) do: both, or window only?
-- [ ] B-d3. Where does the compaction summary go: window only, or history with a marker
-      (distinct `Role`/field) so it isn't mistaken for a real turn?
-- [ ] B-d4. Do failed requests go in the history? Today a failure adds nothing.
+Working file: **`mvp2/learn/chat_w_memory_compaction_refactor.go`**. This is a from-scratch
+refactor of the predecessor file `chat_w_memory_compaction.go` (still present, untouched, kept
+as the last-known-good reference — see "Track 2 history" below), splitting the single
+`ContextWindow`-does-everything design into separate history/context/session types.
+
+**Milestone reached 2026-09-22: the refactor file compiles clean, standalone.**
+`go build`/`go vet`/`gofmt -l` all pass, and it links into a real binary (verified, not
+assumed). The full `ChatHistory` / `ChatContext` / `ChatSession` / `handleUserInput` /
+`runLoop` / `runAgent` chain is wired together and working.
+
+**Not yet done:**
+- An actual interactive run (needs a live provider API key + real stdin — better done by
+  Jerry directly than from here: `cd mvp2/learn && go run chat_w_memory_compaction_refactor.go`).
+- A small dead-comment cleanup left in `runAgent` (an old commented-out
+  `createNewChatHistory(...)` block, fully superseded).
+- **The test suite — this is the explicit next step Jerry said he'll pick up.** See
+  "Next up" below. This was the original goal of the whole multi-session refactor: split
+  history from context specifically to make the code testable, then write the tests. That
+  part is finally unblocked.
+
+## Architecture reference (current, verified shape — read before touching the code)
+
+Four types, each answering a different question:
+
+| Type | Kind | Answers | Key methods |
+|---|---|---|---|
+| `ContextWindow` | interface | how are messages stored/evicted? (pure data structure) | `AddMessages`, `GetMessages`, `RemoveLast`, `Clear`, `GetSize`, `GetMaxSize` — **6 methods**, nothing compaction-related |
+| `OffsetWindow`/`InPlaceWindow`/`RingBufferWindow`/`LLWindow` | structs | four different storage strategies implementing `ContextWindow` | each has its own `mu sync.Mutex`, own `maxSize` |
+| `ChatHistory` | interface | what was ever said? (durable, append-only, single source of truth) | `GetMessages() []ChatMessage`, `Append(msgs []ChatMessage)` — **no `Clear()`**, deliberately (history survives compaction) |
+| `InMemoryChatHistory` | struct | in-memory `ChatHistory` impl | `mu sync.Mutex`, pointer receivers throughout |
+| `ChatContext` | struct | what does the model see *right now*? (compactable cache over history) | see below |
+| `ChatSession` | struct | everything needed to run one turn | `Provider`, `MsgHistory ChatHistory`, `MsgContext *ChatContext`, `SystemMsg ChatMessage` (built once at construction via `createSystemMessage`), `UserID string`, `InBuffer io.Reader`, `OutBuffer io.Writer` |
+
+**`ChatContext`** is the one with real complexity, all load-bearing:
+```go
+type ChatContext struct {
+	mu                   sync.Mutex     // guards window + gen together
+	window               ContextWindow  // unexported — nothing outside ChatContext may touch it directly
+	gen                  int            // generation counter, moved here from the window types
+	autoCompactThreshold int
+	compactInProgress    atomic.Bool
+}
+```
+Methods: pass-throughs to `window` under `c.mu` (`AddMessages`, `GetMessages`, `RemoveLast`,
+`GetSize`; `GetMaxSize`/`GetWindow` deliberately skip the lock — `maxSize` is immutable after
+construction, so there's nothing to protect); `IsAutoCompactionNeeded() bool`
+(`window.GetSize() >= autoCompactThreshold`); `ShouldStartCompaction() bool`
+(`compactInProgress.CompareAndSwap(false, true)` — **must be checked**, it has a side effect,
+see the "why `Window` is hidden" note below); `EndCompaction()`
+(`compactInProgress.Store(false)`); `Snapshot() ContextState`; `Compact(state ContextState,
+summaryMsg ChatMessage) bool`.
+
+**Why `Snapshot`/`Compact`/`gen` moved off `ContextWindow` onto `ChatContext`, and why `window`
+is unexported** (this was the single hardest piece of design work this session — read this
+before changing anything here): `Snapshot`'s `Messages` field was provably redundant with
+`GetMessages()` (verified against `RingBufferWindow` — literally the same traversal loop), so
+`Snapshot` could move up cleanly. `Compact`, however, needs "read current state, check `gen`
+hasn't changed, write new state" to be **one atomic operation** relative to any concurrent
+`AddMessages` call (e.g. the main loop adding a message while a background auto-compaction is
+mid-summarization — this is a real, designed-for scenario, not hypothetical). Decomposing
+`Compact` into separate `GetMessages`+`Clear`+`AddMessages` calls only stays safe if **nothing
+can reach the window except through `ChatContext`'s own lock** — which is exactly why `window`
+is unexported and every window-touching operation funnels through `ChatContext.mu`. Each window
+type also keeps its own internal `mu` regardless (not redundant — needed so each type can still
+be tested standalone, and it's cheap defense-in-depth; nests harmlessly under `ChatContext`'s
+lock).
+
+**`compactChatContext(ctx, cs *ChatSession, compactionType string) (ChatMessage, error)`**
+(function, not a method) does the actual compaction: `defer cs.MsgContext.EndCompaction()` up
+top (guarantees release on every path), prints "triggered..." (message depends on
+`compactionType`, one of the named consts `CompactionManual`/`CompactionAuto`), snapshots,
+summarizes via `summarizeChatContext`, builds the summary message, calls `cs.MsgContext.Compact`.
+Callers must call `cs.MsgContext.ShouldStartCompaction()` themselves first and only proceed into
+`compactChatContext` if it returns `true` — it does *not* guard itself.
+
+**History vs. Context — the resolved design question:** `ChatHistory` is the single source of
+truth; `ChatContext` is a rebuildable cache over it, not a second independent source of truth
+(named pattern: event-sourcing/CQRS — durable log + a derived, disposable read-model). Every
+turn writes `cs.MsgHistory.Append(...)` **first** (durable), then
+`cs.MsgContext.AddMessages(...)` (cache) — see `handleUserInput`. If the cache write ever fails,
+that's a degraded turn, not data loss, since `Context` can be rebuilt by replaying `History`
+through a fresh window. No special error-handling exists for this today — both are in-memory,
+neither call can currently fail; the ordering is a forward-looking discipline for when
+persistence lands, not a live fix.
+
+**Deferred alternative, logged not built:** a "pure derive-context-from-history" design was
+seriously considered and explicitly deferred — see "Open decisions" below for the reasoning.
+
+## Next up: write the test suite
+
+This is what Jerry said he'll do next. The plan (sections C and D) was built from 3 independent
+sub-agent reviews of `chat_w_memory_compaction_test.go`'s test-case outline; "majority" means at
+least 2 of 3 agreed. Walk through Go testing step by step — Jerry is new to it.
 
 ### C. Test scaffolding
 - [ ] C1. `windowFactories` map (`offset`, `in-place`, `ring-buffer`, `linked-list`) +
       `forEachWindow(t, size, func(t, w))` helper. Failures show as `TestX/ring-buffer`.
-- [ ] C2. `fakeProvider`: scripted reply/err, mutex-guarded record of the messages per call, optional
-      `block chan struct{}` to hold a compaction in flight without `time.Sleep`. Return `ctx.Err()`
-      to test cancellation.
-- [ ] C3. `msgs(n)` / `msg(role, id, content)` helper with deterministic IDs (`Compact` matches on
-      ID; `getMessageIDs` skips empty IDs, so tests that forget IDs fail confusingly).
+- [ ] C2. `fakeProvider`: scripted reply/err, mutex-guarded record of the messages per call,
+      optional `block chan struct{}` to hold a compaction in flight without `time.Sleep`.
+      Return `ctx.Err()` to test cancellation.
+- [ ] C3. `msgs(n)` / `msg(role, id, content)` helper with deterministic IDs (`Compact` matches
+      on ID; `getMessageIDs` skips empty IDs, so tests that forget IDs fail confusingly).
 - [ ] C4. Stub every outline bullet as its own `Test…` function starting with `t.Skip("TODO")`,
       bullet text in a comment/skip message. Prefixed names, e.g.
       `TestWindow_AddToFull_EvictsOldest`, `TestCompaction_EmptySummary_LeavesHistoryUnchanged`.
-      Table-driven only for eviction (1 vs N) and failure kinds.
-      (Agents differed: A = per-bullet in outline order; B = per-bullet plus contract runner;
-      C = one `Test…` per group with subtests. Majority A+B.)
+      Table-driven only for eviction (1 vs N) and failure kinds. One function per bullet
+      (majority pick over one function per outline group with subtests).
 
 ### D. Order of attack for filling in the stubs
 - [ ] D1. Window-only tests: add, order, `RemoveLast`, eviction, `Clear`, copy-safety of
-      `GetMessages`/`Snapshot`.
-- [ ] D2. `Compact` and `clampToMax` directly with hand-built `ContextState`.
-- [ ] D3. `summarizeChatHistory` / `compactChatHistory` with the fake provider.
-- [ ] D4. Concurrency tests, run with `go test -race`.
-- [ ] D5. `runLoop`-level bullets (system prompt first, slash commands, failed responses).
-- [ ] D6. Benchmarks (`Benchmark*`, `b.Run` per window type; maybe a separate `_bench_test.go`).
-      Performance bullets are benchmarks, not tests.
+      `GetMessages`. (`Snapshot`/`Compact` are on `ChatContext` now, not the windows — test
+      them there instead, see D2.)
+- [ ] D2. `ChatContext.Compact`/`Snapshot` and `clampToMax` directly with hand-built
+      `ContextState`.
+- [ ] D3. `summarizeChatContext` / `compactChatContext` with the fake provider.
+- [ ] D4. Concurrency tests, run with `go test -race`. Include: `ShouldStartCompaction`
+      single-flight (call it twice, assert only the first returns `true`), and a message added
+      via `AddMessages` during an in-flight `Compact` survives correctly.
+- [ ] D5. `handleUserInput`-level bullets (system prompt first, slash commands, failed
+      responses, the History-then-Context write ordering).
+- [ ] D6. Benchmarks (`Benchmark*`, `b.Run` per window type; maybe a separate
+      `_bench_test.go`). Performance bullets are benchmarks, not tests.
 
-### E. Decisions / bugs surfaced by the review
-- [ ] E1. `RemoveLast(n)` with n > len: Offset/InPlace/Ring do nothing, `LLWindow` removes what it
-      can. Pick one behavior (the four-window suite will catch this). Supersedes the old `>`/`>=`
-      note under Track 2, item 6.
-- [ ] E2. Summary is inserted with `Role: "user"` so the next request can have two consecutive user
-      turns (known trade-off, see design decisions below). Still intended?
-- [ ] E3. `/clear <prompt>` falls through and sends the rest as a prompt (already noted as working).
-      Intended?
-- [ ] E4. `RemoveLast` doesn't bump `gen`, so a message removed during summarization still gets
-      summarized.
-- [ ] E5. Empty `Snapshot()` on `OffsetWindow` returns nil: compare with `len()`, not `DeepEqual`
-      against an empty slice.
-- [ ] E6. Offset/Ring windows keep stale messages in the backing array after `Clear`/`Compact`
-      (memory retention only, not visible through the API).
+## Key design decisions (condensed — why the code looks the way it does)
 
-Two tracks live under `mvp2/` right now — don't conflate them:
+- **`ChatHistory` naming**: chosen over `ChatStore`/`History` — matches the file's own header
+  comment and the domain language, and follows the `<Strategy>Window` naming pattern already
+  used for `ContextWindow` implementations.
+- **`ChatHistory` scope**: one instance per session, no session-ID parameter on any method —
+  matches `mvp1`'s `Memory` (fresh instance per agent, never ID-keyed). A future persistent
+  implementation carries the session ID at *construction* time
+  (`NewFileChatHistory(sessionID)`), not on every call. A "list/resume past sessions" feature,
+  if ever built, is a separate small interface, not an ID param bolted onto `ChatHistory`.
+- **No `Clear()` on `ChatHistory`**: putting it there would commit every future backing store
+  (file/DB) to supporting hard delete, cutting against "history is the truth that survives
+  compaction." `/clear` only ever resets `ChatContext`.
+- **`Append(msgs []ChatMessage)` plural**, matching `ContextWindow.AddMessages` — lets a
+  caller build one slice and pass the same slice to both `History.Append` and
+  `Context.AddMessages`, so the two calls can't drift apart in content.
+- **Constructors return `(*T, error)`** even where they can't fail yet (`NewInMemoryChatHistory`,
+  `NewChatContext`, `NewChatSession`) — deliberate future-proofing so a later persistent/fallible
+  implementation doesn't require a breaking signature change.
+- **`ShouldStartCompaction()` naming**: chosen over an earlier `StartCompaction()` specifically
+  because a name like "Start" invites calling it and ignoring the return value (which is
+  exactly a bug that happened once in this session — the auto-compact goroutine ran
+  unconditionally, ignoring a `false` result, breaking the single-flight guarantee). "Should"
+  signals it's a question worth checking, closer to Go's own `sync.Mutex.TryLock()` idiom.
+- **`fmt.Errorf` vs `fmt.Fprintln`**: errors are values in Go, propagated by return
+  (`fmt.Errorf`) to whoever has a caller to hand them to — nearly every function in this file.
+  Only true output boundaries print directly (`fmt.Fprintln`/`Fprintf`): `fatal()` at the top
+  of `main`, and `handleUserInput` (it returns `bool`, not `error`, by design — it's the REPL's
+  presentation layer, the second legitimate boundary in this program).
+- **All user-facing output goes through `cs.OutBuffer`**, never bare `fmt.Println`/`os.Stderr`
+  — the whole point of `OutBuffer` being injected on `ChatSession` is testability (a test can
+  swap in a fake writer and assert on it); anything that bypasses it defeats that.
+
+## Open decisions / known issues
+
+- [ ] **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Not yet decided or built
+  (no `/undo` command exists). Given the History-is-truth model, likely window-only, matching
+  `/clear` — but not settled.
+- [x] **`/clear` resets `ChatContext` only, `ChatHistory` untouched** — resolved, matches what's
+  built (`handleUserInput`'s `/clear` case calls only `cs.MsgContext.Clear()`).
+- [x] **Compaction summary lives only in `ChatContext`, never written to `ChatHistory`** —
+  resolved, matches what's built (`compactChatContext` only ever calls `cs.MsgContext.Compact`).
+  The history should only ever contain what was actually said, not a generated artifact.
+- [x] **Failed requests don't go in `ChatHistory`** — resolved, matches what's built
+  (`cs.MsgHistory.Append` only happens after `cs.Provider.Chat` succeeds in `handleUserInput`).
+- [ ] Summary message is inserted with `Role: "user"`, so the next request can have two
+  consecutive user turns — known trade-off (portability across providers), not revisited.
+- [ ] `RemoveLast(n)` with `n > len`: Offset/InPlace/Ring do nothing, `LLWindow` removes what it
+  can — inconsistent across window types. The D1 test suite (run across all four types via
+  `forEachWindow`) will surface this; pick one behavior when it does.
+- [ ] Empty `GetMessages()` on `OffsetWindow` can return `nil` rather than an empty
+  non-nil slice (`append(nil, x...)` on zero elements stays `nil`) — tests should compare with
+  `len()`, not `reflect.DeepEqual`/`== nil` against a literal `[]ChatMessage{}`.
+- [ ] Ring buffer keeps stale messages in its backing array after `Clear`/`Compact` until
+  overwritten — memory retention only, never observable through the public API.
+- [ ] **Deferred, not started**: the "pure derive-context-from-history" design — no stored
+  `ChatContext` at all; context computed on demand from `ChatHistory` each time it's needed.
+  Compaction becomes an *append* (a summary entry self-describing its own coverage, e.g. "covers
+  through message ID X"), not a mutation — this would eliminate `Compact`'s `gen`/`Snapshot`
+  concurrency protocol entirely, not just simplify it, since nothing would ever be
+  replaced/removed. Efficiency isn't the blocker (cost would be O(messages since last summary)
+  if "position of the last summary" is tracked as O(1) state, not O(total history)). **Why
+  deferred**: would discard the already-built, correct `Compact`/`Snapshot`/`gen` machinery;
+  weakens the four-window-strategy comparison (which is interesting specifically because of
+  incremental mutation over a session — deriving fresh each time collapses their differences);
+  was a bigger rewrite than finishing the ~90%-done design already in flight. Revisit if/when
+  persistence (`ChatHistory` backed by file/DB) becomes real — that's the point where a
+  single-source-of-truth design pays off most.
+- [ ] **Future: extracting `ContextWindow` + the four window types into a separate package.**
+  Explicitly discussed and deferred (2026-09-22). The composability goal is already met at the
+  interface level within this program — a package boundary adds a *different* kind of
+  composability (reuse across separate programs/modules), which doesn't have a live use case
+  yet. **Concrete trigger to revisit**: when `mvp2/` Track 1 (the real agent build, dormant
+  since 2026-09-12, meant to follow `mvp1`'s multi-package architecture) resumes and needs a
+  context-window abstraction — porting these already-designed, already-debugged
+  implementations there is the natural move, not extracting them now inside `mvp2/learn/`
+  (which is deliberately single-file-per-stage, no shared module structure).
+
+## Two tracks live under `mvp2/` — don't conflate them
 
 1. **`mvp2/` root** (`main.go`, `agent/`, `tool/`, `config.json`) — the real agent build,
-   following mvp1's architecture. Last touched 2026-09-12; see "Track 1" below.
+   following `mvp1`'s architecture. Last touched 2026-09-12; see "Track 1" below. Dormant,
+   not part of the current session's work.
 2. **`mvp2/learn/`** — a separate, standalone sandbox of incremental one-file programs
-   building up an OpenAI-compatible chat loop from scratch (no `agent/` package, no
-   shared module structure). This is where the recent sessions (2026-09-14 → 09-19)
-   happened. See "Track 2" below. Full transcripts in `mvp2/learn/prompts/`
-   (latest: `20260919-session-3.md`).
+   building up an OpenAI-compatible chat loop from scratch (no `agent/` package, no shared
+   module structure — deliberately). This is where all current work happens. See "Track 2"
+   below.
 
-## Track 2 — `mvp2/learn/` (most recent work)
+## Track 2 — `mvp2/learn/`
 
 ```
 mvp2/learn/
-  chat_simple.go                                    gen 1: chat loop, no memory
-  chat_with_simple_memory.go                        gen 2: full history in a slice
+  chat_simple.go                                     gen 1: chat loop, no memory
+  chat_with_simple_memory.go                         gen 2: full history in a slice
   chat_with_sliding_context_window_memory.go         gen 3: fixed-size sliding window
   chat_w_diff_context_window_mgmt_strategies.go      gen 4: pluggable ContextWindow interface
-  chat_w_memory_compaction.go                        gen 5: summarize + compact (CURRENT)
+  chat_w_memory_compaction.go                        gen 5: summarize + compact (last-known-good, superseded by refactor below)
+  chat_w_memory_compaction_refactor.go               gen 6, CURRENT: history/context split (see "Current state" above)
 ```
 
-Each file is a standalone `package main` snapshot of one learning stage — they all
-redeclare the same top-level names, so **`go build ./...` in `mvp2/learn/` fails on
-purpose**, and the IDE shows a wall of "redeclared" errors. Build/vet/run one file at a
-time: `go vet chat_w_memory_compaction.go`, `go run chat_w_memory_compaction.go`.
-(Terminology covered: file = source file/program; package = files in one directory
-sharing a `package` line; module = versioned set of packages via `go.mod`.)
+Each file is a standalone `package main` snapshot of one learning stage — see "How to work in
+this session" above for why `go build ./...` in this directory is expected to fail, and why
+that's not a real signal.
 
-### Current file: `chat_w_memory_compaction.go` (gen 5)
+### History: `chat_w_memory_compaction.go` (gen 5, superseded reference)
 
-State at end of session 3: `go vet` and `gofmt` clean. **Not run interactively, no tests
-yet.** Everything below was checked by reading + tracing, not execution. Auto-compaction
-(below) is now wired in; the guard has never been exercised under `-race`.
+This predecessor file is untouched and still builds/vets clean on its own — kept as a
+last-known-good reference, not part of current work. Its `ContextWindow` interface bundled
+`Snapshot`/`Compact`/`Clear`/`gen` directly into each of the four window types (8 methods, ~100
+lines of near-duplicated `Compact` logic across the four implementations) — this is exactly
+what gen 6 (the refactor) split apart. If gen 6 ever needs to be cross-checked against
+known-correct prior behavior, this file is the reference.
 
-`ContextWindow` interface now: `AddMessages`, `GetMessages`, `RemoveLast`,
-`Snapshot() ContextState`, `Compact(state ContextState, summaryMsg ChatMessage) bool`,
-`Clear()`. `ContextState{Messages, Gen}`. All four window types implement it
-(Offset, InPlace, RingBuffer, LL), each with a `gen` counter.
+**Durable concepts covered while building gens 1–5** (Go fundamentals, still true, don't
+re-teach unless Jerry asks):
+- `sync/atomic`: why check-then-set on a plain `bool` races; `atomic.Bool` (Go 1.19+, zero
+  value usable) with `Load`/`Store`/`Swap`/`CompareAndSwap`; CAS = one indivisible "flip
+  false→true, tell me if I won"; `Load` is for display, never for deciding to start work;
+  `defer` inside a goroutine's func literal fires when the goroutine ends.
+- Go hash set idiom: `map[K]struct{}` (zero-byte value) vs `map[K]bool`; two-value lookup
+  `_, ok := m[k]`.
+- "Missing field" in Go = zero value (`m.ID == ""`).
+- `strings.Cut` (first separator; not found → `(s, "", false)`), `strings.Fields`, `strings.TrimSpace`.
+- `continue` inside a `switch` targets the enclosing `for`; a function with a non-void return
+  type requires an explicit `return` on every path, unlike a `for` loop falling through.
+- Interfaces are reference-like already — a struct field of an interface type should be
+  declared as that interface directly (e.g. `ContextWindow`), never as a pointer to it
+  (`*ContextWindow`). This mistake recurred twice in this session (`ChatContext`'s window
+  field and `ChatSession.MsgHistory`) — watch for it whenever a new interface-typed field
+  gets added.
+- `atomic.Bool`/`sync.Mutex` fields make a struct unsafe to copy — always return `*T` from
+  constructors for any struct holding one, and never pass such a struct by value.
+- `append(nil, x...)` vs `make`+`copy`: equivalent except on zero elements, where `append`
+  stays `nil` and `make` gives a non-nil empty slice — matters for `== nil`/`DeepEqual` in
+  tests, not for anything checking `len()`.
+- Defaults pattern: build `Config` pre-filled, then `json.Unmarshal` onto it — absent JSON
+  keys are left untouched.
 
-**Compaction flow** (`compactChatHistory(ctx, p, w)`): `Snapshot()` → summarize
-`state.Messages` via the provider (slow LLM call, outside any lock) → wrap the summary
-text in a `ChatMessage` (role `user`, fresh `ID`, `Timestamp`) → `w.Compact(state, msg)`.
-`Compact` returns `false` if the window was cleared/compacted since the snapshot; the
-caller turns that into an error.
+Full narrative history of the gen 1–5 work (design deliberations, bugs found and fixed session
+by session) is preserved in `mvp2/learn/prompts/` transcripts if ever needed — not repeated
+here since gen 6 (the current refactor) supersedes the architecture those notes describe.
 
-**Design decisions made this session (and why):**
-
-- **ID set, not a per-message "replace" flag.** Jerry's idea: mark the messages being
-  compacted; anything unmarked is new and survives. Refined to: every `ChatMessage`
-  already has a unique `ID`, so build a `map[string]bool` from the snapshot and keep
-  window messages whose ID isn't in it. Same semantics, but nothing is mutated on the
-  shared state, so a failed summary needs no cleanup and overlapping compactions can't
-  confuse each other.
-- **ID set is built inside `Compact` from `state.Messages`** (helper `getMessageIDs`),
-  not inside `Snapshot()` (keeps `Snapshot` a generic view). Must come from the frozen
-  snapshot, never from live `GetMessages()`, or new messages would be dropped.
-- **`Gen` is kept.** IDs alone can't tell "cleared mid-summary" from "every compacted
-  message was legitimately evicted"; `Gen` can. It also rejects a stale second
-  compaction. Cost: one int. Only matters once compaction goes async (loop is
-  synchronous today).
-- **`Compact` is per-window mechanics only; policy stays in `compactChatHistory`.** The
-  window can't call the LLM and must not hold its mutex across a network call. Smarter
-  policies (keep last N verbatim, tiers) = a different message/ID subset chosen by the
-  caller. Downside noted: passing a subset `ContextState` stops it being a literal
-  snapshot.
-- **`Compact` takes `ContextState`** (Jerry's call) rather than separate ids + gen args,
-  so Messages and Gen can't come from different snapshots.
-- **`Snapshot()` returns no error** — in-memory copy can't fail. Revisit only for a
-  file/DB-backed window.
-- **`clampToMax(msgs, maxSize)`** shared helper, called in all four `Compact`s. Keeps
-  summary at `[0]` + the newest `maxSize-1` survivors. Guards the overflow case: window
-  full, all compacted messages evicted during the summary call → `1 + maxSize` messages
-  (would panic the ring buffer, and leave the LL stuck at `maxSize+1`).
-- **Summary role is `user`**, not `system`, for portability (a second `system` message
-  mid-history breaks Anthropic/some Ollama templates). Cost: consecutive `user`
-  messages after compaction — fine for OpenAI/Ollama, needs merging for Anthropic.
-
-**Slash-command parsing in `runLoop`** (reviewed, correct): `TrimSpace` the line, then
-`strings.Cut(line, " ")` → `lineFirst`/`lineRest`; `switch lineFirst` for `/exit`,
-`/clear`, `/summary`|`/summarize` (read-only, prints summary), `/compact` (rewrites
-history), `default` → "Unrecognized command" + `continue`. After the switch, one shared
-tail trims `lineRest` and sends it as a normal prompt if non-empty (`/clear hi` works).
-`/clearing` no longer matches as `/clear` (old `HasPrefix` did).
-
-### Auto-compaction (session 3)
-
-`runLoop` now compacts in the background when the window nears full. Pieces:
-
-- **Window setup moved to `runAgent`** (step 2, "setup memory and context") and passed into
-  `runLoop`. `MaxContextWindow` is a package const. `runAgent` should `return err` rather
-  than `fatal(err)` (defers) — Jerry said he fixed this; re-verify.
-- **`ContextWindow` gained `GetSize()` and `GetMaxSize()`** (Jerry's call: "size" is generic,
-  so a token-based window can implement it later). Computed on demand, not cached in a
-  field — `len(w.messages)` / `w.count` (ring buffer; its backing array is always `maxSize`
-  long so `len()` would be wrong) / `w.messages.Len()` (list, O(1)). A cached counter would
-  duplicate state the four `AddMessages`/`Compact` paths must keep in sync.
-  `GetMessages()` copy was never the concern (≤ ~20 structs, next to a multi-second LLM call).
-- **Threshold** = `int(float64(chatHistory.GetMaxSize()) * AutoCompactThresholdFrac)`,
-  frac currently 0.9 (earlier note said 0.8 — deliberate choice either way). Based on the
-  window's real max size, not `MaxContextWindow`, because `buffer` is **kept** in
-  `createNewChatHistory` (Jerry's decision; headroom for system prompt + pending user
-  message), so the window is smaller than the const.
-- **Fire-on-demand, not a ticker**: after `AddMessages` each turn, check
-  `GetSize() >= threshold && compactInProgress.CompareAndSwap(false, true)`, then `go func`
-  with `defer compactInProgress.Store(false)` as its first line. Size check first so the
-  flag is only claimed when work will start.
-- **`compactInProgress atomic.Bool`** is a local in `runLoop` (not global, not per-window),
-  shared by the auto path and `/compact`. Must not be copied (pass `*atomic.Bool`).
-  Per-window flag rejected: repeated 4x, and "a compaction is running" is policy, which
-  stays out of the windows.
-- **`/compact` claims the same flag**: on `CompareAndSwap` failure prints "already in
-  progress" and `continue`s (skip, not wait — waiting needs a WaitGroup/channel). Release
-  is an explicit `Store(false)` right after `compactChatHistory` and *before* the error
-  check; `defer` can't be used in a `case` because it fires when `runLoop` returns.
-  Fragile if anything is later inserted between claim and release.
-- `Gen` still rejects the loser if `/clear` or a second compaction lands mid-summary.
-
-### Bugs found and fixed this session (don't re-explain unless asked)
-
-Session 3: `GetSize`/`GetMaxSize` pasted onto the wrong receivers (duplicate on
-`InPlaceWindow`/`LLWindow`, none on Offset/RingBuffer) → compile error; `int(intVal *
-0.9)` doesn't compile (convert to `float64` first); threshold equal to real capacity
-(fired only when full); no single-flight guard (every turn re-launched a compaction).
-
-Session 2:
-
-- `map[int]struct{}` for string IDs; `Compact` with no `Gen` check; `InPlaceWindow`
-  signature left half-updated; interface method with mixed named/unnamed params.
-- Clamp attempts: `newMessages[:maxSize]` (panics when shorter, drops newest) →
-  `newMessages[len-maxSize:]` (drops the summary) → correct summary-first version.
-- Parsing: `lineFirst[0] == "/"` (byte vs string), unused `lineHasSpace`, normal chat
-  lines sent untrimmed with `\n`, `default:` falling through to the LLM,
-  `summarizeChatHistory` given the window instead of `GetMessages()`.
-
-### Concepts covered (don't re-teach unless asked)
-
-- `sync/atomic`: why check-then-set on a plain `bool` races (two steps + data race);
-  `atomic.Bool` (Go 1.19+, zero value usable) with `Load`/`Store`/`Swap`/`CompareAndSwap`;
-  CAS = one indivisible "flip false→true, tell me if I won"; `Load` is for display, never
-  for deciding to start work; `defer` inside a goroutine's func literal fires when the
-  goroutine ends, `defer` in a `switch case` fires at function end.
-- Go hash set: `map[K]struct{}` (zero-byte value; `struct{}{}` = the type + a value of
-  it) vs `map[K]bool`; two-value lookup `_, ok := m[k]`.
-- "Missing field" in Go = zero value (`m.ID == ""`); options: skip / error / panic.
-- `strings.Cut` (first separator; not found → `(s, "", false)`), `strings.Fields`
-  (any whitespace run; empty slice on blank), `strings.TrimSpace` (both ends).
-- `continue` inside a `switch` targets the enclosing `for`; `break` would not.
-- Passing an interface value (`w ContextWindow`), not a pointer to it.
-
-### Open items / next steps for Track 2
-
-1. **Tests first.** For `Compact`: normal (snapshot, add 2, compact → `[summary, m5,
-   m6]`), stale `Gen` after `Clear()`, overlapping compactions (second returns false),
-   and the overflow case (full window, all compacted messages evicted) — run with
-   `-race`. Plus a table test for `clampToMax` (under max, exactly max, max+1 with
-   summary still `[0]`, `maxSize == 1`). Run each of the four window types.
-2. ~~Nothing triggers compaction automatically~~ — **done in session 3** (see above).
-   Still to do: a `-race` test proving the guard. Fake `Provider` (a struct whose `Chat`
-   sleeps and bumps an `atomic` counter), fill window to threshold, fire the trigger twice,
-   assert one provider call. Also `/compact` while auto is running → "in progress".
-   Small polish left: the auto path doesn't print when skipped (good); goroutine prints
-   can land mid-line over the `> ` prompt (cosmetic; a channel drained by `runLoop` is the
-   later fix); a failing provider retries every turn while over threshold (add backoff if
-   annoying); `/clear` mid-compaction prints "compaction failed" (use the sentinel below).
-3. **Wire format.** `ChatMessage`'s JSON tags send `id`/`timestamp` to the API. Ollama
-   ignores them; I believe OpenAI rejects unknown message fields (unverified — default
-   config is OpenAI). Fix = small `{role, content}` wire struct converted just before
-   the request. Non-2xx errors also drop the response body, which hides this.
-4. Sentinel error (`ErrCompactionStale`) instead of a bare `fmt.Errorf` once callers
-   need to distinguish "discarded, retry" from real failures.
-5. Stale comment above `compactChatHistory` ("single system message" — it's `user` now);
-   it also prints from inside the function.
-6. Carried over: `>` vs `>=` in `OffsetWindow`/`InPlaceWindow.RemoveLast` (silently
-   no-ops when `n == len`); dead `CircularLLWindow` block in gen 4 if still present.
-
-## Track 1 — `mvp2/` root (agent build, last touched 2026-09-12)
+## Track 1 — `mvp2/` root (agent build, last touched 2026-09-12, dormant)
 
 ```
 mvp2/
@@ -370,64 +341,44 @@ mvp2/
   go.mod           module github.com/jerryschen31/minagent
 ```
 
-`go build ./...` currently fails. Nothing else is written: no `agent/` package,
-no `tool/tool.go`, no `llm/`, `memory/`, `harness/`, `hooks/`.
+`go build ./...` currently fails. Nothing else is written: no `agent/` package, no
+`tool/tool.go`, no `llm/`, `memory/`, `harness/`, `hooks/`. Not touched since 2026-09-12 — all
+work since then (including this whole session) has been in Track 2 (`mvp2/learn/`).
 
 ### Concepts covered (don't re-teach unless asked)
-
-- **Defaults pattern**: build `Config` pre-filled, then `json.Unmarshal` onto it —
-  absent JSON keys are left untouched. Downside: explicit `0`/`""`/`false` is
-  indistinguishable from absent; pointer fields are the fix if that ever matters.
-- **Struct tags**: `json:"max_tokens"` is the wire-name adapter. Typos fail silently;
-  unexported fields are invisible to `encoding/json`.
-- **`fatal()` vs `defer`**: `os.Exit` skips defers. Hence the `main` → `run() error`
-  split — `fatal()` only ever called from `main`, all cleanup on `defer` inside `run`.
-- **`signal.NotifyContext`**: turns Ctrl-C/SIGTERM into context cancellation.
-  `stop()` cancels the ctx *and* restores the signals' prior disposition (not
-  necessarily "default"). Second signal is swallowed unless you call `stop()` early.
-  `os.Kill`/SIGKILL can't be caught — only useful for *sending*.
-- **Cancellation is cooperative**: the last thing debugged. `time.Sleep` ignores ctx.
-  Anything blocking must take a ctx or be raced against `ctx.Done()` in a `select`.
+- **`fatal()` vs `defer`**: `os.Exit` skips defers. Hence the `main` → `run() error` split —
+  `fatal()` only ever called from `main`, all cleanup on `defer` inside `run`.
+- **`signal.NotifyContext`**: turns Ctrl-C/SIGTERM into context cancellation. `stop()` cancels
+  the ctx *and* restores the signals' prior disposition. Second signal is swallowed unless
+  `stop()` is called early. `os.Kill`/SIGKILL can't be caught.
+- **Cancellation is cooperative**: `time.Sleep` ignores ctx; anything blocking must take a ctx
+  or be raced against `ctx.Done()` in a `select`.
 
 ### Decisions made
-
-- **`requires_approval`** (renamed from mvp1's `approve`) = tools that need a human
-  `[y/N]`. It is a *restriction* list, not an allowlist. Empty list ⇒ hook never
-  installed ⇒ nothing gated. `["*"]` ⇒ everything gated.
-- **MCP tool names are prefixed** `<server>_<tool>` (mvp1 `tool/mcp.go:97`), so
-  approval entries must be `fs_write_file`, `fs_edit_file`, `fs_move_file`,
-  `fs_create_directory`. No collision with builtins.
-- **Grep is a Go-native `tool.Func`, not an MCP server.** Probed the alternatives:
-  no official MCP server does content search (`filesystem`'s `search_files` is
-  filename-glob only); npm's `mcp-ripgrep` still needs `rg` on PATH and pipes
-  model-controlled strings through `spawn(..., {shell: true})` with hand-rolled
-  escaping. Pure Go = zero deps, zero build tags, cross-platform.
-- **Simplified Grep over the hardened version.** The guard that actually matters is
-  the NUL-byte binary check: measured 24KB vs 2.99MB of output on this repo (124×).
-  `Truncate` does not save you — the garbage comes first. Skip-list, streaming
-  reads, and `ToSlash` deferred until they bite.
+- **`requires_approval`** (renamed from `mvp1`'s `approve`) = tools that need a human `[y/N]`.
+  A *restriction* list, not an allowlist.
+- **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
+  `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
+- **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
+  search; pure Go = zero deps, cross-platform.
+- **Simplified Grep over the hardened version** — the NUL-byte binary check is the guard that
+  actually matters (measured 24KB vs 2.99MB output on this repo, 124×); skip-list/streaming
+  reads deferred until they bite.
 
 ### Open items
+1. **`tool/builtin.go` won't compile**: L29 struct-tag comma syntax, L82 missing trailing
+   comma, missing import of the `agent` package.
+2. **Grep schema bug**: `"required"` is nested *inside* `"properties"` — move it out.
+3. Missing prerequisites for Grep: `agent` package (`agent.Tool`), `tool/tool.go` (`Func`,
+   `Args`, `Truncate`), `confine` + `resolveExisting`, `const maxOutput = 16 << 10`. Port from
+   `mvp1 tool/tool.go` and `tool/builtin.go:152`.
+4. **`api_key_name` vs `api_key_env`** — struct tag and `config.json` disagree; pick one.
+5. **`config.json` is currently mandatory** — confirm that's intended (mvp1 treats it as
+   optional).
+6. **Stub `run()` ignores `ctx`** — wrap the sleep in a `select` against `ctx.Done()`.
+7. `gofmt -w` needed — mixed tabs/spaces in `tool/builtin.go`.
 
-1. **`tool/builtin.go` won't compile** — three fixes:
-   - L29 `struct{ Pattern string, Path string }` → `struct{ Pattern, Path string }`
-   - L82 missing trailing `,` after the `}` closing the `Fn:` field
-   - missing import `github.com/jerryschen31/minagent/agent`
-2. **Grep schema bug**: `"required"` is nested *inside* `"properties"` — move it out,
-   or nothing is required and `regexp.Compile("")` matches every line.
-3. **Missing prerequisites** for Grep: `agent` package (`agent.Tool`), `tool/tool.go`
-   (`Func`, `Args`, `Truncate`), `confine` + `resolveExisting`, `const maxOutput = 16 << 10`.
-   Port from mvp1 `tool/tool.go` and `tool/builtin.go:152`.
-4. **`api_key_name` vs `api_key_env`** — struct tag and `config.json` disagree; the
-   default masks it. Pick one.
-5. **`config.json` is currently mandatory** in mvp2 (mvp1 treats the default path as
-   optional). Confirm that's intended.
-6. **Stub `run()` ignores `ctx`** — wrap the sleep in `select { case <-time.After(…):
-   case <-ctx.Done(): return ctx.Err() }`.
-7. `gofmt -w` — mixed tabs/spaces in `tool/builtin.go`.
-
-### Next phase (Jerry's stated plan)
-
-Tests and simple evals before building out the loop. `run(ctx, cfg) error` is the
-seam: testable with `context.WithCancel`, no model needed. mvp1 drives its loop with
-a scripted fake LLM (`go test ./agent -run TestReActLoop`) — same approach here.
+### Next phase (Jerry's stated plan, when this track resumes)
+Tests and simple evals before building out the loop. `run(ctx, cfg) error` is the seam:
+testable with `context.WithCancel`, no model needed. `mvp1` drives its loop with a scripted
+fake LLM (`go test ./agent -run TestReActLoop`) — same approach here.
