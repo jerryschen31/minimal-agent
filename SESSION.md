@@ -189,83 +189,36 @@ least 2 of 3 agreed. Walk through Go testing step by step — Jerry is new to it
 - [ ] D6. Benchmarks (`Benchmark*`, `b.Run` per window type; maybe a separate
       `_bench_test.go`). Performance bullets are benchmarks, not tests.
 
-## Key design decisions (condensed — why the code looks the way it does)
+## Key design decisions
 
-- **`ChatHistory` naming**: chosen over `ChatStore`/`History` — matches the file's own header
-  comment and the domain language, and follows the `<Strategy>Window` naming pattern already
-  used for `ContextWindow` implementations.
-- **`ChatHistory` scope**: one instance per session, no session-ID parameter on any method —
-  matches `mvp1`'s `Memory` (fresh instance per agent, never ID-keyed). A future persistent
-  implementation carries the session ID at *construction* time
-  (`NewFileChatHistory(sessionID)`), not on every call. A "list/resume past sessions" feature,
-  if ever built, is a separate small interface, not an ID param bolted onto `ChatHistory`.
-- **No `Clear()` on `ChatHistory`**: putting it there would commit every future backing store
-  (file/DB) to supporting hard delete, cutting against "history is the truth that survives
-  compaction." `/clear` only ever resets `ChatContext`.
-- **`Append(msgs []ChatMessage)` plural**, matching `ContextWindow.AddMessages` — lets a
-  caller build one slice and pass the same slice to both `History.Append` and
-  `Context.AddMessages`, so the two calls can't drift apart in content.
-- **Constructors return `(*T, error)`** even where they can't fail yet (`NewInMemoryChatHistory`,
-  `NewChatContext`, `NewChatSession`) — deliberate future-proofing so a later persistent/fallible
-  implementation doesn't require a breaking signature change.
-- **`ShouldStartCompaction()` naming**: chosen over an earlier `StartCompaction()` specifically
-  because a name like "Start" invites calling it and ignoring the return value (which is
-  exactly a bug that happened once in this session — the auto-compact goroutine ran
-  unconditionally, ignoring a `false` result, breaking the single-flight guarantee). "Should"
-  signals it's a question worth checking, closer to Go's own `sync.Mutex.TryLock()` idiom.
-- **`fmt.Errorf` vs `fmt.Fprintln`**: errors are values in Go, propagated by return
-  (`fmt.Errorf`) to whoever has a caller to hand them to — nearly every function in this file.
-  Only true output boundaries print directly (`fmt.Fprintln`/`Fprintf`): `fatal()` at the top
-  of `main`, and `handleUserInput` (it returns `bool`, not `error`, by design — it's the REPL's
-  presentation layer, the second legitimate boundary in this program).
+Moved to `DECISIONS.md` (repo root) — see § "Data structures & type organization",
+§ "Naming decisions", § "Concurrency & locking", and § "Compaction design". That file now
+holds the full why, including the ones that changed mid-session (e.g. `window`'s visibility on
+`ChatContext` flipped twice on 2026-09-21 before landing where it is now).
+
+Two decisions worth restating here because they're easy to forget mid-edit, not because they
+need re-explaining (full reasoning in `DECISIONS.md`):
+- **`fmt.Errorf` vs `fmt.Fprintln`**: only two legitimate output boundaries print directly —
+  `fatal()` in `main`, and `handleUserInput` (returns `bool`, not `error`, by design). Every
+  other function propagates errors by return.
 - **All user-facing output goes through `cs.OutBuffer`**, never bare `fmt.Println`/`os.Stderr`
-  — the whole point of `OutBuffer` being injected on `ChatSession` is testability (a test can
-  swap in a fake writer and assert on it); anything that bypasses it defeats that.
+  — that's what makes it swappable for a test.
 
 ## Open decisions / known issues
 
-- [ ] **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Not yet decided or built
-  (no `/undo` command exists). Given the History-is-truth model, likely window-only, matching
-  `/clear` — but not settled.
-- [x] **`/clear` resets `ChatContext` only, `ChatHistory` untouched** — resolved, matches what's
-  built (`handleUserInput`'s `/clear` case calls only `cs.MsgContext.Clear()`).
-- [x] **Compaction summary lives only in `ChatContext`, never written to `ChatHistory`** —
-  resolved, matches what's built (`compactChatContext` only ever calls `cs.MsgContext.Compact`).
-  The history should only ever contain what was actually said, not a generated artifact.
-- [x] **Failed requests don't go in `ChatHistory`** — resolved, matches what's built
-  (`cs.MsgHistory.Append` only happens after `cs.Provider.Chat` succeeds in `handleUserInput`).
-- [ ] Summary message is inserted with `Role: "user"`, so the next request can have two
-  consecutive user turns — known trade-off (portability across providers), not revisited.
-- [ ] `RemoveLast(n)` with `n > len`: Offset/InPlace/Ring do nothing, `LLWindow` removes what it
-  can — inconsistent across window types. The D1 test suite (run across all four types via
-  `forEachWindow`) will surface this; pick one behavior when it does.
-- [ ] Empty `GetMessages()` on `OffsetWindow` can return `nil` rather than an empty
-  non-nil slice (`append(nil, x...)` on zero elements stays `nil`) — tests should compare with
-  `len()`, not `reflect.DeepEqual`/`== nil` against a literal `[]ChatMessage{}`.
-- [ ] Ring buffer keeps stale messages in its backing array after `Clear`/`Compact` until
-  overwritten — memory retention only, never observable through the public API.
-- [ ] **Deferred, not started**: the "pure derive-context-from-history" design — no stored
-  `ChatContext` at all; context computed on demand from `ChatHistory` each time it's needed.
-  Compaction becomes an *append* (a summary entry self-describing its own coverage, e.g. "covers
-  through message ID X"), not a mutation — this would eliminate `Compact`'s `gen`/`Snapshot`
-  concurrency protocol entirely, not just simplify it, since nothing would ever be
-  replaced/removed. Efficiency isn't the blocker (cost would be O(messages since last summary)
-  if "position of the last summary" is tracked as O(1) state, not O(total history)). **Why
-  deferred**: would discard the already-built, correct `Compact`/`Snapshot`/`gen` machinery;
-  weakens the four-window-strategy comparison (which is interesting specifically because of
-  incremental mutation over a session — deriving fresh each time collapses their differences);
-  was a bigger rewrite than finishing the ~90%-done design already in flight. Revisit if/when
-  persistence (`ChatHistory` backed by file/DB) becomes real — that's the point where a
-  single-source-of-truth design pays off most.
-- [ ] **Future: extracting `ContextWindow` + the four window types into a separate package.**
-  Explicitly discussed and deferred (2026-09-22). The composability goal is already met at the
-  interface level within this program — a package boundary adds a *different* kind of
-  composability (reuse across separate programs/modules), which doesn't have a live use case
-  yet. **Concrete trigger to revisit**: when `mvp2/` Track 1 (the real agent build, dormant
-  since 2026-09-12, meant to follow `mvp1`'s multi-package architecture) resumes and needs a
-  context-window abstraction — porting these already-designed, already-debugged
-  implementations there is the natural move, not extracting them now inside `mvp2/learn/`
-  (which is deliberately single-file-per-stage, no shared module structure).
+Resolved decisions moved to `DECISIONS.md` § "Compaction design" (summary-in-`ChatContext`-only,
+failed requests excluded from `ChatHistory`) and § "Concurrency & locking". Still-open items
+(unresolved, not yet built) live in `DECISIONS.md` § "Deferred / open decisions" — that's now
+the single list; don't duplicate items here as they come up, add them there and link back.
+
+Currently open, most relevant to what's being worked on right now:
+- [ ] `RemoveLast` (undo) on `ChatHistory`, not just the window — undecided.
+- [ ] `RemoveLast(n)` with `n > len`: inconsistent across the four window types (see
+  `DECISIONS.md`) — the D1 test suite should surface and force a pick.
+- [ ] `Test_ContextCompaction_CompactingEmptyHistoryReturnsError` and
+  `Test_ContextCompaction_EmptyOrWhitespaceSummaryTreatedAsFailure` still say "history" in
+  name/comment/skip text but should say "context" — flagged 2026-09-22, not yet renamed (see
+  `DECISIONS.md` § "Test suite decisions").
 
 ## Two tracks live under `mvp2/` — don't conflate them
 
