@@ -253,6 +253,42 @@ filter summaries out when searching real user messages.
   separate programs/modules) with no live use case yet. **Revisit trigger**: when `mvp2/`
   Track 1 (the real agent build, dormant since 2026-09-12) resumes and needs a context-window
   abstraction — porting these already-debugged implementations there is the natural move.
+- **Background-goroutine output racing the `"> "` prompt** — auto-compaction's status messages
+  (`compactChatContext`'s `fmt.Fprintln(cs.OutBuffer, ...)` calls) run in a goroutine launched
+  from `handleUserInput` with no coordination against `runLoop`'s own `fmt.Print("\n> ")` +
+  `stdin.ReadString`. Both write to the same underlying stream from different goroutines with no
+  ordering guarantee, so a background message can land spliced right after an already-printed,
+  empty prompt (observed 2026-09-22, e.g. `>[system] Auto-compaction triggered`). **Chosen
+  direction (2026-09-22), not yet built**: background goroutines stop writing to `cs.OutBuffer`
+  directly and instead send their text on a buffered channel; `runLoop` drains the channel and
+  prints anything pending right before it prints the next `"\n> "`, so output only ever appears
+  at the boundary between one line finishing and the next prompt starting. Known limitation,
+  accepted: a message that arrives while the user is mid-line-typing still waits until they hit
+  enter — this doesn't fully eliminate every race, only the specific artifact seen. **Deferred —
+  not critical**, explicitly not being built right now. A full event-loop restructure (`stdin`
+  read on its own goroutine feeding a channel, `runLoop` becomes a `select` between "new user
+  line" and "new background notice") would close the remaining mid-typing gap too, but is more
+  surgery than this cosmetic issue currently warrants. Files (when built):
+  `chat_w_history_context_session_structs.go` (`compactChatContext`, `handleUserInput`,
+  `runLoop`).
+- **Summary-of-summaries handling, and quality degradation from repeated summarization** —
+  not yet decided. Once a session runs long enough to trigger auto-compaction more than once,
+  the second (and later) compaction summarizes a context whose oldest entry is already itself a
+  summary (see "Compaction design" above: the summary message is inserted with `Role: "user"`
+  and no marker distinguishing it from a real turn, so `summarizeChatContext` has no way to
+  treat it differently even if a future design wanted to). Open questions, none resolved yet:
+  whether to summarize-the-summary-plus-new-messages as one blended pass (simplest, but
+  compounds lossiness — each pass is a lossy re-compression of an already-lossy artifact, same
+  failure mode as repeated JPEG re-encoding); keep the original summary verbatim and only
+  append a new summary covering what's happened since (avoids re-compressing old context, but
+  summaries accumulate without bound over a long enough session, undermining the point of
+  compaction); or cap how many summary "generations" are allowed before something else has to
+  give (e.g. forced truncation, or surfacing this to the user). Flagged 2026-09-22; no design
+  work done yet. **Revisit trigger**: once auto-compaction is actually exercised more than once
+  in a single session (currently untested — the D3/D4 compaction test stubs only cover a single
+  compaction pass), or once the `IsSummary`-style marker field discussed under "Wire format /
+  JSON tags" above gets built, since that marker is the prerequisite for `summarizeChatContext`
+  to even know it's being asked to summarize a summary.
 
 ---
 

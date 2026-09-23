@@ -28,7 +28,7 @@ const ResponseTimeout = 5 * time.Minute
 const WelcomeMsg = "Running agent with configuration: %+v\n\nType /clear to clear chat history.\nType /exit to exit\n"
 const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
-const MaxContextWindow = 20          // maximum number of messages to keep in the sliding context window
+const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
 const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
 
 //////////////////////////////////////////////
@@ -740,9 +740,9 @@ const (
 func compactChatContext(ctx context.Context, cs *ChatSession, compactionType string) (ChatMessage, error) {
 	defer cs.MsgContext.EndCompaction() // ensure the compaction lock is released after compaction is done
 	if compactionType == CompactionAuto {
-		fmt.Fprintln(cs.OutBuffer, "Auto-compaction triggered...")
+		fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...\n")
 	} else {
-		fmt.Fprintln(cs.OutBuffer, "Compaction triggered...")
+		fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...\n")
 	}
 
 	// take a snapshot of the current chat history
@@ -765,10 +765,10 @@ func compactChatContext(ctx context.Context, cs *ChatSession, compactionType str
 	isCompacted := cs.MsgContext.Compact(state, summaryMsg)
 	if isCompacted {
 		// optionally, you could log or perform some action when compaction succeeds
-		fmt.Fprintln(cs.OutBuffer, "Chat context compacted successfully.")
+		fmt.Fprintln(cs.OutBuffer, "[system] Chat context compacted successfully.\n")
 		return summaryMsg, nil
 	} else {
-		return ChatMessage{}, fmt.Errorf("Chat context compaction failed")
+		return ChatMessage{}, fmt.Errorf("[system] Chat context compaction failed")
 	}
 }
 
@@ -881,29 +881,29 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			return true
 		case "/clear":
 			cs.MsgContext.Clear()
-			fmt.Fprintln(cs.OutBuffer, "Chat history cleared.")
+			fmt.Fprintln(cs.OutBuffer, "[system] Chat history cleared\n")
 		case "/summary", "/summarize":
 			summaryString, err := summarizeChatContext(ctx, cs.Provider, msgContext)
 			if err != nil {
-				fmt.Fprintln(cs.OutBuffer, "Summarization error:", err)
+				fmt.Fprintln(cs.OutBuffer, "[error] Summarization error:", err)
 				return false
 			}
-			fmt.Fprintln(cs.OutBuffer, "Chat summary:", summaryString)
+			fmt.Fprintln(cs.OutBuffer, "[system] Chat summary:", summaryString)
 		case "/compact":
 			// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
 			if !cs.MsgContext.ShouldStartCompaction() {
-				fmt.Fprintln(cs.OutBuffer, "Compaction already in progress. Skipping this compaction request.")
+				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.\n")
 				return false
 			}
 			summaryMsg, err := compactChatContext(ctx, cs, CompactionManual)
 			if err != nil {
-				fmt.Fprintln(cs.OutBuffer, "Compaction error:", err)
+				fmt.Fprintln(cs.OutBuffer, "[error] Compaction error:", err)
 				return false
 			}
-			fmt.Fprintln(cs.OutBuffer, "Chat summary:", summaryMsg.Content)
+			fmt.Fprintln(cs.OutBuffer, "[system] Chat summary:", summaryMsg.Content)
 		default:
 			// if the command is not recognized, print an error message
-			fmt.Fprintln(cs.OutBuffer, "Unrecognized command:", lineFirst)
+			fmt.Fprintln(cs.OutBuffer, "[system] Unrecognized command:", lineFirst)
 			return false
 		}
 		// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
@@ -936,7 +936,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	}
 
 	// get the response content from the chat provider
-	fmt.Fprintln(cs.OutBuffer, "Chat response:", response)
+	fmt.Fprintln(cs.OutBuffer, "[system] Chat response:", response)
 
 	// append the user prompt and AI assistant's response to the chat history
 	responseMsg := ChatMessage{
@@ -955,7 +955,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		go func() {
 			_, err := compactChatContext(ctx, cs, CompactionAuto)
 			if err != nil {
-				fmt.Fprintln(cs.OutBuffer, "Auto-compaction error:", err)
+				fmt.Fprintln(cs.OutBuffer, "[error] Auto-compaction error:", err)
 			}
 		}()
 	}

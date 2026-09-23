@@ -17,6 +17,18 @@ extensible ReAct agent in Go. Two generations live side by side:
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs
   (`prompts/` is gitignored). Useful for recovering earlier reasoning.
+- `SESSION.md` (repo root) — scratch handoff notes for `mvp2/`: current state, what's in
+  progress, next steps, open TODOs. Read top-to-bottom at the start of a session. Written to be
+  disposable/superseded as work moves — don't treat it as a historical record.
+- `DECISIONS.md` (repo root) — the durable design-decision log for `mvp2/`: what was decided,
+  why, when, which files it affects, and — importantly — decisions that were later reversed,
+  with both the original and the revised reasoning kept. This is where "why does the code look
+  like this" answers live long-term; `SESSION.md` should point into a `DECISIONS.md` section
+  (`see DECISIONS.md § ...`) rather than re-explaining a settled decision inline. Update
+  `DECISIONS.md` whenever a real decision is made or changed while working with Jerry, not just
+  at the end of a session — same continuous-update discipline as `SESSION.md` already follows.
+  A TODO or an open question stays in `SESSION.md` until it resolves into a decision, at which
+  point it moves here.
 
 ## Commands for Reference Agent
 

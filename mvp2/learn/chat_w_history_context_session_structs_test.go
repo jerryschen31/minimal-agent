@@ -4,30 +4,23 @@ import "testing"
 
 // Test cases for chat with context compaction functionality.
 //
-//
-// Basic context window type mechanics
-// - Verify all of the above chat history and context window and context compaction mechanics specifically for each of the current window types
-//   (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)
-//
-// Window type performance tests
-// - Measure and compare the performance of the current window types under various chat and context window operations
-//   (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)
-//
-// Unit tests
-// - Verify ring-buffer wraparound behavior within the data structure
-// - Verify LLWindow eviction behavior within the data structure
-// - Verify OffsetWindow eviction behavior within the data structure
-// - Verify InPlaceWindow eviction behavior within the data structure
-// - An operation on messages returned by GetMessages() does not modify the current chat history
-// - An operation on messages returned by Snapshot() does not modify the current chat history
-//
 // Other tests
 // - Run all tests with -race and make sure the program is free of race conditions.
 //
 
-/////////////////////////////////////////////////////////
+// Verify all tests involving context work specifically for each of the current window types
+// (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)
+// Note that OffsetWindow should be the default type
+// var windowDataStructureTypes = map[string]func(maxSize int) ContextWindow{
+// 	"offset":      func(n int) ContextWindow { return NewOffsetWindow(n) },
+// 	"in-place":    func(n int) ContextWindow { return NewInPlaceWindow(n) },
+// 	"ring-buffer": func(n int) ContextWindow { return NewRingBufferWindow(n) },
+// 	"linked-list": func(n int) ContextWindow { return NewLLWindow(n) },
+// }
+
+//*************************************//
 // Basic chat request mechanics
-/////////////////////////////////////////////////////////
+//*************************************//
 
 // - Verify that a user request receives a valid response
 func Test_ChatRequest_UserRequest_ValidResponse(t *testing.T) {
@@ -68,9 +61,9 @@ func Test_ChatRequest_EmptyUserInput_NoChatHistoryEntry(t *testing.T) {
 	t.Skip("TODO: Verify that an empty user input does not add an entry to the chat history.")
 }
 
-/////////////////////////////////////////////////////////
+//*************************************//
 // Basic chat history mechanics
-/////////////////////////////////////////////////////////
+//*************************************//
 
 // - Verify that a new chat message is correctly added as the most recent entry in the chat history (exists and is most recent)
 func Test_ChatHistory_NewChatMessage_AddedAsMostRecent(t *testing.T) {
@@ -97,9 +90,9 @@ func Test_ChatHistory_FailedResponse_DoesNotAddUserPrompt(t *testing.T) {
 	t.Skip("TODO: Verify that a failed response (timeout or error) does not add the corresponding user prompt to the chat history.")
 }
 
-/////////////////////////////////////////////////////////
+//*************************************//
 // Basic context window mechanics
-/////////////////////////////////////////////////////////
+//*************************************//
 
 // - Verify that adding a new message to a full context window does not exceed the maximum context window size.
 func Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded(t *testing.T) {
@@ -116,9 +109,9 @@ func Test_ContextWindow_ClearContext_SlashCommand(t *testing.T) {
 	t.Skip("TODO: Verify that a user can successfully clear the context with an appropriate slash command.")
 }
 
-/////////////////////////////////////////////////////////
+//*************************************//
 // Basic context compaction tests
-/////////////////////////////////////////////////////////
+//*************************************//
 
 // - Verify that context compaction correctly creates a summary message and inserts it into the context
 func Test_ContextCompaction_CreatesSummaryMessageInContext(t *testing.T) {
@@ -173,4 +166,73 @@ func Test_ContextCompaction_FailedCompactionAllowsNewMessages(t *testing.T) {
 // - Verify that after compaction, the next chat request does not contain old compacted messages.
 func Test_ContextCompaction_NextChatRequestDoesNotContainOldCompactedMessages(t *testing.T) {
 	t.Skip("TODO: Verify that after compaction, the next chat request does not contain old compacted messages.")
+}
+
+//*************************************//
+// Window type performance tests
+//*************************************//
+
+// - Measure and compare the performance of the current window types under various chat and context window operations
+//   (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)
+
+// Benchmark add message operations on different context window data structure types
+func Benchmark_ContextWindow_AddMessages(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for adding messages to different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+// Benchmark bulk add multiple messages to different context window data structure types
+func Benchmark_ContextWindow_BulkAddMessages(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for bulk adding multiple messages to different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+// Benchmark get message operations on different context window data structure types
+func Benchmark_ContextWindow_GetMessages(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for getting messages from different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+// Benchmark eviction operations (when context window is full)on different context window data structure types
+func Benchmark_ContextWindow_Eviction(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for eviction behavior in different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+// Benchmark clear operations on different context window data structure types
+func Benchmark_ContextWindow_Clear(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for clearing different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+// Benchmark remove last message operations on different context window data structure types
+func Benchmark_ContextWindow_RemoveLastMessage(b *testing.B) {
+	b.Skip("TODO: Implement benchmark for removing the last message from different context window types (OffsetWindow, InPlaceWindow, RingBufferWindow, LLWindow)")
+}
+
+//*************************************//
+// Unit tests
+//*************************************//
+
+// - Verify LLWindow eviction behavior within the data structure (new message when context window is full evicts the oldest message)
+func Test_Unit_LLWindowEvictionBehavior(t *testing.T) {
+	t.Skip("TODO: Verify LLWindow eviction behavior within the data structure (new message when context window is full evicts the oldest message).")
+}
+
+func Test_Unit_InPlaceWindowEvictionBehavior(t *testing.T) {
+	t.Skip("TODO: Verify InPlaceWindow eviction behavior within the data structure (new message when context window is full evicts the oldest message).")
+}
+func Test_Unit_RingBufferWindowEvictionBehavior(t *testing.T) {
+	t.Skip("TODO: Verify RingBufferWindow eviction behavior within the data structure (new message when context window is full evicts the oldest message).")
+}
+func Test_Unit_OffsetWindowEvictionBehavior(t *testing.T) {
+	t.Skip("TODO: Verify OffsetWindow eviction behavior within the data structure (new message when context window is full evicts the oldest message).")
+}
+func Test_Unit_RingBufferWindowWraparoundBehavior(t *testing.T) {
+	t.Skip("TODO: Verify RingBufferWindow wraparound behavior within the data structure.")
+}
+
+// - An operation on messages returned by GetMessages() method for ChatContext does not modify the current chat history
+func Test_Unit_OpOnGetMessagesDoesNotModifyChatHistory(t *testing.T) {
+	t.Skip("TODO: Verify that an operation on messages returned by GetMessages() method for ChatContext does not modify the current chat history.")
+}
+
+// - An operation on messages returned by Snapshot() method for ChatContext does not modify the current chat history
+func Test_Unit_OpOnSnapshotDoesNotModifyChatHistory(t *testing.T) {
+	t.Skip("TODO: Verify that an operation on messages returned by Snapshot() method for ChatContext does not modify the current chat history.")
 }
