@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"strings"
+	"sync"
+	"testing"
+)
 
 // Test cases for chat with context compaction functionality.
 //
@@ -17,6 +23,90 @@ import "testing"
 // 	"ring-buffer": func(n int) ContextWindow { return NewRingBufferWindow(n) },
 // 	"linked-list": func(n int) ContextWindow { return NewLLWindow(n) },
 // }
+
+//*************************************//
+// Test fixture
+//*************************************//
+
+// fakeProvider is a scriptable Provider for tests: set Reply/Err before a call, inspect Calls
+// afterward to see exactly which message list a test triggered. Calls is mutex-guarded because
+// auto-compaction invokes Chat from a background goroutine — tests exercising that path need
+// this safe under -race, not just in the common single-goroutine case.
+type fakeProvider struct {
+	mu    sync.Mutex
+	Reply string
+	Err   error
+	Calls [][]ChatMessage
+}
+
+func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
+	p.mu.Lock()
+	p.Calls = append(p.Calls, append([]ChatMessage(nil), chatHistory...))
+	p.mu.Unlock()
+
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if p.Err != nil {
+		return "", p.Err
+	}
+	return p.Reply, nil
+}
+
+// chatSessionFixture bundles a fully wired ChatSession (history + context + a fake provider)
+// so tests don't have to repeat the setup, and so a signature change to how these pieces are
+// wired together only needs fixing here, not in every test. Meant for tests that exercise
+// ChatSession-level behavior (handleUserInput, compaction, chat request shape) — pure
+// ContextWindow-mechanics tests don't need a ChatSession at all and should use forEachWindow
+// (once that's built) instead of this fixture.
+type chatSessionFixture struct {
+	Session  *ChatSession
+	History  *InMemoryChatHistory
+	Context  *ChatContext
+	Provider *fakeProvider
+	Out      *bytes.Buffer
+}
+
+// newChatSessionFixture wires up a ChatSession backed by an OffsetWindow (the default window
+// type for tests that aren't specifically about window-type mechanics) of the given maxSize,
+// with auto-compaction configured to fire once the window reaches threshold messages.
+func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFixture {
+	t.Helper()
+
+	history, err := NewInMemoryChatHistory()
+	if err != nil {
+		t.Fatalf("NewInMemoryChatHistory() returned an error: %v", err)
+	}
+
+	window := NewOffsetWindow(maxSize)
+	chatContext, err := NewChatContext(window, threshold)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+
+	provider := &fakeProvider{}
+	out := &bytes.Buffer{}
+
+	cfg := Config{
+		UserID:       "test-user",
+		SystemPrompt: "You are a helpful assistant.",
+		InBuffer:     strings.NewReader(""),
+		OutBuffer:    out,
+	}
+
+	session, err := NewChatSession(provider, history, chatContext, cfg)
+	if err != nil {
+		t.Fatalf("NewChatSession() returned an error: %v", err)
+	}
+
+	return &chatSessionFixture{
+		Session:  session,
+		History:  history,
+		Context:  chatContext,
+		Provider: provider,
+		Out:      out,
+	}
+}
 
 //*************************************//
 // Basic chat request mechanics
@@ -67,7 +157,23 @@ func Test_ChatRequest_EmptyUserInput_NoChatHistoryEntry(t *testing.T) {
 
 // - Verify that a new chat message is correctly added as the most recent entry in the chat history (exists and is most recent)
 func Test_ChatHistory_NewChatMessage_AddedAsMostRecent(t *testing.T) {
-	t.Skip("TODO: Verify that a new chat message is correctly added as the most recent entry in the chat history.")
+	fx := newChatSessionFixture(t, 10, 9)
+
+	first := ChatMessage{ID: "1", Role: "user", Content: "hello"}
+	fx.History.Append([]ChatMessage{first})
+
+	second := ChatMessage{ID: "2", Role: "assistant", Content: "hi there"}
+	fx.History.Append([]ChatMessage{second})
+
+	messages := fx.History.GetMessages()
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages in history, got %d", len(messages))
+	}
+
+	mostRecent := messages[len(messages)-1]
+	if mostRecent.ID != second.ID {
+		t.Errorf("expected most recent message to have ID %q, got %q", second.ID, mostRecent.ID)
+	}
 }
 
 // - Verify that successive chat messages retain the same order in the chat history.

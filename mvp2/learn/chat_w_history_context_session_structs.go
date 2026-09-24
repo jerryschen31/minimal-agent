@@ -740,9 +740,9 @@ const (
 func compactChatContext(ctx context.Context, cs *ChatSession, compactionType string) (ChatMessage, error) {
 	defer cs.MsgContext.EndCompaction() // ensure the compaction lock is released after compaction is done
 	if compactionType == CompactionAuto {
-		fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...\n")
+		fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...")
 	} else {
-		fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...\n")
+		fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...")
 	}
 
 	// take a snapshot of the current chat history
@@ -765,7 +765,7 @@ func compactChatContext(ctx context.Context, cs *ChatSession, compactionType str
 	isCompacted := cs.MsgContext.Compact(state, summaryMsg)
 	if isCompacted {
 		// optionally, you could log or perform some action when compaction succeeds
-		fmt.Fprintln(cs.OutBuffer, "[system] Chat context compacted successfully.\n")
+		fmt.Fprintln(cs.OutBuffer, "[system] Chat context compacted successfully.")
 		return summaryMsg, nil
 	} else {
 		return ChatMessage{}, fmt.Errorf("[system] Chat context compaction failed")
@@ -881,7 +881,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			return true
 		case "/clear":
 			cs.MsgContext.Clear()
-			fmt.Fprintln(cs.OutBuffer, "[system] Chat history cleared\n")
+			fmt.Fprintln(cs.OutBuffer, "[system] Chat history cleared")
 		case "/summary", "/summarize":
 			summaryString, err := summarizeChatContext(ctx, cs.Provider, msgContext)
 			if err != nil {
@@ -892,7 +892,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/compact":
 			// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
 			if !cs.MsgContext.ShouldStartCompaction() {
-				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.\n")
+				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.")
 				return false
 			}
 			summaryMsg, err := compactChatContext(ctx, cs, CompactionManual)
