@@ -1,5 +1,5 @@
 //
-// This builds on chat_w_memory_compaction_refactor.go to accomodate any needed or desired changes discovered through testing.
+// This builds on chat_w_memory_compaction_refactor.go to accommodate any needed or desired changes discovered through testing.
 //
 
 package main
