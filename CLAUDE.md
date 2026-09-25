@@ -100,7 +100,7 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
 
 ## Conventions
 
-- Keep explanations clear, concise, accurate but avoid unneccessary technical jargon when possible. Explain things as if I am a generalist mid-level software engineer. 
+- Keep explanations clear, concise, accurate but avoid unnecessary technical jargon when possible. Explain things as if I am a generalist mid-level software engineer.
 - Prefix explanatory/teaching comments with `[agent]` so Jerry can grep Claude's commentary apart from
   ordinary code comments. Keep ordinary doc comments unprefixed.
 - Concise, small files; no framework scaffolding, no dependency added without a reason.
