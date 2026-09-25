@@ -67,14 +67,14 @@ Cross-cutting features map onto these seams:
 ## Run
 
 ```sh
-cd mvp1 && go build -o mvp1 .
+cd mvp1 && go build -o minagent .
 
 # local model (Ollama): ollama pull qwen2.5:7b
-./mvp1 -q "List the Go files here and summarise what each does"     # uses config.json
-./mvp1                                                              # REPL, memory persists across turns
+./minagent -q "List the Go files here and summarise what each does"     # uses config.json
+./minagent                                                              # REPL, memory persists across turns
 
-# Claude + a filesystem MCP server
-ANTHROPIC_API_KEY=... ./mvp1 -config config.anthropic.json -q "What's in README.md?"
+# Claude + a filesystem MCP server (save ANTHROPIC_API_KEY in .env file then):
+./minagent -config config.anthropic.json -q "What's in README.md?"
 
 go test ./...                         # unit tests (fake LLM drives the loop)
 MCP_E2E=1 go test ./tool -run MCP -v  # integration test against a real MCP server (needs npx)
