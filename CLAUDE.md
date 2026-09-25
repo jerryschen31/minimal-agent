@@ -9,10 +9,10 @@ extensible ReAct agent in Go. Two generations live side by side:
 
 - `mvp1/` — a complete working reference agent (~1800 lines incl. tests, one third-party dep: the
   Anthropic Go SDK). Written for Jerry to read. Treat it as a reference design for this first building phase. mvp1/README.md is a good summary of the agent implementation.
-- `mvp2/` — empty, on branch `mvp2-do-myself`. This is where **Jerry writes the code himself** while
-  being tutored step by step. Default behaviour here is teach-then-let-him-type: explain the concept,
-  show the smallest next slice, wait for him to write/confirm it before moving on. Do not dump a full
-  implementation into `mvp2/` unless he explicitly asks for it — that defeats the purpose of the branch.
+- `mvp2/` — the in-progress second generation. `mvp2/learn/` contains standalone `package main`
+  snapshots used to build the agent incrementally; the `mvp2/` root is a separate later track. Jerry
+  writes this code himself while being tutored step by step, so default behaviour is teach-then-let-him-type:
+  explain the concept, show the smallest next slice, and wait for him to write/confirm it.
 - `mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs
