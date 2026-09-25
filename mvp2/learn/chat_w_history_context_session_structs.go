@@ -219,6 +219,7 @@ type ChatContext struct {
 	gen                  int           // Generation counter - increments each time the context is compacted or cleared
 	autoCompactThreshold int
 	compactInProgress    atomic.Bool
+	compactWG            sync.WaitGroup // Used for triggering some code that waits for compaction to complete (e.g., for graceful shutdown)
 }
 
 func NewChatContext(w ContextWindow, autoCompactThreshold int) (*ChatContext, error) {
@@ -244,6 +245,13 @@ func (c *ChatContext) EndCompaction() {
 
 func (c *ChatContext) IsAutoCompactionNeeded() bool {
 	return c.window.GetSize() >= c.autoCompactThreshold
+}
+
+// WaitForCompaction blocks until any in-flight background compaction finishes. Safe to call
+// even when none is running — Wait() on a zero counter returns immediately, no blocking.
+// This is useful for code that needs to ensure all background compaction has completed before proceeding, such as during graceful shutdown.
+func (c *ChatContext) WaitForCompaction() {
+	c.compactWG.Wait()
 }
 
 func (c *ChatContext) AddMessages(msgs []ChatMessage) {
@@ -952,7 +960,9 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 
 	// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
 	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
+		cs.MsgContext.compactWG.Add(1) // must be here synchronously BEFORE we enter the goroutine
 		go func() {
+			defer cs.MsgContext.compactWG.Done() // ensure the WaitGroup counter is decremented when the goroutine finishes
 			_, err := compactChatContext(ctx, cs, CompactionAuto)
 			if err != nil {
 				fmt.Fprintln(cs.OutBuffer, "[error] Auto-compaction error:", err)
@@ -962,11 +972,19 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	return false
 }
 
-//***********************************************************//
+// ***********************************************************//
 // Run loop for handling chat session
-//***********************************************************//
+// ***********************************************************//
+func gracefulShutdown(cancel context.CancelFunc, chatSession *ChatSession) {
+	// signal the context to stop any ongoing operations
+	cancel()
+	// wait for any in-flight background compaction to finish
+	chatSession.MsgContext.WaitForCompaction()
+}
 
 func runLoop(ctx context.Context, chatSession *ChatSession) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer gracefulShutdown(cancel, chatSession)
 
 	stdin := bufio.NewReader(chatSession.InBuffer)
 

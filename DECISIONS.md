@@ -214,12 +214,38 @@ filter summaries out when searching real user messages.
   mechanics" with a `_Basic` suffix — both with identical bodies. Kept once, filed under
   context-window mechanics, since `/clear` only ever calls `cs.MsgContext.Clear()` and never
   touches `cs.MsgHistory`.
-- **Known remaining inconsistency, not yet fixed**: `Test_ContextCompaction_
-  CompactingEmptyHistoryReturnsError` and `Test_ContextCompaction_
-  EmptyOrWhitespaceSummaryTreatedAsFailure` still say "history" in name/comment/skip text, but
-  the emptiness/whitespace check in `summarizeChatContext` operates on the `ChatContext`
-  snapshot, not `ChatHistory`. Flagged 2026-09-22, not yet renamed.
-- Status: active (renames applied), one item deferred (see above). Files:
+- **Test scaffolding built (2026-09-24)**: `windowDataStructureTypes` (factory map, one entry
+  per window type), `forEachWindow(t, maxSize, fn)` (subtest-per-type runner, matches the
+  originally-planned C1 item), and `msg`/`msgs` (deterministic-ID message builders, matches the
+  originally-planned C3 item) now exist at the top of the file, superseding those two plan items.
+- **Renamed for the same "history vs. context" reason as above (2026-09-24)**:
+  `Test_Unit_OpOnGetMessagesDoesNotModifyChatHistory` → `...DoesNotModifyContext`, and
+  `Test_Unit_OpOnSnapshotDoesNotModifyChatHistory` → `...DoesNotModifyContext` — both test
+  `ChatContext.GetMessages()`/`Snapshot()`, not anything on `ChatHistory`.
+- **`Test_ContextCompaction_DoesNotRemoveMessagesAddedDuringCompaction` tests `ChatContext.Compact`
+  directly, not through `handleUserInput`** — deliberate: the fake provider is synchronous, so
+  there's no way to make a "real" concurrent message arrive mid-summarization through the normal
+  call path. The test hand-reproduces the scenario instead: snapshot, then simulate a concurrent
+  `AddMessages`, then `Compact` against the now-stale snapshot.
+- **`Test_ContextCompaction_AutoCompactionTriggeredWhenThresholdExceeded` polls with a 2s deadline**
+  rather than asserting immediately, because auto-compaction runs in an un-awaitable background
+  goroutine (the `A4` "make auto-compaction awaitable via `sync.WaitGroup`/a done channel" item
+  from the original test plan is still unbuilt). This is a known, accepted flakiness risk until
+  `A4` lands — revisit if this test ever proves flaky in practice.
+- **Resolved 2026-09-24** (superseding the "not yet renamed" note this entry used to carry):
+  the test is now named `Test_ContextCompaction_CompactingEmptyContextReturnsError` (already
+  correct), and `Test_ContextCompaction_EmptyOrWhitespaceSummaryTreatedAsFailure`'s one
+  remaining stale doc-comment word ("history" → "context") was fixed. No code behavior changed,
+  just naming.
+- **`Test_ChatRequest_MalformedHeaderErrorsGracefully` and `Test_ContextWindow_
+  MalformedChatMessageErrorsGracefully` removed (2026-09-24)**, rather than renamed or
+  implemented. Both were flagged earlier as testing a premise that doesn't map to any real code
+  path: `Chat()` never inspects any response header, so nothing could make "a malformed header"
+  cause an error; a "malformed" `ChatMessage` is mostly ruled out by Go's own type system, and
+  the one realistic case (an unrecognized `Role` value) was never elaborated on. Resolved by
+  deleting rather than redefining — no invariant was lost, since neither test description ever
+  corresponded to an actual behavior of the code.
+- Status: active (renames applied, two ambiguous stubs deleted). Files:
   `chat_w_history_context_session_structs_test.go`.
 
 ---
@@ -253,6 +279,27 @@ filter summaries out when searching real user messages.
   separate programs/modules) with no live use case yet. **Revisit trigger**: when `mvp2/`
   Track 1 (the real agent build, dormant since 2026-09-12) resumes and needs a context-window
   abstraction — porting these already-debugged implementations there is the natural move.
+- **`gracefulShutdown` + `ChatContext.WaitForCompaction` — cancel-then-wait, not wait alone
+  (built 2026-09-24)**: `runLoop` now derives `ctx, cancel := context.WithCancel(ctx)` and
+  defers `gracefulShutdown(cancel, chatSession)`, which calls `cancel()` *then*
+  `chatSession.MsgContext.WaitForCompaction()`, on every exit path (`/exit` or stdin EOF).
+  `WaitForCompaction()` itself just wraps a `compactWG.Wait()`; the `compactWG.Add(1)` happens
+  synchronously in `handleUserInput`, before the `go func(){...}()` that launches a background
+  auto-compaction — never inside the spawned goroutine, which would be a real race (a test or
+  caller could call `WaitForCompaction()` before the goroutine had even started incrementing the
+  counter). **Why cancel first, not just wait**: `OpenAICompat.Chat` derives its own
+  `context.WithTimeout(ctx, ResponseTimeout)` (5 minutes) from whatever `ctx` it's given: Go's
+  context cancellation propagates parent→child regardless of the child's own timeout, so
+  cancelling the parent aborts an in-flight HTTP request almost immediately. An earlier version
+  of this idea (`WaitForCompaction()` alone, no `cancel()`) was rejected before being built: a
+  user typing `/exit` during a slow compaction would have been forced to wait up to
+  `ResponseTimeout` for the program to actually quit — worse than the pre-existing behavior of
+  silently abandoning the goroutine. Known accepted rough edge: a cancelled compaction's error
+  still prints via `fmt.Fprintln(cs.OutBuffer, ...)` from inside the goroutine, which can land
+  on-screen right as (or just after) the program appears to have exited — not a crash, just a
+  slightly odd trailing line. Files: `chat_w_history_context_session_structs.go`
+  (`gracefulShutdown`, `runLoop`, `ChatContext.compactWG`/`WaitForCompaction`, the
+  `compactWG.Add(1)` call site in `handleUserInput`'s auto-compaction branch). Status: active.
 - **Background-goroutine output racing the `"> "` prompt** — auto-compaction's status messages
   (`compactChatContext`'s `fmt.Fprintln(cs.OutBuffer, ...)` calls) run in a goroutine launched
   from `handleUserInput` with no coordination against `runLoop`'s own `fmt.Print("\n> ")` +
