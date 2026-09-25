@@ -1,0 +1,172 @@
+=== RUN   Test_ChatRequest_UserRequest_ValidResponse
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatRequest_UserRequest_ValidResponse (0.00s)
+=== RUN   Test_ChatRequest_SystemMessage_AlwaysFirst
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatRequest_SystemMessage_AlwaysFirst (0.00s)
+=== RUN   Test_ChatRequest_SystemMessage_NotEvicted
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[2] user: hello
+[3] assistant: ok
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[2] user: hello
+[3] assistant: ok
+[debug] --- end ---
+--- PASS: Test_ChatRequest_SystemMessage_NotEvicted (0.00s)
+=== RUN   Test_ChatRequest_SystemMessage_FirstAfterCompaction
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: ok
+[debug] --- end ---
+--- PASS: Test_ChatRequest_SystemMessage_FirstAfterCompaction (0.00s)
+=== RUN   Test_ChatRequest_RecognizedSlashCommands_NotIncluded
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatRequest_RecognizedSlashCommands_NotIncluded (0.00s)
+=== RUN   Test_ChatRequest_UnrecognizedSlashCommands_NoRequestSent
+--- PASS: Test_ChatRequest_UnrecognizedSlashCommands_NoRequestSent (0.00s)
+=== RUN   Test_ChatRequest_EmptyUserInput_NoRequestSent
+--- PASS: Test_ChatRequest_EmptyUserInput_NoRequestSent (0.00s)
+=== RUN   Test_ChatRequest_EmptyUserInput_NoChatHistoryEntry
+--- PASS: Test_ChatRequest_EmptyUserInput_NoChatHistoryEntry (0.00s)
+=== RUN   Test_ChatHistory_NewChatMessage_AddedAsMostRecent
+--- PASS: Test_ChatHistory_NewChatMessage_AddedAsMostRecent (0.00s)
+=== RUN   Test_ChatHistory_SuccessiveChatMessages_RetainOrder
+--- PASS: Test_ChatHistory_SuccessiveChatMessages_RetainOrder (0.00s)
+=== RUN   Test_ChatHistory_FullPromptResponseCycle_AddsBoth
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatHistory_FullPromptResponseCycle_AddsBoth (0.00s)
+=== RUN   Test_ChatHistory_FailedResponse_DoesNotAddIncompleteEntry
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatHistory_FailedResponse_DoesNotAddIncompleteEntry (0.00s)
+=== RUN   Test_ChatHistory_FailedResponse_DoesNotAddUserPrompt
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ChatHistory_FailedResponse_DoesNotAddUserPrompt (0.00s)
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/offset
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/in-place
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/ring-buffer
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/linked-list
+--- PASS: Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/offset (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/in-place (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/ring-buffer (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_MaxSizeNotExceeded/linked-list (0.00s)
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/linked-list
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/offset
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/in-place
+=== RUN   Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/ring-buffer
+--- PASS: Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/linked-list (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/offset (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/in-place (0.00s)
+    --- PASS: Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved/ring-buffer (0.00s)
+=== RUN   Test_ContextWindow_ClearContext_SlashCommand
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ContextWindow_ClearContext_SlashCommand (0.00s)
+=== RUN   Test_ContextCompaction_CreatesSummaryMessageInContext
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_CreatesSummaryMessageInContext (0.00s)
+=== RUN   Test_ContextCompaction_UnsuccessfulDoesNotAlterContext
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_UnsuccessfulDoesNotAlterContext (0.00s)
+=== RUN   Test_ContextCompaction_MultipleCompactionsCannotOccurSimultaneously
+--- PASS: Test_ContextCompaction_MultipleCompactionsCannotOccurSimultaneously (0.00s)
+=== RUN   Test_ContextCompaction_ReducesContextFootprint
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[2] user: hello
+[3] assistant: ok
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_ReducesContextFootprint (0.00s)
+=== RUN   Test_ContextCompaction_DoesNotRemoveMessagesAddedDuringCompaction
+--- PASS: Test_ContextCompaction_DoesNotRemoveMessagesAddedDuringCompaction (0.00s)
+=== RUN   Test_ContextCompaction_AutoCompactionTriggeredWhenThresholdExceeded
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: first
+[1] assistant: ok
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_AutoCompactionTriggeredWhenThresholdExceeded (0.00s)
+=== RUN   Test_ContextCompaction_ManualTrigger
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_ManualTrigger (0.00s)
+=== RUN   Test_ContextCompaction_EmptyOrWhitespaceSummaryTreatedAsFailure
+[debug] --- context window ---
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_EmptyOrWhitespaceSummaryTreatedAsFailure (0.00s)
+=== RUN   Test_ContextCompaction_CompactingEmptyContextReturnsError
+--- PASS: Test_ContextCompaction_CompactingEmptyContextReturnsError (0.00s)
+=== RUN   Test_ContextCompaction_FailedCompactionAllowsNewMessages
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: hello
+[1] assistant: ok
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_FailedCompactionAllowsNewMessages (0.00s)
+=== RUN   Test_ContextCompaction_NextChatRequestDoesNotContainOldCompactedMessages
+[debug] --- context window ---
+[debug] --- end ---
+[debug] --- context window ---
+[0] user: a summary
+[debug] --- end ---
+--- PASS: Test_ContextCompaction_NextChatRequestDoesNotContainOldCompactedMessages (0.00s)
+=== RUN   Test_ChatRequest_ErrorsGracefully
+--- PASS: Test_ChatRequest_ErrorsGracefully (0.00s)
+=== RUN   Test_ChatRequest_Non2xxResponseErrorsGracefully
+--- PASS: Test_ChatRequest_Non2xxResponseErrorsGracefully (0.00s)
+=== RUN   Test_ChatRequest_EmptyResponseErrorsGracefully
+=== RUN   Test_ChatRequest_EmptyResponseErrorsGracefully/no_body_at_all
+=== RUN   Test_ChatRequest_EmptyResponseErrorsGracefully/valid_JSON_but_no_choices
+--- PASS: Test_ChatRequest_EmptyResponseErrorsGracefully (0.00s)
+    --- PASS: Test_ChatRequest_EmptyResponseErrorsGracefully/no_body_at_all (0.00s)
+    --- PASS: Test_ChatRequest_EmptyResponseErrorsGracefully/valid_JSON_but_no_choices (0.00s)
+=== RUN   Test_ChatRequest_ProperRequestResponseCycle
+--- PASS: Test_ChatRequest_ProperRequestResponseCycle (0.00s)
+=== RUN   Test_Unit_LLWindowEvictionBehavior
+--- PASS: Test_Unit_LLWindowEvictionBehavior (0.00s)
+=== RUN   Test_Unit_InPlaceWindowEvictionBehavior
+--- PASS: Test_Unit_InPlaceWindowEvictionBehavior (0.00s)
+=== RUN   Test_Unit_RingBufferWindowEvictionBehavior
+--- PASS: Test_Unit_RingBufferWindowEvictionBehavior (0.00s)
+=== RUN   Test_Unit_OffsetWindowEvictionBehavior
+--- PASS: Test_Unit_OffsetWindowEvictionBehavior (0.00s)
+=== RUN   Test_Unit_RingBufferWindowWraparoundBehavior
+--- PASS: Test_Unit_RingBufferWindowWraparoundBehavior (0.00s)
+=== RUN   Test_Unit_OpOnGetMessagesDoesNotModifyContext
+--- PASS: Test_Unit_OpOnGetMessagesDoesNotModifyContext (0.00s)
+=== RUN   Test_Unit_OpOnSnapshotDoesNotModifyContext
+--- PASS: Test_Unit_OpOnSnapshotDoesNotModifyContext (0.00s)
+PASS
+ok  	command-line-arguments	0.274s
