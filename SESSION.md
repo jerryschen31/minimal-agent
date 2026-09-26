@@ -174,6 +174,19 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
+**Start here next session (added 2026-09-25) — remind Jerry at the top of the session:**
+
+- **Make the chat writer lockable.** `cs.OutBuffer` is written from both the main loop and the
+  auto-compaction goroutine, which is a data race on a `bytes.Buffer`. Jerry to write it: a small
+  type wrapping an `io.Writer` + `sync.Mutex`, wrapped once in `NewChatSession`. Downsides: only
+  single `Write`s are atomic (multi-line output can still interleave), `debugChatContext` uses
+  `fmt.Println` and bypasses it, and `printConfig` writes to `cfg.OutBuffer` rather than the
+  session writer. Add a `-race` test where a slow fake provider makes auto-compaction overlap a
+  second `handleUserInput`. Ties into the goroutine-output item under § "Deferred / open decisions".
+- ~~Package doesn't compile~~ and ~~stale-context bug after slash commands~~: both resolved
+  2026-09-25. Full suite passes under `-race`. Slash commands no longer send trailing text as a
+  prompt; see DECISIONS.md § "Slash commands — text after the command".
+
 1. **Refactor `runLoop`/`runAgent`/`gracefulShutdown`/`main`** — Jerry's own next-iteration plan,
    not yet started. These are the last 0%-coverage functions, left untested on purpose because
    they're expected to change shape. No design decided yet for what the refactor looks like;

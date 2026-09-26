@@ -250,7 +250,51 @@ filter summaries out when searching real user messages.
 
 ---
 
+## Slash commands — text after the command (2026-09-25)
+
+- **Original design (reversed 2026-09-25):** text after a slash command was sent as a normal
+  chat prompt once the command had run. `/clear what is 3 + 2?` meant "clear, then ask". Why:
+  one line could do two things.
+- **Why it was reversed:**
+  - **Ordering bug.** `handleUserInput` read `msgContext` before the command ran, so
+    `/clear <prompt>` and `/compact <prompt>` still sent the pre-command context with the prompt.
+  - **Tests missed it.** The first tests checked `fx.Context` *after* the call. That passes
+    either way, because the prompt and reply are appended after the provider call returns. The
+    bug only showed once a test checked the request actually sent (`fx.Provider.Calls`).
+  - **Not the production convention.** In CLIs such as Claude Code, text after a command is an
+    *argument to that command* (e.g. `/compact [instructions]`), never a follow-up chat turn.
+- **Current design:**
+  - Every slash command returns right after it runs; nothing after it is sent as a chat turn.
+    This also removes the ordering bug, because the request path now only runs for plain prompts,
+    where `msgContext` is always fresh.
+  - `/summary <text>` and `/compact <text>` pass `<text>` to `summarizeChatContext` as extra
+    summarizer instructions (the new `addlInstructions` parameter). Auto-compaction passes `""`.
+  - An empty instruction adds **no** message to the summarization request. Found in review: an
+    empty `system` message was being sent on every plain `/compact` and auto-compaction, and
+    some servers reject empty content.
+  - `/clear <text>` still clears, and the text is **ignored**. `/config` and `/exit` ignore it too.
+- **Honest downside:** ignoring `/clear <text>` silently means a user who types a question there
+  gets no answer and no hint why. Rejecting with a message ("`/clear` takes no arguments") was
+  considered and would be the more user-friendly choice; ignoring was picked for simplicity.
+- **Tests:** `Test_ContextWindow_ClearWithTrailingText_TextIgnored`,
+  `Test_ContextCompaction_CompactWithTrailingText_PassedAsSummarizerInstructions`,
+  `Test_ChatRequest_SummaryWithTrailingText_PassedAsSummarizerInstructions`,
+  `Test_ContextCompaction_NoInstructions_NoExtraMessageInSummarizationRequest`. They replace the
+  short-lived `...PromptSameLineAs{Clear,Compact}...` tests. The instructions checks match on
+  content, not position, so moving the instructions (see the open item below) won't break them.
+- Status: active. Files: `chat_w_history_context_session_structs.go`,
+  `chat_w_history_context_session_structs_test.go`.
+
+---
+
 ## Deferred / open decisions
+
+- **Summarizer instructions are sent as a trailing `system` message** (after the `user`
+  transcript). OpenAI and Ollama accept this. It conflicts with the reasoning in § "Compaction
+  design" (a `system` message mid-list breaks Anthropic and some Ollama chat templates), and
+  Anthropic takes the system prompt as a separate field, not a message. Options: append the
+  instructions to the first system prompt, or to the user message ("Focus on: …"). Open since
+  2026-09-25; revisit when an Anthropic provider is added.
 
 - **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Undecided; no `/undo` command
   exists yet. Leaning window-only, matching `/clear`, per the "history is truth" model.

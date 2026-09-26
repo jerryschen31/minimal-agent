@@ -243,23 +243,6 @@ func Test_ChatRequest_SystemMessage_FirstAfterCompaction(t *testing.T) {
 	}
 }
 
-// - Verify that recognized slash commands are not included in chat request messages.
-func Test_ChatRequest_RecognizedSlashCommands_NotIncluded(t *testing.T) {
-	fx := newChatSessionFixture(t, 10, 100)
-	fx.Provider.Reply = "ok"
-
-	handleUserInput(context.Background(), fx.Session, "/clear hello there")
-
-	if len(fx.Provider.Calls) != 1 {
-		t.Fatalf("expected exactly 1 provider call, got %d", len(fx.Provider.Calls))
-	}
-	sent := fx.Provider.Calls[0]
-	userMsgSent := sent[len(sent)-1]
-	if userMsgSent.Content != "hello there" {
-		t.Errorf("expected the slash command to be stripped and only %q sent, got %q", "hello there", userMsgSent.Content)
-	}
-}
-
 // - Verify that unrecognized slash commands do not send any request to the Provider
 func Test_ChatRequest_UnrecognizedSlashCommands_NoRequestSent(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
@@ -436,6 +419,10 @@ func Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved(t *testing
 	})
 }
 
+//*************************************//
+// Slash command tests
+//*************************************//
+
 // - Verify that a user can successfully clear the context with an appropriate slash command.
 func Test_ContextWindow_ClearContext_SlashCommand(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
@@ -458,10 +445,6 @@ func Test_ContextWindow_ClearContext_SlashCommand(t *testing.T) {
 	}
 }
 
-//*************************************//
-// Basic context compaction tests
-//*************************************//
-
 // - Verify that context compaction correctly creates a summary message and inserts it into the context
 func Test_ContextCompaction_CreatesSummaryMessageInContext(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
@@ -481,6 +464,166 @@ func Test_ContextCompaction_CreatesSummaryMessageInContext(t *testing.T) {
 		t.Errorf("expected a summary message to be present in context after compaction, got %+v", fx.Context.GetMessages())
 	}
 }
+
+// - Verify that /config correctly prints the current agent configuration
+func Test_ConfigCommand_PrintsCurrentConfiguration(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	ctx := context.Background()
+
+	handleUserInput(ctx, fx.Session, "/config")
+
+	// Since the output is printed to the OutBuffer, we can check if it contains the expected configuration string
+	output := fx.Out.String()
+	if !strings.Contains(output, "Current agent configuration:") {
+		t.Errorf("expected /config to print the current agent configuration, got output: %s", output)
+	}
+}
+
+// - Verify that text after /clear (e.g., "/clear what is 3 + 2?") is ignored: the context is still cleared, and the text is never sent or stored.
+func Test_ContextWindow_ClearWithTrailingText_TextIgnored(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Provider.Reply = "ok"
+	ctx := context.Background()
+
+	handleUserInput(ctx, fx.Session, "hello")
+	if fx.Context.GetSize() == 0 {
+		t.Fatalf("test setup problem: expected some context before clearing")
+	}
+	callsBefore := len(fx.Provider.Calls)
+	historyBefore := len(fx.History.GetMessages())
+
+	handleUserInput(ctx, fx.Session, "/clear what is 3 + 2?")
+
+	// the command itself still runs
+	if fx.Context.GetSize() != 0 {
+		t.Errorf("expected /clear with trailing text to still clear the context, got %+v", fx.Context.GetMessages())
+	}
+	// the trailing text is not sent as a chat turn...
+	if len(fx.Provider.Calls) != callsBefore {
+		t.Errorf("expected no provider call for text after /clear, got %d new calls", len(fx.Provider.Calls)-callsBefore)
+	}
+	// ...and not recorded anywhere
+	if len(fx.History.GetMessages()) != historyBefore {
+		t.Errorf("expected chat history unchanged by /clear with trailing text, got %+v", fx.History.GetMessages())
+	}
+}
+
+// - Verify that text after /compact (e.g., "/compact keep only the test code discussion") is passed to the
+// summarizer as instructions, and is not sent or stored as a chat turn.
+func Test_ContextCompaction_CompactWithTrailingText_PassedAsSummarizerInstructions(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	ctx := context.Background()
+	const instructions = "keep only the test code discussion"
+
+	fx.Provider.Reply = "ok"
+	handleUserInput(ctx, fx.Session, "hello")
+	callsBefore := len(fx.Provider.Calls)
+	historyBefore := len(fx.History.GetMessages())
+
+	fx.Provider.Reply = "a summary of the conversation"
+	handleUserInput(ctx, fx.Session, "/compact "+instructions)
+
+	// exactly one new call: the summarization request, no follow-up chat turn
+	if len(fx.Provider.Calls) != callsBefore+1 {
+		t.Fatalf("expected exactly 1 new provider call (summarization), got %d", len(fx.Provider.Calls)-callsBefore)
+	}
+	// the instructions reach the summarizer (checked by content, not position, so either message layout passes)
+	found := false
+	for _, m := range fx.Provider.Calls[callsBefore] {
+		if strings.Contains(m.Content, instructions) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the summarization request to contain the instructions %q, got %+v", instructions, fx.Provider.Calls[callsBefore])
+	}
+	// the context is just the summary, and the instructions never became a message
+	messages := fx.Context.GetMessages()
+	if len(messages) != 1 || messages[0].Type != "summary" {
+		t.Errorf("expected context to be exactly [summary] after /compact, got %+v", messages)
+	}
+	if len(fx.History.GetMessages()) != historyBefore {
+		t.Errorf("expected chat history unchanged by /compact with instructions, got %+v", fx.History.GetMessages())
+	}
+}
+
+// - Verify that text after /summary (e.g., "/summary only the test code discussion") is passed to the summarizer
+// as instructions, the summary is printed, and the context, history and chat turns are untouched.
+func Test_ChatRequest_SummaryWithTrailingText_PassedAsSummarizerInstructions(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	ctx := context.Background()
+	const instructions = "only the test code discussion"
+
+	fx.Provider.Reply = "ok"
+	handleUserInput(ctx, fx.Session, "hello")
+	contextBefore := fx.Context.GetMessages()
+	callsBefore := len(fx.Provider.Calls)
+	historyBefore := len(fx.History.GetMessages())
+
+	fx.Provider.Reply = "a focused summary"
+	handleUserInput(ctx, fx.Session, "/summary "+instructions)
+
+	// exactly one new call: the summarization request, no follow-up chat turn
+	if len(fx.Provider.Calls) != callsBefore+1 {
+		t.Fatalf("expected exactly 1 new provider call (summarization), got %d", len(fx.Provider.Calls)-callsBefore)
+	}
+	found := false
+	for _, m := range fx.Provider.Calls[callsBefore] {
+		if strings.Contains(m.Content, instructions) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the summarization request to contain the instructions %q, got %+v", instructions, fx.Provider.Calls[callsBefore])
+	}
+	// the summary is shown to the user
+	if !strings.Contains(fx.Out.String(), "a focused summary") {
+		t.Errorf("expected the summary to be printed, got output: %s", fx.Out.String())
+	}
+	// unlike /compact, /summary is read-only: context is unchanged, nothing is stored
+	after := fx.Context.GetMessages()
+	if len(after) != len(contextBefore) {
+		t.Fatalf("expected /summary to leave the context unchanged (%d messages), got %d", len(contextBefore), len(after))
+	}
+	for i := range contextBefore {
+		if after[i].ID != contextBefore[i].ID {
+			t.Errorf("expected context message %d unchanged (ID %q), got ID %q", i, contextBefore[i].ID, after[i].ID)
+		}
+	}
+	if len(fx.History.GetMessages()) != historyBefore {
+		t.Errorf("expected chat history unchanged by /summary, got %+v", fx.History.GetMessages())
+	}
+}
+
+// - Verify that a bare /summary or /compact adds no extra instructions message to the summarization request.
+func Test_ContextCompaction_NoInstructions_NoExtraMessageInSummarizationRequest(t *testing.T) {
+	for _, cmd := range []string{"/summary", "/compact"} {
+		t.Run(cmd, func(t *testing.T) {
+			fx := newChatSessionFixture(t, 10, 100)
+			ctx := context.Background()
+
+			fx.Provider.Reply = "ok"
+			handleUserInput(ctx, fx.Session, "hello")
+			callsBefore := len(fx.Provider.Calls)
+
+			fx.Provider.Reply = "a summary"
+			handleUserInput(ctx, fx.Session, cmd)
+
+			if len(fx.Provider.Calls) != callsBefore+1 {
+				t.Fatalf("expected exactly 1 new provider call (summarization), got %d", len(fx.Provider.Calls)-callsBefore)
+			}
+			// system prompt + transcript only; an empty instructions message would make it 3
+			req := fx.Provider.Calls[callsBefore]
+			if len(req) != 2 {
+				t.Errorf("expected a 2-message summarization request with no instructions, got %d: %+v", len(req), req)
+			}
+		})
+	}
+}
+
+//*************************************//
+// Basic context compaction tests
+//*************************************//
 
 // - Verify that unsuccessful context compaction (timeout, error or cancelled) does not alter the context
 func Test_ContextCompaction_UnsuccessfulDoesNotAlterContext(t *testing.T) {
@@ -652,7 +795,7 @@ func Test_ContextCompaction_CompactingEmptyContextReturnsError(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
 	fx.Provider.Reply = "ok"
 
-	_, err := compactChatContext(context.Background(), fx.Session, CompactionManual)
+	_, err := compactChatContext(context.Background(), fx.Session, CompactionManual, "")
 	if err == nil {
 		t.Errorf("expected compacting an empty context to return an error")
 	}

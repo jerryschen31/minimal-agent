@@ -25,7 +25,7 @@ import (
 )
 
 const ResponseTimeout = 5 * time.Minute
-const WelcomeMsg = "Running agent with configuration: %+v\n\nType /clear to clear chat history.\nType /exit to exit\n"
+const WelcomeMsg = "Thanks for using minimal agent!\nType /clear to clear the conversation.\nType /exit to exit\nType /compact to compact the conversation.\nType /config to see the current agent configuration.\n"
 const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
 const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
@@ -56,8 +56,8 @@ type Config struct {
 	ApiKeyName string `json:"api_key_name"`
 
 	// I/O configuration for the chat session
-	InBuffer  io.Reader `json:"in_buffer"`
-	OutBuffer io.Writer `json:"out_buffer"`
+	InBuffer  io.Reader
+	OutBuffer io.Writer
 
 	// system prompt
 	SystemPrompt string `json:"system_prompt"`
@@ -96,6 +96,10 @@ func getDefaultConfig() Config {
 // 		OutBuffer:     os.Stdout,
 // 	}
 // }
+
+func printConfig(cfg Config) {
+	fmt.Fprintf(cfg.OutBuffer, "Current agent configuration: %+v\n", cfg)
+}
 
 type ChatMessage struct {
 	ID        string    `json:"id"`
@@ -182,6 +186,7 @@ func (h *InMemoryChatHistory) Append(msgs []ChatMessage) {
 
 // chatSession holds the state and configuration for an ongoing chat session
 type ChatSession struct {
+	Config     Config
 	Provider   Provider
 	MsgHistory ChatHistory
 	MsgContext *ChatContext
@@ -193,6 +198,7 @@ type ChatSession struct {
 
 func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
 	return &ChatSession{
+		Config:     cfg,
 		Provider:   provider,
 		MsgHistory: chatHistory,
 		MsgContext: chatContext,
@@ -707,7 +713,7 @@ func (w *LLWindow) GetMaxSize() int {
 //***********************************************************//
 
 // makes a call to the provider to summarize the given chat messages
-func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage) (string, error) {
+func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage, addlInstructions string) (string, error) {
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("no messages to summarize")
 	}
@@ -721,6 +727,9 @@ func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage) (
 	req := []ChatMessage{
 		{Role: "system", Content: SummarizeSystemPrompt},
 		{Role: "user", Content: "<transcript>\n" + transcript.String() + "</transcript>"},
+	}
+	if addlInstructions != "" {
+		req = append(req, ChatMessage{Role: "system", Content: addlInstructions})
 	}
 
 	summary, err := p.Chat(ctx, req)
@@ -745,7 +754,8 @@ const (
 	CompactionAuto   = "auto"
 )
 
-func compactChatContext(ctx context.Context, cs *ChatSession, compactionType string) (ChatMessage, error) {
+// addlInstructions provide additional information for the summarization process, guiding how the chat context should be summarized.
+func compactChatContext(ctx context.Context, cs *ChatSession, compactionType string, addlInstructions string) (ChatMessage, error) {
 	defer cs.MsgContext.EndCompaction() // ensure the compaction lock is released after compaction is done
 	if compactionType == CompactionAuto {
 		fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...")
@@ -757,7 +767,7 @@ func compactChatContext(ctx context.Context, cs *ChatSession, compactionType str
 	state := cs.MsgContext.Snapshot()
 
 	// summarize the chat history
-	summary, err := summarizeChatContext(ctx, cs.Provider, state.Messages)
+	summary, err := summarizeChatContext(ctx, cs.Provider, state.Messages, addlInstructions)
 	if err != nil {
 		return ChatMessage{}, err
 	}
@@ -891,7 +901,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			cs.MsgContext.Clear()
 			fmt.Fprintln(cs.OutBuffer, "[system] Chat history cleared")
 		case "/summary", "/summarize":
-			summaryString, err := summarizeChatContext(ctx, cs.Provider, msgContext)
+			summaryString, err := summarizeChatContext(ctx, cs.Provider, msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
 				fmt.Fprintln(cs.OutBuffer, "[error] Summarization error:", err)
 				return false
@@ -903,22 +913,24 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.")
 				return false
 			}
-			summaryMsg, err := compactChatContext(ctx, cs, CompactionManual)
+			summaryMsg, err := compactChatContext(ctx, cs, CompactionManual, strings.TrimSpace(lineRest))
 			if err != nil {
 				fmt.Fprintln(cs.OutBuffer, "[error] Compaction error:", err)
 				return false
 			}
 			fmt.Fprintln(cs.OutBuffer, "[system] Chat summary:", summaryMsg.Content)
+		case "/config":
+			printConfig(cs.Config)
 		default:
 			// if the command is not recognized, print an error message
 			fmt.Fprintln(cs.OutBuffer, "[system] Unrecognized command:", lineFirst)
-			return false
 		}
+		return false
 		// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
-		line = strings.TrimSpace(lineRest)
-		if line == "" {
-			return false
-		}
+		// line = strings.TrimSpace(lineRest)
+		// if line == "" {
+		// 	return false
+		// }
 	}
 
 	// append the user message to the chat history
@@ -963,7 +975,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		cs.MsgContext.compactWG.Add(1) // must be here synchronously BEFORE we enter the goroutine
 		go func() {
 			defer cs.MsgContext.compactWG.Done() // ensure the WaitGroup counter is decremented when the goroutine finishes
-			_, err := compactChatContext(ctx, cs, CompactionAuto)
+			_, err := compactChatContext(ctx, cs, CompactionAuto, "")
 			if err != nil {
 				fmt.Fprintln(cs.OutBuffer, "[error] Auto-compaction error:", err)
 			}
@@ -1041,7 +1053,7 @@ func runAgent(ctx context.Context, cfg Config) error {
 	}
 
 	// print the configuration for debugging purposes
-	fmt.Printf(WelcomeMsg, cfg)
+	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg)
 
 	// 6. chat with the LLM provider in a loop
 	runLoop(ctx, chatSession)
