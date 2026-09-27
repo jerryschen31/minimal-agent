@@ -287,6 +287,94 @@ filter summaries out when searching real user messages.
 
 ---
 
+## Tools & MCP (2026-09-25)
+
+- **Decided: an internal `Tool` interface, with MCP as one adapter behind it (option B),
+  not "every tool is an MCP server" (option A).** A built-in is one Go closure → one `Tool`;
+  one MCP server expands into N `Tool`s (one per `tools/list` entry). The loop only sees `Tool`.
+- **Why:** the model can't tell the difference: every tool is name + description + JSON
+  schema → text result. MCP is a way of packaging and delivering tools, not a different kind
+  of tool. MCP-only would mean:
+  - the agent can do nothing out of the box (reading a file needs an external binary, e.g.
+    `npx` for the official filesystem server);
+  - tools that need agent internals (subagent, history search, todo, compact) would need a
+    protocol to expose `ChatSession`;
+  - every call pays a process/network round trip, with more ways to fail;
+  - tests need a fake MCP server.
+  Same shape as `mvp1`, and consistent with Track 1's "Grep is a Go-native `tool.Func`".
+- **Dividing rule:** MCP if the tool must be added without recompiling, is in another language,
+  or is someone else's. Built-in if it needs agent internals or the agent is useless without it.
+  Built-ins are added at compile time and switched on via `Config.Tools`. No second runtime
+  plugin system; `/mcp-add` is the runtime path.
+- **Planned built-ins:** `read_file`, `list_dir`/`glob`, `grep`, `write_file`/`edit_file`
+  (approval-gated), `shell` (approval-gated, timeout + process-group kill). Later: subagent,
+  todo, memory search. Skipped: calculator, time. Pick one source per capability, so built-in
+  and MCP file tools aren't loaded side by side.
+- **Honest downside:** two ways to add a tool, and adding a built-in means recompiling.
+- **Rejected middle path:** built-ins compiled as an in-process MCP server over in-memory pipes.
+  It keeps one protocol, but JSON-RPC-encoding a call to a function in the same binary is
+  ceremony without payoff.
+- **Build order:**
+  1. `Tool` interface + one built-in (`read_file`) + tool fields on `ChatMessage` + a ReAct loop
+     against the OpenAI tool-calling format;
+  2. registry, with `cfg.Tools` choosing the built-ins;
+  3. MCP stdio adapter;
+  4. `/mcp-add`, `/mcp-remove`, `/mcp-list`;
+  5. HTTP transport.
+- Status: active. Files: `chat_w_history_context_session_mcp_tools.go` (gen 8).
+
+### MCP protocol version: modern-only → dual-era (2026-09-27)
+
+- **Current decision (revised later the same day): a dual-era client.** It supports modern
+  (2026-07-28) and legacy (`initialize`-based, sending `2025-11-25`) servers. Modern is built
+  first, then the legacy fallback. Both live inside `connectMCP`. The rest of the agent only sees
+  `Tool`s and never learns which era a server is.
+  - **Probe rule (stdio):** send `server/discover` with our preferred modern version in `_meta`.
+    - A `DiscoverResult` means modern.
+    - A recognized modern error (e.g. `-32022`) means modern: retry with a listed version, and
+      do **not** fall back.
+    - Any other error, or no reply before a timeout, means legacy: send `initialize`, then
+      `notifications/initialized`. The spec says the fallback **must not** depend on one
+      specific error code.
+  - Record the era for each server and keep it for the life of that process. Probe again after
+    a restart.
+  - **Why the revision:** a modern-only client can't use legacy servers, and those are probably
+    most servers today. Since the probe goes first either way, dual-era only adds code to one
+    function.
+  - **Honest downside:**
+    - two ways of building requests (with `_meta` vs relying on the session);
+    - per-server era state;
+    - a probe timeout that slows `/mcp-add` for legacy servers that never answer;
+    - the fake test server has to be able to act as either kind.
+  - Build order, step 3 becomes: **3a** modern over stdio; **3b** the legacy fallback.
+- **Original decision (first half of 2026-09-27, superseded above):** the client speaks only
+  the stateless 2026-07-28 revision. Connecting sends
+  `server/discover`; after that, every request carries `_meta` with
+  `io.modelcontextprotocol/protocolVersion` and `.../clientCapabilities` (both required) and
+  `.../clientInfo` (should). No `initialize` and no `notifications/initialized`.
+  - Replaces an earlier recommendation (2026-09-25, never built) to start legacy-only like
+    `mvp1/tool/mcp.go:66` and add the probe later.
+- **Why:** it's the current spec, and it's simpler to reason about. There's no session, and the
+  stdio process isn't a conversation, so a crashed server can just be restarted and the request
+  retried. It's also the version to learn.
+- **Honest downside:** a modern-only client **can't talk to legacy servers**, and at
+  2026-09-27 most servers in the wild are probably still legacy, since the revision is two
+  months old. We still send `server/discover` first, as the spec recommends. A legacy server
+  then fails straight away, and `/mcp-add` can print a clear "legacy server, not supported"
+  error, instead of an ambiguous `tools/call` being run under legacy rules. Dual-era support
+  (fall back to `initialize` on any non-modern error or a timeout) is deferred and would stay
+  inside the connect function.
+- **Handling responses:**
+  - pick a version from `supportedVersions`;
+  - on `-32022` (UnsupportedProtocolVersion), retry with a version from `data.supported`;
+  - treat a missing `resultType` as `"complete"`, and treat `"input_required"` as an error for
+    now, because we declare no client capabilities;
+  - keep `instructions` (a candidate to add to the system prompt).
+- **Auth:** stdio gets credentials from environment variables. HTTP uses the spec's OAuth-based
+  Authorization framework plus the `MCP-Protocol-Version` header. Auth is deferred to step 5.
+
+---
+
 ## Deferred / open decisions
 
 - **Summarizer instructions are sent as a trailing `system` message** (after the `user`

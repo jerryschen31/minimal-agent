@@ -174,6 +174,15 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
+**In progress (2026-09-25): tool calling + MCP, in `chat_w_history_context_session_mcp_tools.go`
+(gen 8, a copy of gen 7).** Design and build order: DECISIONS.md § "Tools & MCP". Currently on
+step 1: `Tool` interface + tool fields on `ChatMessage`. Jerry types; review what he shares.
+Open questions for later steps: does `/mcp-add` persist to config or last only this session?
+Hand-rolled stdio JSON-RPC or `github.com/modelcontextprotocol/go-sdk`? (Leaning hand-rolled
+first, for learning.) Protocol: dual-era client, modern (2026-07-28) first, then a legacy `initialize` fallback,
+as steps 3a and 3b (see DECISIONS.md § "MCP protocol version"). Still open: find a real server that speaks the modern revision to test against. Until
+then, use a fake stdio server in Go tests.
+
 **Start here next session (added 2026-09-25) — remind Jerry at the top of the session:**
 
 - **Make the chat writer lockable.** `cs.OutBuffer` is written from both the main loop and the
