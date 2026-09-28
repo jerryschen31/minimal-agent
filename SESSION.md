@@ -1,7 +1,7 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-24)
+# SESSION.md — mvp2 progress (last updated 2026-09-28)
 
-Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself`). Jerry writes the code;
-teach-then-let-him-type. This file is written so a **fresh session with no memory of prior
+Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
+for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
 conversations** can pick up exactly where things left off — read top to bottom before doing
 anything. Full transcripts of most prior sessions are in `mvp2/learn/prompts/` (latest saved:
 `20260921-session-refactoring.md` — no transcript has been saved for the 2026-09-24 session that
@@ -12,7 +12,16 @@ produced the current test suite; this file is the record of it instead).
 Jerry asked explicitly that this be captured, not just the code state. This is how the last
 several sessions have worked well; keep doing it this way.
 
-- **Teach-then-let-him-type is the default.** Explain the concept, give the smallest next
+- **Current style (2026-09-28): concepts, then small examples, then a skeleton.** For each slice:
+  1. the high-level concepts;
+  2. a few *small* examples;
+  3. a skeleton with signatures and ordered `// TODO` hints.
+
+  Jerry fills in the bodies and then shares them for review. Do **not** hand over full
+  implementations: that was tried the same day and he rejected it as "huge chunks". Pure
+  figure-it-out exercises were too slow. The rest of this bullet is the older style, kept for
+  context.
+- **(Previous) Teach-then-let-him-type was the default.** Explain the concept, give the smallest next
   slice (a struct shape, a method signature, an old→new translation table), then stop and
   wait for Jerry to write it and share it back for review. Don't write whole functions/files
   unless he explicitly says "fix this for me" / "do this for me" / "write these" — that's the
@@ -82,6 +91,11 @@ several sessions have worked well; keep doing it this way.
   writes*, not for chat responses or this file.
 
 ## Current state
+
+> **Active work moved to gen 8 on 2026-09-25:**
+> `mvp2/learn/chat_w_history_context_session_mcp_tools.go` + `..._mcp_tools_test.go` (tool
+> calling + MCP). Its status is under "Next up" → "In progress". The gen 7 description below is
+> still accurate for everything gen 8 inherited (windows, compaction, tests).
 
 Working file: **`mvp2/learn/chat_w_history_context_session_structs.go`** (gen 7 — a fresh copy
 of gen 6, `chat_w_memory_compaction_refactor.go`, made 2026-09-24 to continue work; gen 6 is
@@ -174,14 +188,87 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
-**In progress (2026-09-25): tool calling + MCP, in `chat_w_history_context_session_mcp_tools.go`
-(gen 8, a copy of gen 7).** Design and build order: DECISIONS.md § "Tools & MCP". Currently on
-step 1: `Tool` interface + tool fields on `ChatMessage`. Jerry types; review what he shares.
-Open questions for later steps: does `/mcp-add` persist to config or last only this session?
-Hand-rolled stdio JSON-RPC or `github.com/modelcontextprotocol/go-sdk`? (Leaning hand-rolled
-first, for learning.) Protocol: dual-era client, modern (2026-07-28) first, then a legacy `initialize` fallback,
-as steps 3a and 3b (see DECISIONS.md § "MCP protocol version"). Still open: find a real server that speaks the modern revision to test against. Until
-then, use a fake stdio server in Go tests.
+**▶ RESUME HERE (paused 2026-09-28 so Jerry could update Claude Code). In progress: tool
+calling + MCP, in `mvp2/learn/chat_w_history_context_session_mcp_tools.go` (gen 8, a copy of
+gen 7) and `chat_w_history_context_session_mcp_tools_test.go`.**
+
+- **Design and build order:** DECISIONS.md § "Tools & MCP" and § "MCP protocol version:
+  modern-only → dual-era".
+  1. `Tool` + ReAct loop + `read_file`
+  2. registry + `cfg.Tools`
+  3. MCP over stdio: 3a modern (2026-07-28, `server/discover` + `_meta`), then 3b legacy
+     `initialize` fallback
+  4. `/mcp-add`, `/mcp-remove`, `/mcp-list`
+  5. HTTP transport + OAuth
+- **Verified state at pause:** `go vet` clean; full suite passes under `go test -race` (the
+  two-file invocation).
+- **Uncommitted:** gen 8 files and this SESSION.md are modified but not committed. Ask Jerry
+  before committing.
+
+**Step 1 is split into slices 1a–1d:**
+
+- **1a: wire types. DONE.**
+  - `ToolCall{ID, Type, Function ToolCallFunc{Name, Arguments string}}`: `Arguments` is a JSON
+    string holding JSON, as on the wire.
+  - `ToolDef{Type, Function ToolDefFunc{Name, Desc, Params json.RawMessage}}`: Jerry's name,
+    instead of "ToolSpec".
+  - `ChatMessage` gained `ToolCalls` (`tool_calls,omitempty`) and `ToolCallID`
+    (`tool_call_id,omitempty`); `ChatRequest.Tools` (`tools,omitempty`).
+  - Side effect: `ChatMessage` can no longer be compared with `==`, because it now has a slice
+    field. Six test comparisons were switched to `.ID`.
+- **1b: `Tool` interface + `read_file`. DONE.**
+  - `Tool{ GetToolDefinition() ToolDef; CallTool(ctx, args json.RawMessage) (string, error) }`
+    (Jerry's names).
+  - `NewToolDef` fills `Type: "function"` and turns empty params into
+    `{"type":"object","properties":{}}`.
+  - `ReadFileTool` is an empty struct with value receivers and `var _ Tool = ReadFileTool{}`.
+    - `CallTool`: `os.Open` + `io.LimitReader(max+1)`, a NUL-byte binary check, and a
+      truncation note over `ReadFileMaxBytes` (64 KB). Empty path and bad JSON are errors.
+    - Claude rewrote `CallTool` at Jerry's request ("file-stream details aren't core").
+  - Tests: section "Built-in tools: read_file", 4 tests: small, exactly 64 KB, over 64 KB, and
+    a table of 5 failure cases.
+  - **Known gap:** it can read any path. Restricting paths is for hooks/approval later.
+- **1c: `Provider.Chat(ctx, msgs, tools []ToolDef) (ChatMessage, error)`. DONE.**
+  - The request carries `Tools`.
+  - `summarizeChatContext` and `handleUserInput` pass `nil`: no behavior change, which the
+    unchanged suite proves.
+  - `handleUserInput` builds `responseMsg` from the returned message, so `ToolCalls` are kept.
+  - `fakeProvider.Chat` wraps `Reply` into an assistant `ChatMessage`, so the 33
+    `fx.Provider.Reply = ...` lines are untouched.
+- **1d: the ReAct loop. NEXT, not started.** Open with concepts, then small examples, then a
+  skeleton.
+  - `handleUserInput` sends the real tool list. While the reply has `ToolCalls`: look up each
+    tool by name, check that `Arguments` is a JSON object, run it, and append one
+    `role:"tool"` message per call (`ToolCallID` set; an error becomes text in `Content`, and
+    the loop never stops on it). Then call `Chat` again, up to a max-steps limit.
+  - It needs a list/lookup of tools on `ChatSession`: a minimal forerunner of the step-2
+    registry.
+  - `fakeProvider` must be able to play back a *sequence* of replies (a tool call, then the
+    final text).
+  - **Known problem to address in 1d:** the context window trims by message count, so it can
+    cut between an assistant tool call and its tool results; providers reject that. The same
+    goes for compaction, and for `MaxContextWindow = 10` being tiny once tool rounds exist.
+    See the CLAUDE.md invariant and mvp1's `harness.Window`.
+  - How a turn gets appended to history/context also changes: it's no longer a fixed
+    user+assistant pair.
+  - **Optional extra, offered and not yet done:** an `httptest` test where the server returns
+    the SF-weather `tool_calls` JSON; assert that the request body had `"tools"` and that the
+    reply decoded one `ToolCall`.
+- **Open questions for later steps:**
+  - Does `/mcp-add` persist to config, or last only this session?
+  - Hand-rolled stdio JSON-RPC, or `github.com/modelcontextprotocol/go-sdk`? (Leaning
+    hand-rolled first, for learning.)
+  - Still need a real modern-protocol server to test against. Until then, use a fake stdio
+    server in Go tests.
+- **Things Jerry asked about this session (already taught; don't re-teach unless asked):**
+  - why tool calls use dedicated fields, not `Content`;
+  - why `ToolCalls` is a slice and `ToolCallID` is a single ID;
+  - what `ToolDef` is for (you → model menu) vs `ToolCall` (model → you);
+  - `var _ Iface = T{}` compile-time checks (when they're worth it);
+  - value vs pointer receivers (empty `ReadFileTool` → value; the MCP wrapper will need a
+    pointer);
+  - passing `nil` tools (idiomatic; `omitempty` drops the key);
+  - `server/discover` vs legacy `initialize`, and the dual-era matrix.
 
 **Start here next session (added 2026-09-25) — remind Jerry at the top of the session:**
 

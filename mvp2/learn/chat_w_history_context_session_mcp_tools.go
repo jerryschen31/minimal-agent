@@ -36,7 +36,7 @@ const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window
 //////////////////////////////////////////////
 
 type Provider interface {
-	Chat(ctx context.Context, chatHistory []ChatMessage) (string, error)
+	Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
 
 type OpenAICompat struct {
@@ -102,22 +102,129 @@ func printConfig(cfg Config) {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"` // `json:"role"` is a tag indicating the JSON key for this field
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
+	ID         string     `json:"id"`
+	Role       string     `json:"role"` // `json:"role"` is a tag indicating the JSON key for this field
+	Content    string     `json:"content"`
+	Timestamp  time.Time  `json:"timestamp"`
+	Type       string     `json:"type,omitempty"`         // flexible type field that indicates what kind of message this is (e.g., "user", "system", "summary")
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // records any tool invocations associated with this message
+	ToolCallID string     `json:"tool_call_id,omitempty"` // ID of the associated tool call, if any
+}
+
+// shape of a tool definition that is sent as context to the LLM - this shape matches what is expected by most models (OpenAI chat completions standard)
+type ToolDefFunc struct {
+	Name   string          `json:"name"`
+	Desc   string          `json:"description"`
+	Params json.RawMessage `json:"parameters"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+type ToolDef struct {
+	Type     string      `json:"type"`
+	Function ToolDefFunc `json:"function"`
+}
+
+// shape of the LLM response when it asks for a tool call - this shape matches what is returned by most models
+type ToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function ToolCallFunc `json:"function"`
 }
 
 type ChatRequest struct {
 	Model    string        `json:"model"`
 	Messages []ChatMessage `json:"messages"`
+	Tools    []ToolDef     `json:"tools,omitempty"`
 }
 
 type ChatResponse struct {
 	Choices []struct {
 		Message ChatMessage `json:"message"`
 	} `json:"choices"`
+}
+
+// Tool interface - Tool is any tool function the model can call (built-in tools for now, an MCP tool later)
+// Note that when getting a tools list from an MCP server, the tools will be instantiated as many Tool values, one per listed tool.
+type Tool interface {
+	GetToolDefinition() ToolDef
+	CallTool(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+// instantiates a new tool definition instance
+func NewToolDef(name string, description string, params json.RawMessage) ToolDef {
+	if len(params) == 0 {
+		params = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return ToolDef{
+		Type:     "function",
+		Function: ToolDefFunc{Name: name, Desc: description, Params: params},
+	}
+}
+
+// In the agent kernel, we define a built-in tool that can read contents of text files, capped at ReadFileMaxBytes.
+const ReadFileMaxBytes = 64 * 1024
+
+type ReadFileTool struct{}
+
+// compile-time check: the build fails here if ReadFileTool stops satisfying Tool
+var _ Tool = ReadFileTool{}
+
+func (ReadFileTool) GetToolDefinition() ToolDef {
+	return NewToolDef(
+		"read_file",
+		"Reads the contents of a UTF-8 text file. Files larger than 64 KB are truncated, with a note at the end.",
+		json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "The path to the file to read"
+				}
+			},
+			"required": ["path"]
+		}`),
+	)
+}
+
+func (ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
+	var params struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Path == "" {
+		return "", fmt.Errorf("missing required argument: path")
+	}
+
+	f, err := os.Open(params.Path)
+	if err != nil {
+		return "", err // e.g. "open go.mod: no such file or directory" (clear enough for the model)
+	}
+	defer f.Close()
+
+	// LimitReader is used to cap how much of the file is read into memory, preventing huge files from being fully loaded.
+	// Reading one byte past the cap is how we can tell that the file was cut off with the comparison below.
+	// A directory opens fine but fails here with "is a directory".
+	data, err := io.ReadAll(io.LimitReader(f, ReadFileMaxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	// a NUL byte means binary; returning it would just be noise to the model
+	if bytes.IndexByte(data, 0) != -1 {
+		return "", fmt.Errorf("%s looks like a binary file, not text", params.Path)
+	}
+	if len(data) > ReadFileMaxBytes {
+		// add a note clearly indicating the file output was truncated since the file exceeded the maximum allowed size
+		return string(data[:ReadFileMaxBytes]) + "\n[truncated: file is larger than 64 KB]", nil
+	}
+	return string(data), nil
 }
 
 // ContextWindow defines the interface for managing the chat history within the context window, allowing different strategies for handling the chat history.
@@ -732,13 +839,13 @@ func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage, a
 		req = append(req, ChatMessage{Role: "system", Content: addlInstructions})
 	}
 
-	summary, err := p.Chat(ctx, req)
+	resp, err := p.Chat(ctx, req, nil)
 	if err != nil {
 		return "", fmt.Errorf("summarize: %w", err)
 	}
 
 	// Chat response summary could be nil, which should be considered an error.
-	summary = strings.TrimSpace(summary)
+	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {
 		return "", fmt.Errorf("summarize: model returned an empty summary")
 	}
@@ -803,18 +910,19 @@ func debugChatContext(msgContext []ChatMessage) {
 // Chat request and response
 //***********************************************************//
 
-func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
+func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	// make a request to the OpenAI-compatible server
 	// 1. build a chatRequest with p.Model and the provided chat history
 	reqRaw := ChatRequest{
 		Model:    p.Model,
 		Messages: chatHistory,
+		Tools:    tools, // omitempty: nil tools send no "tools" key at all
 	}
 
 	// 2. json.Marshal it into a []byte body
 	reqBody, err := json.Marshal(reqRaw)
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 3. build an *http.Request with http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", ...)
@@ -822,7 +930,7 @@ func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (stri
 	defer cancel()
 	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 4. set header "Content-Type": "application/json"
@@ -834,26 +942,26 @@ func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (stri
 	// 5. do the request with a http.DefaultClient.Do(req) and TIMEOUT
 	resp, err := http.DefaultClient.Do(reqHttp)
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 	defer resp.Body.Close()
 
 	// 5b. Check if the HTTP response status code indicates an error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return ChatMessage{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	// 6. read the response body, json.Unmarshal into a chatResponse
 	var chatResp ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 7. return resp.Choices[0].Message.Content, nil
 	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return ChatMessage{}, fmt.Errorf("no choices in response")
 	}
-	return chatResp.Choices[0].Message.Content, nil
+	return chatResp.Choices[0].Message, nil
 }
 
 // helper function for handling a fatal error and exiting the program immediately
@@ -949,21 +1057,24 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	chat2send := prepareChatRequest(msgContext, cs.SystemMsg, userMsg)
 
 	// send the chat request to the LLM provider
-	response, err := cs.Provider.Chat(ctx, chat2send)
+	response, err := cs.Provider.Chat(ctx, chat2send, nil) // [agent] nil until the loop in slice 1d passes the real tool list
 	if err != nil {
 		fmt.Fprintln(cs.OutBuffer, "error:", err)
 		return false
 	}
 
 	// get the response content from the chat provider
-	fmt.Fprintln(cs.OutBuffer, "[system] Chat response:", response)
+	fmt.Fprintln(cs.OutBuffer, "[system] Chat response:", response.Content)
 
 	// append the user prompt and AI assistant's response to the chat history
 	responseMsg := ChatMessage{
-		Role:      "assistant",
-		Content:   response,
-		ID:        createID(),
-		Timestamp: time.Now().UTC(),
+		Role:       response.Role,
+		Content:    response.Content,
+		ID:         createID(),
+		Timestamp:  time.Now().UTC(),
+		Type:       "assistant",
+		ToolCalls:  response.ToolCalls,
+		ToolCallID: response.ToolCallID,
 	}
 
 	// add new messages to history and context

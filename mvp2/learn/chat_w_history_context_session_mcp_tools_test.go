@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -54,18 +56,18 @@ type fakeProvider struct {
 	Calls [][]ChatMessage
 }
 
-func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
+func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]ChatMessage(nil), chatHistory...))
 	p.mu.Unlock()
 
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return ChatMessage{}, ctx.Err()
 	}
 	if p.Err != nil {
-		return "", p.Err
+		return ChatMessage{}, p.Err
 	}
-	return p.Reply, nil
+	return ChatMessage{Role: "assistant", Content: p.Reply}, nil
 }
 
 // chatSessionFixture bundles a fully wired ChatSession (history + context + a fake provider)
@@ -863,10 +865,10 @@ func Test_ChatRequest_ErrorsGracefully(t *testing.T) {
 	srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply)
+		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply.Content)
 	}
 }
 
@@ -878,10 +880,10 @@ func Test_ChatRequest_Non2xxResponseErrorsGracefully(t *testing.T) {
 	defer srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply)
+		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply.Content)
 	}
 }
 
@@ -896,10 +898,10 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		defer srv.Close()
 
 		p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for an empty response body, got reply %q", reply)
+			t.Fatalf("expected an error for an empty response body, got reply %q", reply.Content)
 		}
 	})
 
@@ -911,10 +913,10 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		defer srv.Close()
 
 		p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for a response with no choices, got reply %q", reply)
+			t.Fatalf("expected an error for a response with no choices, got reply %q", reply.Content)
 		}
 	})
 }
@@ -941,13 +943,13 @@ func Test_ChatRequest_ProperRequestResponseCycle(t *testing.T) {
 	defer srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err != nil {
 		t.Fatalf("Chat() returned an unexpected error: %v", err)
 	}
-	if reply != "hi there" {
-		t.Errorf("expected reply %q, got %q", "hi there", reply)
+	if reply.Content != "hi there" {
+		t.Errorf("expected reply %q, got %q", "hi there", reply.Content)
 	}
 }
 
@@ -1176,7 +1178,7 @@ func Test_Unit_ClampToMax_UnderCapacity_ReturnsUnchanged(t *testing.T) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
 	for i := range clamped {
-		if clamped[i] != messages[i] {
+		if clamped[i].ID != messages[i].ID {
 			t.Errorf("expected message at index %d to be unchanged", i)
 		}
 	}
@@ -1191,7 +1193,7 @@ func Test_Unit_ClampToMax_ExactlyAtCapacity_ReturnsUnchanged(t *testing.T) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
 	for i := range clamped {
-		if clamped[i] != messages[i] {
+		if clamped[i].ID != messages[i].ID {
 			t.Errorf("expected message at index %d to be unchanged", i)
 		}
 	}
@@ -1206,11 +1208,11 @@ func Test_Unit_ClampToMax_OverCapacity_KeepsSummaryAndNewestSurvivors(t *testing
 		t.Errorf("expected clamped slice to have length %d, got %d", max, len(clamped))
 	}
 	// assuming the first message is the summary and the last (max-1) messages are the newest survivors
-	if clamped[0] != messages[0] {
+	if clamped[0].ID != messages[0].ID {
 		t.Errorf("expected the first message (summary) to be unchanged")
 	}
 	for i := 1; i < max; i++ {
-		if clamped[i] != messages[len(messages)-max+i] {
+		if clamped[i].ID != messages[len(messages)-max+i].ID {
 			t.Errorf("expected message at index %d to be one of the newest survivors", i)
 		}
 	}
@@ -1261,7 +1263,7 @@ func Test_Unit_ContextWindow_RemoveLast_RemovesNewestN(t *testing.T) {
 			t.Fatalf("expected %d messages after removal, got %d", len(expected), len(actual))
 		}
 		for i := range expected {
-			if actual[i] != expected[i] {
+			if actual[i].ID != expected[i].ID {
 				t.Errorf("expected message at index %d to be %+v, got %+v", i, expected[i], actual[i])
 			}
 		}
@@ -1319,7 +1321,7 @@ func Test_Unit_ChatContext_RemoveLast_DelegatesToWindow(t *testing.T) {
 			t.Fatalf("expected %d messages after removal, got %d", len(expected), len(actual))
 		}
 		for i := range expected {
-			if actual[i] != expected[i] {
+			if actual[i].ID != expected[i].ID {
 				t.Errorf("expected message at index %d to be %+v, got %+v", i, expected[i], actual[i])
 			}
 		}
@@ -1426,5 +1428,106 @@ func Test_Unit_SetupChatContext_ComputesExpectedThreshold(t *testing.T) {
 	chatContext.AddMessages(msgs(1))
 	if !chatContext.IsAutoCompactionNeeded() {
 		t.Errorf("expected auto-compaction to be needed at %d messages (threshold %d)", wantThreshold, wantThreshold)
+	}
+}
+
+//*************************************//
+// Built-in tools: read_file
+//*************************************//
+
+// writeTempFile creates a file with the given contents in a per-test temp dir (deleted by Go
+// after the test) and returns its path.
+func writeTempFile(t *testing.T, name string, contents []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+	return path
+}
+
+// readFileArgs builds the JSON arguments the model would send for read_file.
+func readFileArgs(path string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	return b
+}
+
+// - Verify that a small text file is returned in full, unchanged
+func Test_ReadFile_SmallFile_ReturnsContents(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-small.txt", []byte("hello"))
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("expected %q, got %q", "hello", got)
+	}
+}
+
+// - Verify that a file of exactly ReadFileMaxBytes is returned in full with no truncation note
+// (the +1 byte read is what tells "exactly at the cap" apart from "over the cap")
+func Test_ReadFile_ExactlyMaxBytes_NotTruncated(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-exact.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes))
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != ReadFileMaxBytes {
+		t.Errorf("expected %d bytes, got %d", ReadFileMaxBytes, len(got))
+	}
+	if strings.Contains(got, "[truncated") {
+		t.Errorf("expected no truncation note for a file exactly at the cap")
+	}
+}
+
+// - Verify that a file over ReadFileMaxBytes returns the first ReadFileMaxBytes plus a truncation
+// note, so the model knows the file doesn't really end there
+func Test_ReadFile_OverMaxBytes_TruncatedWithNote(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-big.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes+10))
+	const note = "\n[truncated: file is larger than 64 KB]"
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(got, note) {
+		t.Fatalf("expected output to end with the truncation note, got tail %q", got[len(got)-50:])
+	}
+	if len(got) != ReadFileMaxBytes+len(note) {
+		t.Errorf("expected %d content bytes before the note, got %d", ReadFileMaxBytes, len(got)-len(note))
+	}
+}
+
+// - Verify that every failure is returned as an error (for the model to read), never a panic
+// and never an empty "success"
+func Test_ReadFile_InvalidInputs_ReturnErrors(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeTempFile(t, "minagent-read-file-test-bin.dat", []byte{'a', 0, 'b'})
+
+	cases := map[string]struct {
+		args    json.RawMessage
+		wantErr string // substring the error message must contain
+	}{
+		"bad json":     {json.RawMessage(`{"path":`), "invalid arguments"},
+		"empty path":   {json.RawMessage(`{}`), "missing required argument: path"},
+		"missing file": {readFileArgs(filepath.Join(dir, "nope.txt")), "no such file"},
+		"directory":    {readFileArgs(dir), "is a directory"},
+		"binary file":  {readFileArgs(binary), "binary file"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := ReadFileTool{}.CallTool(context.Background(), tc.args)
+			if err == nil {
+				t.Fatalf("expected an error, got nil (output %q)", got)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error containing %q, got %q", tc.wantErr, err.Error())
+			}
+			if got != "" {
+				t.Errorf("expected empty output on error, got %q", got)
+			}
+		})
 	}
 }
