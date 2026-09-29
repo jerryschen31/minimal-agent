@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,6 +33,10 @@ const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat 
 const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
 const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
 const MaxReActSteps = 10             // maximum number of steps in a single ReAct loop - prevents infinite reasoning cycles when model gets stuck
+
+// ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after MaxReActSteps steps.
+// A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
+var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 
 //////////////////////////////////////////////
 // Interfaces and structs
@@ -182,7 +187,7 @@ type toolEntry struct {
 	def  ToolDef // captured once, at Register time
 }
 
-func NewToolRegistry(tools ...Tool) (*ToolRegistry, error) {
+func NewToolRegistry(tools []Tool) (*ToolRegistry, error) {
 	// initialize an empty tool registry
 	reg := &ToolRegistry{
 		tools:    make(map[string]toolEntry),
@@ -287,9 +292,6 @@ func (r *ToolRegistry) GetToolDefs() []ToolDef {
 const ReadFileMaxBytes = 64 * 1024
 
 type ReadFileTool struct{}
-
-// compile-time check: the build fails here if ReadFileTool stops satisfying Tool
-var _ Tool = ReadFileTool{}
 
 func (ReadFileTool) GetToolDefinition() ToolDef {
 	return NewToolDef(
@@ -414,18 +416,20 @@ type ChatSession struct {
 	Provider   Provider
 	MsgHistory ChatHistory
 	MsgContext *ChatContext
+	Tools      *ToolRegistry
 	SystemMsg  ChatMessage
 	UserID     string
 	InBuffer   io.Reader
 	OutBuffer  io.Writer
 }
 
-func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
+func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, tools *ToolRegistry, cfg Config) (*ChatSession, error) {
 	return &ChatSession{
 		Config:     cfg,
 		Provider:   provider,
 		MsgHistory: chatHistory,
 		MsgContext: chatContext,
+		Tools:      tools,
 		SystemMsg:  createSystemMessage(cfg.SystemPrompt),
 		UserID:     cfg.UserID,
 		InBuffer:   cfg.InBuffer,
@@ -637,12 +641,28 @@ func setupChatContext(cfg Config) (*ChatContext, error) {
 }
 
 // creates a new chat session instance
-func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
-	cs, err := NewChatSession(provider, chatHistory, chatContext, cfg)
+func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, tools *ToolRegistry, cfg Config) (*ChatSession, error) {
+	cs, err := NewChatSession(provider, chatHistory, chatContext, tools, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return cs, nil
+}
+
+// creates a tool registry
+func setupToolRegistry(cfg Config) (*ToolRegistry, error) {
+	tools := []Tool{}
+	// first add the built-in tools (ReadFile Tool to start)
+	tools = append(tools, ReadFileTool{})
+
+	// later we will add MCP tools specified in the config file
+
+	// create a registry from the tools list
+	reg, err := NewToolRegistry(tools)
+	if err != nil {
+		return nil, err
+	}
+	return reg, nil
 }
 
 //*********************************************************//
@@ -1095,12 +1115,13 @@ func createID() string {
 	return hex.EncodeToString(b)
 }
 
-// prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the chat history, and the user's message into a single slice of ChatMessage.
-func prepareChatRequest(msgContext []ChatMessage, systemMsg, userMsg ChatMessage) []ChatMessage {
-	chat2send := make([]ChatMessage, len(msgContext)+2)
+// prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the context, and the messages this turn into a single slice of ChatMessage.
+// [note2agent] turnMsgs []ChatMessage breaks old tests on this
+func prepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage {
+	chat2send := make([]ChatMessage, len(msgContext)+len(turnMsgs)+1)
 	chat2send[0] = systemMsg
 	copy(chat2send[1:], msgContext)
-	chat2send[len(chat2send)-1] = userMsg
+	copy(chat2send[len(msgContext)+1:], turnMsgs)
 	return chat2send
 }
 
@@ -1158,45 +1179,22 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		// }
 	}
 
-	// append the user message to the chat history
-	userMsg := ChatMessage{
-		Role:      "user",
-		Content:   line,
-		ID:        createID(),
-		Timestamp: time.Now().UTC(),
-		Type:      "user",
-	}
-
 	// [debug] print the current chat history before sending the prompt to the chat provider
 	debugChatContext(msgContext)
 
-	// prepare the request to send to the chat provider - includes the system message, the chat history, and the user's message
-	chat2send := prepareChatRequest(msgContext, cs.SystemMsg, userMsg)
+	// initial user message
+	userMsg := createChatMessage("user", "user", line, "", nil)
 
-	// send the chat request to the LLM provider
-	response, err := cs.Provider.Chat(ctx, chat2send, nil) // [agent] nil until the loop in slice 1d passes the real tool list
+	// maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
+	turnMsgs, err := reActLoop(ctx, cs, msgContext, userMsg)
 	if err != nil {
-		fmt.Fprintln(cs.OutBuffer, "error:", err)
+		fmt.Fprintln(cs.OutBuffer, "[error] ReAct loop error:", err)
 		return false
 	}
 
-	// get the response content from the chat provider
-	fmt.Fprintln(cs.OutBuffer, "[system] Chat response:", response.Content)
-
-	// append the user prompt and AI assistant's response to the chat history
-	responseMsg := ChatMessage{
-		Role:       response.Role,
-		Content:    response.Content,
-		ID:         createID(),
-		Timestamp:  time.Now().UTC(),
-		Type:       "assistant",
-		ToolCalls:  response.ToolCalls,
-		ToolCallID: response.ToolCallID,
-	}
-
 	// add new messages to history and context
-	cs.MsgHistory.Append([]ChatMessage{userMsg, responseMsg})
-	cs.MsgContext.AddMessages([]ChatMessage{userMsg, responseMsg})
+	cs.MsgHistory.Append(turnMsgs)
+	cs.MsgContext.AddMessages(turnMsgs)
 
 	// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
 	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
@@ -1212,6 +1210,53 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	return false
 }
 
+func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []ChatMessage, initialMsg ChatMessage) ([]ChatMessage, error) {
+	// implementation of the ReAct loop goes here
+	// // [PLAN] ReAct Loop
+	// loop up to MaxSteps:
+	// reply := Chat(msgs, cs.Tools.GetToolDefs())
+	// append reply to the turn's messages
+	// if len(reply.ToolCalls) == 0 → done
+	// for each call in reply.ToolCalls:
+	//     append runToolCall(ctx, cs, call)
+
+	requestMsgs := []ChatMessage{initialMsg}
+	toolDefs := cs.Tools.GetToolDefs()
+	for stepNum := 0; stepNum < MaxReActSteps; stepNum++ {
+		// if user cancels the operation (maybe the ReAct loop is taking too long), exit the loop immediately
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// prepare the request to send to the chat provider - includes the system message, the context, the request message, and tool definition info
+		request2send := prepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
+
+		// send the chat request to the LLM provider
+		response, err := cs.Provider.Chat(ctx, request2send, toolDefs)
+		if err != nil {
+			fmt.Fprintln(cs.OutBuffer, "error:", err)
+			return nil, err
+		}
+
+		// append the response as a ChatMessage to the request messages for the next iteration
+		fmt.Fprintf(cs.OutBuffer, "[assistant] %s\n", response)
+		responseMsg := createChatMessage("assistant", "assistant", response.Content, "", response.ToolCalls)
+		requestMsgs = append(requestMsgs, responseMsg)
+
+		// if there are no tool calls in the response, we are done
+		if len(response.ToolCalls) == 0 {
+			return requestMsgs, nil
+		}
+		// otherwise there are tool calls to be made
+		for _, tc := range response.ToolCalls {
+			fmt.Fprintln(cs.OutBuffer, "[tool] Tool called:", tc.Function.Name)
+			toolResultMsg := runToolCall(ctx, cs, tc)
+			requestMsgs = append(requestMsgs, toolResultMsg)
+		}
+	}
+
+	return nil, fmt.Errorf("%w (limit %d)", ErrMaxSteps, MaxReActSteps)
+}
+
 // ***********************************************************//
 // Run loop for handling chat session
 // ***********************************************************//
@@ -1220,6 +1265,61 @@ func gracefulShutdown(cancel context.CancelFunc, chatSession *ChatSession) {
 	cancel()
 	// wait for any in-flight background compaction to finish
 	chatSession.MsgContext.WaitForCompaction()
+}
+
+func createChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage {
+	return ChatMessage{
+		Role:       role,
+		ToolCallID: toolCallID,
+		Content:    content,
+		ID:         createID(),
+		Timestamp:  time.Now().UTC(),
+		Type:       msgType,
+		ToolCalls:  toolCalls,
+	}
+}
+
+// callToolSafely runs tool.CallTool and recovers from a panic inside a tool (since we want model execution to continue on a failed tool)
+func callToolSafely(ctx context.Context, tool Tool, args json.RawMessage) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+			err = fmt.Errorf("tool panicked: %v", r)
+		}
+	}()
+	return tool.CallTool(ctx, args)
+}
+
+// executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model
+func runToolCall(ctx context.Context, cs *ChatSession, call ToolCall) ChatMessage {
+	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, the result is an error message.
+	tool, ok := cs.Tools.Lookup(call.Function.Name)
+	if !ok {
+		return createChatMessage("tool", "tool", fmt.Sprintf("error: unknown tool %q", call.Function.Name), call.ID, nil)
+	}
+	// 2. Check that call.Function.Arguments is a JSON object. Arguments is a string holding JSON. If it isn't an object, the result is an error message. Empty "" for no-arg tools.
+	if call.Function.Arguments != "" {
+		var argsMap map[string]interface{}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &argsMap); err != nil {
+			return createChatMessage("tool", "tool", fmt.Sprintf("error: invalid JSON arguments: %v", err), call.ID, nil)
+		}
+		if argsMap == nil {
+			return createChatMessage("tool", "tool", "error: arguments must be a JSON object", call.ID, nil)
+		}
+	}
+
+	// 3. Run tool.CallTool(ctx, json.RawMessage(args)). If it returns an error, put "error: ..." in Content.
+	args := json.RawMessage(call.Function.Arguments)
+	// if call.Function.Arguments is empty, json.RawMessage returns an empty byte slice - create a proper empty JSON string in this case.
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	result, err := callToolSafely(ctx, tool, args)
+	if err != nil {
+		return createChatMessage("tool", "tool", fmt.Sprintf("error: %v", err), call.ID, nil)
+	}
+
+	return createChatMessage("tool", "tool", result, call.ID, nil)
 }
 
 func runLoop(ctx context.Context, chatSession *ChatSession) {
@@ -1272,16 +1372,21 @@ func runAgent(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	// 4. setup tools and MCP servers (if applicable)
-
-	// 5. setup this chat session
-	chatSession, err := setupChatSession(provider, chatHistory, chatContext, cfg)
+	// 4. setup tools (if applicable)
+	tools, err := setupToolRegistry(cfg)
 	if err != nil {
 		return err
 	}
 
-	// print the configuration for debugging purposes
+	// 5. setup this chat session
+	chatSession, err := setupChatSession(provider, chatHistory, chatContext, tools, cfg)
+	if err != nil {
+		return err
+	}
+
+	// print a welcome message
 	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg)
+	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
 	// 6. chat with the LLM provider in a loop
 	runLoop(ctx, chatSession)

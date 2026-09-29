@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-28)
+# SESSION.md — mvp2 progress (last updated 2026-09-29)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -188,9 +188,16 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
-**▶ RESUME HERE (paused 2026-09-28 so Jerry could update Claude Code). In progress: tool
-calling + MCP, in `mvp2/learn/chat_w_history_context_session_mcp_tools.go` (gen 8, a copy of
-gen 7) and `chat_w_history_context_session_mcp_tools_test.go`.**
+**▶ RESUME HERE (updated 2026-09-29). In progress: tool calling + MCP, in
+`mvp2/learn/chat_w_history_context_session_mcp_tools.go` (gen 8, a copy of gen 7) and
+`chat_w_history_context_session_mcp_tools_test.go`.**
+
+**Where things stand:** step 1 is built end to end. `Tool`, `read_file`, the `ToolRegistry`,
+`runToolCall` (with panic recovery) and a first-draft ReAct loop (`reActLoop`) all exist, and
+Jerry tried the loop by hand against a real model ("works decently well"). **Next session:**
+Jerry does a small cleanup pass, then focuses on the ReAct-loop tests (list under 1d-iii below).
+Slice 1d-iv (window integrity) follows the tests. Design reasoning for everything below is in
+DECISIONS.md § "Tool registry, tool calls and the ReAct loop".
 
 - **Design and build order:** DECISIONS.md § "Tools & MCP" and § "MCP protocol version:
   modern-only → dual-era".
@@ -200,8 +207,10 @@ gen 7) and `chat_w_history_context_session_mcp_tools_test.go`.**
      `initialize` fallback
   4. `/mcp-add`, `/mcp-remove`, `/mcp-list`
   5. HTTP transport + OAuth
-- **Verified state at pause:** `go vet` clean; full suite passes under `go test -race` (the
-  two-file invocation).
+- **Verified state (2026-09-29):** `go vet` clean, `gofmt -l` clean, full suite passes under
+  `go test -race` (the two-file invocation). The existing `handleUserInput` tests now run through
+  `reActLoop` on the no-tool-call path (unscripted `fakeProvider`); **no test yet drives a
+  scripted tool-call sequence.**
 - **Uncommitted:** gen 8 files and this SESSION.md are modified but not committed. Ask Jerry
   before committing.
 
@@ -235,22 +244,56 @@ gen 7) and `chat_w_history_context_session_mcp_tools_test.go`.**
   - `handleUserInput` builds `responseMsg` from the returned message, so `ToolCalls` are kept.
   - `fakeProvider.Chat` wraps `Reply` into an assistant `ChatMessage`, so the 33
     `fx.Provider.Reply = ...` lines are untouched.
-- **1d: the ReAct loop. NEXT, not started.** Open with concepts, then small examples, then a
-  skeleton.
-  - `handleUserInput` sends the real tool list. While the reply has `ToolCalls`: look up each
-    tool by name, check that `Arguments` is a JSON object, run it, and append one
-    `role:"tool"` message per call (`ToolCallID` set; an error becomes text in `Content`, and
-    the loop never stops on it). Then call `Chat` again, up to a max-steps limit.
-  - It needs a list/lookup of tools on `ChatSession`: a minimal forerunner of the step-2
-    registry.
-  - `fakeProvider` must be able to play back a *sequence* of replies (a tool call, then the
-    final text).
-  - **Known problem to address in 1d:** the context window trims by message count, so it can
-    cut between an assistant tool call and its tool results; providers reject that. The same
-    goes for compaction, and for `MaxContextWindow = 10` being tiny once tool rounds exist.
-    See the CLAUDE.md invariant and mvp1's `harness.Window`.
-  - How a turn gets appended to history/context also changes: it's no longer a fixed
-    user+assistant pair.
+- **1d: the ReAct loop. IN PROGRESS: code drafted and tried by hand; tests not yet written.**
+  Split into sub-slices:
+  - **1d-i: tool registry + `runToolCall`. DONE** (tested except `runToolCall`'s non-panic paths).
+    - `ToolRegistry{mu RWMutex, tools map[string]toolEntry, tooldefs []ToolDef}` with
+      `toolEntry{tool, def}`. `NewToolRegistry([]Tool)`, `Register` (errors on nil, empty name,
+      duplicate), `Remove`, `Lookup` (returns `Tool`), `GetToolDefs` (cached, name-sorted,
+      copy-on-write). 13 tests in section "Tool registry", incl. a `-race` test and a
+      copy-on-write test.
+    - `ChatSession` gained `Tools *ToolRegistry`; `NewChatSession(provider, history, context,
+      tools, cfg)` and `setupChatSession` take it; `setupToolRegistry(cfg)` builds it in
+      `runAgent` step 4. **It hardcodes `ReadFileTool{}`; `cfg.Tools` is not consulted yet**
+      (the remainder of build-order step 2). The test fixture has a `Tools` field, starting empty.
+    - `runToolCall(ctx, cs, call) ChatMessage` never returns an error: unknown tool, non-object
+      args (`""` becomes `{}`), tool error and tool panic are all `role:"tool"` messages with an
+      `error: ...` `Content` and `ToolCallID = call.ID`. `callToolSafely` wraps `CallTool` with
+      `recover()`. 1 test (`Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage`, two subtests).
+    - `createChatMessage(role, msgType, content, toolCallID, toolCalls)` builds every message the
+      loop makes. Pitfall: four positional `string` params can be swapped silently; a narrower
+      `newToolMessage(toolCallID, content)` was suggested and not taken.
+  - **1d-ii: scripted `fakeProvider`. DONE.** `Script []ChatMessage` plays back one reply per
+    `Chat` call; running past the end is an error (a loop that over-calls fails loudly); unscripted
+    still returns `Reply`. `ToolDefs [][]ToolDef` records each call's tools. Builders
+    `assistantText(...)` and `assistantToolCall(id, name, args)`. 2 self-tests.
+  - **1d-iii: `reActLoop`. DRAFT, WORKS BY HAND, UNTESTED.**
+    - `reActLoop(ctx, cs, priorMsgs, initialMsg) ([]ChatMessage, error)` keeps one local `turn`
+      slice (user msg, assistant, tool results, ..., final assistant). Each step sends
+      `system + prior context + turn` with `cs.Tools.GetToolDefs()`. It does not touch history or
+      context.
+    - `handleUserInput` builds `userMsg`, calls the loop, and on success appends the whole turn
+      to `MsgHistory` and `MsgContext` in one batch, then runs the auto-compaction check. On
+      error it prints and persists nothing. Limit is `MaxReActSteps = 10`; exceeding it returns
+      `ErrMaxSteps` (sentinel, wrapped with `%w`; check with `errors.Is`).
+    - **Tests to write (Jerry's focus next):** one tool round (request 2 must contain the
+      assistant `tool_calls` message then the matching `tool` message); unknown tool continues
+      with an error observation; two tool calls in one reply, results in order; a `Chat`
+      failure persists nothing; the step limit (script longer than `MaxReActSteps`, expect
+      `errors.Is(err, ErrMaxSteps)`, nothing persisted); a cancelled `ctx`; `Tools` def list
+      reaches the provider (`Provider.ToolDefs`).
+    - **Cleanup Jerry planned:** the empty `[PLAN]` comment block at the top of `reActLoop`; the
+      `Chat` error is printed in both `reActLoop` (`error:`) and `handleUserInput`
+      (`[error] ReAct loop error:`), so pick one (the caller is the output boundary); print the
+      final answer from `turnMsgs[len(turnMsgs)-1].Content` (currently the loop prints the whole
+      `response` struct with `%s`, which is a debug view; `json.MarshalIndent` was suggested).
+  - **1d-iv: window / compaction integrity. NOT STARTED.** The context window trims by message
+    count, so it can cut between an assistant tool call and its results; providers reject that.
+    Worse, `MaxContextWindow = 10` gives a window of 8, and a turn with two tool rounds is
+    already 6 messages, so a longer turn overflows the window and trimming can drop the user
+    message and leave orphaned tool results. Compaction has the same exposure. See the CLAUDE.md
+    invariant and mvp1's `harness.Window` (widens backwards to a user turn). Until then, keep
+    loop tests short or use a larger window in the fixture.
   - **Optional extra, offered and not yet done:** an `httptest` test where the server returns
     the SF-weather `tool_calls` JSON; assert that the request body had `"tools"` and that the
     reply decoded one `ToolCall`.
@@ -269,6 +312,18 @@ gen 7) and `chat_w_history_context_session_mcp_tools_test.go`.**
     pointer);
   - passing `nil` tools (idiomatic; `omitempty` drops the key);
   - `server/discover` vs legacy `initialize`, and the dual-era matrix.
+  - (2026-09-28/29) why the tool list is sorted (providers cache an exact prompt prefix; Go map
+    order is random) and why the sort happens on register, not per request;
+  - `sync.RWMutex` vs `sync.Mutex`, and not taking a write lock while holding a read lock;
+  - copy-on-write: why returning the cached slice uncopied is safe;
+  - variadic vs slice parameter; struct vs pointer for types with a mutex (`copylocks`); why
+    `ChatHistory` is an interface holding a pointer;
+  - typed nil in an interface (taught, then deliberately not handled in `Register`);
+  - `recover()`: only in a deferred function, same goroutine; named returns let it set `err`;
+  - sentinel errors: `errors.New`, `errors.Is`, wrapping with `%w`;
+  - `toolCallID` on a `tool` message vs `ToolCalls[i].ID` on the assistant message;
+  - how Ctrl+C reaches the loop (`signal.NotifyContext` in `main`, ctx passed down), and why
+    `reActLoop` needs no `WithCancel` of its own.
 
 **Start here next session (added 2026-09-25) — remind Jerry at the top of the session:**
 

@@ -373,9 +373,134 @@ filter summaries out when searching real user messages.
 - **Auth:** stdio gets credentials from environment variables. HTTP uses the spec's OAuth-based
   Authorization framework plus the `MCP-Protocol-Version` header. Auth is deferred to step 5.
 
+### Tool registry, tool calls and the ReAct loop (2026-09-28/29)
+
+Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
+
+**Tool registry (`ToolRegistry`, `toolEntry`)**
+- **Decided:** the registry holds `map[string]toolEntry{tool, def}` plus a cached `[]ToolDef` sorted
+  by name, behind a `sync.RWMutex`. The sorted slice is rebuilt only in `Register` and `Remove`
+  and is never modified in place (copy-on-write), so `GetToolDefs()` returns it with no copy and
+  no per-request sort.
+- **Why:** providers cache on an exact prompt prefix, and tool definitions sit at the front of the
+  prompt. Go map iteration order is random, so an unsorted list could change the prefix and
+  invalidate the cache for the whole conversation. Order never affects correctness; it only
+  affects cost and latency. Sorting on every request was rejected: it is cheap (n is about 5 to
+  50) but recomputes something that only changes on register or remove.
+- **`toolEntry` captures `GetToolDefinition()` once, at `Register`.** The rebuild never calls into
+  a `Tool`, so its cost doesn't depend on how a tool is written (an MCP wrapper can't make
+  rebuilds slow), and the map key and the stored def can't disagree. A first version called
+  `GetToolDefinition()` twice in `Register`; that was fixed.
+- **Rejected: an ordered slice plus a lookup map, with no sort (option A).** Simplest, but the
+  order would depend on registration order, which becomes nondeterministic once MCP servers
+  connect concurrently. Revisit only if the sort ever shows up as a cost.
+- **Duplicate names are an error, not an overwrite,** so a second MCP server can't shadow a
+  built-in such as `read_file`. Empty names and a nil `Tool` are errors too. Changing a tool is
+  `Remove` then `Register`.
+- **A typed nil pointer is not handled.** An `isNilTool` helper (using `reflect`) was written and
+  then removed: too complex for an edge case no code path creates. The plain `t == nil` check
+  catches only a nil interface. If a typed nil ever arrives, `Register` panics in
+  `GetToolDefinition()`.
+- **`Lookup` returns `Tool`, not `toolEntry`.** `toolEntry` is an unexported detail, and callers
+  only need to call the tool. Trigger to revisit: if callers need a source label (built-in vs
+  `mcp:<server>`) for `/mcp-list` or approval policy, return a small exported type; don't export
+  `toolEntry`.
+- **`NewToolRegistry` takes `[]Tool`, not variadic.** A wash: the production caller builds a slice,
+  and the tests' `newRegistry` helper stays variadic.
+- **Honest downsides:** the stored def is a snapshot, so a tool whose definition changes after
+  registration (e.g. an MCP `tools/list_changed`) isn't noticed until it is re-registered.
+  "Don't modify the slice `GetToolDefs` returns" is a convention Go can't enforce. The `RWMutex`
+  isn't needed while only one goroutine touches the registry; it was chosen for the read-heavy,
+  write-rare shape, and swapping to a `Mutex` is a two-line change.
+
+**Running a tool call (`runToolCall`, `callToolSafely`)**
+- **Decided: `runToolCall` returns a `ChatMessage`, never a Go `error`.** Every failure (unknown
+  tool, arguments that aren't a JSON object, a tool error, a tool panic) becomes a `role:"tool"`
+  message with `error: ...` in `Content` and `ToolCallID = call.ID`.
+- **Why:** the failure is something the model can react to (a misspelled tool name, bad
+  arguments), and providers reject a request where any `ToolCall` lacks exactly one matching tool
+  message. An `error` return would force every call site to convert it, and one forgotten branch
+  would produce an orphaned call. Loop-level failures (a cancelled context) are the loop's job,
+  handled by checking `ctx.Err()` at the top of each step. Same principle as mvp1: `Run` returns
+  an error only for LLM or memory failures and the step limit.
+- **Arguments:** must be a JSON object; `null`, arrays and strings are rejected; an empty string
+  is normalized to `{}` so no-arg tools work. There is no `IsError` field on `ChatMessage`, so the
+  model tells failures apart only by the `error:` prefix; keep that prefix consistent.
+- **`callToolSafely` wraps `CallTool` with `recover()`,** turning a panic into an ordinary error
+  (`tool panicked: <value>`) that flows through the same path. Named returns are what let the
+  deferred function set `err`.
+  - **Limits:** it covers only the calling goroutine (a goroutine the tool spawns can still crash
+    the process); fatal runtime errors (concurrent map writes, out of memory) are unrecoverable;
+    a recovered panic looks like an ordinary tool error to the model, so a real bug can hide; and
+    the tool's own state may be left inconsistent.
+  - The stack trace is dropped. If wanted, `runtime/debug.Stack()` written to `cs.OutBuffer`.
+- **Tool calls run sequentially** in the first draft. mvp1 fans out on goroutines. Trigger to
+  change: a slow tool (MCP, shell). Each goroutine would then need its own `recover`.
+
+**ReAct loop shape (`reActLoop`, `handleUserInput`)**
+- **Decided: one local `turn` slice, batch persistence after success.** The loop accumulates the
+  turn (user msg, assistant reply, tool results, ..., final assistant) in a local slice, and each
+  step sends `system + prior context + turn`. It never touches history or context. On success
+  `handleUserInput` appends the whole turn to `MsgHistory` and `MsgContext` in one batch. On any
+  error nothing is persisted.
+- **Why:** a failed or aborted turn leaves no half-turn (this matches the existing behavior pinned
+  by `Test_ChatHistory_FailedResponse_*`); auto-compaction snapshots the context from a
+  goroutine, and incremental writes could let it summarize an assistant `tool_calls` message
+  whose results haven't been written; and the window can't trim mid-turn because nothing enters
+  it until the turn ends.
+- **Honest downside:** a crash or cancellation mid-turn loses the turn's work, so the model won't
+  remember what a tool already did. Trigger to revisit: persistent history, or tools with side
+  effects (write, shell). Then append each step to `MsgHistory` (the durable log) while still
+  batching the context write.
+- **Step limit:** `MaxReActSteps = 10`. Exceeding it returns `ErrMaxSteps`, a sentinel error
+  wrapped with `%w` so callers and tests use `errors.Is` rather than comparing text. Nothing is
+  persisted. Alternative not taken: persist the truncated turn with a synthetic closing assistant
+  message, so tool side effects aren't lost.
+- **The assistant reply is rebuilt with `createChatMessage`,** which copies `ToolCalls` (dropping
+  them was a real bug: the next request would carry tool messages with no preceding tool call),
+  hardcodes `Role`/`Type` to `"assistant"` (the provider is the untrusted party and may return
+  an empty role), and passes an empty `ToolCallID` (assistant messages never have one; the IDs
+  the model chose live in `ToolCalls[i].ID`). Alternative: stamp the provider's reply in place,
+  which would keep any field added to `ChatMessage` later; `createChatMessage` copies only the
+  five fields it knows.
+- **Printing:** `handleUserInput` is the output boundary; the loop should return errors, not
+  print them. (Cleanup pending, see SESSION.md.)
+- **Ctrl+C:** `signal.NotifyContext` in `main` cancels a ctx that is passed down through
+  `runLoop`, `handleUserInput`, `reActLoop`, `Chat` and `CallTool`, so the loop needs no
+  `WithCancel` of its own (a child ctx nothing cancels adds nothing). What it needs is the
+  `ctx.Err()` check at the top of each step and tools that honor the ctx. A `WithCancel` /
+  `WithTimeout` inside the loop only makes sense for a per-turn timeout or for cancelling sibling
+  tool goroutines. Open question about what Ctrl+C should mean is under § "Deferred / open
+  decisions".
+
+**Test double**
+- **`fakeProvider` gained a scripted mode.** `Script []ChatMessage` plays back one reply per `Chat`
+  call; once `Script` is set, running past its end is an error, so a loop that over-calls fails
+  loudly instead of quietly reusing `Reply`. With `Script` unset it behaves as before (the
+  other 37 uses are untouched). `ToolDefs` records each call's tools, parallel to `Calls`.
+
 ---
 
 ## Deferred / open decisions
+
+- **Window and compaction can split a tool call from its results (slice 1d-iv, next after the
+  loop tests).** The window trims by message count, and a turn is now several messages (user,
+  assistant, tool results, ..., final). With `MaxContextWindow = 10` (window of 8) a two-round
+  turn is already 6 messages, and a longer one overflows and can drop the user message, leaving
+  orphaned tool results that providers reject. Compaction has the same exposure. Options: make
+  eviction turn-aware (widen backwards to a user turn, as mvp1's `harness.Window` does), treat a
+  turn as one atomic unit, or simply raise the limits. Not yet decided.
+- **What should Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
+  ctx-aware, so at the prompt nothing happens until Enter, and `runLoop` never checks
+  `ctx.Err()`, so afterward every turn fails with `context canceled` while the REPL keeps
+  prompting. Option A: Ctrl+C quits (add a `ctx.Err()` check in `runLoop`). Option B: Ctrl+C
+  interrupts only the current turn (a per-turn ctx in `runLoop`, with `os.Interrupt` removed from
+  `main`'s registration). Leaning A first; revisit B when tools run long enough to be worth
+  interrupting.
+- **`read_file` can read any path.** Restricting paths belongs to hooks or approval, later.
+- **`createChatMessage` takes four positional `string` params,** so a swapped argument compiles.
+  A narrower `newToolMessage(toolCallID, content)` was suggested; revisit if a second caller
+  pattern appears or a swap bug bites.
 
 - **Summarizer instructions are sent as a trailing `system` message** (after the `user`
   transcript). OpenAI and Ollama accept this. It conflicts with the reasoning in § "Compaction

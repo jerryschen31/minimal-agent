@@ -49,17 +49,28 @@ func windowTypeNames() []string {
 // afterward to see exactly which message list a test triggered. Calls is mutex-guarded because
 // auto-compaction invokes Chat from a background goroutine — tests exercising that path need
 // this safe under -race, not just in the common single-goroutine case.
+//
+// For multi-step (ReAct) tests, set Script to a list of replies to play back one per Chat call,
+// e.g. a tool-call reply followed by a final text reply. Once Script is set, the fake is in
+// "scripted" mode: running past the end of the script is an error (so a loop that calls Chat too
+// many times fails loudly instead of silently reusing Reply). With Script unset, every call
+// returns Reply, exactly as before. Err, if set, wins over both. ToolDefs records the tools
+// argument of each call, parallel to Calls.
 type fakeProvider struct {
-	mu    sync.Mutex
-	Reply string
-	Err   error
-	Calls [][]ChatMessage
+	mu       sync.Mutex
+	Reply    string
+	Err      error
+	Script   []ChatMessage
+	next     int // index of the next Script entry to play
+	Calls    [][]ChatMessage
+	ToolDefs [][]ToolDef
 }
 
 func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.Calls = append(p.Calls, append([]ChatMessage(nil), chatHistory...))
-	p.mu.Unlock()
+	p.ToolDefs = append(p.ToolDefs, append([]ToolDef(nil), tools...))
 
 	if ctx.Err() != nil {
 		return ChatMessage{}, ctx.Err()
@@ -67,7 +78,33 @@ func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage, tool
 	if p.Err != nil {
 		return ChatMessage{}, p.Err
 	}
+	if p.Script != nil {
+		if p.next >= len(p.Script) {
+			return ChatMessage{}, fmt.Errorf("fakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
+		}
+		reply := p.Script[p.next]
+		p.next++
+		return reply, nil
+	}
 	return ChatMessage{Role: "assistant", Content: p.Reply}, nil
+}
+
+// assistantText builds a plain assistant reply with no tool calls (the "final answer" step).
+func assistantText(text string) ChatMessage {
+	return ChatMessage{Role: "assistant", Content: text}
+}
+
+// assistantToolCall builds an assistant reply that asks for one tool call. args is the raw
+// JSON string the model would send, e.g. `{"path":"go.mod"}`.
+func assistantToolCall(callID, toolName, args string) ChatMessage {
+	return ChatMessage{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:       callID,
+			Type:     "function",
+			Function: ToolCallFunc{Name: toolName, Arguments: args},
+		}},
+	}
 }
 
 // chatSessionFixture bundles a fully wired ChatSession (history + context + a fake provider)
@@ -81,6 +118,7 @@ type chatSessionFixture struct {
 	History  *InMemoryChatHistory
 	Context  *ChatContext
 	Provider *fakeProvider
+	Tools    *ToolRegistry // starts empty; tests that need tools call Tools.Register
 	Out      *bytes.Buffer
 }
 
@@ -111,7 +149,12 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		OutBuffer:    out,
 	}
 
-	session, err := NewChatSession(provider, history, chatContext, cfg)
+	tools, err := NewToolRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewToolRegistry() returned an error: %v", err)
+	}
+
+	session, err := NewChatSession(provider, history, chatContext, tools, cfg)
 	if err != nil {
 		t.Fatalf("NewChatSession() returned an error: %v", err)
 	}
@@ -121,6 +164,7 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		History:  history,
 		Context:  chatContext,
 		Provider: provider,
+		Tools:    tools,
 		Out:      out,
 	}
 }
@@ -1560,7 +1604,7 @@ func defNames(defs []ToolDef) []string {
 // newRegistry builds a registry from tools, failing the test on error.
 func newRegistry(t *testing.T, tools ...Tool) *ToolRegistry {
 	t.Helper()
-	reg, err := NewToolRegistry(tools...)
+	reg, err := NewToolRegistry(tools)
 	if err != nil {
 		t.Fatalf("NewToolRegistry: %v", err)
 	}
@@ -1617,7 +1661,7 @@ func Test_ToolRegistry_Register_DuplicateName_ErrorsAndKeepsOriginal(t *testing.
 
 // - Verify that NewToolRegistry surfaces a duplicate among its arguments as an error
 func Test_ToolRegistry_NewToolRegistry_DuplicateInArgs_ReturnsError(t *testing.T) {
-	reg, err := NewToolRegistry(stubTool{name: "x"}, stubTool{name: "x"})
+	reg, err := NewToolRegistry([]Tool{stubTool{name: "x"}, stubTool{name: "x"}})
 	if err == nil {
 		t.Fatalf("expected an error, got nil")
 	}
@@ -1765,5 +1809,116 @@ func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(names) {
 		t.Errorf("expected defs sorted by name, got %v", names)
+	}
+}
+
+//*************************************//
+// Running tool calls
+//*************************************//
+
+// panicTool is a Tool whose CallTool always panics with the given behavior.
+type panicTool struct{ boom func() }
+
+func (panicTool) GetToolDefinition() ToolDef { return NewToolDef("boom", "always panics", nil) }
+func (p panicTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	p.boom()
+	return "unreachable", nil
+}
+
+// - Verify that a tool that panics (explicitly, or via a runtime error) becomes an error
+// observation for the model instead of crashing the agent
+func Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage(t *testing.T) {
+	cases := map[string]struct {
+		boom    func()
+		wantErr string // substring the message content must contain
+	}{
+		"explicit panic": {func() { panic("kaboom") }, "kaboom"},
+		"runtime error": {func() {
+			var m map[string]int
+			m["a"] = 1 // write to a nil map panics
+		}, "nil map"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fx := newChatSessionFixture(t, 10, 9)
+			if err := fx.Tools.Register(panicTool{boom: tc.boom}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			call := ToolCall{ID: "call_1", Function: ToolCallFunc{Name: "boom", Arguments: "{}"}}
+
+			got := runToolCall(context.Background(), fx.Session, call)
+
+			if got.Role != "tool" {
+				t.Errorf("expected role %q, got %q", "tool", got.Role)
+			}
+			if got.ToolCallID != "call_1" {
+				t.Errorf("expected ToolCallID %q, got %q", "call_1", got.ToolCallID)
+			}
+			if !strings.HasPrefix(got.Content, "error:") || !strings.Contains(got.Content, "tool panicked") ||
+				!strings.Contains(got.Content, tc.wantErr) {
+				t.Errorf("expected content like %q mentioning %q, got %q", "error: tool panicked: …", tc.wantErr, got.Content)
+			}
+		})
+	}
+}
+
+//*************************************//
+// Fixture self-tests
+//*************************************//
+
+// - Verify the scripted fakeProvider plays replies in order, records the messages and tools of
+// every call, and fails loudly (rather than reusing Reply) once the script runs out
+func Test_FakeProvider_Script_PlaysRepliesInOrderThenErrors(t *testing.T) {
+	p := &fakeProvider{Reply: "unscripted", Script: []ChatMessage{
+		assistantToolCall("c1", "read_file", `{"path":"go.mod"}`),
+		assistantText("done"),
+	}}
+	defs := []ToolDef{ReadFileTool{}.GetToolDefinition()}
+	ctx := context.Background()
+
+	first, err := p.Chat(ctx, []ChatMessage{msg("user", "u1", "hi")}, defs)
+	if err != nil {
+		t.Fatalf("call 1: unexpected error: %v", err)
+	}
+	if len(first.ToolCalls) != 1 || first.ToolCalls[0].ID != "c1" || first.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("call 1: expected the read_file tool call c1, got %+v", first.ToolCalls)
+	}
+
+	second, err := p.Chat(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("call 2: unexpected error: %v", err)
+	}
+	if second.Content != "done" || len(second.ToolCalls) != 0 {
+		t.Errorf("call 2: expected final text %q with no tool calls, got %+v", "done", second)
+	}
+
+	if _, err := p.Chat(ctx, nil, nil); err == nil || !strings.Contains(err.Error(), "script exhausted") {
+		t.Errorf("call 3: expected a 'script exhausted' error, got %v", err)
+	}
+
+	if len(p.Calls) != 3 || len(p.ToolDefs) != 3 {
+		t.Fatalf("expected 3 recorded calls and 3 recorded tool lists, got %d and %d", len(p.Calls), len(p.ToolDefs))
+	}
+	if len(p.Calls[0]) != 1 || p.Calls[0][0].ID != "u1" {
+		t.Errorf("expected call 1 to record the user message, got %+v", p.Calls[0])
+	}
+	if len(p.ToolDefs[0]) != 1 || p.ToolDefs[0][0].Function.Name != "read_file" {
+		t.Errorf("expected call 1 to record the read_file def, got %+v", p.ToolDefs[0])
+	}
+	if len(p.ToolDefs[1]) != 0 {
+		t.Errorf("expected call 2 to record no tools, got %+v", p.ToolDefs[1])
+	}
+}
+
+// - Verify an unscripted fakeProvider still returns Reply on every call (the behavior the
+// existing tests depend on)
+func Test_FakeProvider_NoScript_ReturnsReplyEveryCall(t *testing.T) {
+	p := &fakeProvider{Reply: "same"}
+
+	for i := 0; i < 3; i++ {
+		got, err := p.Chat(context.Background(), nil, nil)
+		if err != nil || got.Role != "assistant" || got.Content != "same" {
+			t.Fatalf("call %d: expected assistant %q, got (%+v, %v)", i+1, "same", got, err)
+		}
 	}
 }
