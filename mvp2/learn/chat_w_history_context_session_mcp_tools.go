@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,7 @@ const WindowStrategy = "offset" // default context window strategy: "offset", "i
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
 const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
 const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
+const MaxReActSteps = 10             // maximum number of steps in a single ReAct loop - prevents infinite reasoning cycles when model gets stuck
 
 //////////////////////////////////////////////
 // Interfaces and structs
@@ -136,6 +138,7 @@ type ToolCall struct {
 	Function ToolCallFunc `json:"function"`
 }
 
+// chat request and response structs
 type ChatRequest struct {
 	Model    string        `json:"model"`
 	Messages []ChatMessage `json:"messages"`
@@ -164,6 +167,120 @@ func NewToolDef(name string, description string, params json.RawMessage) ToolDef
 		Type:     "function",
 		Function: ToolDefFunc{Name: name, Desc: description, Params: params},
 	}
+}
+
+// tool registry - keeps track of all registered tools that the model can call
+type ToolRegistry struct {
+	mu       sync.RWMutex         // allows concurrent reads with RLock() - good for frequent-read, rare-write structs (like a tool registry)
+	tools    map[string]toolEntry // maps tool names to their corresponding tool entries for O(1) access
+	tooldefs []ToolDef            // ordered list of registered tool definitions - this is what is sent to the LLM as context - this is better for caching purposes on the model end (order is same each time)
+}
+
+// an entry in the tool registry
+type toolEntry struct {
+	tool Tool
+	def  ToolDef // captured once, at Register time
+}
+
+func NewToolRegistry(tools ...Tool) (*ToolRegistry, error) {
+	// initialize an empty tool registry
+	reg := &ToolRegistry{
+		tools:    make(map[string]toolEntry),
+		tooldefs: []ToolDef{},
+	}
+	// then register each tool
+	for _, tool := range tools {
+		if err := reg.Register(tool); err != nil {
+			return nil, err
+		}
+	}
+	return reg, nil
+}
+
+// isNilTool reports whether t is nil, including the "typed nil" case.
+// [agent] An interface value is a (type, value) pair. `var p *MyTool; var t Tool = p` gives t the
+// type *MyTool and the value nil, so `t == nil` is false even though calling a method that
+// dereferences the receiver would panic. reflect is the only way to look inside the pair.
+// Trade-off: reflect is slower and less obvious than a plain nil check, but this runs only at
+// registration (rare), never per request. Downside: a tool that deliberately supports a nil
+// receiver would be rejected too; nothing here does.
+// func isNilTool(t Tool) bool {
+// 	if t == nil {
+// 		return true
+// 	}
+// 	v := reflect.ValueOf(t)
+// 	switch v.Kind() {
+// 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+// 		return v.IsNil()
+// 	}
+// 	return false
+// }
+
+// Adds a new tool to the tool registry. It returns an error if the tool name is empty or if a tool with the same name is already registered.
+func (r *ToolRegistry) Register(t Tool) error {
+	// if passed Tool is nil, error out
+	// [agent] This catches only a nil interface; a typed nil pointer (e.g. (*MyTool)(nil)) passes and would panic below. Deliberately not handled: nothing here creates one.
+	if t == nil {
+		return fmt.Errorf("cannot register a nil tool")
+	}
+	toolDef := t.GetToolDefinition()
+	toolName := toolDef.Function.Name
+	if toolName == "" {
+		return fmt.Errorf("tool name cannot be empty")
+	}
+	// tools that match an existing tool name do NOT overwrite - Lock() is called on writes
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[toolName]; exists {
+		return fmt.Errorf("tool with name %q already registered", toolName)
+	}
+	r.tools[toolName] = toolEntry{
+		tool: t,
+		def:  toolDef,
+	}
+	r.rebuildToolDefList()
+	return nil
+}
+
+// assuming that tool map exists, builds / rebuilds the ordered (sorted) list of tool definitions for the LLM context
+// since this modifies the registry, ANY method that calls this MUST already hold the write lock (Lock) on the registry.
+func (r *ToolRegistry) rebuildToolDefList() {
+	r.tooldefs = make([]ToolDef, 0, len(r.tools))
+	for _, toolEntry := range r.tools {
+		r.tooldefs = append(r.tooldefs, toolEntry.def)
+	}
+	// sort the tool definitions by name to ensure consistent order
+	sort.Slice(r.tooldefs, func(i, j int) bool {
+		return r.tooldefs[i].Function.Name < r.tooldefs[j].Function.Name
+	})
+}
+
+// Deletes a tool from the registry by name. It returns true if the tool was found and removed, false otherwise.
+func (r *ToolRegistry) Remove(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[name]; !exists {
+		return false
+	}
+	delete(r.tools, name)
+	r.rebuildToolDefList()
+	return true
+}
+
+// Looks up a tool by name. It returns the tool and true if found, or nil and false otherwise.
+func (r *ToolRegistry) Lookup(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	return t.tool, ok
+}
+
+// Returns the cached tool definitions, sorted by name.
+// Callers must not modify the returned slice.
+func (r *ToolRegistry) GetToolDefs() []ToolDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tooldefs
 }
 
 // In the agent kernel, we define a built-in tool that can read contents of text files, capped at ReadFileMaxBytes.
