@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-29)
+# SESSION.md — mvp2 progress (last updated 2026-09-30)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -299,8 +299,19 @@ DECISIONS.md § "Tool registry, tool calls and the ReAct loop".
     reply decoded one `ToolCall`.
 - **Open questions for later steps:**
   - Does `/mcp-add` persist to config, or last only this session?
-  - Hand-rolled stdio JSON-RPC, or `github.com/modelcontextprotocol/go-sdk`? (Leaning
-    hand-rolled first, for learning.)
+  - ~~Hand-rolled stdio JSON-RPC, or the Go SDK?~~ Resolved 2026-09-30: official SDK. See
+    DECISIONS.md § "MCP client: official Go SDK, not hand-rolled; restart with idempotency
+    rules". Step 3 is now: add the dependency, `connectMCP` + `ListTools`, `mcpTool` adapter,
+    restart logic (the old slices A, B and E are gone).
+  - **Still need a real modern-protocol server** to test against (fake stdio server in tests
+    until then).
+- **PENDING REQUEST — separate session, Jerry will ask for it:** teach the hand-rolled MCP
+  client from `mvp1/tool/mcp.go` in about 20 to 30 minutes. Cover: the pending-map pattern
+  (`id → chan`), the reader goroutine, the write mutex, process lifecycle (pipes, `WaitDelay`,
+  closing stdin), how the version handshake works (`server/discover` vs `initialize`), and why
+  the stateless 2026-07-28 revision is better. Optional: do one handshake by hand by piping raw
+  JSON into a real server. Don't start this unprompted. This is a teaching-only session, and
+  no code gets added to `mvp2/`.
   - Still need a real modern-protocol server to test against. Until then, use a fake stdio
     server in Go tests.
 - **Things Jerry asked about this session (already taught; don't re-teach unless asked):**

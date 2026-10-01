@@ -1,5 +1,5 @@
 //
-// This builds on chat_w_history_context_session_tools.go by adding support for MCP tool calls
+// This builds on chat_w_history_context_session_structs.go by adding support for built-in tool calls
 //
 
 package main
@@ -315,7 +315,6 @@ func (ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string,
 	var params struct {
 		Path string `json:"path"`
 	}
-	// json.Marshal = json.dumps() in Python => dumps JSON var into byte string; json.Unmarshal = json.loads() in Python => loads JSON byte string into JSON var
 	if err := json.Unmarshal(args, &params); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}

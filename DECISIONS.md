@@ -479,6 +479,38 @@ Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
   loudly instead of quietly reusing `Reply`. With `Script` unset it behaves as before (the
   other 37 uses are untouched). `ToolDefs` records each call's tools, parallel to `Calls`.
 
+### MCP client: official Go SDK, not hand-rolled; restart with idempotency rules (2026-09-30)
+
+- **Decided: use `github.com/modelcontextprotocol/go-sdk` (checked: v1.8.0).** Supersedes the
+  2026-09-27 plan for a hand-rolled stdio client and the "leaning hand-rolled first" note.
+  - **Why:** `Client.Connect` already does the dual-era probe (`server/discover` first, then
+    `initialize` fallback) and injects the 2026-07-28 per-request `_meta` itself, so old slices
+    A, B and E disappear. What stays ours is the adapter (`mcpTool` implementing `Tool`),
+    `Config` wiring and lifecycle. HTTP + OAuth (step 5) becomes configuration, not a rewrite.
+    It's also the long-term path the protocol authors provide.
+  - **Honest downside:** we no longer see the wire protocol; a new dependency; 2026-07-28
+    support is recent, so pin the version and expect churn.
+  - **Era handling:** the SDK's `*mcp.ClientSession` holds the negotiated version, capabilities
+    and the connection. No extra state structs; the agent keeps one small `mcpServer{name,
+    session}` per server and never learns the era.
+  - The "dual-era" decision above still stands as behaviour; only *who implements it* changed.
+- **Decided: restart a crashed MCP server, with a retry rule based on idempotency.**
+  - Server found dead *before* a call is sent: restart, reconnect, send. Safe, nothing in flight.
+  - Dies *during* a call, tool read-only/idempotent: restart and retry once.
+  - Dies *during* a call, tool not known safe: restart, **don't retry**; return an error
+    observation saying the call may or may not have completed, so the model can check state.
+  - Safety comes from the tool annotations (`readOnlyHint`, `idempotentHint`,
+    `destructiveHint`). They are **untrusted hints**: fine for retry decisions, never to skip
+    approval. A missing hint means "not safe".
+  - Lives inside `mcpServer` (mutex-guarded session + `reconnect()`), not in the loop.
+  - A restart of a legacy server is a new session, so server-side session state is lost.
+  - **Why:** can't tell whether a mutating call finished before the crash; blind retry could
+    double-apply it. **Honest downside:** more code in the adapter, and the hints are only as
+    honest as the server.
+  - To check when building: which error the SDK returns for a closed session, so crash
+    detection doesn't rely on string matching.
+- Status: active (nothing built yet). Files: `chat_w_history_context_session_mcp_tools.go`.
+
 ---
 
 ## Deferred / open decisions
