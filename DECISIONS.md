@@ -507,9 +507,113 @@ Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
   - **Why:** can't tell whether a mutating call finished before the crash; blind retry could
     double-apply it. **Honest downside:** more code in the adapter, and the hints are only as
     honest as the server.
-  - To check when building: which error the SDK returns for a closed session, so crash
-    detection doesn't rely on string matching.
-- Status: active (nothing built yet). Files: `chat_w_history_context_session_mcp_tools.go`.
+  - To check when building: which error the SDK returns for a closed session. Calls on a
+    session closed by the server return an error wrapping `mcp.ErrConnectionClosed` (from the SDK
+    docs, `errors.Is` should work), so detection needn't use string matching. Verify in a test.
+- **Findings from the first real run (2026-09-30):**
+  - The official filesystem server is legacy-era (`server/discover` → `-32601`); the SDK fell
+    back to `initialize` on its own. The retry rule is workable with real data: its tools are
+    annotated (reads `readOnlyHint`; `write_file`/`create_directory` idempotent; `edit_file` and
+    `move_file` non-idempotent, so they get the no-retry path).
+  - The SDK declares the `roots` capability by default, so servers can call back `roots/list`.
+    Declaring no client capabilities would avoid that; not needed yet.
+  - `move_file` shows why blind retry is wrong: after a crash that happened *after* the move, a
+    retry fails with "source not found" even though the first call succeeded.
+- Status: scratch driver works (`mvp2/learn/mcp_scratch.go`); the adapter, config wiring and
+  restart are not built yet. Files: `chat_w_history_context_session_mcp_tools.go`.
+
+### Config file loading: `setDefaultConfig(filename) (Config, error)` (2026-10-01)
+
+- **Decided: it returns `(Config, error)`, not just `Config`.** The spec said "error when the file
+  is not found", and Go has no other way to return one. Not-found wraps `os.ErrNotExist` (`%w`).
+  Invalid JSON is also an error (Jerry will add richer validation later).
+- **Decided: start from `getDefaultConfig()` and overlay the file.** Keys missing from the file
+  keep their defaults, and `InBuffer`/`OutBuffer` stay wired. Honest downside: you can't tell
+  "file said the default" from "file omitted it".
+- **Decided: unknown keys warn on stdout and are ignored.** Two passes: `json.Unmarshal` into
+  `Config` (drops unknowns silently), then into `map[string]json.RawMessage`, compared against
+  `Config`'s json tags via reflect (case-insensitive, like `encoding/json`). Rejected
+  `DisallowUnknownFields`: it errors on the first unknown key instead of warning on all.
+  Downside: only top-level keys are checked, not unknown keys inside nested structs.
+- **Decided: warnings go to `cfg.OutBuffer`** (stdout by default), per the "all output through
+  OutBuffer" rule. Tests capture it by swapping `os.Stdout`, because the buffer is set inside the
+  function.
+- **`InBuffer`/`OutBuffer` tagged `json:"-"`**: they are runtime wiring, and without the tag a
+  stray `"InBuffer"` key would make the decode fail instead of warn.
+- **Empty filename means `DefaultConfigFile` (`config.default.json`)**: Go has no default
+  arguments.
+- **Known problem:** the existing `mvp2/learn/config.default.json` is not loadable yet. It has a
+  trailing comma (invalid JSON), and some keys have no `Config` field (`maxSteps`, `workDir`,
+  `memory`, `contextWindow`, `mcpServers`, `subagents`). (2026-10-01, later: its key names were
+  aligned with the camelCase tags, see below.)
+- **Decided (2026-10-01): all config file keys are camelCase** (`userId`, `baseUrl`,
+  `apiKeyName`, `systemPrompt`, `chatStoreType`, `mcpServers`), superseding the snake_case tags.
+  **Why:** one convention across the file, and `mcpServers` (and `command`/`args`/`env`) is
+  camelCase in every other MCP client, so copied configs load unchanged. Go field names stay
+  PascalCase (`UserID`): exported fields can't be camelCase. **Honest downside:** an old
+  snake_case config no longer applies; `user_id` is now an unrecognized key (warns, default
+  kept), because `encoding/json` ignores case but not underscores. Also renamed the default
+  file's `api_key_env` to `apiKeyName` to match the field (its value is an env var *name*).
+- Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
+
+### MCP server transport: inferred per server, optional `type` for SSE (2026-10-01)
+
+- **Decided: the transport is per server entry** (`mcpServers` map key = server label), inferred
+  from its fields: `command` → stdio; `url` → Streamable HTTP; `url` + `"type": "sse"` → legacy
+  SSE. Both or neither of `command`/`url` is a config error naming the server. `type`, if given,
+  must agree with the fields.
+- **Why SSE is in scope:** the agent exists to run third-party MCP servers, and older ones are
+  SSE-only. SSE itself is deprecated in the spec (replaced by Streamable HTTP, 2025-03-26), so a
+  bare `url` defaults to HTTP and SSE is opt-in.
+- **Honest downside:** a legacy SSE `url` pasted without `type` fails at connect; the error text
+  must hint "set type: sse". Rejected for now: requiring `type` on every `url` server (extra
+  line for the common case) and auto-fallback probe HTTP → SSE (more code, murkier failures).
+  Revisit the probe if the missing-`type` error keeps biting.
+- `MCPServerConfig` has no `Name`: the label is the map key (`map[string]MCPServerConfig`); sort
+  keys before connecting since map order is random.
+- Open: how custom `headers` attach in the Go SDK; exact SDK transport type names (verify with
+  `go doc`). Nested unknown-key warnings in `setDefaultConfig` (top-level only today).
+
+**Reversed later the same day (2026-10-01): legacy HTTP+SSE is NOT supported; warn and skip.**
+The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, transports page §
+"HTTP+SSE Transport (2024-11-05)" and the deprecated-features registry: deprecated since
+`2025-03-26` (SEP-2596), "eligible for removal in a future revision", replaced by Streamable HTTP.
+
+- **Decided: support stdio and Streamable HTTP only.** The spec defines exactly those two
+  transports. Within Streamable HTTP there are three response modes, all handled per request:
+  (1) one JSON object, (2) a request-scoped SSE stream (progress notifications then the final
+  response), (3) the long-lived SSE response of `subscriptions/listen`. They are modes of one
+  transport, not three transports. Clients MUST support (1) and (2); the SDK is expected to do it.
+- **Decided: a server that uses HTTP+SSE is skipped with a stdout warning, never an error**, and
+  the other servers still load. Recognised by `"type": "sse"` (checked before any connection).
+  Suggested text: `[warning] MCP server "<label>": skipped, it uses the deprecated HTTP+SSE
+  transport (protocol 2024-11-05); its tools were not added`.
+- **Decided: a bare `url` always means Streamable HTTP; no legacy detection.** If the server is
+  really HTTP+SSE, the connect fails like any other connection failure (below). Rejected: the
+  spec's detection probe (POST fails with 400/404/405 and a non-modern body, then GET returns an
+  `endpoint` event): more code for a deprecated path. Honest downside: the warning for such a
+  server says "connect failed", not "legacy SSE"; the user must add `"type": "sse"` themselves
+  to get the precise message. Revisit if that confuses people.
+- **Decided: any per-server connection failure is also warn-and-skip, not fatal** (bad `npx`
+  package, unreachable `url`, handshake error, legacy SSE behind a bare `url`). The warning goes
+  to stdout and names the server and the error; the other servers still load, and the agent
+  starts even if none do. So `setupToolRegistry` must continue past a failing server, and the
+  failed server's session must be closed so a half-started process doesn't leak. Honest
+  downside: a typo in the config shows up as a missing tool, not a startup failure, so the
+  warning text matters. Config *shape* errors (both `command` and `url`) stay errors.
+- **Not the same thing:** Streamable HTTP of protocol 2025-03-26..2025-11-25 (sessions via
+  `Mcp-Session-Id`, GET stream, DELETE) is an older *era* of the supported transport, not
+  deprecated; it falls under the existing dual-era fallback decision, handled by the SDK.
+- **Why:** third-party breadth was the argument for SSE, but it is a deprecated path with
+  removal pending, costs a second transport implementation, and the SDK doesn't give it for free
+  as far as we know. **Honest downside:** old servers that only speak HTTP+SSE can't be used; a
+  user needs a Streamable HTTP front-end or a stdio bridge. Revisit if a server we need has no
+  alternative.
+- **`subscriptions/listen` (mode 3) is a separate later slice**, not part of the adapter: it is
+  a client-initiated, long-lived request (the spec's subscriptions pattern is transport-neutral,
+  so it also applies to stdio). It needs a goroutine per server, cancel-then-close on shutdown,
+  and re-listening after a reconnect. It only delivers best-effort `list_changed` notifications,
+  so polling is still the fallback. Progress notifications are NOT delivered on it.
 
 ---
 

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -54,23 +55,23 @@ type OpenAICompat struct {
 
 type Config struct {
 	// User configuration
-	UserID string `json:"user_id"`
+	UserID string `json:"userId"`
 
 	// LLM service provider configuration
 	Provider   string `json:"provider"` // "openai" (any OpenAI-compatible server) | "anthropic"
 	Model      string `json:"model"`
-	BaseURL    string `json:"base_url"`
-	ApiKeyName string `json:"api_key_name"`
+	BaseURL    string `json:"baseUrl"`
+	ApiKeyName string `json:"apiKeyName"`
 
 	// I/O configuration for the chat session
-	InBuffer  io.Reader
-	OutBuffer io.Writer
+	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
+	OutBuffer io.Writer `json:"-"`
 
 	// system prompt
-	SystemPrompt string `json:"system_prompt"`
+	SystemPrompt string `json:"systemPrompt"`
 
 	// memory configuration
-	ChatStoreType string `json:"chat_store_type"` // "in-memory" | "persistent"
+	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
 	// tools and MCP servers configuration
 	Tools []string `json:"tools"`
@@ -88,6 +89,59 @@ func getDefaultConfig() Config {
 		InBuffer:      os.Stdin,
 		OutBuffer:     os.Stdout,
 	}
+}
+
+// DefaultConfigFile is the file setDefaultConfig reads when it is given an empty filename.
+const DefaultConfigFile = "config.default.json"
+
+// setDefaultConfig builds a Config from a config JSON file. An empty filename parses the default config file (config.default.json)
+func setDefaultConfig(filename string) (Config, error) {
+	if filename == "" {
+		filename = DefaultConfigFile
+	}
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config file: %w", err)
+	}
+
+	// first get the default config, so missing keys in the file keep their defaults
+	cfg := getDefaultConfig()
+	// parse config JSON - unrecognized fields display a warning and get ignored ; error if file not found
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
+	}
+
+	known := configJSONKeys()
+	var unknown []string
+	for key := range raw {
+		if !known[strings.ToLower(key)] { // encoding/json matches keys case-insensitively, so do the same
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown) // map order is random; sorted keeps the warnings stable
+	for _, key := range unknown {
+		fmt.Fprintf(cfg.OutBuffer, "[warning] config file %s: ignoring unrecognized field %q\n", filename, key)
+	}
+	return cfg, nil
+}
+
+// configJSONKeys returns the lowercased JSON key of every Config field that can be set from a file.
+// Untagged or `json:"-"` fields (InBuffer, OutBuffer) are left out.
+func configJSONKeys() map[string]bool {
+	keys := make(map[string]bool)
+	t := reflect.TypeOf(Config{})
+	for i := 0; i < t.NumField(); i++ {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",") // drop options like ",omitempty"
+		if name == "" || name == "-" {
+			continue
+		}
+		keys[strings.ToLower(name)] = true
+	}
+	return keys
 }
 
 // func getDefaultConfig() Config {

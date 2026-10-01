@@ -525,6 +525,198 @@ func Test_ConfigCommand_PrintsCurrentConfiguration(t *testing.T) {
 	}
 }
 
+//*************************************//
+// Config file loading: setDefaultConfig
+//*************************************//
+
+// captureStdout swaps os.Stdout for a temp file while fn runs and returns what was written.
+// getDefaultConfig reads os.Stdout when it is called, so a Config built inside fn writes its
+// OutBuffer output here. Tests using this must not run in parallel (os.Stdout is process-wide).
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatalf("creating stdout capture file: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = f
+	defer func() { os.Stdout = orig }() // restore even if fn calls t.Fatalf (runtime.Goexit still runs defers)
+	fn()
+	f.Close()
+
+	out, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatalf("reading captured stdout: %v", err)
+	}
+	return string(out)
+}
+
+// - Verify setDefaultConfig applies the values in the file, keeps defaults for keys the file
+// omits, and prints no warning when every key is recognized
+func Test_Unit_SetDefaultConfig_PopulatesFromFile_KeepsDefaultsForMissingKeys(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{
+		"userId": "jerry",
+		"model": "qwen2.5:0.5b",
+		"baseUrl": "http://127.0.0.1:11434/v1",
+		"tools": ["read_file"]
+	}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = setDefaultConfig(path) })
+
+	if err != nil {
+		t.Fatalf("setDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.UserID != "jerry" || cfg.Model != "qwen2.5:0.5b" || cfg.BaseURL != "http://127.0.0.1:11434/v1" {
+		t.Errorf("expected file values to be applied, got UserID=%q Model=%q BaseURL=%q", cfg.UserID, cfg.Model, cfg.BaseURL)
+	}
+	if len(cfg.Tools) != 1 || cfg.Tools[0] != "read_file" {
+		t.Errorf("expected Tools [read_file], got %v", cfg.Tools)
+	}
+
+	defaults := getDefaultConfig()
+	if cfg.Provider != defaults.Provider || cfg.SystemPrompt != defaults.SystemPrompt || cfg.ChatStoreType != defaults.ChatStoreType {
+		t.Errorf("expected omitted keys to keep their defaults, got Provider=%q SystemPrompt=%q ChatStoreType=%q", cfg.Provider, cfg.SystemPrompt, cfg.ChatStoreType)
+	}
+	if cfg.InBuffer == nil || cfg.OutBuffer == nil {
+		t.Errorf("expected InBuffer and OutBuffer to stay wired, got %v and %v", cfg.InBuffer, cfg.OutBuffer)
+	}
+	if out != "" {
+		t.Errorf("expected no output when all keys are recognized, got %q", out)
+	}
+}
+
+// - Verify setDefaultConfig returns an error (that errors.Is os.ErrNotExist recognizes) when the file is missing
+func Test_Unit_SetDefaultConfig_MissingFile_ReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nope.json")
+
+	_, err := setDefaultConfig(path)
+
+	if err == nil {
+		t.Fatalf("expected an error for a missing config file, got nil")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected the error to wrap os.ErrNotExist, got %v", err)
+	}
+}
+
+// - Verify keys Config has no field for produce one stdout warning each (sorted, naming the key),
+// are ignored, and do not stop the recognized keys from being applied or cause an error
+func Test_Unit_SetDefaultConfig_UnknownFields_WarnsAndIgnores(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{
+		"userId": "jerry",
+		"zebra": 1,
+		"mcpServers": {"fs": {"command": "npx"}},
+		"InBuffer": "not a reader"
+	}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = setDefaultConfig(path) })
+
+	if err != nil {
+		t.Fatalf("expected unknown fields to be a warning, not an error, got: %v", err)
+	}
+	if cfg.UserID != "jerry" {
+		t.Errorf("expected recognized key userId to still apply, got %q", cfg.UserID)
+	}
+	if cfg.InBuffer == nil {
+		t.Errorf("expected InBuffer to be untouched by the file, got nil")
+	}
+
+	// sorted by key: "InBuffer" < "mcpServers" < "zebra" (uppercase sorts before lowercase)
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 warning lines, got %d: %q", len(lines), out)
+	}
+	for i, key := range []string{"InBuffer", "mcpServers", "zebra"} {
+		if !strings.HasPrefix(lines[i], "[warning]") || !strings.Contains(lines[i], fmt.Sprintf("%q", key)) {
+			t.Errorf("line %d: expected a [warning] naming %q, got %q", i, key, lines[i])
+		}
+	}
+}
+
+// - Verify keys match case-insensitively like encoding/json does, so a key that was applied is not also reported as unrecognized
+func Test_Unit_SetDefaultConfig_KeyCaseInsensitive_AppliedWithoutWarning(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"UserId": "jerry"}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = setDefaultConfig(path) })
+
+	if err != nil {
+		t.Fatalf("setDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.UserID != "jerry" {
+		t.Errorf("expected UserId to apply to UserID, got %q", cfg.UserID)
+	}
+	if out != "" {
+		t.Errorf("expected no warning for a case-variant of a known key, got %q", out)
+	}
+}
+
+// - Verify config keys are camelCase: the old snake_case spellings are no longer recognized, so
+// they warn and are ignored instead of silently applying
+func Test_Unit_SetDefaultConfig_SnakeCaseKeys_WarnAndIgnored(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"user_id": "jerry", "base_url": "http://x/v1", "apiKeyName": "MY_KEY"}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = setDefaultConfig(path) })
+
+	if err != nil {
+		t.Fatalf("setDefaultConfig() returned an error: %v", err)
+	}
+	defaults := getDefaultConfig()
+	if cfg.UserID != defaults.UserID || cfg.BaseURL != defaults.BaseURL {
+		t.Errorf("expected snake_case keys to be ignored (defaults kept), got UserID=%q BaseURL=%q", cfg.UserID, cfg.BaseURL)
+	}
+	if cfg.ApiKeyName != "MY_KEY" {
+		t.Errorf("expected camelCase apiKeyName to apply, got %q", cfg.ApiKeyName)
+	}
+	for _, key := range []string{"user_id", "base_url"} {
+		if !strings.Contains(out, fmt.Sprintf("%q", key)) {
+			t.Errorf("expected a warning naming %q, got %q", key, out)
+		}
+	}
+}
+
+// - Verify malformed JSON (here a trailing comma) is an error that names the file
+func Test_Unit_SetDefaultConfig_InvalidJSON_ReturnsError(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"userId": "jerry",}`))
+
+	_, err := setDefaultConfig(path)
+
+	if err == nil {
+		t.Fatalf("expected an error for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("expected the error to name the file %q, got %v", path, err)
+	}
+}
+
+// - Verify an empty filename reads DefaultConfigFile ("config.default.json") from the working directory
+func Test_Unit_SetDefaultConfig_EmptyFilename_UsesDefaultConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, DefaultConfigFile), []byte(`{"userId": "from-default-file"}`), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", DefaultConfigFile, err)
+	}
+	t.Chdir(dir) // restored automatically when the test ends
+
+	cfg, err := setDefaultConfig("")
+
+	if err != nil {
+		t.Fatalf("setDefaultConfig(\"\") returned an error: %v", err)
+	}
+	if cfg.UserID != "from-default-file" {
+		t.Errorf("expected UserID from the default file, got %q", cfg.UserID)
+	}
+	if DefaultConfigFile != "config.default.json" {
+		t.Errorf("expected DefaultConfigFile to be config.default.json, got %q", DefaultConfigFile)
+	}
+}
+
 // - Verify that text after /clear (e.g., "/clear what is 3 + 2?") is ignored: the context is still cleared, and the text is never sent or stored.
 func Test_ContextWindow_ClearWithTrailingText_TextIgnored(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)

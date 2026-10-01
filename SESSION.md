@@ -4,8 +4,8 @@ Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry write
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
 conversations** can pick up exactly where things left off — read top to bottom before doing
 anything. Full transcripts of most prior sessions are in `mvp2/learn/prompts/` (latest saved:
-`20260921-session-refactoring.md` — no transcript has been saved for the 2026-09-24 session that
-produced the current test suite; this file is the record of it instead).
+`20260930-session-1.md`, the MCP-SDK decision and scratch-driver session; no transcript was saved
+for the 2026-09-24 session that produced the current test suite, so this file is the record of it).
 
 ## How to work in this session (interaction style — read this first)
 
@@ -188,6 +188,70 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
+**▶ NEWEST (2026-09-30): MCP step 3 is now SDK-based and the scratch driver works. Read this
+block first; the "RESUME HERE (2026-09-29)" block below it is still accurate for steps 1 and 2.**
+
+- **State:** `mvp2/learn/mcp_scratch.go` is a standalone driver (run alone: `go run
+  mcp_scratch.go`; it has its own `main`, so never build it with the other `package main`
+  files). It has `mcpServer{name, session}`, `connectMCP(ctx, name, command, args...)`,
+  `(*mcpServer).Close()`, and a `main` that connects to the filesystem server, prints `ListTools`
+  as JSON, then calls `list_directory` on `/tmp`. **Jerry confirmed it works end to end.** It is
+  throwaway; the real code goes into `chat_w_history_context_session_mcp_tools.go` next.
+- **Dependency:** `go get github.com/modelcontextprotocol/go-sdk@v1.8.0` was run in `mvp2/`
+  (module `github.com/jerryschen31/minagent`; `mvp2/go.mod` and `go.sum` are untracked, so ask
+  before committing). Gotcha hit: a plain `go get <module>` before any code imports it leaves
+  `go.sum` incomplete; run `go get github.com/modelcontextprotocol/go-sdk/mcp@v1.8.0` (or `go
+  mod tidy`) after the first import.
+- **Decided today (DECISIONS.md § "MCP client: official Go SDK..."):** official SDK instead of
+  hand-rolling, plus restart-with-idempotency rules.
+- **Facts verified today (don't re-derive):**
+  - `@modelcontextprotocol/server-filesystem` (2026.8.31) is a **legacy-era** server: it answers
+    `server/discover` with `-32601 Method not found`, and the SDK falls back to `initialize`
+    (negotiated `2025-11-25`) by itself. So the modern path still needs a fake server to test.
+  - The SDK advertises the `roots` capability by default. The server then sends a `roots/list`
+    request back to the client and the SDK answers with an empty list (the server falls back to
+    the directories in its args). This is the server→client request direction, which mvp1's
+    hand-rolled client ignored.
+  - Annotations on its tools: all read/list/search tools are `readOnlyHint: true`;
+    `write_file` and `create_directory` are `idempotentHint: true`; **`edit_file` and `move_file`
+    are `idempotentHint: false`** (these are the ones the no-retry rule applies to).
+    `ToolAnnotations` is a **pointer and can be nil** (nil means "no hints, not safe to retry").
+  - `mcp.LoggingTransport{Transport, Writer}` wraps any transport and prints every JSON-RPC
+    message; very useful for seeing the wire format.
+  - Use `exec.Command` (not `CommandContext`): the SDK's transport closes stdin, waits 5 s, then
+    SIGTERMs. `session.Close()` is what stops the process. `cmd.Stderr = os.Stderr` is needed to
+    see why a server fails to start.
+  - `Implementation{Name, Version}` is the **client's** identity; the `name` argument of
+    `connectMCP` is the **server's label**, which becomes the tool-name prefix (`<label>_<tool>`).
+- **Next session (Jerry writes the code; use the concepts → examples → skeleton style):**
+  1. Move `mcpServer` and `connectMCP` into `chat_w_history_context_session_mcp_tools.go`. Make
+     `mcpServer` hold a `func() mcp.Transport` factory (a closed transport can't be reused, and
+     HTTP has no process to respawn) instead of command + args.
+  2. `mcpTool` implementing `Tool`: `GetToolDefinition()` via `NewToolDef(<label>_<name>,
+     description, schema)` (marshal `InputSchema`, which is an `any`, to `json.RawMessage`), and
+     `CallTool` via `session.CallTool`, flattening `Content` text blocks, returning an error when
+     `IsError`, and truncating large output. Needs a **pointer receiver**.
+  3. `ListTools` via `session.Tools(ctx, nil)` (the paging iterator) in an `mcpServer` method that
+     returns `[]Tool`.
+  4. (2026-10-01) `MCPServers` is `map[string]MCPServerConfig` (key = label); transport is
+     inferred per server; `"type": "sse"` (deprecated HTTP+SSE) is skipped with a warning. See
+     DECISIONS.md § "MCP server transport". `subscriptions/listen` is a later slice.
+     Add `MCPServers` to `Config` and wire it into `setupToolRegistry`; close sessions in
+     `gracefulShutdown`/`runAgent` (a leaked `npx` process is the failure to avoid).
+  5. Restart + idempotency rules (DECISIONS.md), with a way to simulate a crash in a test.
+  6. Tests with a fake stdio server (a Go helper process) that can also act as a modern server;
+     real-server test opt-in via an env var, as in mvp1 (`MCP_E2E=1`).
+  Per-call timeouts go on individual calls; connecting gets its own longer timeout (cold `npx`
+  downloads are slow). Don't wrap the whole program in one timeout.
+- **Taught today (don't re-teach unless asked):** what `npx -y <pkg>` does (npm registry, not
+  GitHub; the cache in `~/.npm/_npx`); how JS builds work (no compile/link, optional
+  `tsc`/bundlers, package vs standalone binary, publishing); `slice...` unpacking into variadic
+  args; `context` cancel functions (`cancel`, `stop` are returned by the package, called with
+  `defer`; Ctrl+C cancels the contexts, it doesn't call them); whether surface-level JS is enough
+  for platform/infra roles (yes, with caveats).
+- **Still pending, separate session, only when Jerry asks:** the hand-rolled-client teaching
+  session from `mvp1/tool/mcp.go` (see the PENDING REQUEST entry under "Open questions").
+
 **▶ RESUME HERE (updated 2026-09-29). In progress: tool calling + MCP, in
 `mvp2/learn/chat_w_history_context_session_mcp_tools.go` (gen 8, a copy of gen 7) and
 `chat_w_history_context_session_mcp_tools_test.go`.**
@@ -203,8 +267,9 @@ DECISIONS.md § "Tool registry, tool calls and the ReAct loop".
   modern-only → dual-era".
   1. `Tool` + ReAct loop + `read_file`
   2. registry + `cfg.Tools`
-  3. MCP over stdio: 3a modern (2026-07-28, `server/discover` + `_meta`), then 3b legacy
-     `initialize` fallback
+  3. MCP over stdio via the **official Go SDK** (it does the modern probe and the legacy
+     fallback itself; we write the `Tool` adapter, config wiring, lifecycle and restart. The old
+     3a/3b split no longer applies.)
   4. `/mcp-add`, `/mcp-remove`, `/mcp-list`
   5. HTTP transport + OAuth
 - **Verified state (2026-09-29):** `go vet` clean, `gofmt -l` clean, full suite passes under
@@ -498,6 +563,8 @@ work since then (including this whole session) has been in Track 2 (`mvp2/learn/
    `Args`, `Truncate`), `confine` + `resolveExisting`, `const maxOutput = 16 << 10`. Port from
    `mvp1 tool/tool.go` and `tool/builtin.go:152`.
 4. **`api_key_name` vs `api_key_env`** — struct tag and `config.json` disagree; pick one.
+   (This is the dormant Track 1 `mvp2/config.json`. In `mvp2/learn/`, config keys are now
+   camelCase, e.g. `apiKeyName`; see DECISIONS.md § "Config file loading".)
 5. **`config.json` is currently mandatory** — confirm that's intended (mvp1 treats it as
    optional).
 6. **Stub `run()` ignores `ctx`** — wrap the sleep in a `select` against `ctx.Done()`.
