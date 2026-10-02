@@ -1,0 +1,11 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-5",
+  "api_key_env": "ANTHROPIC_API_KEY",
+  "tools": ["grep"],
+  "mcp_servers": [
+    {"name": "fs", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}
+  ],
+  "subagents": true,
+  "requires_approval": ["fs_write_file", "fs_edit_file", "fs_move_file", "fs_create_directory"]
+}
