@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"reflect"
 	"sort"
@@ -25,8 +26,14 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	AgentName    = "min-agent"
+	AgentVersion = "0.1.0"
+)
 const ResponseTimeout = 5 * time.Minute
 const WelcomeMsg = "Thanks for using minimal agent!\nType /clear to clear the conversation.\nType /exit to exit\nType /compact to compact the conversation.\nType /config to see the current agent configuration.\n"
 const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
@@ -39,9 +46,21 @@ const MaxReActSteps = 10             // maximum number of steps in a single ReAc
 // A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
 var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 
+const (
+	TransportHTTP  = "http"
+	TransportSSE   = "sse"
+	TransportStdio = "stdio"
+)
+
 //////////////////////////////////////////////
 // Interfaces and structs
 //////////////////////////////////////////////
+
+type Agent struct {
+	session      *ChatSession
+	toolRegistry *ToolRegistry
+	mcpServers   []*mcpServer
+}
 
 type Provider interface {
 	Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error)
@@ -74,7 +93,8 @@ type Config struct {
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
 	// tools and MCP servers configuration
-	Tools []string `json:"tools"`
+	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
+	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
 }
 
 func getDefaultConfig() Config {
@@ -88,6 +108,7 @@ func getDefaultConfig() Config {
 		ChatStoreType: "in-memory",
 		InBuffer:      os.Stdin,
 		OutBuffer:     os.Stdout,
+		BuiltinTools:  []string{"ReadFile"},
 	}
 }
 
@@ -401,6 +422,279 @@ func (ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string,
 	return string(data), nil
 }
 
+// *******************************************
+// MCP server connecting and tool registering
+// *******************************************
+
+type McpServerConfig struct {
+	Type string `json:"type,omitempty"` // types: "stdio" | "http" | "sse" - note that sse is now deprecated in the MCP spec (2026-07-28+)
+
+	// local MCP server (communication via stdio - server started as a child process)
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+
+	// remote MCP server (communication via HTTP - stateless in the latest MCP spec (2026-07-28+))
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// transportType works out which transport this server entry uses, and rejects entries that are ambiguous or contradictory.
+//
+//		command             -> stdio
+//		url                 -> http
+//		url + "type": "sse" -> sse (caller warns and skips)
+//	    weird mix of fields (e.g., command and url specified) or unknown fields -> error
+func (m McpServerConfig) transportType() (string, error) {
+
+	hasCmd, hasURL := m.Command != "", m.URL != ""
+	switch {
+	case hasCmd && hasURL:
+		return "", fmt.Errorf(`both "command" and "url" are set; a server is either local (command) or remote (url)`)
+	case !hasCmd && !hasURL:
+		return "", fmt.Errorf(`set either "command" (local server) or "url" (remote server)`)
+	}
+
+	// infer from the fields, then let an explicit type confirm or refine it
+	kind := TransportHTTP
+	if hasCmd {
+		kind = TransportStdio
+	}
+	switch m.Type {
+	case "": // nothing written, keep the inferred kind
+	case TransportStdio:
+		if !hasCmd {
+			return "", fmt.Errorf(`type %q needs "command"`, m.Type)
+		}
+	case TransportHTTP, TransportSSE:
+		if !hasURL {
+			return "", fmt.Errorf(`type %q needs "url"`, m.Type)
+		}
+		kind = m.Type
+	default:
+		return "", fmt.Errorf("unknown type %q (want %q, %q or %q)", m.Type, TransportStdio, TransportHTTP, TransportSSE)
+	}
+
+	// a known field that doesn't apply is an error, not a warning: ignoring e.g. an "env" token on a
+	// remote server would silently drop the credential and surface later as a confusing 401
+	switch kind {
+	case TransportStdio:
+		if len(m.Headers) > 0 {
+			return "", fmt.Errorf(`"headers" only applies to remote servers`)
+		}
+	case TransportHTTP:
+		if len(m.Env) > 0 {
+			return "", fmt.Errorf(`"env" only applies to local servers (use "headers" for remote auth)`)
+		}
+		if len(m.Args) > 0 {
+			return "", fmt.Errorf(`"args" only applies to local servers`)
+		}
+	}
+	return kind, nil
+}
+
+var _ Tool = (*mcpTool)(nil) // placeholder to check for compile errors if interface is not fully implemented
+
+type mcpTool struct {
+	server      *mcpServer // shared connection (a pointer: every tool of a server uses the same session)
+	toolName    string     // the tool's name on the server (what tools/call needs); toolDef holds the prefixed name the model sees
+	toolDef     ToolDef    // tool definition
+	safeToRetry bool       // are retries okay on this tool call (i.e., idempotent?)
+}
+
+func (t *mcpTool) GetToolDefinition() ToolDef {
+	return t.toolDef
+}
+
+func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	toolParams := mcp.CallToolParams{Name: t.toolName, Arguments: args}
+	res, err := t.server.session.CallTool(ctx, &toolParams)
+	if err != nil {
+		return "", fmt.Errorf("CallTool error: %w", err)
+	}
+	// flatten the MCP tool result response struct into plain text for the model
+	return flattenMCPResult(res)
+}
+
+// MCPResultMaxBytes caps how much of an MCP tool result is returned to the model (same idea as ReadFileMaxBytes).
+const MCPResultMaxBytes = 64 * 1024
+
+// flattenMCPResult turns an MCP tool result into plain text for the model, or an error if the tool reported failure.
+func flattenMCPResult(res *mcp.CallToolResult) (string, error) {
+	if res == nil {
+		return "", fmt.Errorf("mcp server returned no result")
+	}
+
+	parts := make([]string, 0, len(res.Content))
+	for _, c := range res.Content {
+		switch c := c.(type) {
+		case *mcp.TextContent:
+			parts = append(parts, c.Text)
+		case *mcp.ImageContent:
+			parts = append(parts, fmt.Sprintf("[image omitted: %s]", c.MIMEType))
+		default: // audio, resource links, embedded resources: not passed to the model yet
+			parts = append(parts, "[non-text content omitted]")
+		}
+	}
+	text := strings.Join(parts, "\n")
+
+	// no content blocks at all: fall back to the structured output, if the server sent one
+	if len(parts) == 0 && res.StructuredContent != nil {
+		b, err := json.Marshal(res.StructuredContent)
+		if err != nil {
+			return "", fmt.Errorf("encoding structured content: %w", err)
+		}
+		text = string(b)
+	}
+
+	// cap the size, then drop any multi-byte character that the byte cut split in half
+	if len(text) > MCPResultMaxBytes {
+		text = strings.ToValidUTF8(text[:MCPResultMaxBytes], "") +
+			fmt.Sprintf("\n[truncated: result is larger than %d KB]", MCPResultMaxBytes/1024)
+	}
+
+	// the tool ran but reported failure: the text is the error message (runToolCall prefixes "error: ")
+	if res.IsError {
+		if text == "" {
+			text = "tool reported an error with no message"
+		}
+		return "", errors.New(text)
+	}
+	return text, nil
+}
+
+// newMCPTool wraps one tool listed by an MCP server as a Tool the agent can register and call.
+func newMCPTool(server *mcpServer, t *mcp.Tool) (*mcpTool, error) {
+	// get tool parameters as raw JSON from the mcp.Tool input schema
+	// InputSchema is an `any` (a map[string]any when it comes from a server), but ToolDef wants raw JSON.
+	// A nil schema is left empty so NewToolDef fills in its "no parameters" default; marshalling nil would send "null".
+	var params json.RawMessage
+	if t.InputSchema != nil {
+		b, err := json.Marshal(t.InputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("encoding input schema of tool %q: %w", t.Name, err)
+		}
+		params = b
+	}
+
+	// name sent to the model - sees "<server label>_<tool name>"; avoids tool name conflicts across multiple servers
+	modelName := server.name + "_" + t.Name
+
+	// annotations are optional (nil) and only hints; no annotations means "not known to be safe to retry"
+	safeToRetry := t.Annotations != nil && (t.Annotations.ReadOnlyHint || t.Annotations.IdempotentHint)
+
+	return &mcpTool{
+		server:      server,
+		toolName:    t.Name,
+		toolDef:     NewToolDef(modelName, t.Description, params),
+		safeToRetry: safeToRetry,
+	}, nil
+}
+
+func getMCPTools(ctx context.Context, mcpServer *mcpServer) ([]Tool, error) {
+	mcpTools := []Tool{}
+	// query the server for available tools - t is of type *mcp.Tool (from the MCP official Go SDK)
+	for t, err := range mcpServer.session.Tools(ctx, nil) {
+		// if there is an issue adding a tool, just continue with a warning
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to get tool from server %s: %v\n", mcpServer.name, err)
+			continue
+		}
+		// otherwise from t of type *mcp.Tool, create a variable that satifies the Tool interface (type mcpTool)
+		mt, err := newMCPTool(mcpServer, t) // t is *mcp.Tool, mt is *mcpTool
+		if err != nil {
+			// warn and skip this one tool
+			fmt.Printf("warning: failed to create MCP tool from server %s: %v\n", mcpServer.name, err)
+			continue
+		}
+		mcpTools = append(mcpTools, mt)
+	}
+	return mcpTools, nil
+}
+
+func setupMCPTools(ctx context.Context, mcpServers []*mcpServer) ([]Tool, error) {
+	mcpTools := []Tool{}
+	if len(mcpServers) == 0 {
+		return nil, nil
+	}
+
+	// for each server, we get the list of tools and then append to our tools object
+	for _, s := range mcpServers {
+		sTools, err := getMCPTools(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		mcpTools = append(mcpTools, sTools...)
+	}
+	return mcpTools, nil
+}
+
+// connects to all MCP servers listed in input config, if possible - returns list of MCP server objects
+func setupMCPServers(ctx context.Context, cfg Config) ([]*mcpServer, error) {
+	var servers []*mcpServer
+	// note sconfig is already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
+	for sname, sconfig := range cfg.McpServers {
+		transportType, err := sconfig.transportType()
+		// if transport type is not supported or error in config, do not connect to this MCP server
+		if err != nil {
+			return nil, fmt.Errorf("failed to determine transport type for server %s: %w", sname, err)
+		}
+		switch transportType {
+		case TransportStdio:
+			server, err := connectLocalMCP(ctx, sname, sconfig)
+			if err != nil {
+				return nil, err
+			}
+			servers = append(servers, server)
+		default:
+			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
+		}
+	}
+	return servers, nil
+}
+
+type mcpServer struct {
+	name    string // server name from config
+	config  McpServerConfig
+	session *mcp.ClientSession
+}
+
+// [agent] note that I changed shape of connectLocalMCP()
+func connectLocalMCP(ctx context.Context, name string, config McpServerConfig) (*mcpServer, error) {
+	command := config.Command
+	args := config.Args
+
+	// build the MCP client
+	client := mcp.NewClient(&mcp.Implementation{Name: AgentName, Version: AgentVersion}, nil)
+
+	// This is the command that is executed to start a local MCP server
+	cmd := exec.Command(command, args...)
+	cmd.Stderr = os.Stderr
+	// transport := &mcp.CommandTransport{Command: cmd}
+	// log all transport messages - just for debugging
+	transport := &mcp.LoggingTransport{
+		Transport: &mcp.CommandTransport{Command: cmd},
+		Writer:    os.Stderr,
+	}
+
+	// Create client-server connection (session)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
+	}
+
+	return &mcpServer{name: name, config: config, session: session}, nil
+}
+
+// closes an MCP server connection
+func (s *mcpServer) Close() error {
+	return s.session.Close()
+}
+
+// ****************************************
+// ContextWindow
+// ****************************************
+
 // ContextWindow defines the interface for managing the chat history within the context window, allowing different strategies for handling the chat history.
 type ContextWindow interface {
 	AddMessages(msgs []ChatMessage)
@@ -704,13 +998,30 @@ func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *C
 	return cs, nil
 }
 
+// setup built-in tools
+func setupBuiltinTools(toolList []string) ([]Tool, error) {
+	tools := []Tool{}
+	// add the built-in tools specified in the config
+	for _, t := range toolList {
+		switch t {
+		case "ReadFile":
+			tools = append(tools, ReadFileTool{})
+		// add more built-in tools here as needed
+		default:
+			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
+		}
+	}
+	return tools, nil
+}
+
 // creates a tool registry
-func setupToolRegistry(cfg Config) (*ToolRegistry, error) {
+func setupToolRegistry(builtinTools []Tool, mcpTools []Tool) (*ToolRegistry, error) {
 	tools := []Tool{}
 	// first add the built-in tools (ReadFile Tool to start)
-	tools = append(tools, ReadFileTool{})
+	tools = append(tools, builtinTools...)
 
-	// later we will add MCP tools specified in the config file
+	// add the MCP tools specified in the config file
+	tools = append(tools, mcpTools...)
 
 	// create a registry from the tools list
 	reg, err := NewToolRegistry(tools)
@@ -1315,11 +1626,19 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []ChatMessage, in
 // ***********************************************************//
 // Run loop for handling chat session
 // ***********************************************************//
-func gracefulShutdown(cancel context.CancelFunc, chatSession *ChatSession) {
+func gracefulShutdown(cancel context.CancelFunc, agent *Agent) {
 	// signal the context to stop any ongoing operations
 	cancel()
-	// wait for any in-flight background compaction to finish
-	chatSession.MsgContext.WaitForCompaction()
+	if agent.session != nil {
+		// wait for any in-flight background compaction to finish
+		agent.session.MsgContext.WaitForCompaction()
+	}
+	if len(agent.mcpServers) > 0 {
+		// close MCP servers
+		for _, m := range agent.mcpServers {
+			m.Close()
+		}
+	}
 }
 
 func createChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage {
@@ -1378,8 +1697,6 @@ func runToolCall(ctx context.Context, cs *ChatSession, call ToolCall) ChatMessag
 }
 
 func runLoop(ctx context.Context, chatSession *ChatSession) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer gracefulShutdown(cancel, chatSession)
 
 	stdin := bufio.NewReader(chatSession.InBuffer)
 
@@ -1404,11 +1721,14 @@ func runLoop(ctx context.Context, chatSession *ChatSession) {
 //***********************************************************//
 
 func runAgent(ctx context.Context, cfg Config) error {
-	// placeholder for the main agent logic
-	// this function should implement the core functionality of the agent
-	// using the provided context and configuration
+	// this function implements the core functionality of the agent
+	ctx, cancel := context.WithCancel(ctx)
 
 	//// setup the agent object ////
+	// initialize the Agent object
+	agent := Agent{}
+	defer gracefulShutdown(cancel, &agent)
+
 	// 1. setup LLM provider
 	provider, err := setupProvider(cfg)
 	if err != nil {
@@ -1427,23 +1747,49 @@ func runAgent(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	// 4. setup tools (if applicable)
-	tools, err := setupToolRegistry(cfg)
+	// 4. setup built-in tools -> builtinTools satisfies Tool interface
+	builtinTools, err := setupBuiltinTools(cfg.BuiltinTools)
 	if err != nil {
 		return err
 	}
 
-	// 5. setup this chat session
+	// 5. connect to MCP servers (if applicable)
+	mcpServers, err := setupMCPServers(ctx, cfg)
+	if err != nil {
+		// print errors on MCP server connect fails - but don't exit
+		fmt.Fprintf(cfg.OutBuffer, "error connecting to MCP servers: %v\n", err)
+	}
+	agent.mcpServers = mcpServers
+
+	// 6. setup MCP tools (if applicable) - mcpTools satisfies Tool interface
+	mcpTools, err := setupMCPTools(ctx, mcpServers)
+	if err != nil {
+		// print errors on MCP tools setup fails - but don't exit
+		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %v\n", err)
+	}
+	// agent.mcpTools = mcpTools
+
+	// 7. setup tool registry
+	tools, err := setupToolRegistry(builtinTools, mcpTools)
+	if err != nil {
+		return err
+	}
+
+	// 8. setup this chat session
 	chatSession, err := setupChatSession(provider, chatHistory, chatContext, tools, cfg)
 	if err != nil {
 		return err
 	}
+	agent.session = chatSession
 
 	// print a welcome message
 	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg)
 	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
-	// 6. chat with the LLM provider in a loop
+	// 9. chat with the LLM provider in a loop (as long as program hasn't been Ctrl+C canceled before)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	runLoop(ctx, chatSession)
 
 	return nil
@@ -1452,14 +1798,19 @@ func runAgent(ctx context.Context, cfg Config) error {
 func main() {
 
 	// setup hard-coded default configuration
-	cfg := getDefaultConfig()
+	// cfg := getDefaultConfig()
+	cfg, err := setDefaultConfig("config.default.json")
+	if err != nil {
+		fatal(err)
+	}
 
 	// catch OS signals (e.g., Ctrl+C or process termination signal (kill)) and terminate gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// setup the agent object and run the main agent logic with the provided context and configuration
-	if err := runAgent(ctx, cfg); err != nil {
+	// a user-initiated cancel (Ctrl+C / SIGTERM) is a clean exit, not a failure; runAgent has already returned, so its defers (shutdown) have run
+	if err := runAgent(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		fatal(err)
 	}
 }

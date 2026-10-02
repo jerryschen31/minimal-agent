@@ -14,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Test cases for chat with context compaction functionality.
@@ -558,7 +561,7 @@ func Test_Unit_SetDefaultConfig_PopulatesFromFile_KeepsDefaultsForMissingKeys(t 
 		"userId": "jerry",
 		"model": "qwen2.5:0.5b",
 		"baseUrl": "http://127.0.0.1:11434/v1",
-		"tools": ["read_file"]
+		"builtinTools": ["read_file"]
 	}`))
 
 	var cfg Config
@@ -571,8 +574,8 @@ func Test_Unit_SetDefaultConfig_PopulatesFromFile_KeepsDefaultsForMissingKeys(t 
 	if cfg.UserID != "jerry" || cfg.Model != "qwen2.5:0.5b" || cfg.BaseURL != "http://127.0.0.1:11434/v1" {
 		t.Errorf("expected file values to be applied, got UserID=%q Model=%q BaseURL=%q", cfg.UserID, cfg.Model, cfg.BaseURL)
 	}
-	if len(cfg.Tools) != 1 || cfg.Tools[0] != "read_file" {
-		t.Errorf("expected Tools [read_file], got %v", cfg.Tools)
+	if len(cfg.BuiltinTools) != 1 || cfg.BuiltinTools[0] != "read_file" {
+		t.Errorf("expected BuiltinTools [read_file], got %v", cfg.BuiltinTools)
 	}
 
 	defaults := getDefaultConfig()
@@ -607,7 +610,7 @@ func Test_Unit_SetDefaultConfig_UnknownFields_WarnsAndIgnores(t *testing.T) {
 	path := writeTempFile(t, "config.json", []byte(`{
 		"userId": "jerry",
 		"zebra": 1,
-		"mcpServers": {"fs": {"command": "npx"}},
+		"subagents": true,
 		"InBuffer": "not a reader"
 	}`))
 
@@ -625,12 +628,12 @@ func Test_Unit_SetDefaultConfig_UnknownFields_WarnsAndIgnores(t *testing.T) {
 		t.Errorf("expected InBuffer to be untouched by the file, got nil")
 	}
 
-	// sorted by key: "InBuffer" < "mcpServers" < "zebra" (uppercase sorts before lowercase)
+	// sorted by key: "InBuffer" < "subagents" < "zebra" (uppercase sorts before lowercase)
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 warning lines, got %d: %q", len(lines), out)
 	}
-	for i, key := range []string{"InBuffer", "mcpServers", "zebra"} {
+	for i, key := range []string{"InBuffer", "subagents", "zebra"} {
 		if !strings.HasPrefix(lines[i], "[warning]") || !strings.Contains(lines[i], fmt.Sprintf("%q", key)) {
 			t.Errorf("line %d: expected a [warning] naming %q, got %q", i, key, lines[i])
 		}
@@ -714,6 +717,291 @@ func Test_Unit_SetDefaultConfig_EmptyFilename_UsesDefaultConfigFile(t *testing.T
 	}
 	if DefaultConfigFile != "config.default.json" {
 		t.Errorf("expected DefaultConfigFile to be config.default.json, got %q", DefaultConfigFile)
+	}
+}
+
+//*************************************//
+// MCP server config: transportType
+//*************************************//
+
+// - Verify transportType infers the transport from the fields, honors a matching explicit type,
+// and rejects ambiguous, unknown, contradicting and inapplicable-field entries (wantErr is a
+// substring of the expected error; "" means success)
+func Test_Unit_McpServerConfig_TransportType(t *testing.T) {
+	env := map[string]string{"TOKEN": "x"}
+	hdr := map[string]string{"Authorization": "Bearer x"}
+
+	tests := []struct {
+		name    string
+		cfg     McpServerConfig
+		want    string
+		wantErr string
+	}{
+		// inferred from fields
+		{"command only is stdio", McpServerConfig{Command: "npx"}, "stdio", ""},
+		{"command, args and env is stdio", McpServerConfig{Command: "npx", Args: []string{"-y", "pkg"}, Env: env}, "stdio", ""},
+		{"url only is http", McpServerConfig{URL: "https://x/mcp"}, "http", ""},
+		{"url with headers is http", McpServerConfig{URL: "https://x/mcp", Headers: hdr}, "http", ""},
+		// explicit type agreeing with the fields
+		{"type stdio with command", McpServerConfig{Type: "stdio", Command: "npx"}, "stdio", ""},
+		{"type http with url", McpServerConfig{Type: "http", URL: "https://x/mcp"}, "http", ""},
+		{"type sse with url is passed through", McpServerConfig{Type: "sse", URL: "https://x/sse"}, "sse", ""},
+		// shape errors
+		{"both command and url", McpServerConfig{Command: "npx", URL: "https://x/mcp"}, "", "both"},
+		{"neither command nor url", McpServerConfig{}, "", "set either"},
+		{"only args set", McpServerConfig{Args: []string{"a"}}, "", "set either"},
+		// type errors
+		{"unknown type", McpServerConfig{Type: "htpp", URL: "https://x/mcp"}, "", "unknown type"},
+		{"type is case-sensitive", McpServerConfig{Type: "HTTP", URL: "https://x/mcp"}, "", "unknown type"},
+		{"type stdio without command", McpServerConfig{Type: "stdio", URL: "https://x/mcp"}, "", `needs "command"`},
+		{"type http without url", McpServerConfig{Type: "http", Command: "npx"}, "", `needs "url"`},
+		{"type sse without url", McpServerConfig{Type: "sse", Command: "npx"}, "", `needs "url"`},
+		// fields that don't apply to the transport
+		{"headers on stdio", McpServerConfig{Command: "npx", Headers: hdr}, "", `"headers"`},
+		{"env on http", McpServerConfig{URL: "https://x/mcp", Env: env}, "", `"env"`},
+		{"args on http", McpServerConfig{URL: "https://x/mcp", Args: []string{"a"}}, "", `"args"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.cfg.transportType()
+
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected an error containing %q, got (%q, %v)", tt.wantErr, got, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected transport %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+// - Verify transportType does not modify the config: Type stays what the user wrote (empty here)
+func Test_Unit_McpServerConfig_TransportType_DoesNotMutate(t *testing.T) {
+	cfg := McpServerConfig{Command: "npx"}
+
+	if _, err := cfg.transportType(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Type != "" {
+		t.Errorf("expected Type to stay empty, got %q", cfg.Type)
+	}
+}
+
+// - Verify an mcpServers block decodes from a config file in the usual MCP shape and each entry's transport is inferred
+func Test_Unit_SetDefaultConfig_McpServers_DecodeAndInferTransport(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{
+		"mcpServers": {
+			"fs":     {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], "env": {"A": "b"}},
+			"remote": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer x"}},
+			"legacy": {"type": "sse", "url": "https://example.com/sse"}
+		}
+	}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = setDefaultConfig(path) })
+
+	if err != nil {
+		t.Fatalf("setDefaultConfig() returned an error: %v", err)
+	}
+	if out != "" {
+		t.Errorf("expected no warnings (mcpServers and its inner keys are known), got %q", out)
+	}
+	want := map[string]string{"fs": "stdio", "remote": "http", "legacy": "sse"}
+	if len(cfg.McpServers) != len(want) {
+		t.Fatalf("expected %d servers, got %d: %+v", len(want), len(cfg.McpServers), cfg.McpServers)
+	}
+	for label, wantKind := range want {
+		got, err := cfg.McpServers[label].transportType()
+		if err != nil || got != wantKind {
+			t.Errorf("server %q: expected %q, got (%q, %v)", label, wantKind, got, err)
+		}
+	}
+	if fs := cfg.McpServers["fs"]; len(fs.Args) != 3 || fs.Env["A"] != "b" {
+		t.Errorf("expected fs args and env to decode, got %+v", fs)
+	}
+}
+
+//*************************************//
+// MCP tools: newMCPTool
+//*************************************//
+
+// - Verify newMCPTool gives the model a "<server label>_<tool name>" name, keeps the server-side
+// name for the call, carries the description and schema into the ToolDef, and shares the server pointer
+func Test_Unit_NewMCPTool_BuildsToolDefAndKeepsServerSideName(t *testing.T) {
+	server := &mcpServer{name: "fs"}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"path": map[string]any{"type": "string"}},
+		"required":   []any{"path"},
+	}
+
+	tool, err := newMCPTool(server, &mcp.Tool{Name: "read_text_file", Description: "Reads a file", InputSchema: schema})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	def := tool.GetToolDefinition()
+	if def.Function.Name != "fs_read_text_file" {
+		t.Errorf("expected the model-facing name fs_read_text_file, got %q", def.Function.Name)
+	}
+	if tool.toolName != "read_text_file" {
+		t.Errorf("expected the server-side name read_text_file, got %q", tool.toolName)
+	}
+	if def.Type != "function" || def.Function.Desc != "Reads a file" {
+		t.Errorf("expected a function def with the description, got %+v", def)
+	}
+	var gotSchema map[string]any
+	if err := json.Unmarshal(def.Function.Params, &gotSchema); err != nil || gotSchema["type"] != "object" || gotSchema["required"] == nil {
+		t.Errorf("expected the input schema as JSON params, got %s (err %v)", def.Function.Params, err)
+	}
+	if tool.server != server {
+		t.Errorf("expected the tool to share the server pointer, not a copy")
+	}
+}
+
+// - Verify a tool with no input schema gets the default "no parameters" schema, not the JSON text "null"
+func Test_Unit_NewMCPTool_NilSchema_UsesDefaultParams(t *testing.T) {
+	tool, err := newMCPTool(&mcpServer{name: "s"}, &mcp.Tool{Name: "ping"})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := string(tool.GetToolDefinition().Function.Params); got != `{"type":"object","properties":{}}` {
+		t.Errorf("expected the default empty-object schema, got %s", got)
+	}
+}
+
+// - Verify a schema that can't be marshalled to JSON is an error naming the tool
+func Test_Unit_NewMCPTool_UnmarshalableSchema_ReturnsError(t *testing.T) {
+	_, err := newMCPTool(&mcpServer{name: "s"}, &mcp.Tool{Name: "bad", InputSchema: make(chan int)})
+
+	if err == nil || !strings.Contains(err.Error(), `"bad"`) {
+		t.Errorf("expected an error naming the tool, got %v", err)
+	}
+}
+
+// - Verify safeToRetry is true only when annotations say the tool is read-only or idempotent (nil annotations = not safe)
+func Test_Unit_NewMCPTool_SafeToRetry_FromAnnotations(t *testing.T) {
+	tests := []struct {
+		name string
+		ann  *mcp.ToolAnnotations
+		want bool
+	}{
+		{"nil annotations", nil, false},
+		{"empty annotations", &mcp.ToolAnnotations{}, false},
+		{"read-only", &mcp.ToolAnnotations{ReadOnlyHint: true}, true},
+		{"idempotent", &mcp.ToolAnnotations{IdempotentHint: true}, true},
+		{"title only", &mcp.ToolAnnotations{Title: "Move file"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tool, err := newMCPTool(&mcpServer{name: "s"}, &mcp.Tool{Name: "x", Annotations: tt.ann})
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tool.safeToRetry != tt.want {
+				t.Errorf("expected safeToRetry=%v, got %v", tt.want, tool.safeToRetry)
+			}
+		})
+	}
+}
+
+//*************************************//
+// MCP tool results: flattenMCPResult
+//*************************************//
+
+// - Verify flattenMCPResult turns each kind of result into the right text, or into an error when
+// the tool reported failure (wantErr is a substring of the expected error; "" means success)
+func Test_Unit_FlattenMCPResult(t *testing.T) {
+	text := func(s string) mcp.Content { return &mcp.TextContent{Text: s} }
+
+	tests := []struct {
+		name    string
+		res     *mcp.CallToolResult
+		want    string
+		wantErr string
+	}{
+		{"one text block", &mcp.CallToolResult{Content: []mcp.Content{text("hello")}}, "hello", ""},
+		{"text blocks joined by newline", &mcp.CallToolResult{Content: []mcp.Content{text("a"), text("b")}}, "a\nb", ""},
+		{"image becomes a placeholder", &mcp.CallToolResult{Content: []mcp.Content{text("see:"), &mcp.ImageContent{MIMEType: "image/png", Data: []byte("x")}}}, "see:\n[image omitted: image/png]", ""},
+		{"audio becomes a generic placeholder", &mcp.CallToolResult{Content: []mcp.Content{&mcp.AudioContent{MIMEType: "audio/wav"}}}, "[non-text content omitted]", ""},
+		{"no content, structured output is used", &mcp.CallToolResult{StructuredContent: map[string]any{"n": 1}}, `{"n":1}`, ""},
+		{"content wins over structured output", &mcp.CallToolResult{Content: []mcp.Content{text("hi")}, StructuredContent: map[string]any{"n": 1}}, "hi", ""},
+		{"nothing at all is empty text", &mcp.CallToolResult{}, "", ""},
+		{"IsError returns the text as an error", &mcp.CallToolResult{IsError: true, Content: []mcp.Content{text("no such file")}}, "", "no such file"},
+		{"IsError without text still errors", &mcp.CallToolResult{IsError: true}, "", "no message"},
+		{"nil result is an error", nil, "", "no result"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := flattenMCPResult(tt.res)
+
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("expected an error containing %q, got (%q, %v)", tt.wantErr, got, err)
+				}
+				if got != "" {
+					t.Errorf("expected empty text alongside the error, got %q", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+// - Verify a result over MCPResultMaxBytes is cut at the cap with a truncation note, and a result exactly at the cap is left alone
+func Test_Unit_FlattenMCPResult_Truncation(t *testing.T) {
+	big := func(s string) *mcp.CallToolResult {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
+	}
+
+	exact, err := flattenMCPResult(big(strings.Repeat("a", MCPResultMaxBytes)))
+	if err != nil || len(exact) != MCPResultMaxBytes || strings.Contains(exact, "truncated") {
+		t.Errorf("expected a result exactly at the cap to be untouched, got len=%d err=%v", len(exact), err)
+	}
+
+	over, err := flattenMCPResult(big(strings.Repeat("a", MCPResultMaxBytes+10)))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(over, strings.Repeat("a", MCPResultMaxBytes)) || !strings.HasSuffix(over, "KB]") || !strings.Contains(over, "[truncated:") {
+		t.Errorf("expected the cap's worth of text plus a truncation note, got len=%d tail=%q", len(over), over[len(over)-45:])
+	}
+}
+
+// - Verify truncation never leaves half of a multi-byte character (invalid UTF-8) in the result
+func Test_Unit_FlattenMCPResult_Truncation_DoesNotSplitMultiByteCharacter(t *testing.T) {
+	// "a" then 2-byte "é" repeated: byte MCPResultMaxBytes-1 is the first half of an "é", so a raw byte cut would split it
+	s := "a" + strings.Repeat("é", MCPResultMaxBytes)
+
+	got, err := flattenMCPResult(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("expected valid UTF-8 after truncation")
+	}
+	if !strings.Contains(got, "[truncated:") {
+		t.Errorf("expected a truncation note, got tail %q", got[len(got)-45:])
 	}
 }
 

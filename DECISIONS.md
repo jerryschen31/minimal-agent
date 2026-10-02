@@ -615,6 +615,60 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   and re-listening after a reconnect. It only delivers best-effort `list_changed` notifications,
   so polling is still the fallback. Progress notifications are NOT delivered on it.
 
+### `mcpTool`: the adapter from one MCP tool to `Tool` (2026-10-01)
+
+- **Decided: one `*mcpTool` per tool listed by a server**, built by `newMCPTool(server, *mcp.Tool)`.
+  The SDK's `*mcp.Tool` is a plain data struct (Name, Description, InputSchema, Annotations) and
+  does not satisfy our `Tool` interface; `mcpTool` is the wrapper that does (pointer receivers,
+  `var _ Tool = (*mcpTool)(nil)`).
+- **Two names, deliberately:** `toolName` is the name the server knows (what `tools/call` sends);
+  `toolDef.Function.Name` is `<server label>_<toolName>`, which is what the model sees and what
+  keeps two servers' tools from colliding. The label is the `mcpServers` map key, not the agent
+  name. Mixing the two up is the classic bug.
+- **`server` is a `*mcpServer`, not a copy:** all tools of a server share one session, and the
+  server will hold a mutex and a session that `reconnect()` swaps.
+- **`safeToRetry`** = annotations non-nil and (`ReadOnlyHint` or `IdempotentHint`). Nil means "not
+  known safe". Annotations are untrusted hints: used for retry only, never to skip approval.
+  Checked against the real filesystem server: reads, `write_file`, `create_directory` are safe;
+  `edit_file` and `move_file` are not. Nothing reads the field until slice 5.
+- **A nil `InputSchema` is left empty** so `NewToolDef` supplies its "no parameters" default
+  (marshalling nil would send the JSON text `null` to the model).
+- **Result flattening (`flattenMCPResult`, a pure function):** text blocks joined with `\n`; an
+  image becomes `[image omitted: <mime>]`; any other content type becomes `[non-text content
+  omitted]`; with no content blocks it falls back to `StructuredContent` as JSON; `IsError`
+  becomes a Go error carrying the text (so `runToolCall` prefixes `error:`), as does a nil
+  result. Output is capped at `MCPResultMaxBytes` (64 KB) with a truncation note, and
+  `strings.ToValidUTF8` drops a multi-byte character the byte cut split. **Honest downside:**
+  images, audio and resources are not passed to the model at all yet.
+- **Two failure kinds in `CallTool`:** a transport/protocol error (`err != nil` from the SDK)
+  versus a tool-level failure (`IsError`). Both become error observations.
+- Verified end to end (2026-10-01, throwaway test run from the scratchpad, not saved in the
+  repo) against the real `@modelcontextprotocol/server-filesystem`: 14 tools listed, calls with
+  `json.RawMessage` arguments work, a missing file and a missing argument come back as errors.
+- **Not decided:** whether `CallTool` goes through a `server.call(...)` seam now or when slice 5
+  needs it (recommended: now, one line). Name sanitizing and the length cap for model-facing
+  names (see SESSION.md).
+
+### Shutdown: one `Agent` object, one deferred `gracefulShutdown` in `runAgent` (2026-10-01)
+
+- **Decided (Jerry's design):** `runAgent` creates the cancellable context at the top, creates an
+  empty `Agent{session, toolRegistry, mcpServers}`, and does `defer gracefulShutdown(cancel,
+  &agent)` before any setup. Each setup step fills the `Agent`; shutdown cleans up whatever is in
+  it at that moment. `runLoop` no longer defers or creates its own cancel.
+- **Why it works:** the defer captures the *pointer*, so it sees the struct's final contents
+  (deferring with `chatSession` as an argument would capture `nil`, since defer evaluates its
+  arguments immediately). It also covers an early return from setup and a Ctrl+C during setup,
+  which the old `defer` inside `runLoop` could not.
+- **Shutdown order:** cancel, wait for background compaction, close MCP servers. `gracefulShutdown`
+  must tolerate a nil `agent.session` (setup failed before step 8); a missing guard was a real
+  nil-dereference bug, fixed 2026-10-01.
+- **`ctx.Err()` is checked before `runLoop`** so a Ctrl+C during setup doesn't start a loop on a
+  dead context. **`main` treats `context.Canceled` as a clean exit** (`errors.Is`), not `fatal`.
+  Honest downside: a real failure that surfaces wrapped as a cancel would also exit quietly;
+  tighten to `ctx.Err() != nil` if that ever matters.
+- **Rejected:** a `defer s.Close()` inside `connectLocalMCP` (a defer runs when its own function
+  returns, so it would close the server immediately). The owner of a resource closes it.
+
 ---
 
 ## Deferred / open decisions

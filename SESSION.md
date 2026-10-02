@@ -1,9 +1,10 @@
-# SESSION.md — mvp2 progress (last updated 2026-09-30)
+# SESSION.md — mvp2 progress (last updated 2026-10-01)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
 conversations** can pick up exactly where things left off — read top to bottom before doing
 anything. Full transcripts of most prior sessions are in `mvp2/learn/prompts/` (latest saved:
+`20261001-session-1.md`, the config loading, MCP adapter and shutdown session; before it
 `20260930-session-1.md`, the MCP-SDK decision and scratch-driver session; no transcript was saved
 for the 2026-09-24 session that produced the current test suite, so this file is the record of it).
 
@@ -188,8 +189,101 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
-**▶ NEWEST (2026-09-30): MCP step 3 is now SDK-based and the scratch driver works. Read this
-block first; the "RESUME HERE (2026-09-29)" block below it is still accurate for steps 1 and 2.**
+**▶ NEWEST (2026-10-01): MCP tools now work end to end for local (stdio) servers. Read this
+block first. The 2026-09-30 block below it is background; where they disagree, this one wins.**
+
+**Verified at the end of the session:** `go vet`, `gofmt -l` and `go test -race` (the scoped
+two-file command) all pass. Real-server check: a throwaway test (not saved in the repo) ran
+`connectLocalMCP` → `getMCPTools` → `mcpTool.CallTool` against the real filesystem server; 14
+tools listed and calls worked. **Uncommitted:** all of this, plus `mvp2/go.mod`/`go.sum`
+(untracked). Ask Jerry before committing.
+
+**What we did today** (design reasoning is in DECISIONS.md; the code is Jerry's unless noted):
+- **Config loading.** `setDefaultConfig(filename) (Config, error)` (Claude wrote it): starts from
+  `getDefaultConfig()`, overlays the JSON file, error on missing file or bad JSON, one stdout
+  warning per unrecognized top-level key. Config keys are now **camelCase** (`userId`,
+  `baseUrl`, `apiKeyName`, `systemPrompt`, `chatStoreType`, `mcpServers`); `InBuffer`/`OutBuffer`
+  are `json:"-"`. `Config.Tools []string` became `BuiltinTools []string` (`builtinTools`) plus
+  `McpServers map[string]McpServerConfig` (key = server label). § "Config file loading".
+- **`McpServerConfig` + `transportType()`** (Jerry's struct; Claude wrote the function and its
+  18-row table test): `command` → stdio, `url` → http, `"type": "sse"` recognized so it can be
+  skipped with a warning; errors for both/neither of command/url, unknown or contradicting
+  `type`, and inapplicable fields (`headers` on stdio, `env`/`args` on http). Jerry moved the
+  kind strings into local variables in the function. § "MCP server transport".
+- **Spec check (2026-07-28):** two transports only, stdio and Streamable HTTP; JSON reply,
+  request-scoped SSE reply and `subscriptions/listen` are response modes of Streamable HTTP, not
+  separate transports. HTTP+SSE is deprecated: **not supported, warn and skip.** Every client
+  message is a POST in this revision (GET stream, DELETE and sessions are gone).
+- **`mcpTool`** (§ "`mcpTool`: the adapter"): struct, `newMCPTool` (Claude wrote it plus 4
+  tests), `GetToolDefinition`, `CallTool`, `flattenMCPResult` (Claude wrote it plus 3 tests).
+  Also `getMCPTools`, `setupMCPTools`, `setupMCPServers`, and `connectLocalMCP` (new signature
+  takes the config).
+- **Shutdown restructure** (§ "Shutdown: one `Agent` object"): `Agent` struct, cancellable context
+  and `defer gracefulShutdown(cancel, &agent)` at the top of `runAgent`, `ctx.Err()` check before
+  `runLoop`, `main` exits cleanly on `context.Canceled`. Claude found and Jerry fixed a nil
+  dereference in `gracefulShutdown` (nil `agent.session` on early return).
+- **Tooling.** `/brief` skill at `~/.claude/skills/brief/SKILL.md` (user-level; answers one
+  question briefly; the repo's CLAUDE.md rules still apply to everything else).
+- **Working notes.** When the file doesn't compile, verify new code on a patched copy through
+  `go vet -overlay=...` with a JSON overlay in the scratchpad, never by editing Jerry's file.
+  Jerry asked Claude to write the tedious, low-design functions (`transportType`,
+  `flattenMCPResult`, `newMCPTool`'s `safeToRetry`) and types the design-heavy ones himself;
+  keep that split. `mcp__ide__getDiagnostics` shows the IDE's real diagnostics, and the
+  whole-directory "redeclared" errors are still just noise. An "unreachable code" warning was a
+  side effect of a syntax error elsewhere in the file.
+
+**To do next, most important first** (small fixes and improvements Claude flagged; when one
+resolves into a decision, move it to DECISIONS.md):
+
+1. **`setupMCPServers` throws away connected servers on the first failure** (`return nil, err`):
+   they leak, and one bad server disables all MCP. Decided behavior: connection failures **warn
+   and skip**; a `type: "sse"` server warns with the deprecation message; `http` is not built yet,
+   so warn and skip too; config *shape* errors (from `transportType`) stay errors. Today
+   `runAgent` only prints the error and continues, so decide whether a shape error should be
+   fatal there.
+2. **`config.Env` is parsed but never applied** in `connectLocalMCP`. Use `cmd.Env =
+   append(os.Environ(), "K=V", ...)`; a plain `cmd.Env = ...` drops `PATH`.
+3. **No timeouts** on connecting (longer, cold `npx` is slow), on listing, or on `CallTool`; a hung
+   server hangs startup or a whole turn until Ctrl+C. Per-call timeouts, not one global one.
+4. **Wire the config file.** `main` still calls `getDefaultConfig()`, so `McpServers` is empty and
+   no MCP code runs from `main`. Use `setDefaultConfig("")`. `config.default.json` doesn't parse:
+   trailing commas on lines 15, 16 and 18, and `"subagents": "true"` is a string. Its keys
+   `maxSteps`, `workDir`, `memory`, `contextWindow`, `subagents` have no `Config` field and will
+   warn. (It currently points the fs server at `/tmp`.)
+5. **`runLoop` blocks in `stdin.ReadString` and ignores `ctx`,** so Ctrl+C at the prompt does
+   nothing until Enter (then the turn fails with "context canceled"). Read stdin in a goroutine
+   and `select` on `ctx.Done()`.
+6. **Move the `ctx.Err()` check above the welcome message** in `runAgent` (offered, not done).
+7. **`gracefulShutdown` nits:** the loop variable `mcp` shadows the imported package; `Close()`
+   errors are ignored (print them); the `len(...) > 0` guard is redundant; `agent.toolRegistry`
+   is never assigned and `agent.mcpTools` is commented out. A one-line test, `gracefulShutdown(
+   cancel, &Agent{})` must not panic, would have caught the nil bug.
+8. **`getMCPTools` / `setupMCPTools` / `CallTool` cleanups:** `getMCPTools` always returns a nil
+   error, so the error path in `setupMCPTools` is dead (and a dead server just yields no tools
+   plus a stderr line); warnings use both `os.Stderr` and `fmt.Printf`, but the repo rule is
+   everything through `OutBuffer` (pass a writer in); the parameter `mcpServer *mcpServer`
+   shadows its type; `CallTool`'s error is `"CallTool error: %w"` and should name the server.
+9. **Model-facing tool names:** sanitize invalid characters and cap the length (OpenAI-style APIs
+   allow roughly letters, digits, `_`, `-`, up to 64 characters; verify against the provider). A
+   collision (`a_b` + `c` vs `a` + `b_c`) makes `NewToolRegistry` fail and the agent exit, so
+   register one tool at a time and warn on a duplicate.
+10. **`mcpServer` growth (slices 4 and 5 of the build order):** a `func() mcp.Transport` factory
+    (a closed transport can't be reused), a mutex around `session` plus `reconnect()`, the
+    optional `server.call(...)` seam, the restart and idempotency rule from DECISIONS.md, and
+    `LoggingTransport` should not be always-on.
+11. **Later slices:** Streamable HTTP transport (verify how the Go SDK attaches custom `headers`
+    and the exact transport type names with `go doc`), OAuth, `${VAR}` expansion in
+    `headers`/`env` values, nested unknown-key warnings in `setDefaultConfig` (a typo like `arg`
+    inside a server entry is silently dropped), a per-server `tools` allowlist, and
+    `subscriptions/listen` (its own slice; see DECISIONS.md).
+12. **Tests still missing:** `setupMCPServers`, `getMCPTools` and `CallTool` (need a fake stdio
+    server; real-server test opt-in via `MCP_E2E=1`, as in mvp1). The throwaway end-to-end test
+    from this session was in the scratchpad and is gone; recreate it as that gated test. Also the
+    `ReAct`-loop tests and slice 1d-iv from the 2026-09-29 block are still open.
+13. **Still unanswered by Jerry:** the default for `BuiltinTools` (the code has `["ReadFile"]` in
+    `getDefaultConfig`), and whether the `server.call` seam goes in now.
+
+**Older block (2026-09-30), kept as background:**
 
 - **State:** `mvp2/learn/mcp_scratch.go` is a standalone driver (run alone: `go run
   mcp_scratch.go`; it has its own `main`, so never build it with the other `package main`
