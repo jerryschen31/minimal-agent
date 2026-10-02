@@ -12,7 +12,7 @@
   "mcpServers": {
     "fs": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
     },
     "deepwiki": {
       "url": "https://mcp.deepwiki.com/mcp"
