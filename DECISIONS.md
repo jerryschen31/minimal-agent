@@ -669,6 +669,88 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 - **Rejected:** a `defer s.Close()` inside `connectLocalMCP` (a defer runs when its own function
   returns, so it would close the server immediately). The owner of a resource closes it.
 
+### Remote MCP: `DisableStandaloneSSE: true`, headers via `RoundTripper` (decided 2026-10-01, recorded 2026-10-02)
+
+- **Decided (Jerry, in the 2026-10-01 session; not written down at the time):** the remote
+  (Streamable HTTP) transport is built with `DisableStandaloneSSE: true`. The client sends only
+  POSTs and never opens the long-lived GET stream. Replies to a POST (plain JSON or a
+  request-scoped SSE stream) still work, so tool listing and tool calls are unaffected.
+- **Why it is safe here:** the agent lists tools once at startup and implements no
+  server-initiated features, so it has nothing to receive on that stream.
+- **Honest downside:** server-pushed messages are lost: `tools/list_changed` notifications and
+  server-to-client requests (sampling, elicitation). **Revisit trigger:** if the agent wants live
+  tool-list refresh or any of those features, set it back to `false`.
+- **Also avoids:** servers that answer the GET with a 405 or handle it badly.
+- **Custom headers (e.g. `Authorization`):** `StreamableClientTransport` has no `Headers` field.
+  Checked 2026-10-02 against v1.8.0 (the newest tag, and Jerry's version) and the SDK `main`
+  branch (v1.8.1-pre): fields are `Endpoint`, `HTTPClient`, `MaxRetries`, `DisableStandaloneSSE`,
+  `OAuthHandler`, `MaxEventSize`. So config `headers` are applied by an `http.Client` whose
+  `Transport` is a small `RoundTripper` that clones each request and sets the headers.
+- **Files:** `chat_w_history_context_session_mcp_tools.go` (`connectRemoteMCP`, `headerTransport`);
+  tests in `..._mcp_tools_test.go`.
+- **Status:** active for the decision; **but the flag currently has no effect, see the bug below.**
+  Code written and smoke-tested against `https://mcp.deepwiki.com/mcp` on 2026-10-02.
+
+#### Bug found 2026-10-02: `LoggingTransport` hides the client's `sessionUpdated` hook (OPEN, needs Jerry's decision)
+
+- **What happens.** After the initialize handshake the SDK client calls `sessionUpdated()` on the
+  connection, but only if it implements the `clientConnection` interface (`mcp/client.go:401`, and
+  `:332` on the discover path). `mcp.LoggingTransport` wraps the connection in `loggingConn`,
+  which has no such method, so the call is silently skipped. `connectRemoteMCP` wraps the
+  transport in `LoggingTransport` for debugging, so for remote servers:
+  1. **`DisableStandaloneSSE` is a no-op.** The standalone GET stream is started from
+     `sessionUpdated` (`mcp/streamable.go:2138-2165`); it never starts, whatever the flag says.
+  2. **`Mcp-Protocol-Version` is missing** on every request after initialize. The spec requires
+     it. DeepWiki tolerated that in the smoke test; a stricter server could reject the requests.
+- **Evidence (a scratch copy against the in-process fake server, recorded request headers):**
+
+  | | with `LoggingTransport` (current code) | without it |
+  |---|---|---|
+  | GET stream, flag `false` | not opened | opened |
+  | GET stream, flag `true` | not opened | not opened |
+  | `Mcp-Protocol-Version` after initialize | empty | `2025-11-25` |
+  | `Mcp-Session-Id` | present | present |
+
+- **Why the first version of the test missed it.** Two separate reasons, both worth remembering:
+  the SDK skips the GET stream entirely on protocol `2026-07-28` and later (so a fake server that
+  speaks the new spec never triggers it), and the wrapper hid it on the old path. The fake server
+  in the tests now rejects `server/discover` like DeepWiki does, so it exercises the old path.
+- **Local (stdio) is not affected:** `sessionUpdated` on the I/O connection is server-side only.
+
+**Decisions Jerry needs to make:**
+
+1. **What to do about `LoggingTransport` on the remote path.**
+   - **(a) Remove it from `connectRemoteMCP` (recommended).** Restores the header and makes the
+     flag meaningful. Downside: no JSON-RPC debug log for remote servers. HTTP-level logging can
+     come back as a logging `RoundTripper` around `headerTransport.base`, which doesn't touch the
+     SDK's connection type.
+   - **(b) Gate it behind a debug setting, off by default.** Keeps the log. Downside: debug mode
+     changes behavior, which is exactly what bit us; the bug returns whenever it is on.
+   - **(c) Leave it and document it.** Cheapest, but keeps the missing header.
+   - **Revisit trigger for (a):** if a future SDK version makes `loggingConn` forward
+     `sessionUpdated`, (b) becomes safe.
+2. **Whether to keep `LoggingTransport` on the local (stdio) path.** Harmless today because of the
+   point above; decide together with 1 so both paths log the same way.
+3. **After 1 is decided:** add the assertions that the current tests cannot make meaningfully
+   (no GET with the flag on; `Mcp-Protocol-Version` set on non-initial requests) and a mutation
+   check that flipping the flag to `false` fails the test.
+
+**Claude's notes (2026-10-02):**
+
+- Tests added today: remote connect with and without headers, `headerTransport` (3 tests), local
+  connect via a re-exec of the test binary (`TestHelperMCPServer`, skipped in normal runs), and
+  two error-path tests. Mutation checks: dropping `Clone` is caught; not wiring `headerTransport`
+  is caught; flipping the SSE flag is **not** caught (that is the bug above).
+- `connectLocalMCP` never applies `config.Env`, so a configured `env` map doesn't reach the child
+  process (the local test uses `t.Setenv`). Still open, SESSION.md "To do next" item 2.
+- There is no `${VAR}` expansion in header values yet, so a token in `config.json` is literal.
+  `os.ExpandEnv(v)` in `headerTransport.RoundTrip` is a one-line change when wanted.
+- The checked-in `config.default.json` has `deepwiki` configured with no auth header; don't put a
+  real token there.
+- The `DisableStandaloneSSE` decision itself was made in the 2026-10-01 session but never
+  recorded; the SESSION.md notes didn't carry it. Record decisions as they're made.
+- macOS has no `timeout` command; use `go test -timeout 30s` when running experiments.
+
 ---
 
 ## Deferred / open decisions

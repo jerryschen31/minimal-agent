@@ -646,6 +646,12 @@ func setupMCPServers(ctx context.Context, cfg Config) ([]*mcpServer, error) {
 				return nil, err
 			}
 			servers = append(servers, server)
+		case TransportHTTP:
+			server, err := connectRemoteMCP(ctx, sname, sconfig)
+			if err != nil {
+				return nil, err
+			}
+			servers = append(servers, server)
 		default:
 			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
 		}
@@ -659,7 +665,7 @@ type mcpServer struct {
 	session *mcp.ClientSession
 }
 
-// [agent] note that I changed shape of connectLocalMCP()
+// [note2agent] note that I changed shape of connectLocalMCP()
 func connectLocalMCP(ctx context.Context, name string, config McpServerConfig) (*mcpServer, error) {
 	command := config.Command
 	args := config.Args
@@ -684,6 +690,47 @@ func connectLocalMCP(ctx context.Context, name string, config McpServerConfig) (
 	}
 
 	return &mcpServer{name: name, config: config, session: session}, nil
+}
+
+func connectRemoteMCP(ctx context.Context, name string, config McpServerConfig) (*mcpServer, error) {
+	// Implementation for connecting to a remote MCP server
+	client := mcp.NewClient(&mcp.Implementation{Name: AgentName, Version: AgentVersion}, nil)
+
+	httpClient := &http.Client{
+		Transport: &headerTransport{base: http.DefaultTransport, headers: config.Headers},
+	}
+
+	transport := &mcp.LoggingTransport{
+		Transport: &mcp.StreamableClientTransport{
+			Endpoint:             config.URL,
+			HTTPClient:           httpClient,
+			DisableStandaloneSSE: true, // [agent] see DECISIONS.md: no server push needed
+		},
+		Writer: os.Stderr,
+	}
+
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
+	}
+	return &mcpServer{name: name, config: config, session: session}, nil
+}
+
+// headerTransport adds fixed headers (e.g. Authorization) to every outgoing request.
+// this is needed because the request shape in Go MCP SDK does not include a headers field, so we need to manually add it to each request
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+// adds headers to a request before sending it off
+// this is needed because the request shape in Go MCP SDK does not include a headers field, so we need to manually add it to each request
+func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context()) // RoundTrippers must not mutate the caller's request
+	for k, v := range h.headers {
+		req.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(req)
 }
 
 // closes an MCP server connection

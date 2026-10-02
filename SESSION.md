@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-01)
+# SESSION.md — mvp2 progress (last updated 2026-10-02)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -189,8 +189,62 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
-**▶ NEWEST (2026-10-01): MCP tools now work end to end for local (stdio) servers. Read this
-block first. The 2026-09-30 block below it is background; where they disagree, this one wins.**
+**▶ NEWEST (2026-10-02): remote (Streamable HTTP) MCP servers work. Read this block first; where it
+disagrees with the 2026-10-01 block below, this one wins.**
+
+**State, verified at the end of the session:** `gofmt`, `go vet` and `go test -race -count=3` on the
+scoped two-file command all pass. Smoke test: the agent started with `config.default.json`
+(`fs` stdio + `deepwiki` at `https://mcp.deepwiki.com/mcp`) and listed 14 + 3 tools. **Not yet
+done: an actual tool call to DeepWiki through the agent.** **Uncommitted:** all of it, plus
+`config.default.json` (it gained the `deepwiki` entry). Ask Jerry before committing; a commit
+before the refactor below would keep that diff clean.
+
+**What we did** (full reasoning in DECISIONS.md § "Remote MCP: ..."):
+- **`connectRemoteMCP` + `headerTransport`** (Claude wrote them at Jerry's request because the
+  `net/http` and SDK APIs were unfamiliar; explained line by line). Headers go through an
+  `http.Client` whose `Transport` is a `RoundTripper`, because `StreamableClientTransport` has no
+  `Headers` field in v1.8.0 or in SDK `main`. `setupMCPServers` got a `TransportHTTP` case.
+- **Recorded the `DisableStandaloneSSE: true` decision** Jerry made on 2026-10-01 (it had been lost).
+- **Tests added** (8, all pass): remote connect with and without headers (in-process fake server
+  that records every request), `headerTransport` (3), local connect by re-running the test binary
+  as a stdio server, and two error-path tests. They live at the end of the mcp_tools test file.
+- **Found a bug** (details and the table of evidence in DECISIONS.md): `LoggingTransport` hides
+  the SDK's `sessionUpdated` hook, so `DisableStandaloneSSE` does nothing and
+  `Mcp-Protocol-Version` is never sent after initialize. **Open: Jerry has to pick option (a), (b)
+  or (c)** in DECISIONS.md. Until then the no-GET assertions in the two remote tests pass for the
+  wrong reason; don't read them as proof the flag works.
+
+**Next session, in this order:**
+1. **Decide the `LoggingTransport` question** (about 10 minutes), fix `connectRemoteMCP`, and add
+   the assertions listed in DECISIONS.md. Do this *before* the refactor so the refactor is a pure
+   move.
+2. **Refactor the single file into packages, as in `mvp1/`** (Jerry's plan; Claude agrees, see
+   below). The file is now about 1,860 lines plus a 2,680-line test file.
+3. A tool call to DeepWiki through the agent as a manual check.
+
+**Refactor plan notes (agreed in principle, nothing decided yet):**
+- **Pure move, no behavior changes.** Tests green before the first move and after each package.
+  One package per step, committing between steps. Fixes from "To do next" wait until after.
+- **Layout to decide first.** `mvp1/` has `agent/` (types, interfaces, loop; imports nothing from
+  the module), `llm/`, `tool/`, `memory/`, `harness/`, `hooks/`. Shared types (`ChatMessage`,
+  `ToolDef`, the `Tool` interface) must live in the kernel package or the others will import
+  each other in a cycle. This is the main design decision of the refactor.
+- **Where it goes.** `mvp2/` root already holds an older, dormant Track 1 (`main.go`, `agent/`,
+  `tool/`, `config.json`, module `github.com/jerryschen31/minagent`, last touched 2026-09-12).
+  Decide whether the refactor replaces it or goes in a new directory. `mvp2/learn/` stays frozen
+  as the snapshot history either way.
+- **Tests.** Keep tests in the same package as the code (`package tool`, not `tool_test`) so they
+  can still reach unexported fields such as `mcpTool.toolName`. `fakeProvider` and the session
+  fixture are shared, so they need a home (a small `internal/testutil` or a `_test.go` file in
+  the kernel). `runLoop`, `runAgent` and `main` are untested; the move will reshape them, which
+  is a reason not to write those tests first.
+- **Teaching mode still applies:** give Jerry an old-to-new mapping table (function or type, from
+  file, to package) and let him do the moves with the IDE's rename and move tools.
+
+**Older block (2026-10-01):**
+
+**(2026-10-01): MCP tools now work end to end for local (stdio) servers. The 2026-09-30
+block below it is background; where they disagree, this one wins.**
 
 **Verified at the end of the session:** `go vet`, `gofmt -l` and `go test -race` (the scoped
 two-file command) all pass. Real-server check: a throwaway test (not saved in the repo) ran
@@ -238,15 +292,14 @@ resolves into a decision, move it to DECISIONS.md):
 1. **`setupMCPServers` throws away connected servers on the first failure** (`return nil, err`):
    they leak, and one bad server disables all MCP. Decided behavior: connection failures **warn
    and skip**; a `type: "sse"` server warns with the deprecation message; `http` is not built yet,
-   so warn and skip too; config *shape* errors (from `transportType`) stay errors. Today
+   so warn and skip too (**update 2026-10-02: `http` is now built**, so only the "warn and skip on connection failure" part is still open); config *shape* errors (from `transportType`) stay errors. Today
    `runAgent` only prints the error and continues, so decide whether a shape error should be
    fatal there.
 2. **`config.Env` is parsed but never applied** in `connectLocalMCP`. Use `cmd.Env =
    append(os.Environ(), "K=V", ...)`; a plain `cmd.Env = ...` drops `PATH`.
 3. **No timeouts** on connecting (longer, cold `npx` is slow), on listing, or on `CallTool`; a hung
    server hangs startup or a whole turn until Ctrl+C. Per-call timeouts, not one global one.
-4. **Wire the config file.** `main` still calls `getDefaultConfig()`, so `McpServers` is empty and
-   no MCP code runs from `main`. Use `setDefaultConfig("")`. `config.default.json` doesn't parse:
+4. **Wire the config file.** (**Done by 2026-10-02**: `runAgent` calls `setDefaultConfig("config.default.json")`; the unrecognized-field warnings remain.) Originally: `main` called `getDefaultConfig()`, so `McpServers` was empty. `config.default.json` doesn't parse:
    trailing commas on lines 15, 16 and 18, and `"subagents": "true"` is a string. Its keys
    `maxSteps`, `workDir`, `memory`, `contextWindow`, `subagents` have no `Config` field and will
    warn. (It currently points the fs server at `/tmp`.)
@@ -271,8 +324,7 @@ resolves into a decision, move it to DECISIONS.md):
     (a closed transport can't be reused), a mutex around `session` plus `reconnect()`, the
     optional `server.call(...)` seam, the restart and idempotency rule from DECISIONS.md, and
     `LoggingTransport` should not be always-on.
-11. **Later slices:** Streamable HTTP transport (verify how the Go SDK attaches custom `headers`
-    and the exact transport type names with `go doc`), OAuth, `${VAR}` expansion in
+11. **Later slices:** ~~Streamable HTTP transport~~ (done 2026-10-02), OAuth (`OAuthHandler` on `StreamableClientTransport` is the hook), `${VAR}` expansion in
     `headers`/`env` values, nested unknown-key warnings in `setDefaultConfig` (a typo like `arg`
     inside a server entry is silently dropped), a per-server `tools` allowlist, and
     `subscriptions/listen` (its own slice; see DECISIONS.md).
