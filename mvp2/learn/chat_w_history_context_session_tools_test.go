@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -47,25 +49,62 @@ func windowTypeNames() []string {
 // afterward to see exactly which message list a test triggered. Calls is mutex-guarded because
 // auto-compaction invokes Chat from a background goroutine — tests exercising that path need
 // this safe under -race, not just in the common single-goroutine case.
+//
+// For multi-step (ReAct) tests, set Script to a list of replies to play back one per Chat call,
+// e.g. a tool-call reply followed by a final text reply. Once Script is set, the fake is in
+// "scripted" mode: running past the end of the script is an error (so a loop that calls Chat too
+// many times fails loudly instead of silently reusing Reply). With Script unset, every call
+// returns Reply, exactly as before. Err, if set, wins over both. ToolDefs records the tools
+// argument of each call, parallel to Calls.
 type fakeProvider struct {
-	mu    sync.Mutex
-	Reply string
-	Err   error
-	Calls [][]ChatMessage
+	mu       sync.Mutex
+	Reply    string
+	Err      error
+	Script   []ChatMessage
+	next     int // index of the next Script entry to play
+	Calls    [][]ChatMessage
+	ToolDefs [][]ToolDef
 }
 
-func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
+func (p *fakeProvider) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.Calls = append(p.Calls, append([]ChatMessage(nil), chatHistory...))
-	p.mu.Unlock()
+	p.ToolDefs = append(p.ToolDefs, append([]ToolDef(nil), tools...))
 
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return ChatMessage{}, ctx.Err()
 	}
 	if p.Err != nil {
-		return "", p.Err
+		return ChatMessage{}, p.Err
 	}
-	return p.Reply, nil
+	if p.Script != nil {
+		if p.next >= len(p.Script) {
+			return ChatMessage{}, fmt.Errorf("fakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
+		}
+		reply := p.Script[p.next]
+		p.next++
+		return reply, nil
+	}
+	return ChatMessage{Role: "assistant", Content: p.Reply}, nil
+}
+
+// assistantText builds a plain assistant reply with no tool calls (the "final answer" step).
+func assistantText(text string) ChatMessage {
+	return ChatMessage{Role: "assistant", Content: text}
+}
+
+// assistantToolCall builds an assistant reply that asks for one tool call. args is the raw
+// JSON string the model would send, e.g. `{"path":"go.mod"}`.
+func assistantToolCall(callID, toolName, args string) ChatMessage {
+	return ChatMessage{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:       callID,
+			Type:     "function",
+			Function: ToolCallFunc{Name: toolName, Arguments: args},
+		}},
+	}
 }
 
 // chatSessionFixture bundles a fully wired ChatSession (history + context + a fake provider)
@@ -79,6 +118,7 @@ type chatSessionFixture struct {
 	History  *InMemoryChatHistory
 	Context  *ChatContext
 	Provider *fakeProvider
+	Tools    *ToolRegistry // starts empty; tests that need tools call Tools.Register
 	Out      *bytes.Buffer
 }
 
@@ -109,7 +149,12 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		OutBuffer:    out,
 	}
 
-	session, err := NewChatSession(provider, history, chatContext, cfg)
+	tools, err := NewToolRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewToolRegistry() returned an error: %v", err)
+	}
+
+	session, err := NewChatSession(provider, history, chatContext, tools, cfg)
 	if err != nil {
 		t.Fatalf("NewChatSession() returned an error: %v", err)
 	}
@@ -119,6 +164,7 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		History:  history,
 		Context:  chatContext,
 		Provider: provider,
+		Tools:    tools,
 		Out:      out,
 	}
 }
@@ -863,10 +909,10 @@ func Test_ChatRequest_ErrorsGracefully(t *testing.T) {
 	srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply)
+		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply.Content)
 	}
 }
 
@@ -878,10 +924,10 @@ func Test_ChatRequest_Non2xxResponseErrorsGracefully(t *testing.T) {
 	defer srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply)
+		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply.Content)
 	}
 }
 
@@ -896,10 +942,10 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		defer srv.Close()
 
 		p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for an empty response body, got reply %q", reply)
+			t.Fatalf("expected an error for an empty response body, got reply %q", reply.Content)
 		}
 	})
 
@@ -911,10 +957,10 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		defer srv.Close()
 
 		p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for a response with no choices, got reply %q", reply)
+			t.Fatalf("expected an error for a response with no choices, got reply %q", reply.Content)
 		}
 	})
 }
@@ -941,13 +987,13 @@ func Test_ChatRequest_ProperRequestResponseCycle(t *testing.T) {
 	defer srv.Close()
 
 	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
-	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}})
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err != nil {
 		t.Fatalf("Chat() returned an unexpected error: %v", err)
 	}
-	if reply != "hi there" {
-		t.Errorf("expected reply %q, got %q", "hi there", reply)
+	if reply.Content != "hi there" {
+		t.Errorf("expected reply %q, got %q", "hi there", reply.Content)
 	}
 }
 
@@ -1176,7 +1222,7 @@ func Test_Unit_ClampToMax_UnderCapacity_ReturnsUnchanged(t *testing.T) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
 	for i := range clamped {
-		if clamped[i] != messages[i] {
+		if clamped[i].ID != messages[i].ID {
 			t.Errorf("expected message at index %d to be unchanged", i)
 		}
 	}
@@ -1191,7 +1237,7 @@ func Test_Unit_ClampToMax_ExactlyAtCapacity_ReturnsUnchanged(t *testing.T) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
 	for i := range clamped {
-		if clamped[i] != messages[i] {
+		if clamped[i].ID != messages[i].ID {
 			t.Errorf("expected message at index %d to be unchanged", i)
 		}
 	}
@@ -1206,11 +1252,11 @@ func Test_Unit_ClampToMax_OverCapacity_KeepsSummaryAndNewestSurvivors(t *testing
 		t.Errorf("expected clamped slice to have length %d, got %d", max, len(clamped))
 	}
 	// assuming the first message is the summary and the last (max-1) messages are the newest survivors
-	if clamped[0] != messages[0] {
+	if clamped[0].ID != messages[0].ID {
 		t.Errorf("expected the first message (summary) to be unchanged")
 	}
 	for i := 1; i < max; i++ {
-		if clamped[i] != messages[len(messages)-max+i] {
+		if clamped[i].ID != messages[len(messages)-max+i].ID {
 			t.Errorf("expected message at index %d to be one of the newest survivors", i)
 		}
 	}
@@ -1261,7 +1307,7 @@ func Test_Unit_ContextWindow_RemoveLast_RemovesNewestN(t *testing.T) {
 			t.Fatalf("expected %d messages after removal, got %d", len(expected), len(actual))
 		}
 		for i := range expected {
-			if actual[i] != expected[i] {
+			if actual[i].ID != expected[i].ID {
 				t.Errorf("expected message at index %d to be %+v, got %+v", i, expected[i], actual[i])
 			}
 		}
@@ -1319,7 +1365,7 @@ func Test_Unit_ChatContext_RemoveLast_DelegatesToWindow(t *testing.T) {
 			t.Fatalf("expected %d messages after removal, got %d", len(expected), len(actual))
 		}
 		for i := range expected {
-			if actual[i] != expected[i] {
+			if actual[i].ID != expected[i].ID {
 				t.Errorf("expected message at index %d to be %+v, got %+v", i, expected[i], actual[i])
 			}
 		}
@@ -1426,5 +1472,453 @@ func Test_Unit_SetupChatContext_ComputesExpectedThreshold(t *testing.T) {
 	chatContext.AddMessages(msgs(1))
 	if !chatContext.IsAutoCompactionNeeded() {
 		t.Errorf("expected auto-compaction to be needed at %d messages (threshold %d)", wantThreshold, wantThreshold)
+	}
+}
+
+//*************************************//
+// Built-in tools: read_file
+//*************************************//
+
+// writeTempFile creates a file with the given contents in a per-test temp dir (deleted by Go
+// after the test) and returns its path.
+func writeTempFile(t *testing.T, name string, contents []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, contents, 0o644); err != nil {
+		t.Fatalf("writing temp file: %v", err)
+	}
+	return path
+}
+
+// readFileArgs builds the JSON arguments the model would send for read_file.
+func readFileArgs(path string) json.RawMessage {
+	b, _ := json.Marshal(map[string]string{"path": path})
+	return b
+}
+
+// - Verify that a small text file is returned in full, unchanged
+func Test_ReadFile_SmallFile_ReturnsContents(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-small.txt", []byte("hello"))
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("expected %q, got %q", "hello", got)
+	}
+}
+
+// - Verify that a file of exactly ReadFileMaxBytes is returned in full with no truncation note
+// (the +1 byte read is what tells "exactly at the cap" apart from "over the cap")
+func Test_ReadFile_ExactlyMaxBytes_NotTruncated(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-exact.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes))
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != ReadFileMaxBytes {
+		t.Errorf("expected %d bytes, got %d", ReadFileMaxBytes, len(got))
+	}
+	if strings.Contains(got, "[truncated") {
+		t.Errorf("expected no truncation note for a file exactly at the cap")
+	}
+}
+
+// - Verify that a file over ReadFileMaxBytes returns the first ReadFileMaxBytes plus a truncation
+// note, so the model knows the file doesn't really end there
+func Test_ReadFile_OverMaxBytes_TruncatedWithNote(t *testing.T) {
+	path := writeTempFile(t, "minagent-read-file-test-big.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes+10))
+	const note = "\n[truncated: file is larger than 64 KB]"
+
+	got, err := ReadFileTool{}.CallTool(context.Background(), readFileArgs(path))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(got, note) {
+		t.Fatalf("expected output to end with the truncation note, got tail %q", got[len(got)-50:])
+	}
+	if len(got) != ReadFileMaxBytes+len(note) {
+		t.Errorf("expected %d content bytes before the note, got %d", ReadFileMaxBytes, len(got)-len(note))
+	}
+}
+
+// - Verify that every failure is returned as an error (for the model to read), never a panic
+// and never an empty "success"
+func Test_ReadFile_InvalidInputs_ReturnErrors(t *testing.T) {
+	dir := t.TempDir()
+	binary := writeTempFile(t, "minagent-read-file-test-bin.dat", []byte{'a', 0, 'b'})
+
+	cases := map[string]struct {
+		args    json.RawMessage
+		wantErr string // substring the error message must contain
+	}{
+		"bad json":     {json.RawMessage(`{"path":`), "invalid arguments"},
+		"empty path":   {json.RawMessage(`{}`), "missing required argument: path"},
+		"missing file": {readFileArgs(filepath.Join(dir, "nope.txt")), "no such file"},
+		"directory":    {readFileArgs(dir), "is a directory"},
+		"binary file":  {readFileArgs(binary), "binary file"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := ReadFileTool{}.CallTool(context.Background(), tc.args)
+			if err == nil {
+				t.Fatalf("expected an error, got nil (output %q)", got)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected error containing %q, got %q", tc.wantErr, err.Error())
+			}
+			if got != "" {
+				t.Errorf("expected empty output on error, got %q", got)
+			}
+		})
+	}
+}
+
+//*************************************//
+// Tool registry
+//*************************************//
+
+// stubTool is a minimal Tool for registry tests. Tag lets a test tell two tools with the same
+// name apart (e.g. to check which one survived a duplicate registration).
+type stubTool struct {
+	name string
+	Tag  string
+}
+
+func (s stubTool) GetToolDefinition() ToolDef { return NewToolDef(s.name, "stub tool", nil) }
+func (s stubTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	return s.Tag, nil
+}
+
+// defNames returns the tool names from a slice of definitions, in order.
+func defNames(defs []ToolDef) []string {
+	names := make([]string, len(defs))
+	for i, d := range defs {
+		names[i] = d.Function.Name
+	}
+	return names
+}
+
+// newRegistry builds a registry from tools, failing the test on error.
+func newRegistry(t *testing.T, tools ...Tool) *ToolRegistry {
+	t.Helper()
+	reg, err := NewToolRegistry(tools)
+	if err != nil {
+		t.Fatalf("NewToolRegistry: %v", err)
+	}
+	return reg
+}
+
+// - Verify that tools registered out of order come back from GetToolDefs sorted by name
+// (the order must not depend on registration order or map iteration order)
+func Test_ToolRegistry_Register_OutOfOrder_DefsSortedByName(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "zeta"}, stubTool{name: "alpha"}, stubTool{name: "mid"})
+
+	got := strings.Join(defNames(reg.GetToolDefs()), ",")
+	if want := "alpha,mid,zeta"; got != want {
+		t.Errorf("expected defs %q, got %q", want, got)
+	}
+}
+
+// - Verify that the defs stay in the same order across repeated calls and rebuilds
+// (map iteration is random, so a missing sort would show up as flakiness here)
+func Test_ToolRegistry_GetToolDefs_OrderStableAcrossRebuilds(t *testing.T) {
+	reg := newRegistry(t)
+	for _, n := range []string{"e", "b", "d", "a", "c"} {
+		if err := reg.Register(stubTool{name: n}); err != nil {
+			t.Fatalf("Register(%q): %v", n, err)
+		}
+		if names := defNames(reg.GetToolDefs()); !sort.StringsAreSorted(names) {
+			t.Fatalf("defs not sorted after registering %q: %v", n, names)
+		}
+	}
+}
+
+// - Verify that registering a duplicate name is an error and the original tool is kept
+func Test_ToolRegistry_Register_DuplicateName_ErrorsAndKeepsOriginal(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "dup", Tag: "first"})
+
+	err := reg.Register(stubTool{name: "dup", Tag: "second"})
+	if err == nil {
+		t.Fatalf("expected an error registering a duplicate name, got nil")
+	}
+	if !strings.Contains(err.Error(), "already registered") {
+		t.Errorf("expected error to mention 'already registered', got %q", err.Error())
+	}
+	if n := len(reg.GetToolDefs()); n != 1 {
+		t.Errorf("expected 1 def after a rejected duplicate, got %d", n)
+	}
+	tool, ok := reg.Lookup("dup")
+	if !ok {
+		t.Fatalf("expected the original tool to still be registered")
+	}
+	if got, _ := tool.CallTool(context.Background(), nil); got != "first" {
+		t.Errorf("expected original tool (tag %q) to be kept, got tag %q", "first", got)
+	}
+}
+
+// - Verify that NewToolRegistry surfaces a duplicate among its arguments as an error
+func Test_ToolRegistry_NewToolRegistry_DuplicateInArgs_ReturnsError(t *testing.T) {
+	reg, err := NewToolRegistry([]Tool{stubTool{name: "x"}, stubTool{name: "x"}})
+	if err == nil {
+		t.Fatalf("expected an error, got nil")
+	}
+	if reg != nil {
+		t.Errorf("expected a nil registry on error, got %+v", reg)
+	}
+}
+
+// - Verify that a tool with an empty name is rejected and leaves the registry unchanged
+func Test_ToolRegistry_Register_EmptyName_Errors(t *testing.T) {
+	reg := newRegistry(t)
+
+	err := reg.Register(stubTool{name: ""})
+	if err == nil {
+		t.Fatalf("expected an error registering an empty name, got nil")
+	}
+	if n := len(reg.GetToolDefs()); n != 0 {
+		t.Errorf("expected no defs after a rejected registration, got %d", n)
+	}
+}
+
+// - Verify that a nil Tool is rejected with an error, not a panic
+// (a typed nil pointer is deliberately not handled; see the note on Register)
+func Test_ToolRegistry_Register_NilTool_Errors(t *testing.T) {
+	reg := newRegistry(t)
+
+	if err := reg.Register(nil); err == nil {
+		t.Errorf("expected an error registering a nil tool, got nil")
+	}
+	if n := len(reg.GetToolDefs()); n != 0 {
+		t.Errorf("expected no defs after a rejected registration, got %d", n)
+	}
+}
+
+// - Verify that Remove drops both the tool and its definition, keeping the rest in sorted order
+func Test_ToolRegistry_Remove_DropsToolAndDef(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "c"}, stubTool{name: "a"}, stubTool{name: "b"})
+
+	if !reg.Remove("b") {
+		t.Fatalf("expected Remove(%q) to return true", "b")
+	}
+	if _, ok := reg.Lookup("b"); ok {
+		t.Errorf("expected %q to be gone from Lookup", "b")
+	}
+	if got, want := strings.Join(defNames(reg.GetToolDefs()), ","), "a,c"; got != want {
+		t.Errorf("expected defs %q after Remove, got %q", want, got)
+	}
+}
+
+// - Verify that Remove on an unknown name returns false and changes nothing
+func Test_ToolRegistry_Remove_UnknownName_ReturnsFalse(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "a"})
+
+	if reg.Remove("nope") {
+		t.Errorf("expected Remove of an unknown name to return false")
+	}
+	if n := len(reg.GetToolDefs()); n != 1 {
+		t.Errorf("expected registry unchanged (1 def), got %d", n)
+	}
+}
+
+// - Verify that a removed name can be registered again
+func Test_ToolRegistry_Remove_ThenRegisterAgain_Succeeds(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "a", Tag: "old"})
+	reg.Remove("a")
+
+	if err := reg.Register(stubTool{name: "a", Tag: "new"}); err != nil {
+		t.Fatalf("re-registering a removed name: %v", err)
+	}
+	tool, _ := reg.Lookup("a")
+	if got, _ := tool.CallTool(context.Background(), nil); got != "new" {
+		t.Errorf("expected the new tool (tag %q), got tag %q", "new", got)
+	}
+}
+
+// - Verify Lookup finds registered tools and reports (nil, false) for unknown names
+func Test_ToolRegistry_Lookup_KnownAndUnknown(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "known"})
+
+	if tool, ok := reg.Lookup("known"); !ok || tool == nil {
+		t.Errorf("expected Lookup(%q) to find the tool, got (%v, %v)", "known", tool, ok)
+	}
+	if tool, ok := reg.Lookup("unknown"); ok || tool != nil {
+		t.Errorf("expected Lookup(%q) to return (nil, false), got (%v, %v)", "unknown", tool, ok)
+	}
+}
+
+// - Verify an empty registry has no defs (so the request's "tools" key is omitted)
+func Test_ToolRegistry_GetToolDefs_EmptyRegistry_NoDefs(t *testing.T) {
+	reg := newRegistry(t)
+
+	if n := len(reg.GetToolDefs()); n != 0 {
+		t.Errorf("expected no defs, got %d", n)
+	}
+}
+
+// - Verify copy-on-write: a slice handed out earlier is not changed by later Register/Remove calls
+// (this is what lets GetToolDefs return its slice without copying it)
+func Test_ToolRegistry_GetToolDefs_EarlierSliceUnaffectedByLaterChanges(t *testing.T) {
+	reg := newRegistry(t, stubTool{name: "a"}, stubTool{name: "c"})
+	before := reg.GetToolDefs()
+
+	if err := reg.Register(stubTool{name: "b"}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	reg.Remove("a")
+
+	if got, want := strings.Join(defNames(before), ","), "a,c"; got != want {
+		t.Errorf("earlier slice changed: expected %q, got %q", want, got)
+	}
+	if got, want := strings.Join(defNames(reg.GetToolDefs()), ","), "b,c"; got != want {
+		t.Errorf("expected current defs %q, got %q", want, got)
+	}
+}
+
+// - Verify concurrent Register, GetToolDefs and Lookup are safe (run with -race) and that
+// every registration lands
+func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
+	const writers = 20
+	reg := newRegistry(t)
+
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(2)
+		name := fmt.Sprintf("tool_%02d", i)
+		go func() {
+			defer wg.Done()
+			if err := reg.Register(stubTool{name: name}); err != nil {
+				t.Errorf("Register(%q): %v", name, err)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				reg.GetToolDefs()
+				reg.Lookup(name)
+			}
+		}()
+	}
+	wg.Wait()
+
+	names := defNames(reg.GetToolDefs())
+	if len(names) != writers {
+		t.Errorf("expected %d defs, got %d", writers, len(names))
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("expected defs sorted by name, got %v", names)
+	}
+}
+
+//*************************************//
+// Running tool calls
+//*************************************//
+
+// panicTool is a Tool whose CallTool always panics with the given behavior.
+type panicTool struct{ boom func() }
+
+func (panicTool) GetToolDefinition() ToolDef { return NewToolDef("boom", "always panics", nil) }
+func (p panicTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	p.boom()
+	return "unreachable", nil
+}
+
+// - Verify that a tool that panics (explicitly, or via a runtime error) becomes an error
+// observation for the model instead of crashing the agent
+func Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage(t *testing.T) {
+	cases := map[string]struct {
+		boom    func()
+		wantErr string // substring the message content must contain
+	}{
+		"explicit panic": {func() { panic("kaboom") }, "kaboom"},
+		"runtime error": {func() {
+			var m map[string]int
+			m["a"] = 1 // write to a nil map panics
+		}, "nil map"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			fx := newChatSessionFixture(t, 10, 9)
+			if err := fx.Tools.Register(panicTool{boom: tc.boom}); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			call := ToolCall{ID: "call_1", Function: ToolCallFunc{Name: "boom", Arguments: "{}"}}
+
+			got := runToolCall(context.Background(), fx.Session, call)
+
+			if got.Role != "tool" {
+				t.Errorf("expected role %q, got %q", "tool", got.Role)
+			}
+			if got.ToolCallID != "call_1" {
+				t.Errorf("expected ToolCallID %q, got %q", "call_1", got.ToolCallID)
+			}
+			if !strings.HasPrefix(got.Content, "error:") || !strings.Contains(got.Content, "tool panicked") ||
+				!strings.Contains(got.Content, tc.wantErr) {
+				t.Errorf("expected content like %q mentioning %q, got %q", "error: tool panicked: …", tc.wantErr, got.Content)
+			}
+		})
+	}
+}
+
+//*************************************//
+// Fixture self-tests
+//*************************************//
+
+// - Verify the scripted fakeProvider plays replies in order, records the messages and tools of
+// every call, and fails loudly (rather than reusing Reply) once the script runs out
+func Test_FakeProvider_Script_PlaysRepliesInOrderThenErrors(t *testing.T) {
+	p := &fakeProvider{Reply: "unscripted", Script: []ChatMessage{
+		assistantToolCall("c1", "read_file", `{"path":"go.mod"}`),
+		assistantText("done"),
+	}}
+	defs := []ToolDef{ReadFileTool{}.GetToolDefinition()}
+	ctx := context.Background()
+
+	first, err := p.Chat(ctx, []ChatMessage{msg("user", "u1", "hi")}, defs)
+	if err != nil {
+		t.Fatalf("call 1: unexpected error: %v", err)
+	}
+	if len(first.ToolCalls) != 1 || first.ToolCalls[0].ID != "c1" || first.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("call 1: expected the read_file tool call c1, got %+v", first.ToolCalls)
+	}
+
+	second, err := p.Chat(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("call 2: unexpected error: %v", err)
+	}
+	if second.Content != "done" || len(second.ToolCalls) != 0 {
+		t.Errorf("call 2: expected final text %q with no tool calls, got %+v", "done", second)
+	}
+
+	if _, err := p.Chat(ctx, nil, nil); err == nil || !strings.Contains(err.Error(), "script exhausted") {
+		t.Errorf("call 3: expected a 'script exhausted' error, got %v", err)
+	}
+
+	if len(p.Calls) != 3 || len(p.ToolDefs) != 3 {
+		t.Fatalf("expected 3 recorded calls and 3 recorded tool lists, got %d and %d", len(p.Calls), len(p.ToolDefs))
+	}
+	if len(p.Calls[0]) != 1 || p.Calls[0][0].ID != "u1" {
+		t.Errorf("expected call 1 to record the user message, got %+v", p.Calls[0])
+	}
+	if len(p.ToolDefs[0]) != 1 || p.ToolDefs[0][0].Function.Name != "read_file" {
+		t.Errorf("expected call 1 to record the read_file def, got %+v", p.ToolDefs[0])
+	}
+	if len(p.ToolDefs[1]) != 0 {
+		t.Errorf("expected call 2 to record no tools, got %+v", p.ToolDefs[1])
+	}
+}
+
+// - Verify an unscripted fakeProvider still returns Reply on every call (the behavior the
+// existing tests depend on)
+func Test_FakeProvider_NoScript_ReturnsReplyEveryCall(t *testing.T) {
+	p := &fakeProvider{Reply: "same"}
+
+	for i := 0; i < 3; i++ {
+		got, err := p.Chat(context.Background(), nil, nil)
+		if err != nil || got.Role != "assistant" || got.Content != "same" {
+			t.Fatalf("call %d: expected assistant %q, got (%+v, %v)", i+1, "same", got, err)
+		}
 	}
 }

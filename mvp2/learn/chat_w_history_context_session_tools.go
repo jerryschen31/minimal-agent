@@ -1,5 +1,5 @@
 //
-// This builds on chat_w_memory_compaction_refactor.go to accommodate any needed or desired changes discovered through testing.
+// This builds on chat_w_history_context_session_structs.go by adding support for built-in tool calls
 //
 
 package main
@@ -12,11 +12,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,13 +32,18 @@ const WindowStrategy = "offset" // default context window strategy: "offset", "i
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
 const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
 const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
+const MaxReActSteps = 10             // maximum number of steps in a single ReAct loop - prevents infinite reasoning cycles when model gets stuck
+
+// ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after MaxReActSteps steps.
+// A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
+var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 
 //////////////////////////////////////////////
 // Interfaces and structs
 //////////////////////////////////////////////
 
 type Provider interface {
-	Chat(ctx context.Context, chatHistory []ChatMessage) (string, error)
+	Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
 
 type OpenAICompat struct {
@@ -102,22 +109,241 @@ func printConfig(cfg Config) {
 }
 
 type ChatMessage struct {
-	ID        string    `json:"id"`
-	Role      string    `json:"role"` // `json:"role"` is a tag indicating the JSON key for this field
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-	Type      string    `json:"type"`
+	ID         string     `json:"id"`
+	Role       string     `json:"role"` // `json:"role"` is a tag indicating the JSON key for this field
+	Content    string     `json:"content"`
+	Timestamp  time.Time  `json:"timestamp"`
+	Type       string     `json:"type,omitempty"`         // flexible type field that indicates what kind of message this is (e.g., "user", "system", "summary")
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // records any tool invocations associated with this message
+	ToolCallID string     `json:"tool_call_id,omitempty"` // ID of the associated tool call, if any
 }
 
+// shape of a tool definition that is sent as context to the LLM - this shape matches what is expected by most models (OpenAI chat completions standard)
+type ToolDefFunc struct {
+	Name   string          `json:"name"`
+	Desc   string          `json:"description"`
+	Params json.RawMessage `json:"parameters"`
+	Strict bool            `json:"strict,omitempty"`
+}
+
+type ToolDef struct {
+	Type     string      `json:"type"`
+	Function ToolDefFunc `json:"function"`
+}
+
+// shape of the LLM response when it asks for a tool call - this shape matches what is returned by most models
+type ToolCallFunc struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function ToolCallFunc `json:"function"`
+}
+
+// chat request and response structs
 type ChatRequest struct {
 	Model    string        `json:"model"`
 	Messages []ChatMessage `json:"messages"`
+	Tools    []ToolDef     `json:"tools,omitempty"`
 }
 
 type ChatResponse struct {
 	Choices []struct {
 		Message ChatMessage `json:"message"`
 	} `json:"choices"`
+}
+
+// Tool interface - Tool is any tool function the model can call (built-in tools for now, an MCP tool later)
+// Note that when getting a tools list from an MCP server, the tools will be instantiated as many Tool values, one per listed tool.
+type Tool interface {
+	GetToolDefinition() ToolDef
+	CallTool(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+// instantiates a new tool definition instance
+func NewToolDef(name string, description string, params json.RawMessage) ToolDef {
+	if len(params) == 0 {
+		params = json.RawMessage(`{"type":"object","properties":{}}`)
+	}
+	return ToolDef{
+		Type:     "function",
+		Function: ToolDefFunc{Name: name, Desc: description, Params: params},
+	}
+}
+
+// tool registry - keeps track of all registered tools that the model can call
+type ToolRegistry struct {
+	mu       sync.RWMutex         // allows concurrent reads with RLock() - good for frequent-read, rare-write structs (like a tool registry)
+	tools    map[string]toolEntry // maps tool names to their corresponding tool entries for O(1) access
+	tooldefs []ToolDef            // ordered list of registered tool definitions - this is what is sent to the LLM as context - this is better for caching purposes on the model end (order is same each time)
+}
+
+// an entry in the tool registry
+type toolEntry struct {
+	tool Tool
+	def  ToolDef // captured once, at Register time
+}
+
+func NewToolRegistry(tools []Tool) (*ToolRegistry, error) {
+	// initialize an empty tool registry
+	reg := &ToolRegistry{
+		tools:    make(map[string]toolEntry),
+		tooldefs: []ToolDef{},
+	}
+	// then register each tool
+	for _, tool := range tools {
+		if err := reg.Register(tool); err != nil {
+			return nil, err
+		}
+	}
+	return reg, nil
+}
+
+// isNilTool reports whether t is nil, including the "typed nil" case.
+// [agent] An interface value is a (type, value) pair. `var p *MyTool; var t Tool = p` gives t the
+// type *MyTool and the value nil, so `t == nil` is false even though calling a method that
+// dereferences the receiver would panic. reflect is the only way to look inside the pair.
+// Trade-off: reflect is slower and less obvious than a plain nil check, but this runs only at
+// registration (rare), never per request. Downside: a tool that deliberately supports a nil
+// receiver would be rejected too; nothing here does.
+// func isNilTool(t Tool) bool {
+// 	if t == nil {
+// 		return true
+// 	}
+// 	v := reflect.ValueOf(t)
+// 	switch v.Kind() {
+// 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+// 		return v.IsNil()
+// 	}
+// 	return false
+// }
+
+// Adds a new tool to the tool registry. It returns an error if the tool name is empty or if a tool with the same name is already registered.
+func (r *ToolRegistry) Register(t Tool) error {
+	// if passed Tool is nil, error out
+	// [agent] This catches only a nil interface; a typed nil pointer (e.g. (*MyTool)(nil)) passes and would panic below. Deliberately not handled: nothing here creates one.
+	if t == nil {
+		return fmt.Errorf("cannot register a nil tool")
+	}
+	toolDef := t.GetToolDefinition()
+	toolName := toolDef.Function.Name
+	if toolName == "" {
+		return fmt.Errorf("tool name cannot be empty")
+	}
+	// tools that match an existing tool name do NOT overwrite - Lock() is called on writes
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[toolName]; exists {
+		return fmt.Errorf("tool with name %q already registered", toolName)
+	}
+	r.tools[toolName] = toolEntry{
+		tool: t,
+		def:  toolDef,
+	}
+	r.rebuildToolDefList()
+	return nil
+}
+
+// assuming that tool map exists, builds / rebuilds the ordered (sorted) list of tool definitions for the LLM context
+// since this modifies the registry, ANY method that calls this MUST already hold the write lock (Lock) on the registry.
+func (r *ToolRegistry) rebuildToolDefList() {
+	r.tooldefs = make([]ToolDef, 0, len(r.tools))
+	for _, toolEntry := range r.tools {
+		r.tooldefs = append(r.tooldefs, toolEntry.def)
+	}
+	// sort the tool definitions by name to ensure consistent order
+	sort.Slice(r.tooldefs, func(i, j int) bool {
+		return r.tooldefs[i].Function.Name < r.tooldefs[j].Function.Name
+	})
+}
+
+// Deletes a tool from the registry by name. It returns true if the tool was found and removed, false otherwise.
+func (r *ToolRegistry) Remove(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[name]; !exists {
+		return false
+	}
+	delete(r.tools, name)
+	r.rebuildToolDefList()
+	return true
+}
+
+// Looks up a tool by name. It returns the tool and true if found, or nil and false otherwise.
+func (r *ToolRegistry) Lookup(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	return t.tool, ok
+}
+
+// Returns the cached tool definitions, sorted by name.
+// Callers must not modify the returned slice.
+func (r *ToolRegistry) GetToolDefs() []ToolDef {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tooldefs
+}
+
+// In the agent kernel, we define a built-in tool that can read contents of text files, capped at ReadFileMaxBytes.
+const ReadFileMaxBytes = 64 * 1024
+
+type ReadFileTool struct{}
+
+func (ReadFileTool) GetToolDefinition() ToolDef {
+	return NewToolDef(
+		"read_file",
+		"Reads the contents of a UTF-8 text file. Files larger than 64 KB are truncated, with a note at the end.",
+		json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "The path to the file to read"
+				}
+			},
+			"required": ["path"]
+		}`),
+	)
+}
+
+func (ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
+	var params struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if params.Path == "" {
+		return "", fmt.Errorf("missing required argument: path")
+	}
+
+	f, err := os.Open(params.Path)
+	if err != nil {
+		return "", err // e.g. "open go.mod: no such file or directory" (clear enough for the model)
+	}
+	defer f.Close()
+
+	// LimitReader is used to cap how much of the file is read into memory, preventing huge files from being fully loaded.
+	// Reading one byte past the cap is how we can tell that the file was cut off with the comparison below.
+	// A directory opens fine but fails here with "is a directory".
+	data, err := io.ReadAll(io.LimitReader(f, ReadFileMaxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	// a NUL byte means binary; returning it would just be noise to the model
+	if bytes.IndexByte(data, 0) != -1 {
+		return "", fmt.Errorf("%s looks like a binary file, not text", params.Path)
+	}
+	if len(data) > ReadFileMaxBytes {
+		// add a note clearly indicating the file output was truncated since the file exceeded the maximum allowed size
+		return string(data[:ReadFileMaxBytes]) + "\n[truncated: file is larger than 64 KB]", nil
+	}
+	return string(data), nil
 }
 
 // ContextWindow defines the interface for managing the chat history within the context window, allowing different strategies for handling the chat history.
@@ -190,18 +416,20 @@ type ChatSession struct {
 	Provider   Provider
 	MsgHistory ChatHistory
 	MsgContext *ChatContext
+	Tools      *ToolRegistry
 	SystemMsg  ChatMessage
 	UserID     string
 	InBuffer   io.Reader
 	OutBuffer  io.Writer
 }
 
-func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
+func NewChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, tools *ToolRegistry, cfg Config) (*ChatSession, error) {
 	return &ChatSession{
 		Config:     cfg,
 		Provider:   provider,
 		MsgHistory: chatHistory,
 		MsgContext: chatContext,
+		Tools:      tools,
 		SystemMsg:  createSystemMessage(cfg.SystemPrompt),
 		UserID:     cfg.UserID,
 		InBuffer:   cfg.InBuffer,
@@ -413,12 +641,28 @@ func setupChatContext(cfg Config) (*ChatContext, error) {
 }
 
 // creates a new chat session instance
-func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, cfg Config) (*ChatSession, error) {
-	cs, err := NewChatSession(provider, chatHistory, chatContext, cfg)
+func setupChatSession(provider Provider, chatHistory ChatHistory, chatContext *ChatContext, tools *ToolRegistry, cfg Config) (*ChatSession, error) {
+	cs, err := NewChatSession(provider, chatHistory, chatContext, tools, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return cs, nil
+}
+
+// creates a tool registry
+func setupToolRegistry(cfg Config) (*ToolRegistry, error) {
+	tools := []Tool{}
+	// first add the built-in tools (ReadFile Tool to start)
+	tools = append(tools, ReadFileTool{})
+
+	// later we will add MCP tools specified in the config file
+
+	// create a registry from the tools list
+	reg, err := NewToolRegistry(tools)
+	if err != nil {
+		return nil, err
+	}
+	return reg, nil
 }
 
 //*********************************************************//
@@ -732,13 +976,13 @@ func summarizeChatContext(ctx context.Context, p Provider, msgs []ChatMessage, a
 		req = append(req, ChatMessage{Role: "system", Content: addlInstructions})
 	}
 
-	summary, err := p.Chat(ctx, req)
+	resp, err := p.Chat(ctx, req, nil)
 	if err != nil {
 		return "", fmt.Errorf("summarize: %w", err)
 	}
 
 	// Chat response summary could be nil, which should be considered an error.
-	summary = strings.TrimSpace(summary)
+	summary := strings.TrimSpace(resp.Content)
 	if summary == "" {
 		return "", fmt.Errorf("summarize: model returned an empty summary")
 	}
@@ -803,18 +1047,19 @@ func debugChatContext(msgContext []ChatMessage) {
 // Chat request and response
 //***********************************************************//
 
-func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (string, error) {
+func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	// make a request to the OpenAI-compatible server
 	// 1. build a chatRequest with p.Model and the provided chat history
 	reqRaw := ChatRequest{
 		Model:    p.Model,
 		Messages: chatHistory,
+		Tools:    tools, // omitempty: nil tools send no "tools" key at all
 	}
 
 	// 2. json.Marshal it into a []byte body
 	reqBody, err := json.Marshal(reqRaw)
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 3. build an *http.Request with http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", ...)
@@ -822,7 +1067,7 @@ func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (stri
 	defer cancel()
 	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 4. set header "Content-Type": "application/json"
@@ -834,26 +1079,26 @@ func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage) (stri
 	// 5. do the request with a http.DefaultClient.Do(req) and TIMEOUT
 	resp, err := http.DefaultClient.Do(reqHttp)
 	if err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 	defer resp.Body.Close()
 
 	// 5b. Check if the HTTP response status code indicates an error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return ChatMessage{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	// 6. read the response body, json.Unmarshal into a chatResponse
 	var chatResp ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", err
+		return ChatMessage{}, err
 	}
 
 	// 7. return resp.Choices[0].Message.Content, nil
 	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no choices in response")
+		return ChatMessage{}, fmt.Errorf("no choices in response")
 	}
-	return chatResp.Choices[0].Message.Content, nil
+	return chatResp.Choices[0].Message, nil
 }
 
 // helper function for handling a fatal error and exiting the program immediately
@@ -870,12 +1115,13 @@ func createID() string {
 	return hex.EncodeToString(b)
 }
 
-// prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the chat history, and the user's message into a single slice of ChatMessage.
-func prepareChatRequest(msgContext []ChatMessage, systemMsg, userMsg ChatMessage) []ChatMessage {
-	chat2send := make([]ChatMessage, len(msgContext)+2)
+// prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the context, and the messages this turn into a single slice of ChatMessage.
+// [note2agent] turnMsgs []ChatMessage breaks old tests on this
+func prepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage {
+	chat2send := make([]ChatMessage, len(msgContext)+len(turnMsgs)+1)
 	chat2send[0] = systemMsg
 	copy(chat2send[1:], msgContext)
-	chat2send[len(chat2send)-1] = userMsg
+	copy(chat2send[len(msgContext)+1:], turnMsgs)
 	return chat2send
 }
 
@@ -933,42 +1179,22 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		// }
 	}
 
-	// append the user message to the chat history
-	userMsg := ChatMessage{
-		Role:      "user",
-		Content:   line,
-		ID:        createID(),
-		Timestamp: time.Now().UTC(),
-		Type:      "user",
-	}
-
 	// [debug] print the current chat history before sending the prompt to the chat provider
 	debugChatContext(msgContext)
 
-	// prepare the request to send to the chat provider - includes the system message, the chat history, and the user's message
-	chat2send := prepareChatRequest(msgContext, cs.SystemMsg, userMsg)
+	// initial user message
+	userMsg := createChatMessage("user", "user", line, "", nil)
 
-	// send the chat request to the LLM provider
-	response, err := cs.Provider.Chat(ctx, chat2send)
+	// maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
+	turnMsgs, err := reActLoop(ctx, cs, msgContext, userMsg)
 	if err != nil {
-		fmt.Fprintln(cs.OutBuffer, "error:", err)
+		fmt.Fprintln(cs.OutBuffer, "[error] ReAct loop error:", err)
 		return false
 	}
 
-	// get the response content from the chat provider
-	fmt.Fprintln(cs.OutBuffer, "[system] Chat response:", response)
-
-	// append the user prompt and AI assistant's response to the chat history
-	responseMsg := ChatMessage{
-		Role:      "assistant",
-		Content:   response,
-		ID:        createID(),
-		Timestamp: time.Now().UTC(),
-	}
-
 	// add new messages to history and context
-	cs.MsgHistory.Append([]ChatMessage{userMsg, responseMsg})
-	cs.MsgContext.AddMessages([]ChatMessage{userMsg, responseMsg})
+	cs.MsgHistory.Append(turnMsgs)
+	cs.MsgContext.AddMessages(turnMsgs)
 
 	// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
 	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
@@ -984,6 +1210,53 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	return false
 }
 
+func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []ChatMessage, initialMsg ChatMessage) ([]ChatMessage, error) {
+	// implementation of the ReAct loop goes here
+	// // [PLAN] ReAct Loop
+	// loop up to MaxSteps:
+	// reply := Chat(msgs, cs.Tools.GetToolDefs())
+	// append reply to the turn's messages
+	// if len(reply.ToolCalls) == 0 → done
+	// for each call in reply.ToolCalls:
+	//     append runToolCall(ctx, cs, call)
+
+	requestMsgs := []ChatMessage{initialMsg}
+	toolDefs := cs.Tools.GetToolDefs()
+	for stepNum := 0; stepNum < MaxReActSteps; stepNum++ {
+		// if user cancels the operation (maybe the ReAct loop is taking too long), exit the loop immediately
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// prepare the request to send to the chat provider - includes the system message, the context, the request message, and tool definition info
+		request2send := prepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
+
+		// send the chat request to the LLM provider
+		response, err := cs.Provider.Chat(ctx, request2send, toolDefs)
+		if err != nil {
+			fmt.Fprintln(cs.OutBuffer, "error:", err)
+			return nil, err
+		}
+
+		// append the response as a ChatMessage to the request messages for the next iteration
+		fmt.Fprintf(cs.OutBuffer, "[assistant] %s\n", response)
+		responseMsg := createChatMessage("assistant", "assistant", response.Content, "", response.ToolCalls)
+		requestMsgs = append(requestMsgs, responseMsg)
+
+		// if there are no tool calls in the response, we are done
+		if len(response.ToolCalls) == 0 {
+			return requestMsgs, nil
+		}
+		// otherwise there are tool calls to be made
+		for _, tc := range response.ToolCalls {
+			fmt.Fprintln(cs.OutBuffer, "[tool] Tool called:", tc.Function.Name)
+			toolResultMsg := runToolCall(ctx, cs, tc)
+			requestMsgs = append(requestMsgs, toolResultMsg)
+		}
+	}
+
+	return nil, fmt.Errorf("%w (limit %d)", ErrMaxSteps, MaxReActSteps)
+}
+
 // ***********************************************************//
 // Run loop for handling chat session
 // ***********************************************************//
@@ -992,6 +1265,61 @@ func gracefulShutdown(cancel context.CancelFunc, chatSession *ChatSession) {
 	cancel()
 	// wait for any in-flight background compaction to finish
 	chatSession.MsgContext.WaitForCompaction()
+}
+
+func createChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage {
+	return ChatMessage{
+		Role:       role,
+		ToolCallID: toolCallID,
+		Content:    content,
+		ID:         createID(),
+		Timestamp:  time.Now().UTC(),
+		Type:       msgType,
+		ToolCalls:  toolCalls,
+	}
+}
+
+// callToolSafely runs tool.CallTool and recovers from a panic inside a tool (since we want model execution to continue on a failed tool)
+func callToolSafely(ctx context.Context, tool Tool, args json.RawMessage) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result = ""
+			err = fmt.Errorf("tool panicked: %v", r)
+		}
+	}()
+	return tool.CallTool(ctx, args)
+}
+
+// executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model
+func runToolCall(ctx context.Context, cs *ChatSession, call ToolCall) ChatMessage {
+	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, the result is an error message.
+	tool, ok := cs.Tools.Lookup(call.Function.Name)
+	if !ok {
+		return createChatMessage("tool", "tool", fmt.Sprintf("error: unknown tool %q", call.Function.Name), call.ID, nil)
+	}
+	// 2. Check that call.Function.Arguments is a JSON object. Arguments is a string holding JSON. If it isn't an object, the result is an error message. Empty "" for no-arg tools.
+	if call.Function.Arguments != "" {
+		var argsMap map[string]interface{}
+		if err := json.Unmarshal([]byte(call.Function.Arguments), &argsMap); err != nil {
+			return createChatMessage("tool", "tool", fmt.Sprintf("error: invalid JSON arguments: %v", err), call.ID, nil)
+		}
+		if argsMap == nil {
+			return createChatMessage("tool", "tool", "error: arguments must be a JSON object", call.ID, nil)
+		}
+	}
+
+	// 3. Run tool.CallTool(ctx, json.RawMessage(args)). If it returns an error, put "error: ..." in Content.
+	args := json.RawMessage(call.Function.Arguments)
+	// if call.Function.Arguments is empty, json.RawMessage returns an empty byte slice - create a proper empty JSON string in this case.
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	result, err := callToolSafely(ctx, tool, args)
+	if err != nil {
+		return createChatMessage("tool", "tool", fmt.Sprintf("error: %v", err), call.ID, nil)
+	}
+
+	return createChatMessage("tool", "tool", result, call.ID, nil)
 }
 
 func runLoop(ctx context.Context, chatSession *ChatSession) {
@@ -1044,16 +1372,21 @@ func runAgent(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	// 4. setup tools and MCP servers (if applicable)
-
-	// 5. setup this chat session
-	chatSession, err := setupChatSession(provider, chatHistory, chatContext, cfg)
+	// 4. setup tools (if applicable)
+	tools, err := setupToolRegistry(cfg)
 	if err != nil {
 		return err
 	}
 
-	// print the configuration for debugging purposes
+	// 5. setup this chat session
+	chatSession, err := setupChatSession(provider, chatHistory, chatContext, tools, cfg)
+	if err != nil {
+		return err
+	}
+
+	// print a welcome message
 	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg)
+	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
 	// 6. chat with the LLM provider in a loop
 	runLoop(ctx, chatSession)

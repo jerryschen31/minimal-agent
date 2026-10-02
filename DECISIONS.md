@@ -250,7 +250,536 @@ filter summaries out when searching real user messages.
 
 ---
 
+## Slash commands — text after the command (2026-09-25)
+
+- **Original design (reversed 2026-09-25):** text after a slash command was sent as a normal
+  chat prompt once the command had run. `/clear what is 3 + 2?` meant "clear, then ask". Why:
+  one line could do two things.
+- **Why it was reversed:**
+  - **Ordering bug.** `handleUserInput` read `msgContext` before the command ran, so
+    `/clear <prompt>` and `/compact <prompt>` still sent the pre-command context with the prompt.
+  - **Tests missed it.** The first tests checked `fx.Context` *after* the call. That passes
+    either way, because the prompt and reply are appended after the provider call returns. The
+    bug only showed once a test checked the request actually sent (`fx.Provider.Calls`).
+  - **Not the production convention.** In CLIs such as Claude Code, text after a command is an
+    *argument to that command* (e.g. `/compact [instructions]`), never a follow-up chat turn.
+- **Current design:**
+  - Every slash command returns right after it runs; nothing after it is sent as a chat turn.
+    This also removes the ordering bug, because the request path now only runs for plain prompts,
+    where `msgContext` is always fresh.
+  - `/summary <text>` and `/compact <text>` pass `<text>` to `summarizeChatContext` as extra
+    summarizer instructions (the new `addlInstructions` parameter). Auto-compaction passes `""`.
+  - An empty instruction adds **no** message to the summarization request. Found in review: an
+    empty `system` message was being sent on every plain `/compact` and auto-compaction, and
+    some servers reject empty content.
+  - `/clear <text>` still clears, and the text is **ignored**. `/config` and `/exit` ignore it too.
+- **Honest downside:** ignoring `/clear <text>` silently means a user who types a question there
+  gets no answer and no hint why. Rejecting with a message ("`/clear` takes no arguments") was
+  considered and would be the more user-friendly choice; ignoring was picked for simplicity.
+- **Tests:** `Test_ContextWindow_ClearWithTrailingText_TextIgnored`,
+  `Test_ContextCompaction_CompactWithTrailingText_PassedAsSummarizerInstructions`,
+  `Test_ChatRequest_SummaryWithTrailingText_PassedAsSummarizerInstructions`,
+  `Test_ContextCompaction_NoInstructions_NoExtraMessageInSummarizationRequest`. They replace the
+  short-lived `...PromptSameLineAs{Clear,Compact}...` tests. The instructions checks match on
+  content, not position, so moving the instructions (see the open item below) won't break them.
+- Status: active. Files: `chat_w_history_context_session_structs.go`,
+  `chat_w_history_context_session_structs_test.go`.
+
+---
+
+## Tools & MCP (2026-09-25)
+
+- **Decided: an internal `Tool` interface, with MCP as one adapter behind it (option B),
+  not "every tool is an MCP server" (option A).** A built-in is one Go closure → one `Tool`;
+  one MCP server expands into N `Tool`s (one per `tools/list` entry). The loop only sees `Tool`.
+- **Why:** the model can't tell the difference: every tool is name + description + JSON
+  schema → text result. MCP is a way of packaging and delivering tools, not a different kind
+  of tool. MCP-only would mean:
+  - the agent can do nothing out of the box (reading a file needs an external binary, e.g.
+    `npx` for the official filesystem server);
+  - tools that need agent internals (subagent, history search, todo, compact) would need a
+    protocol to expose `ChatSession`;
+  - every call pays a process/network round trip, with more ways to fail;
+  - tests need a fake MCP server.
+  Same shape as `mvp1`, and consistent with Track 1's "Grep is a Go-native `tool.Func`".
+- **Dividing rule:** MCP if the tool must be added without recompiling, is in another language,
+  or is someone else's. Built-in if it needs agent internals or the agent is useless without it.
+  Built-ins are added at compile time and switched on via `Config.Tools`. No second runtime
+  plugin system; `/mcp-add` is the runtime path.
+- **Planned built-ins:** `read_file`, `list_dir`/`glob`, `grep`, `write_file`/`edit_file`
+  (approval-gated), `shell` (approval-gated, timeout + process-group kill). Later: subagent,
+  todo, memory search. Skipped: calculator, time. Pick one source per capability, so built-in
+  and MCP file tools aren't loaded side by side.
+- **Honest downside:** two ways to add a tool, and adding a built-in means recompiling.
+- **Rejected middle path:** built-ins compiled as an in-process MCP server over in-memory pipes.
+  It keeps one protocol, but JSON-RPC-encoding a call to a function in the same binary is
+  ceremony without payoff.
+- **Build order:**
+  1. `Tool` interface + one built-in (`read_file`) + tool fields on `ChatMessage` + a ReAct loop
+     against the OpenAI tool-calling format;
+  2. registry, with `cfg.Tools` choosing the built-ins;
+  3. MCP stdio adapter;
+  4. `/mcp-add`, `/mcp-remove`, `/mcp-list`;
+  5. HTTP transport.
+- Status: active. Files: `chat_w_history_context_session_mcp_tools.go` (gen 8).
+
+### MCP protocol version: modern-only → dual-era (2026-09-27)
+
+- **Current decision (revised later the same day): a dual-era client.** It supports modern
+  (2026-07-28) and legacy (`initialize`-based, sending `2025-11-25`) servers. Modern is built
+  first, then the legacy fallback. Both live inside `connectMCP`. The rest of the agent only sees
+  `Tool`s and never learns which era a server is.
+  - **Probe rule (stdio):** send `server/discover` with our preferred modern version in `_meta`.
+    - A `DiscoverResult` means modern.
+    - A recognized modern error (e.g. `-32022`) means modern: retry with a listed version, and
+      do **not** fall back.
+    - Any other error, or no reply before a timeout, means legacy: send `initialize`, then
+      `notifications/initialized`. The spec says the fallback **must not** depend on one
+      specific error code.
+  - Record the era for each server and keep it for the life of that process. Probe again after
+    a restart.
+  - **Why the revision:** a modern-only client can't use legacy servers, and those are probably
+    most servers today. Since the probe goes first either way, dual-era only adds code to one
+    function.
+  - **Honest downside:**
+    - two ways of building requests (with `_meta` vs relying on the session);
+    - per-server era state;
+    - a probe timeout that slows `/mcp-add` for legacy servers that never answer;
+    - the fake test server has to be able to act as either kind.
+  - Build order, step 3 becomes: **3a** modern over stdio; **3b** the legacy fallback.
+- **Original decision (first half of 2026-09-27, superseded above):** the client speaks only
+  the stateless 2026-07-28 revision. Connecting sends
+  `server/discover`; after that, every request carries `_meta` with
+  `io.modelcontextprotocol/protocolVersion` and `.../clientCapabilities` (both required) and
+  `.../clientInfo` (should). No `initialize` and no `notifications/initialized`.
+  - Replaces an earlier recommendation (2026-09-25, never built) to start legacy-only like
+    `mvp1/tool/mcp.go:66` and add the probe later.
+- **Why:** it's the current spec, and it's simpler to reason about. There's no session, and the
+  stdio process isn't a conversation, so a crashed server can just be restarted and the request
+  retried. It's also the version to learn.
+- **Honest downside:** a modern-only client **can't talk to legacy servers**, and at
+  2026-09-27 most servers in the wild are probably still legacy, since the revision is two
+  months old. We still send `server/discover` first, as the spec recommends. A legacy server
+  then fails straight away, and `/mcp-add` can print a clear "legacy server, not supported"
+  error, instead of an ambiguous `tools/call` being run under legacy rules. Dual-era support
+  (fall back to `initialize` on any non-modern error or a timeout) is deferred and would stay
+  inside the connect function.
+- **Handling responses:**
+  - pick a version from `supportedVersions`;
+  - on `-32022` (UnsupportedProtocolVersion), retry with a version from `data.supported`;
+  - treat a missing `resultType` as `"complete"`, and treat `"input_required"` as an error for
+    now, because we declare no client capabilities;
+  - keep `instructions` (a candidate to add to the system prompt).
+- **Auth:** stdio gets credentials from environment variables. HTTP uses the spec's OAuth-based
+  Authorization framework plus the `MCP-Protocol-Version` header. Auth is deferred to step 5.
+
+### Tool registry, tool calls and the ReAct loop (2026-09-28/29)
+
+Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
+
+**Tool registry (`ToolRegistry`, `toolEntry`)**
+- **Decided:** the registry holds `map[string]toolEntry{tool, def}` plus a cached `[]ToolDef` sorted
+  by name, behind a `sync.RWMutex`. The sorted slice is rebuilt only in `Register` and `Remove`
+  and is never modified in place (copy-on-write), so `GetToolDefs()` returns it with no copy and
+  no per-request sort.
+- **Why:** providers cache on an exact prompt prefix, and tool definitions sit at the front of the
+  prompt. Go map iteration order is random, so an unsorted list could change the prefix and
+  invalidate the cache for the whole conversation. Order never affects correctness; it only
+  affects cost and latency. Sorting on every request was rejected: it is cheap (n is about 5 to
+  50) but recomputes something that only changes on register or remove.
+- **`toolEntry` captures `GetToolDefinition()` once, at `Register`.** The rebuild never calls into
+  a `Tool`, so its cost doesn't depend on how a tool is written (an MCP wrapper can't make
+  rebuilds slow), and the map key and the stored def can't disagree. A first version called
+  `GetToolDefinition()` twice in `Register`; that was fixed.
+- **Rejected: an ordered slice plus a lookup map, with no sort (option A).** Simplest, but the
+  order would depend on registration order, which becomes nondeterministic once MCP servers
+  connect concurrently. Revisit only if the sort ever shows up as a cost.
+- **Duplicate names are an error, not an overwrite,** so a second MCP server can't shadow a
+  built-in such as `read_file`. Empty names and a nil `Tool` are errors too. Changing a tool is
+  `Remove` then `Register`.
+- **A typed nil pointer is not handled.** An `isNilTool` helper (using `reflect`) was written and
+  then removed: too complex for an edge case no code path creates. The plain `t == nil` check
+  catches only a nil interface. If a typed nil ever arrives, `Register` panics in
+  `GetToolDefinition()`.
+- **`Lookup` returns `Tool`, not `toolEntry`.** `toolEntry` is an unexported detail, and callers
+  only need to call the tool. Trigger to revisit: if callers need a source label (built-in vs
+  `mcp:<server>`) for `/mcp-list` or approval policy, return a small exported type; don't export
+  `toolEntry`.
+- **`NewToolRegistry` takes `[]Tool`, not variadic.** A wash: the production caller builds a slice,
+  and the tests' `newRegistry` helper stays variadic.
+- **Honest downsides:** the stored def is a snapshot, so a tool whose definition changes after
+  registration (e.g. an MCP `tools/list_changed`) isn't noticed until it is re-registered.
+  "Don't modify the slice `GetToolDefs` returns" is a convention Go can't enforce. The `RWMutex`
+  isn't needed while only one goroutine touches the registry; it was chosen for the read-heavy,
+  write-rare shape, and swapping to a `Mutex` is a two-line change.
+
+**Running a tool call (`runToolCall`, `callToolSafely`)**
+- **Decided: `runToolCall` returns a `ChatMessage`, never a Go `error`.** Every failure (unknown
+  tool, arguments that aren't a JSON object, a tool error, a tool panic) becomes a `role:"tool"`
+  message with `error: ...` in `Content` and `ToolCallID = call.ID`.
+- **Why:** the failure is something the model can react to (a misspelled tool name, bad
+  arguments), and providers reject a request where any `ToolCall` lacks exactly one matching tool
+  message. An `error` return would force every call site to convert it, and one forgotten branch
+  would produce an orphaned call. Loop-level failures (a cancelled context) are the loop's job,
+  handled by checking `ctx.Err()` at the top of each step. Same principle as mvp1: `Run` returns
+  an error only for LLM or memory failures and the step limit.
+- **Arguments:** must be a JSON object; `null`, arrays and strings are rejected; an empty string
+  is normalized to `{}` so no-arg tools work. There is no `IsError` field on `ChatMessage`, so the
+  model tells failures apart only by the `error:` prefix; keep that prefix consistent.
+- **`callToolSafely` wraps `CallTool` with `recover()`,** turning a panic into an ordinary error
+  (`tool panicked: <value>`) that flows through the same path. Named returns are what let the
+  deferred function set `err`.
+  - **Limits:** it covers only the calling goroutine (a goroutine the tool spawns can still crash
+    the process); fatal runtime errors (concurrent map writes, out of memory) are unrecoverable;
+    a recovered panic looks like an ordinary tool error to the model, so a real bug can hide; and
+    the tool's own state may be left inconsistent.
+  - The stack trace is dropped. If wanted, `runtime/debug.Stack()` written to `cs.OutBuffer`.
+- **Tool calls run sequentially** in the first draft. mvp1 fans out on goroutines. Trigger to
+  change: a slow tool (MCP, shell). Each goroutine would then need its own `recover`.
+
+**ReAct loop shape (`reActLoop`, `handleUserInput`)**
+- **Decided: one local `turn` slice, batch persistence after success.** The loop accumulates the
+  turn (user msg, assistant reply, tool results, ..., final assistant) in a local slice, and each
+  step sends `system + prior context + turn`. It never touches history or context. On success
+  `handleUserInput` appends the whole turn to `MsgHistory` and `MsgContext` in one batch. On any
+  error nothing is persisted.
+- **Why:** a failed or aborted turn leaves no half-turn (this matches the existing behavior pinned
+  by `Test_ChatHistory_FailedResponse_*`); auto-compaction snapshots the context from a
+  goroutine, and incremental writes could let it summarize an assistant `tool_calls` message
+  whose results haven't been written; and the window can't trim mid-turn because nothing enters
+  it until the turn ends.
+- **Honest downside:** a crash or cancellation mid-turn loses the turn's work, so the model won't
+  remember what a tool already did. Trigger to revisit: persistent history, or tools with side
+  effects (write, shell). Then append each step to `MsgHistory` (the durable log) while still
+  batching the context write.
+- **Step limit:** `MaxReActSteps = 10`. Exceeding it returns `ErrMaxSteps`, a sentinel error
+  wrapped with `%w` so callers and tests use `errors.Is` rather than comparing text. Nothing is
+  persisted. Alternative not taken: persist the truncated turn with a synthetic closing assistant
+  message, so tool side effects aren't lost.
+- **The assistant reply is rebuilt with `createChatMessage`,** which copies `ToolCalls` (dropping
+  them was a real bug: the next request would carry tool messages with no preceding tool call),
+  hardcodes `Role`/`Type` to `"assistant"` (the provider is the untrusted party and may return
+  an empty role), and passes an empty `ToolCallID` (assistant messages never have one; the IDs
+  the model chose live in `ToolCalls[i].ID`). Alternative: stamp the provider's reply in place,
+  which would keep any field added to `ChatMessage` later; `createChatMessage` copies only the
+  five fields it knows.
+- **Printing:** `handleUserInput` is the output boundary; the loop should return errors, not
+  print them. (Cleanup pending, see SESSION.md.)
+- **Ctrl+C:** `signal.NotifyContext` in `main` cancels a ctx that is passed down through
+  `runLoop`, `handleUserInput`, `reActLoop`, `Chat` and `CallTool`, so the loop needs no
+  `WithCancel` of its own (a child ctx nothing cancels adds nothing). What it needs is the
+  `ctx.Err()` check at the top of each step and tools that honor the ctx. A `WithCancel` /
+  `WithTimeout` inside the loop only makes sense for a per-turn timeout or for cancelling sibling
+  tool goroutines. Open question about what Ctrl+C should mean is under § "Deferred / open
+  decisions".
+
+**Test double**
+- **`fakeProvider` gained a scripted mode.** `Script []ChatMessage` plays back one reply per `Chat`
+  call; once `Script` is set, running past its end is an error, so a loop that over-calls fails
+  loudly instead of quietly reusing `Reply`. With `Script` unset it behaves as before (the
+  other 37 uses are untouched). `ToolDefs` records each call's tools, parallel to `Calls`.
+
+### MCP client: official Go SDK, not hand-rolled; restart with idempotency rules (2026-09-30)
+
+- **Decided: use `github.com/modelcontextprotocol/go-sdk` (checked: v1.8.0).** Supersedes the
+  2026-09-27 plan for a hand-rolled stdio client and the "leaning hand-rolled first" note.
+  - **Why:** `Client.Connect` already does the dual-era probe (`server/discover` first, then
+    `initialize` fallback) and injects the 2026-07-28 per-request `_meta` itself, so old slices
+    A, B and E disappear. What stays ours is the adapter (`mcpTool` implementing `Tool`),
+    `Config` wiring and lifecycle. HTTP + OAuth (step 5) becomes configuration, not a rewrite.
+    It's also the long-term path the protocol authors provide.
+  - **Honest downside:** we no longer see the wire protocol; a new dependency; 2026-07-28
+    support is recent, so pin the version and expect churn.
+  - **Era handling:** the SDK's `*mcp.ClientSession` holds the negotiated version, capabilities
+    and the connection. No extra state structs; the agent keeps one small `mcpServer{name,
+    session}` per server and never learns the era.
+  - The "dual-era" decision above still stands as behaviour; only *who implements it* changed.
+- **Decided: restart a crashed MCP server, with a retry rule based on idempotency.**
+  - Server found dead *before* a call is sent: restart, reconnect, send. Safe, nothing in flight.
+  - Dies *during* a call, tool read-only/idempotent: restart and retry once.
+  - Dies *during* a call, tool not known safe: restart, **don't retry**; return an error
+    observation saying the call may or may not have completed, so the model can check state.
+  - Safety comes from the tool annotations (`readOnlyHint`, `idempotentHint`,
+    `destructiveHint`). They are **untrusted hints**: fine for retry decisions, never to skip
+    approval. A missing hint means "not safe".
+  - Lives inside `mcpServer` (mutex-guarded session + `reconnect()`), not in the loop.
+  - A restart of a legacy server is a new session, so server-side session state is lost.
+  - **Why:** can't tell whether a mutating call finished before the crash; blind retry could
+    double-apply it. **Honest downside:** more code in the adapter, and the hints are only as
+    honest as the server.
+  - To check when building: which error the SDK returns for a closed session. Calls on a
+    session closed by the server return an error wrapping `mcp.ErrConnectionClosed` (from the SDK
+    docs, `errors.Is` should work), so detection needn't use string matching. Verify in a test.
+- **Findings from the first real run (2026-09-30):**
+  - The official filesystem server is legacy-era (`server/discover` → `-32601`); the SDK fell
+    back to `initialize` on its own. The retry rule is workable with real data: its tools are
+    annotated (reads `readOnlyHint`; `write_file`/`create_directory` idempotent; `edit_file` and
+    `move_file` non-idempotent, so they get the no-retry path).
+  - The SDK declares the `roots` capability by default, so servers can call back `roots/list`.
+    Declaring no client capabilities would avoid that; not needed yet.
+  - `move_file` shows why blind retry is wrong: after a crash that happened *after* the move, a
+    retry fails with "source not found" even though the first call succeeded.
+- Status: scratch driver works (`mvp2/learn/mcp_scratch.go`); the adapter, config wiring and
+  restart are not built yet. Files: `chat_w_history_context_session_mcp_tools.go`.
+
+### Config file loading: `setDefaultConfig(filename) (Config, error)` (2026-10-01)
+
+- **Decided: it returns `(Config, error)`, not just `Config`.** The spec said "error when the file
+  is not found", and Go has no other way to return one. Not-found wraps `os.ErrNotExist` (`%w`).
+  Invalid JSON is also an error (Jerry will add richer validation later).
+- **Decided: start from `getDefaultConfig()` and overlay the file.** Keys missing from the file
+  keep their defaults, and `InBuffer`/`OutBuffer` stay wired. Honest downside: you can't tell
+  "file said the default" from "file omitted it".
+- **Decided: unknown keys warn on stdout and are ignored.** Two passes: `json.Unmarshal` into
+  `Config` (drops unknowns silently), then into `map[string]json.RawMessage`, compared against
+  `Config`'s json tags via reflect (case-insensitive, like `encoding/json`). Rejected
+  `DisallowUnknownFields`: it errors on the first unknown key instead of warning on all.
+  Downside: only top-level keys are checked, not unknown keys inside nested structs.
+- **Decided: warnings go to `cfg.OutBuffer`** (stdout by default), per the "all output through
+  OutBuffer" rule. Tests capture it by swapping `os.Stdout`, because the buffer is set inside the
+  function.
+- **`InBuffer`/`OutBuffer` tagged `json:"-"`**: they are runtime wiring, and without the tag a
+  stray `"InBuffer"` key would make the decode fail instead of warn.
+- **Empty filename means `DefaultConfigFile` (`config.default.json`)**: Go has no default
+  arguments.
+- **Known problem:** the existing `mvp2/learn/config.default.json` is not loadable yet. It has a
+  trailing comma (invalid JSON), and some keys have no `Config` field (`maxSteps`, `workDir`,
+  `memory`, `contextWindow`, `mcpServers`, `subagents`). (2026-10-01, later: its key names were
+  aligned with the camelCase tags, see below.)
+- **Decided (2026-10-01): all config file keys are camelCase** (`userId`, `baseUrl`,
+  `apiKeyName`, `systemPrompt`, `chatStoreType`, `mcpServers`), superseding the snake_case tags.
+  **Why:** one convention across the file, and `mcpServers` (and `command`/`args`/`env`) is
+  camelCase in every other MCP client, so copied configs load unchanged. Go field names stay
+  PascalCase (`UserID`): exported fields can't be camelCase. **Honest downside:** an old
+  snake_case config no longer applies; `user_id` is now an unrecognized key (warns, default
+  kept), because `encoding/json` ignores case but not underscores. Also renamed the default
+  file's `api_key_env` to `apiKeyName` to match the field (its value is an env var *name*).
+- Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
+
+### MCP server transport: inferred per server, optional `type` for SSE (2026-10-01)
+
+- **Decided: the transport is per server entry** (`mcpServers` map key = server label), inferred
+  from its fields: `command` → stdio; `url` → Streamable HTTP; `url` + `"type": "sse"` → legacy
+  SSE. Both or neither of `command`/`url` is a config error naming the server. `type`, if given,
+  must agree with the fields.
+- **Why SSE is in scope:** the agent exists to run third-party MCP servers, and older ones are
+  SSE-only. SSE itself is deprecated in the spec (replaced by Streamable HTTP, 2025-03-26), so a
+  bare `url` defaults to HTTP and SSE is opt-in.
+- **Honest downside:** a legacy SSE `url` pasted without `type` fails at connect; the error text
+  must hint "set type: sse". Rejected for now: requiring `type` on every `url` server (extra
+  line for the common case) and auto-fallback probe HTTP → SSE (more code, murkier failures).
+  Revisit the probe if the missing-`type` error keeps biting.
+- `MCPServerConfig` has no `Name`: the label is the map key (`map[string]MCPServerConfig`); sort
+  keys before connecting since map order is random.
+- Open: how custom `headers` attach in the Go SDK; exact SDK transport type names (verify with
+  `go doc`). Nested unknown-key warnings in `setDefaultConfig` (top-level only today).
+
+**Reversed later the same day (2026-10-01): legacy HTTP+SSE is NOT supported; warn and skip.**
+The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, transports page §
+"HTTP+SSE Transport (2024-11-05)" and the deprecated-features registry: deprecated since
+`2025-03-26` (SEP-2596), "eligible for removal in a future revision", replaced by Streamable HTTP.
+
+- **Decided: support stdio and Streamable HTTP only.** The spec defines exactly those two
+  transports. Within Streamable HTTP there are three response modes, all handled per request:
+  (1) one JSON object, (2) a request-scoped SSE stream (progress notifications then the final
+  response), (3) the long-lived SSE response of `subscriptions/listen`. They are modes of one
+  transport, not three transports. Clients MUST support (1) and (2); the SDK is expected to do it.
+- **Decided: a server that uses HTTP+SSE is skipped with a stdout warning, never an error**, and
+  the other servers still load. Recognised by `"type": "sse"` (checked before any connection).
+  Suggested text: `[warning] MCP server "<label>": skipped, it uses the deprecated HTTP+SSE
+  transport (protocol 2024-11-05); its tools were not added`.
+- **Decided: a bare `url` always means Streamable HTTP; no legacy detection.** If the server is
+  really HTTP+SSE, the connect fails like any other connection failure (below). Rejected: the
+  spec's detection probe (POST fails with 400/404/405 and a non-modern body, then GET returns an
+  `endpoint` event): more code for a deprecated path. Honest downside: the warning for such a
+  server says "connect failed", not "legacy SSE"; the user must add `"type": "sse"` themselves
+  to get the precise message. Revisit if that confuses people.
+- **Decided: any per-server connection failure is also warn-and-skip, not fatal** (bad `npx`
+  package, unreachable `url`, handshake error, legacy SSE behind a bare `url`). The warning goes
+  to stdout and names the server and the error; the other servers still load, and the agent
+  starts even if none do. So `setupToolRegistry` must continue past a failing server, and the
+  failed server's session must be closed so a half-started process doesn't leak. Honest
+  downside: a typo in the config shows up as a missing tool, not a startup failure, so the
+  warning text matters. Config *shape* errors (both `command` and `url`) stay errors.
+- **Not the same thing:** Streamable HTTP of protocol 2025-03-26..2025-11-25 (sessions via
+  `Mcp-Session-Id`, GET stream, DELETE) is an older *era* of the supported transport, not
+  deprecated; it falls under the existing dual-era fallback decision, handled by the SDK.
+- **Why:** third-party breadth was the argument for SSE, but it is a deprecated path with
+  removal pending, costs a second transport implementation, and the SDK doesn't give it for free
+  as far as we know. **Honest downside:** old servers that only speak HTTP+SSE can't be used; a
+  user needs a Streamable HTTP front-end or a stdio bridge. Revisit if a server we need has no
+  alternative.
+- **`subscriptions/listen` (mode 3) is a separate later slice**, not part of the adapter: it is
+  a client-initiated, long-lived request (the spec's subscriptions pattern is transport-neutral,
+  so it also applies to stdio). It needs a goroutine per server, cancel-then-close on shutdown,
+  and re-listening after a reconnect. It only delivers best-effort `list_changed` notifications,
+  so polling is still the fallback. Progress notifications are NOT delivered on it.
+
+### `mcpTool`: the adapter from one MCP tool to `Tool` (2026-10-01)
+
+- **Decided: one `*mcpTool` per tool listed by a server**, built by `newMCPTool(server, *mcp.Tool)`.
+  The SDK's `*mcp.Tool` is a plain data struct (Name, Description, InputSchema, Annotations) and
+  does not satisfy our `Tool` interface; `mcpTool` is the wrapper that does (pointer receivers,
+  `var _ Tool = (*mcpTool)(nil)`).
+- **Two names, deliberately:** `toolName` is the name the server knows (what `tools/call` sends);
+  `toolDef.Function.Name` is `<server label>_<toolName>`, which is what the model sees and what
+  keeps two servers' tools from colliding. The label is the `mcpServers` map key, not the agent
+  name. Mixing the two up is the classic bug.
+- **`server` is a `*mcpServer`, not a copy:** all tools of a server share one session, and the
+  server will hold a mutex and a session that `reconnect()` swaps.
+- **`safeToRetry`** = annotations non-nil and (`ReadOnlyHint` or `IdempotentHint`). Nil means "not
+  known safe". Annotations are untrusted hints: used for retry only, never to skip approval.
+  Checked against the real filesystem server: reads, `write_file`, `create_directory` are safe;
+  `edit_file` and `move_file` are not. Nothing reads the field until slice 5.
+- **A nil `InputSchema` is left empty** so `NewToolDef` supplies its "no parameters" default
+  (marshalling nil would send the JSON text `null` to the model).
+- **Result flattening (`flattenMCPResult`, a pure function):** text blocks joined with `\n`; an
+  image becomes `[image omitted: <mime>]`; any other content type becomes `[non-text content
+  omitted]`; with no content blocks it falls back to `StructuredContent` as JSON; `IsError`
+  becomes a Go error carrying the text (so `runToolCall` prefixes `error:`), as does a nil
+  result. Output is capped at `MCPResultMaxBytes` (64 KB) with a truncation note, and
+  `strings.ToValidUTF8` drops a multi-byte character the byte cut split. **Honest downside:**
+  images, audio and resources are not passed to the model at all yet.
+- **Two failure kinds in `CallTool`:** a transport/protocol error (`err != nil` from the SDK)
+  versus a tool-level failure (`IsError`). Both become error observations.
+- Verified end to end (2026-10-01, throwaway test run from the scratchpad, not saved in the
+  repo) against the real `@modelcontextprotocol/server-filesystem`: 14 tools listed, calls with
+  `json.RawMessage` arguments work, a missing file and a missing argument come back as errors.
+- **Not decided:** whether `CallTool` goes through a `server.call(...)` seam now or when slice 5
+  needs it (recommended: now, one line). Name sanitizing and the length cap for model-facing
+  names (see SESSION.md).
+
+### Shutdown: one `Agent` object, one deferred `gracefulShutdown` in `runAgent` (2026-10-01)
+
+- **Decided (Jerry's design):** `runAgent` creates the cancellable context at the top, creates an
+  empty `Agent{session, toolRegistry, mcpServers}`, and does `defer gracefulShutdown(cancel,
+  &agent)` before any setup. Each setup step fills the `Agent`; shutdown cleans up whatever is in
+  it at that moment. `runLoop` no longer defers or creates its own cancel.
+- **Why it works:** the defer captures the *pointer*, so it sees the struct's final contents
+  (deferring with `chatSession` as an argument would capture `nil`, since defer evaluates its
+  arguments immediately). It also covers an early return from setup and a Ctrl+C during setup,
+  which the old `defer` inside `runLoop` could not.
+- **Shutdown order:** cancel, wait for background compaction, close MCP servers. `gracefulShutdown`
+  must tolerate a nil `agent.session` (setup failed before step 8); a missing guard was a real
+  nil-dereference bug, fixed 2026-10-01.
+- **`ctx.Err()` is checked before `runLoop`** so a Ctrl+C during setup doesn't start a loop on a
+  dead context. **`main` treats `context.Canceled` as a clean exit** (`errors.Is`), not `fatal`.
+  Honest downside: a real failure that surfaces wrapped as a cancel would also exit quietly;
+  tighten to `ctx.Err() != nil` if that ever matters.
+- **Rejected:** a `defer s.Close()` inside `connectLocalMCP` (a defer runs when its own function
+  returns, so it would close the server immediately). The owner of a resource closes it.
+
+### Remote MCP: `DisableStandaloneSSE: true`, headers via `RoundTripper` (decided 2026-10-01, recorded 2026-10-02)
+
+- **Decided (Jerry, in the 2026-10-01 session; not written down at the time):** the remote
+  (Streamable HTTP) transport is built with `DisableStandaloneSSE: true`. The client sends only
+  POSTs and never opens the long-lived GET stream. Replies to a POST (plain JSON or a
+  request-scoped SSE stream) still work, so tool listing and tool calls are unaffected.
+- **Why it is safe here:** the agent lists tools once at startup and implements no
+  server-initiated features, so it has nothing to receive on that stream.
+- **Honest downside:** server-pushed messages are lost: `tools/list_changed` notifications and
+  server-to-client requests (sampling, elicitation). **Revisit trigger:** if the agent wants live
+  tool-list refresh or any of those features, set it back to `false`.
+- **Also avoids:** servers that answer the GET with a 405 or handle it badly.
+- **Custom headers (e.g. `Authorization`):** `StreamableClientTransport` has no `Headers` field.
+  Checked 2026-10-02 against v1.8.0 (the newest tag, and Jerry's version) and the SDK `main`
+  branch (v1.8.1-pre): fields are `Endpoint`, `HTTPClient`, `MaxRetries`, `DisableStandaloneSSE`,
+  `OAuthHandler`, `MaxEventSize`. So config `headers` are applied by an `http.Client` whose
+  `Transport` is a small `RoundTripper` that clones each request and sets the headers.
+- **Files:** `chat_w_history_context_session_mcp_tools.go` (`connectRemoteMCP`, `headerTransport`);
+  tests in `..._mcp_tools_test.go`.
+- **Status:** active for the decision; **but the flag currently has no effect, see the bug below.**
+  Code written and smoke-tested against `https://mcp.deepwiki.com/mcp` on 2026-10-02.
+
+#### Bug found 2026-10-02: `LoggingTransport` hides the client's `sessionUpdated` hook (OPEN, needs Jerry's decision)
+
+- **What happens.** After the initialize handshake the SDK client calls `sessionUpdated()` on the
+  connection, but only if it implements the `clientConnection` interface (`mcp/client.go:401`, and
+  `:332` on the discover path). `mcp.LoggingTransport` wraps the connection in `loggingConn`,
+  which has no such method, so the call is silently skipped. `connectRemoteMCP` wraps the
+  transport in `LoggingTransport` for debugging, so for remote servers:
+  1. **`DisableStandaloneSSE` is a no-op.** The standalone GET stream is started from
+     `sessionUpdated` (`mcp/streamable.go:2138-2165`); it never starts, whatever the flag says.
+  2. **`Mcp-Protocol-Version` is missing** on every request after initialize. The spec requires
+     it. DeepWiki tolerated that in the smoke test; a stricter server could reject the requests.
+- **Evidence (a scratch copy against the in-process fake server, recorded request headers):**
+
+  | | with `LoggingTransport` (current code) | without it |
+  |---|---|---|
+  | GET stream, flag `false` | not opened | opened |
+  | GET stream, flag `true` | not opened | not opened |
+  | `Mcp-Protocol-Version` after initialize | empty | `2025-11-25` |
+  | `Mcp-Session-Id` | present | present |
+
+- **Why the first version of the test missed it.** Two separate reasons, both worth remembering:
+  the SDK skips the GET stream entirely on protocol `2026-07-28` and later (so a fake server that
+  speaks the new spec never triggers it), and the wrapper hid it on the old path. The fake server
+  in the tests now rejects `server/discover` like DeepWiki does, so it exercises the old path.
+- **Local (stdio) is not affected:** `sessionUpdated` on the I/O connection is server-side only.
+
+**Decisions Jerry needs to make:**
+
+1. **What to do about `LoggingTransport` on the remote path.**
+   - **(a) Remove it from `connectRemoteMCP` (recommended).** Restores the header and makes the
+     flag meaningful. Downside: no JSON-RPC debug log for remote servers. HTTP-level logging can
+     come back as a logging `RoundTripper` around `headerTransport.base`, which doesn't touch the
+     SDK's connection type.
+   - **(b) Gate it behind a debug setting, off by default.** Keeps the log. Downside: debug mode
+     changes behavior, which is exactly what bit us; the bug returns whenever it is on.
+   - **(c) Leave it and document it.** Cheapest, but keeps the missing header.
+   - **Revisit trigger for (a):** if a future SDK version makes `loggingConn` forward
+     `sessionUpdated`, (b) becomes safe.
+2. **Whether to keep `LoggingTransport` on the local (stdio) path.** Harmless today because of the
+   point above; decide together with 1 so both paths log the same way.
+3. **After 1 is decided:** add the assertions that the current tests cannot make meaningfully
+   (no GET with the flag on; `Mcp-Protocol-Version` set on non-initial requests) and a mutation
+   check that flipping the flag to `false` fails the test.
+
+**Claude's notes (2026-10-02):**
+
+- Tests added today: remote connect with and without headers, `headerTransport` (3 tests), local
+  connect via a re-exec of the test binary (`TestHelperMCPServer`, skipped in normal runs), and
+  two error-path tests. Mutation checks: dropping `Clone` is caught; not wiring `headerTransport`
+  is caught; flipping the SSE flag is **not** caught (that is the bug above).
+- `connectLocalMCP` never applies `config.Env`, so a configured `env` map doesn't reach the child
+  process (the local test uses `t.Setenv`). Still open, SESSION.md "To do next" item 2.
+- There is no `${VAR}` expansion in header values yet, so a token in `config.json` is literal.
+  `os.ExpandEnv(v)` in `headerTransport.RoundTrip` is a one-line change when wanted.
+- The checked-in `config.default.json` has `deepwiki` configured with no auth header; don't put a
+  real token there.
+- The `DisableStandaloneSSE` decision itself was made in the 2026-10-01 session but never
+  recorded; the SESSION.md notes didn't carry it. Record decisions as they're made.
+- macOS has no `timeout` command; use `go test -timeout 30s` when running experiments.
+
+---
+
 ## Deferred / open decisions
+
+- **Window and compaction can split a tool call from its results (slice 1d-iv, next after the
+  loop tests).** The window trims by message count, and a turn is now several messages (user,
+  assistant, tool results, ..., final). With `MaxContextWindow = 10` (window of 8) a two-round
+  turn is already 6 messages, and a longer one overflows and can drop the user message, leaving
+  orphaned tool results that providers reject. Compaction has the same exposure. Options: make
+  eviction turn-aware (widen backwards to a user turn, as mvp1's `harness.Window` does), treat a
+  turn as one atomic unit, or simply raise the limits. Not yet decided.
+- **What should Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
+  ctx-aware, so at the prompt nothing happens until Enter, and `runLoop` never checks
+  `ctx.Err()`, so afterward every turn fails with `context canceled` while the REPL keeps
+  prompting. Option A: Ctrl+C quits (add a `ctx.Err()` check in `runLoop`). Option B: Ctrl+C
+  interrupts only the current turn (a per-turn ctx in `runLoop`, with `os.Interrupt` removed from
+  `main`'s registration). Leaning A first; revisit B when tools run long enough to be worth
+  interrupting.
+- **`read_file` can read any path.** Restricting paths belongs to hooks or approval, later.
+- **`createChatMessage` takes four positional `string` params,** so a swapped argument compiles.
+  A narrower `newToolMessage(toolCallID, content)` was suggested; revisit if a second caller
+  pattern appears or a swap bug bites.
+
+- **Summarizer instructions are sent as a trailing `system` message** (after the `user`
+  transcript). OpenAI and Ollama accept this. It conflicts with the reasoning in § "Compaction
+  design" (a `system` message mid-list breaks Anthropic and some Ollama chat templates), and
+  Anthropic takes the system prompt as a separate field, not a message. Options: append the
+  instructions to the first system prompt, or to the user message ("Focus on: …"). Open since
+  2026-09-25; revisit when an Anthropic provider is added.
 
 - **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Undecided; no `/undo` command
   exists yet. Leaning window-only, matching `/clear`, per the "history is truth" model.

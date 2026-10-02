@@ -1,0 +1,12 @@
+{
+  "userId": "default_user",
+  "provider": "openai",
+  "model": "qwen2.5:0.5b",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "apiKeyName": "",
+  "systemPrompt": "You are a helpful assistant. Keep your responses concise and relevant.",
+  "maxSteps": 10,
+  "workDir": ".",
+  "memory": "in-memory",
+  "contextWindow": 10
+}

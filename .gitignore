@@ -1,6 +1,6 @@
 *.DS_Store
 */.agent-memory.json
-prompts/
+mvp2/learn/prompts/
 .env
 */.env
 .out-of-code-insights*
