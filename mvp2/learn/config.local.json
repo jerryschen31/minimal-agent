@@ -8,5 +8,5 @@
   "maxSteps": 10,
   "workDir": ".",
   "memory": "in-memory",
-  "contextWindow": 10,
+  "contextWindow": 10
 }
