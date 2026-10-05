@@ -1,4 +1,4 @@
- ▐▛███▛█   Claude Code v2.1.289
+ ▐▛███▛█   Claude Code v2.1.290
 ▝▜██████▀  Opus 5.5 · Claude Pro
  ▝▝   ▝▝   ~/gh/public/minimal-agent
 
@@ -211,3 +211,258 @@
 ✻ Cooked for 1m 36s · done Sunday 10:04 PM
 
 ※ recap: You're turning the minimal agent into a headless agent that runs from a mission file, and I've brainstormed the features it needs, ordered as build steps. Next, choose a direction (for example, the `finish` tool and mission file) so I can write the step-1 skeleton. (disable recaps in /config)
+
+❯ /export prompts/20261004-headless-mode-to-do.md                               
+  ⎿  Conversation exported to: /Users/jerry/gh/public/minimal-agent/prompts/2026
+     1004-headless-mode-to-do.md
+
+❯ 1. Explain in more detail what and how exactly I need to refactor             
+  @mvp2/learn/chat_w_history_context_session_mcp_tools.go ? Is the runLoop()    
+  primarily what I need to refactor?                                            
+  2. Explain what and how the minimal agent I build can use and support the     
+  Agent2Agent A2A Open Protocol (https://github.com/a2aproject/a2a). Here is    
+  the Go SDK for that: https://github.com/a2aproject/a2a-go                     
+
+  Ran 5 shell commands (ctrl+o to expand)
+
+⏺ I've read your mvp2 run loop and cloned a2a-go v2.6.0 to check its real API.
+  Now checking how the SDK models task lifecycle events.
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+⏺ 1. Refactoring chat_w_history_context_session_mcp_tools.go
+
+  runLoop() is where the human shows up, but it's only 15 lines and isn't really
+  the problem. The real coupling is in handleUserInput() (:1545), which does
+  three different jobs at once:
+
+  ┌────────────┬───────────────────────────────────────┬────────────────────┐
+  │   Lines    │                  Job                  │ Headless needs it? │
+  ├────────────┼───────────────────────────────────────┼────────────────────┤
+  │ :1548–1593 │ Parse REPL slash commands (/exit,     │ No. This is        │
+  │            │ /clear, /compact, …)                  │ terminal-only      │
+  ├────────────┼───────────────────────────────────────┼────────────────────┤
+  │            │ Run one turn: build user msg →        │ Yes. This is the   │
+  │ :1599–1610 │ reActLoop → save to history and       │ core               │
+  │            │ context                               │                    │
+  ├────────────┼───────────────────────────────────────┼────────────────────┤
+  │ :1612–1622 │ Start auto-compaction in the          │ Yes                │
+  │            │ background                            │                    │
+  └────────────┴───────────────────────────────────────┴────────────────────┘
+
+  So the refactor is a split, not a rewrite.
+
+  Step A: extract a turn function that doesn't know about the terminal
+
+  // runTurn runs one ReAct turn for input and saves it to history and context.
+  // The REPL and the headless driver both call it.
+  func runTurn(ctx context.Context, cs *ChatSession, input ChatMessage)
+  ([]ChatMessage, error)
+  The body is lines 1599–1622 moved over unchanged. handleUserInput shrinks to
+  "parse slash commands, otherwise runTurn".
+
+  Step B: fix a bug that headless mode would expose
+
+  On ErrMaxSteps, reActLoop returns nil, err (:1673), so the whole turn is 
+  thrown away. That means 10 steps of tool calls and results never get saved to
+  history. In the REPL you shrug and retype. Headless, the driver wants to say
+  "you ran out of steps, keep going". That only works if the work is kept.
+  Return requestMsgs, err and let runTurn save it.
+
+  Watch the invariant from CLAUDE.md here: if the last step was an assistant
+  tool call whose results never got added, saving it would leave an orphaned
+  tool call. Check the loop: results are appended inside the same iteration, so
+  every exit point has a complete call/result pair. Still worth a test.
+
+  Step C: add the headless driver next to runLoop
+
+  // runHeadless repeats turns until the agent calls finish or a budget runs 
+  out.
+  func runHeadless(ctx context.Context, cs *ChatSession, run *RunState)
+  (RunStatus, error)
+  //   TODO 1: input := the mission's kickoff message
+  //   TODO 2: loop: runTurn(ctx, cs, input)
+  //   TODO 3:   if run.Finished → return run.Status
+  //   TODO 4:   if a budget is used up (total steps / time) → return 
+  StatusFailed
+  //   TODO 5:   input = the nudge message ("No human is present. Continue, or 
+  call finish.")
+  //   TODO 6:   on ErrMaxSteps from runTurn: count it against the budget, 
+  nudge, continue
+  runLoop and runHeadless are now two drivers sitting on top of the same
+  runTurn.
+
+  Step D: the smaller changes this needs
+
+  - finish tool. A Tool with a pointer to a shared RunState{Finished bool; 
+    Status, Summary string}. CallTool sets the fields and returns
+    "acknowledged". Your tools run one after another (:1665), so there's no race
+    yet. If you run them concurrently later, RunState needs a mutex.
+  - Mission goes into the system prompt, not a user message. prepareChatRequest
+    always puts SystemMsg first (:1534), and compaction and window trimming
+    never touch it. A goal stored as the first user message would eventually get
+    summarized or dropped. This is the main reason the mission file feeds
+    cfg.SystemPrompt.
+  - Config gets Mode ("repl"|"headless"), MissionPath, and MaxRunSteps. That
+    gives you -mission in main().
+  - runAgent step 9 (:1838) picks the driver based on cfg.Mode, and it returns 
+    the status so main can turn it into an exit code (0 done, 1 failed, 2
+    blocked). Right now runLoop returns nothing, and fatal always exits with 1.
+  - Background compaction gets busier. It was built so the summary is generated
+    while a person is typing. Headless, there's no gap between turns, so turns
+    run while compaction is still in progress. Your snapshot + ID-merge design
+    in Compact (:934) already handles this correctly. The cost is that the
+    window is more likely to fill up and drop messages before the summary
+    arrives. If you see that in run logs, the fix is to wait for compaction in
+    headless mode (WaitForCompaction() before the next turn): slower, but no
+    surprise drops.
+  - Output already goes through cs.OutBuffer, so headless just points it at a
+    log file. One leftover: fmt.Print("\n> ") at :1752 writes straight to
+    stdout. Harmless, since it's REPL-only.
+
+  Nothing else changes: Provider, ToolRegistry, MCP, windows, history, shutdown.
+
+  ---
+
+  2. A2A with your agent
+
+  I read a2a-go directly (v2.6.0, 2026-09-25, targets A2A spec v1.0). The names
+  below are from its source.
+
+  What A2A is, compared with MCP
+
+  ┌────────────┬──────────────────┬────────────────────────────────────────┐
+  │            │ MCP (you already │                  A2A                   │
+  │            │     have it)     │                                        │
+  ├────────────┼──────────────────┼────────────────────────────────────────┤
+  │ Connects   │ agent → tools    │ agent ↔ agent                          │
+  ├────────────┼──────────────────┼────────────────────────────────────────┤
+  │ The other  │ a function:      │ an opaque peer with its own model,     │
+  │ side is    │ arguments in,    │ tools and memory                       │
+  │            │ result out       │                                        │
+  ├────────────┼──────────────────┼────────────────────────────────────────┤
+  │ One call   │ stateless, fast  │ a Task with a lifecycle; it can take   │
+  │ is         │                  │ hours or ask you questions             │
+  ├────────────┼──────────────────┼────────────────────────────────────────┤
+  │            │                  │ Agent Card at                          │
+  │ Discovery  │ ListTools        │ /.well-known/agent-card.json (name,    │
+  │            │                  │ skills, endpoint, auth)                │
+  └────────────┴──────────────────┴────────────────────────────────────────┘
+
+  Core concepts:
+  - Message: has a role (user/agent) and Parts (text, file, or structured data).
+  - Task: has an ID, a ContextID, a Status.State and Artifacts (its outputs).
+  - Task states: SUBMITTED → WORKING → COMPLETED | FAILED | CANCELED | REJECTED,
+    plus two "paused" states, INPUT_REQUIRED and AUTH_REQUIRED.
+  - ContextID groups related tasks into one conversation.
+  - Transports: JSON-RPC, REST or gRPC. Results can come back by streaming
+    (SSE), polling (GetTask) or webhook (push config).
+
+  Two roles, built separately
+
+  Role 1, A2A server (others can call your agent). This is your headless driver,
+  with the network as its input source. You implement one interface:
+
+  a2asrv.AgentExecutorFunc(func(ctx context.Context, ec *a2asrv.ExecutorContext)
+  iter.Seq2[a2a.Event, error] {
+      return func(yield func(a2a.Event, error) bool) {
+          // TODO 1: collect text from ec.Message.Parts (part.Text())
+          // TODO 2: find or create a ChatSession for ec.ContextID (map + mutex)
+          // TODO 3: yield a2a.NewStatusUpdateEvent(ec, a2a.TaskStateWorking, 
+  nil)
+          // TODO 4: status := runHeadless(ctx, cs, runStateWithMission(text))
+          // TODO 5: yield a2a.NewArtifactEvent(ec, a2a.NewTextPart(summary))
+          // TODO 6: map status → final state event (table below)
+      }
+  })
+  Then the wiring is copied from their hello-world example:
+  a2asrv.NewHandler(executor), a2asrv.NewJSONRPCHandler(h) on a mux, and
+  a2asrv.NewStaticAgentCardHandler(card) at a2asrv.WellKnownAgentCardPath.
+
+  The useful thing is how directly the headless design maps onto A2A:
+
+  ┌─────────────────────┬───────────────────────────────────────────────────┐
+  │     Your agent      │                        A2A                        │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ ContextID           │ one ChatSession (history + context window)        │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ one headless run    │ one Task                                          │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ finish(done)        │ TaskStateCompleted + artifact                     │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ finish(blocked,     │ TaskStateInputRequired with the question as the   │
+  │ "need X")           │ status message. The caller replies with a message │
+  │                     │  on the same TaskID, and you continue             │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ finish(failed) or   │ TaskStateFailed                                   │
+  │ budget used up      │                                                   │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ ctx canceled        │ Cancel → TaskStateCanceled (the Func helper's     │
+  │                     │ default does this)                                │
+  ├─────────────────────┼───────────────────────────────────────────────────┤
+  │ finish summary      │ Artifact                                          │
+  └─────────────────────┴───────────────────────────────────────────────────┘
+
+  INPUT_REQUIRED is how a headless agent asks a question without a human at the
+  keyboard. The question goes to whoever sent the task, which might be another
+  agent.
+
+  Role 2, A2A client (your agent calls others). This uses the same adapter
+  pattern as your mcpTool (:498). Each remote agent becomes a Tool:
+
+  type a2aAgentTool struct {
+      client *a2aclient.Client  // from agentcard.DefaultResolver.Resolve + 
+  a2aclient.NewFromCard
+      card   *a2a.AgentCard     // name and skills → GetToolDefinition()
+  }
+  // CallTool: client.SendMessage(ctx, &a2a.SendMessageRequest{Message: 
+  a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(task))})
+  //   result is a2a.SendMessageResult — a type switch: *a2a.Message (direct 
+  answer) or *a2a.Task (check Status.State)
+  The part that needs thought is a *a2a.Task that isn't finished yet:
+  - INPUT_REQUIRED: return the remote agent's question as the tool result, and
+    include the TaskID. The model answers with another call, and the tool sends
+    a message that references that task. This needs a task_id tool argument,
+    which makes it a stateful tool.
+  - WORKING: simplest is to block, polling GetTask with a timeout. Better later:
+    return "pending, task_id=…" right away and add a check_task tool, so your
+    agent keeps working in parallel.
+
+  Config gets an a2aAgents map of card URLs next to mcpServers. The
+  setupA2ATools function mirrors setupMCPTools.
+
+  Trade-offs
+
+  - Dependency weight. The SDK pulls in gRPC, protobuf, genproto and uuid even
+    if you only use JSON-RPC. CLAUDE.md says no dependency without a reason. The
+    reason holds here (spec compliance, the task store, SSE, cancellation
+    logic), but it's much heavier than the MCP SDK. The alternative is to
+    hand-write JSON-RPC client calls, which is a few hundred lines and
+    educational, but you'd re-implement the task state machine and it would
+    drift from the spec. My recommendation: use the SDK for the server side and
+    keep your own code thin.
+  - The spec is still moving. v1.0, SDK v2.x, and the changelog shows fixes to
+    spec error codes in the last month. Pin the version.
+  - Security is the big one. An A2A server is a network endpoint that makes your
+    agent run tools for whoever sends a request. Start by binding to 127.0.0.1,
+    exposing only read-only tools, and treating incoming message text as
+    untrusted input. A peer agent's message is a prompt-injection channel. Auth
+    (securitySchemes on the card, ec.User) comes before any non-local use.
+  - Go version. The SDK needs Go ≥1.26.0. You have 1.26.3, so that's fine.
+
+  Suggested order
+
+  1. Part 1 refactor (runTurn → fix the max-steps bug → finish tool →
+     runHeadless → exit codes). A2A needs this first.
+  2. A2A server: wrap runHeadless in an AgentExecutorFunc. Test it with the
+     SDK's own hello-world client (examples/helloworld/client in the a2a-go
+     repo), pointed at your card URL.
+  3. A2A client tool: test it against the SDK's hello-world server, then against
+     a second instance of your own agent. That's two of your agents talking
+     with no human involved.
+
+  I haven't changed any files. If you want to start, the first slice is runTurn
+  plus the ErrMaxSteps fix, done as concepts → examples → TODO skeleton. I can
+  also add this plan to SESSION.md as the next-steps section.
+
+✻ Worked for 1m 47s · done 4:23 PM
