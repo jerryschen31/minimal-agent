@@ -466,3 +466,504 @@
   also add this plan to SESSION.md as the next-steps section.
 
 ✻ Worked for 1m 47s · done 4:23 PM
+
+❯ /export prompts/20261004-headless-mode-to-do.md                               
+  ⎿  Conversation exported to: /Users/jerry/gh/public/minimal-agent/prompts/2026
+     1004-headless-mode-to-do.md
+
+❯ I'm thinking minimal-agent will support 3 different modes: chat (current),    
+  headless (what we've been talking about), and one-shot. For one-shot I'm      
+  thinking it could either be with a --query flag at the command line:          
+                                                                                
+  ./minagent --query "what is 2+3?" --mode oneshot                              
+                                                                                
+  Or it could be an input/output file style:                                    
+                                                                                
+  ./minagent --mode oneshot --input input-query.json --output                   
+  output-response.json                                                          
+                                                                                
+  where input-query.json needs to follow some understood JSON format. Does this 
+  make sense or is this making it too complicated? Should I just drop oneshot   
+  support or would this genuinely be useful?                                    
+
+⏺ Keep one-shot. It's useful, and once the runTurn split from the last answer
+  exists it's nearly free. I'd simplify both ways you proposed, though.
+
+  Why one-shot is worth keeping
+
+  One-shot makes your agent usable as an ordinary Unix command. Some examples:
+  - Scripting and pipes: git diff | minagent -q "write a commit message".
+  - Evals: a script that runs 50 test prompts and checks the answers. Since
+    you're learning how agents behave, this is the most valuable one. You can't
+    run an eval suite through a REPL.
+  - CI and cron: one invocation and one exit code.
+  - Debugging: every run is fresh and repeatable, with no leftover REPL state.
+
+  mvp1 already has -q for these reasons, and claude -p is the same idea.
+
+  It also differs from headless in a clean way, so it isn't a redundant third
+  mode:
+
+  ┌─────────────────┬─────────────────────────┬─────────────────────────────┐
+  │                 │        One-shot         │          Headless           │
+  ├─────────────────┼─────────────────────────┼─────────────────────────────┤
+  │ Caller          │ a program that wants an │ someone who wants a goal    │
+  │                 │  answer                 │ done                        │
+  ├─────────────────┼─────────────────────────┼─────────────────────────────┤
+  │ Turns           │ one runTurn             │ many, driven by the loop    │
+  ├─────────────────┼─────────────────────────┼─────────────────────────────┤
+  │ When it's done  │ no tool calls (the      │ finish tool + verifier      │
+  │                 │ existing rule is fine)  │                             │
+  ├─────────────────┼─────────────────────────┼─────────────────────────────┤
+  │ Nudges,         │ no                      │ yes                         │
+  │ budgets, resume │                         │                             │
+  ├─────────────────┼─────────────────────────┼─────────────────────────────┤
+  │ Returns         │ answer text, exit 0/1   │ status + summary/artifacts, │
+  │                 │                         │  exit 0/1/2                 │
+  └─────────────────┴─────────────────────────┴─────────────────────────────┘
+
+  In code it's about 10 lines: runTurn(ctx, cs, userMsg), print the last
+  assistant message, return.
+
+  Simplification 1: let the flags choose the mode
+
+  minagent                        # chat
+  minagent -q "what is 2+3?"      # one-shot
+  minagent -mission mission.md    # headless
+  With an explicit --mode, people can write contradictory combinations (--mode 
+  chat -q "..."), and you then need code to reject them. Inferring the mode
+  makes those combinations impossible.
+
+  The downside is that the mode is implicit. Someone reading main() has to know
+  the rule, and if a fourth mode ever overlaps with these flags, inference stops
+  working. The thing that would change my mind is a mode that can't be
+  identified by a flag. Until that happens, write the rule as one switch in main
+  with a comment.
+
+  Simplification 2: drop the --input/--output JSON files for now
+
+  Your file pair duplicates what the shell already does:
+  minagent -q "summarize this" < notes.txt > summary.txt
+  Use the usual Unix conventions:
+  - Input: -q "...", or -q - to read the query from stdin.
+  - Output: the answer goes to stdout. Everything else (logs, [tool] lines,
+    errors) goes to stderr.
+  - Structured output when needed: add --json to print {"answer", "status", 
+    "steps", "usage"} instead of plain text. Scripts and evals want this, and it
+    costs little.
+
+  A JSON input format becomes worth adding when the input is more than a string:
+  attachments, seeded prior messages, or per-run config overrides. At that
+  point you're designing a file format, and that's a real decision to make on
+  purpose. Until then you'd be maintaining a format nobody uses yet.
+
+  The actual work: separate the answer from the logs
+
+  reActLoop writes [assistant] … and [tool] … to cs.OutBuffer (:1655, :1664).
+  For one-shot output to be pipeable, stdout must contain only the final answer.
+  So the real refactor is splitting output into two writers: progress/logs →
+  stderr, result → stdout. Headless benefits from the same split (logs to a
+  file, report separately), so it isn't one-shot-only work.
+
+  Two defaults to settle
+
+  - History: one-shot should start with a fresh in-memory history even if config
+    says persistent. Otherwise the same command gives different answers
+    depending on earlier runs, which breaks evals. Add --session <id> later if
+    you want to continue a conversation.
+  - Exit codes: 0 when there's an answer. Non-zero for a provider error or
+    ErrMaxSteps, so a script can tell "the model answered" from "the run
+    failed."
+
+  Bottom line: keep three modes, chosen by flags. One-shot uses -q / -q - with
+  stdout for the answer, stderr for logs, and an optional --json. Skip the
+  input-file format until you need structured input. Build it right after
+  runTurn, before headless. It's the smallest new driver, and it gives you the
+  stdout/stderr split and exit codes that headless needs too.
+
+  Once you've decided, I'll log it in DECISIONS.md (modes chosen by flags, no
+  input-file format yet, and the condition for adding one).
+
+✻ Cogitated for 26s · done 4:53 PM
+
+※ recap: You're designing chat, one-shot and headless modes for your mvp2 agent, and we just settled that one-shot should stay, chosen by `-q` with stdout/stderr output. Next, decide whether to log that in `DECISIONS.md` and start the `runTurn` refactor skeleton. (disable recaps in /config)
+
+❯ Should --json also dictate the model response format in chat and headless     
+  mode as well?                                                                 
+  ⎿  ⧉ Selected 1 lines from main.go in Visual Studio Code
+
+⏺ No. Keep --json meaning one thing: the format of what minagent itself outputs,
+  not what the model is asked to produce. These are separate features, and
+  mixing them causes real problems.
+
+  Two different "JSON outputs"
+
+  ┌──────────────┬────────────────────────┬────────────────────────────────┐
+  │              │    Output envelope     │     Model response format      │
+  │              │        (--json)        │                                │
+  ├──────────────┼────────────────────────┼────────────────────────────────┤
+  │ What changes │ how your Go program    │ what the LLM is told to        │
+  │              │ reports the result     │ generate                       │
+  ├──────────────┼────────────────────────┼────────────────────────────────┤
+  │ Who produces │ your code              │ the model                      │
+  │  the JSON    │ (json.Marshal)         │                                │
+  ├──────────────┼────────────────────────┼────────────────────────────────┤
+  │ Always       │ yes                    │ no. Models emit broken JSON,   │
+  │ valid?       │                        │ especially small local ones    │
+  ├──────────────┼────────────────────────┼────────────────────────────────┤
+  │ Effect on    │                        │ can hurt: forcing JSON-only    │
+  │ answer       │ none                   │ output tends to make reasoning │
+  │ quality      │                        │  and tool use worse            │
+  ├──────────────┼────────────────────────┼────────────────────────────────┤
+  │              │ {"answer": "5",        │                                │
+  │ Example      │ "status": "ok",        │ {"sum": 5}                     │
+  │              │ "steps": 1}            │                                │
+  └──────────────┴────────────────────────┴────────────────────────────────┘
+
+  With the envelope, the model answers in plain prose as usual, and Go wraps
+  that text in valid JSON. That's what scripts and evals need, and it can't
+  break, because your code builds it.
+
+  Per mode
+
+  - One-shot: --json prints the result envelope. This is its main use.
+  - Headless: the same meaning works, so support it. The final report (status,
+    summary, steps, usage, escalations) is printed as JSON instead of markdown.
+    A program that launches headless runs wants exactly this, and the flag means
+    the same thing as in one-shot.
+  - Chat: reject it with an error (--json is not supported in chat mode). A
+    human is reading, and a REPL has no single result to wrap. Silently ignoring
+    the flag would be worse: someone would assume it worked.
+
+  If you do want the model to return structured data
+
+  That's a separate feature for a separate need, such as "extract the name and
+  date from this email" where the caller wants fields, not prose. It would be
+  its own flag, e.g. --schema schema.json, implemented as a request option on
+  the Provider. OpenAI-compatible servers use response_format with a JSON
+  schema, and Anthropic has its own structured-output option. Support for
+  response_format varies across local servers, so check yours before relying on
+  it.
+
+  The two flags work together. With --json --schema s.json, the envelope's
+  answer field contains the model's JSON object instead of a string.
+
+  The condition for building --schema: a real caller needs fields from inside
+  the answer, not just the answer text. Until then, skip it.
+
+  I'll add this to the DECISIONS.md entry when we write up the modes decision:
+  --json is the output envelope only, it's rejected in chat mode, and model
+  output format would be a separate --schema flag.
+
+✻ Crunched for 17s · done 4:57 PM
+
+❯ Do I need a subagents flag or not? I'm debating whether to actually support   
+  calling of subagents, or whether that makes it confusing (e.g., who actually  
+  makes the call to use subagents? The model? Or my minagent?)                  
+
+⏺ You don't need a flag. Subagents are worth supporting, just not yet. The "who
+  decides" question has a clean answer that removes the confusion.
+
+  Who decides? Both, at different levels
+
+  - Your program decides which subagents exist and what each one can do: its
+    system prompt, its tools, its model. That comes from config, like
+    builtinTools and mcpServers.
+  - The model decides when to use one. A subagent is just a Tool. The model sees
+    research(task) in its tool list and calls it the way it calls read_file.
+
+  This is how mvp1 works: agent.Subagent (mvp1/agent/subagent.go) implements
+  Tool, and its Call runs a fresh agent and returns the final answer as the tool
+  result. The parent's ReAct loop doesn't know the tool is an agent.
+
+  There's also a second pattern that people call "subagents" but isn't the same
+  thing: your Go code running agents in a fixed sequence (writer → reviewer).
+  That's orchestration, and it belongs to the headless/multi-agent work. Keeping
+  the two separate is most of what removes the confusion.
+
+  Why no flag
+
+  Being enabled is the same as being listed in config:
+  "subagents": {
+    "researcher": { "systemPrompt": "...", "tools": ["read_file"], "model":
+  "..." }
+  }
+  An empty map means no subagents. A --subagents flag would just be a second
+  switch for the same thing.
+
+  Is it worth supporting?
+
+  The real benefit is keeping the parent's context clean. A subagent can make 30
+  tool calls exploring files, and the parent only sees a one-paragraph result.
+  That matters most in headless mode, where long runs are exactly what fill the
+  context window and set off compaction. Other benefits: a cheaper model for
+  simple subtasks, and a smaller tool set for risky ones.
+
+  The honest costs:
+  - More tokens. The subagent re-reads context the parent already had.
+  - Lost detail. The parent only gets the summary. If the subagent missed
+    something, the parent can't see that.
+  - Harder debugging. You now have nested transcripts to follow.
+  - Two safety rules you have to get right:
+    a. Don't give subagents the subagent tool, so you can't get endless
+       recursion.
+    b. Subagents must share the parent's tool policy, so delegating can't get
+       around restrictions. This is the mvp1 invariant: "policy hooks are shared
+       with subagents."
+
+  When to build it
+
+  After one-shot. A subagent's body is a one-shot run: fresh in-memory history,
+  one runTurn, return the final answer. Once one-shot exists, the subagent tool
+  is roughly 30 lines wrapped around it.
+
+  Build it when you have evidence you need it: headless run logs showing the
+  context filling up with exploration output, or compaction throwing away
+  information the agent needed later.
+
+  It also lines up with A2A. A local subagent is a Tool that runs one-shot in
+  your process, and a remote agent is the a2aAgentTool from earlier. The parent
+  model sees the same kind of tool either way.
+
+  So the updated order is: runTurn → one-shot → headless → subagent tool (when
+  the logs call for it) → A2A. I'll add this to the DECISIONS.md modes entry
+  along with the rest: no flag, subagents come from config, the model decides
+  when to call one, and building it waits for evidence from headless runs.
+
+✻ Cogitated for 19s · done 5:02 PM
+
+❯ Any other flags that are necessary?                                           
+
+  Listed 1 directory (ctrl+o to expand)
+
+⏺ Not many. Here's how to decide which settings become flags:
+
+  - Flag: something that changes from one run to the next (this query, this
+    mission, this model for this eval).
+  - Config file: something that stays the same across runs (provider, tools, MCP
+    servers, system prompt, window strategy).
+
+  A setting can exist in both, with the flag overriding config for that one run.
+
+  Necessary now
+
+  ┌────────────┬────────────────────────────────────────────────────────────┐
+  │    Flag    │                            Why                             │
+  ├────────────┼────────────────────────────────────────────────────────────┤
+  │ -config    │ mvp2's main() hard-codes "config.default.json". You need   │
+  │ <path>     │ this to switch between local Ollama and Claude without     │
+  │            │ editing code. mvp1 already has it.                         │
+  ├────────────┼────────────────────────────────────────────────────────────┤
+  │ -q <text>  │ One-shot input. Already in your draft.                     │
+  │ / -q -     │                                                            │
+  ├────────────┼────────────────────────────────────────────────────────────┤
+  │ -mission   │ Headless input.                                            │
+  │ <path>     │                                                            │
+  ├────────────┼────────────────────────────────────────────────────────────┤
+  │ --json     │ Output envelope. Already in your draft.                    │
+  └────────────┴────────────────────────────────────────────────────────────┘
+
+  On --mode: your main.go draft still has it. Earlier I suggested choosing the
+  mode from which input flag is present. If you keep --mode, add a check that
+  rejects mismatches (--mode chat -q …, --mode headless with no -mission).
+  Either way works; it's your call.
+
+  Worth adding soon (per-run overrides you'll actually use)
+
+  ┌──────────────┬───────────────────────────────────────────────────────────┐
+  │     Flag     │                            Why                            │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ -model       │ Evals mean "same prompts, different models." Editing      │
+  │ <name>       │ config for every run is tedious.                          │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ -max-steps   │ A per-run budget, mainly for headless.                    │
+  │ <n>          │                                                           │
+  ├──────────────┼───────────────────────────────────────────────────────────┤
+  │ -v           │ How much goes to stderr. debugChatContext currently       │
+  │              │ prints every turn, which is noise in one-shot.            │
+  └──────────────┴───────────────────────────────────────────────────────────┘
+
+  Once a value can come from several places, write the precedence rule down
+  once: flag > mission frontmatter > config file > built-in default. Without a
+  rule, "why did it use 10 steps?" turns into a debugging session.
+
+  Later, when the feature exists
+
+  - -resume <run-id>: only once headless saves its state to disk.
+
+  Leave out
+
+  - --api-key: flag values end up in shell history and in ps output. Keep
+    apiKeyName pointing at an environment variable, as you do now.
+  - --subagents, --tools, --system-prompt: these describe the agent itself, so
+    they belong in config (the system prompt can also come from the mission
+    file).
+  - --output <file>: shell redirection already does this.
+  - --timeout: step budgets cover runaway runs for now. Add it if a slow
+    provider ever leaves a run hanging.
+
+  One Go detail: the standard flag package accepts both -q and --q, but it has
+  no built-in short/long pairs. For -q and --query you register both names
+  pointing at the same variable. It also stops parsing at the first argument
+  that isn't a flag, so keep everything as flags rather than positional
+  arguments.
+
+  The final set is four flags now (-config, -q, -mission, --json) and three soon
+  (-model, -max-steps, -v). I'll add the list and the precedence rule to the
+  DECISIONS.md modes entry with the rest.
+
+✻ Churned for 20s · done 5:04 PM
+
+❯ Is -mission the right word, or maybe '-goal' would work too?                  
+  Also for -model, how would the user know which models could be used?          
+
+⏺ -mission vs -goal
+
+  I'd keep -mission, or use -instructions. I'd avoid -goal.
+
+  The flag takes a path to a markdown file, and that file contains more than a
+  goal: goal, success criteria, guidelines and constraints. The goal is one
+  section inside it. -goal also sounds like it takes a short inline string, like
+  -q, so someone would reasonably try -goal "fix the tests".
+
+  Options I considered:
+
+  ┌───────────────┬──────────────────────────────────────────────────────────┐
+  │     Name      │                         Verdict                          │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │               │ Covers the whole bundle and is distinct. Downside:       │
+  │ -mission      │ slightly grand, and not a standard term, so the help     │
+  │               │ text has to explain it.                                  │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │               │ Plain and widely understood (compare                     │
+  │ -instructions │ AGENTS.md/CLAUDE.md). Downside: long, and it doesn't     │
+  │               │ hint that the file contains a goal that ends the run.    │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ -goal         │ Names only one part of the file, and suggests an inline  │
+  │               │ string.                                                  │
+  ├───────────────┼──────────────────────────────────────────────────────────┤
+  │ -task         │ Avoid: it collides with A2A Task and with the todo items │
+  │               │  in the plan.                                            │
+  └───────────────┴──────────────────────────────────────────────────────────┘
+
+  Whichever you choose, use the same word everywhere: the flag, the file
+  (mission.md), and the code (loadMission, RunState.Mission). That consistency
+  matters more than which word wins. If you later want inline goals, add them as
+  a separate flag rather than making one flag accept both a path and text.
+
+  How users find out which models work with -model
+
+  Ask the provider. Both providers have a list endpoint:
+  - OpenAI-compatible (including Ollama): GET {baseUrl}/models
+  - Anthropic: GET /v1/models
+
+  Add a -list-models flag that prints the models from the configured provider
+  and exits:
+  minagent -list-models                          # uses config.default.json
+  minagent -config config.anthropic.json -list-models
+
+  How it fits the code: don't add a method to Provider. That would force every
+  provider, including test fakes, to implement it. Use a small optional
+  interface and check for it with a type assertion:
+  type ModelLister interface {
+      ListModels(ctx context.Context) ([]string, error)
+  }
+  // in main: if l, ok := provider.(ModelLister); ok { ... } else { "this 
+  provider can't list models" }
+  This is the usual Go pattern for an optional capability (the standard library
+  does the same with io.WriterTo). The downside is that it's less discoverable:
+  nothing in Provider tells a reader the option exists, so put a comment next to
+  Provider.
+
+  Don't check -model against the list on every run. That's an extra network call
+  per run just to catch typos. Let the provider reject a bad name, and make
+  that error helpful: model "llama9" not found — run minagent -list-models.
+
+  Caveat: the list shows what's installed or available, not what works for an
+  agent. Many small Ollama models don't support tool calling at all. In the REPL
+  that shows up as a model that never uses tools. In headless mode it shows up
+  as a run that never calls finish. Ollama's native /api/show reports whether a
+  model supports tools; the OpenAI-compatible /models list doesn't include that
+  information. When you have a reason, either mark tool-capable models in the
+  list (Ollama only), or have headless fail early: if the model makes no tool
+  calls in its first N turns, stop with a clear error.
+
+  I'll add both choices to the DECISIONS.md entry once you've picked the flag
+  name.
+
+✻ Cooked for 20s · done 5:06 PM
+
+❯ Is -maxspend something that can actually be coded as a constraint?            
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Yes. It's a soft limit, though, and it needs more plumbing than it sounds
+  like. The pieces:
+
+  How it works
+
+  1. Read token usage from each response. Every provider reports input and
+     output tokens per call. mvp2 currently drops this: ChatResponse (:228) only
+     decodes choices, and Provider.Chat returns only a ChatMessage. mvp1 keeps
+     it (mvp1/llm/openai.go:78, agent.Response.Usage), so that's your reference.
+  2. Convert tokens to dollars yourself. APIs report tokens, not cost. You need
+     a per-model price table in config (dollars per million input and output
+     tokens), and you update it by hand when prices change.
+  3. Count every call. This is easy to miss: summarizeChatContext also calls
+     Provider.Chat, so compaction costs money, and so would subagents.
+  4. Check before each call, stop when over.
+
+  Where it goes: a wrapper around Provider
+
+  // meteredProvider wraps a Provider: it counts usage and refuses calls once 
+  the budget is spent.
+  type meteredProvider struct {
+      inner  Provider
+      budget float64  // dollars; 0 = unlimited
+      spent  float64  // guarded by mu
+      mu     sync.Mutex
+  }
+  // Chat: TODO 1 if spent >= budget → return ErrBudgetExceeded
+  //       TODO 2 call inner.Chat
+  //       TODO 3 spent += cost(usage)
+  Because everything goes through Provider, this catches ReAct turns, compaction
+  and future subagents automatically, and none of the loop code changes. Give
+  subagents the same meter, for the same reason they share policy: delegating
+  shouldn't get around the limit. The mutex is there because compaction already
+  runs on its own goroutine.
+
+  When the budget runs out, it becomes a run outcome, not a crash. In one-shot,
+  exit 1 with "budget exceeded". In headless, the driver maps ErrBudgetExceeded
+  to status: failed, writes the partial report and exits 1.
+
+  Caveats
+
+  - It's soft. You only learn a call's cost after it returns, so you can
+    overshoot by up to one call. A long-context call can be large. To tighten
+    it, estimate the next call before sending (last input tokens + new messages,
+    plus a max-output allowance) and refuse if spent + estimate > budget. For
+    real money, also set a spending limit in the provider's console. That's the
+    only truly hard cap.
+  - Pricing is more complicated than input × price + output × price. Anthropic
+    reports cached-input tokens separately at different rates. Thinking tokens
+    are billed as output. A simple formula will be somewhat off, so call the
+    result an estimate.
+  - Usage can be missing. Some OpenAI-compatible servers omit usage, especially
+    when streaming. Fail closed: if a budget is set and usage is missing, stop
+    with an error rather than counting the call as $0.
+  - Local Ollama costs $0, so a dollar cap never triggers. If -max-spend is set
+    and the model has no price entry, refuse at startup with an error rather
+    than silently running with no limit.
+
+  Recommendation
+
+  Build -max-tokens first. It's exact, it works for local models, and it needs
+  no price table. Then add -max-spend on top as tokens × the config price table.
+  Same wrapper, one extra conversion. Name it -max-spend (hyphenated) to match
+  -max-steps.
+
+  So that's three budgets, each stopping a different kind of runaway: steps
+  (loops), tokens (context growth) and spend (money). All three use the same
+  "budget exceeded → failed status" path in the driver.
+
+✻ Cooked for 26s · done 5:09 PM
