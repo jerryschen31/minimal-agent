@@ -3,9 +3,11 @@ package mcpconnect
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -17,30 +19,41 @@ type McpConnection struct {
 	Session *mcp.ClientSession
 }
 
-// connects to all MCP servers listed in input config, if possible - returns list of MCP server objects
+// SetupMCPConns connects to all MCP servers listed in the config, in name order, and returns one connection per server.
+// If any server fails, the connections already made are closed (so no child process outlives the failed setup) and the error is returned.
 func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
 	var mcpConns []*McpConnection
-	// note sconfig is already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
-	for sname, sconfig := range cfg.McpServers {
+	closeAll := func() {
+		for _, c := range mcpConns {
+			c.Close()
+		}
+	}
+	// map order is random; sorted names make which server fails first (and the error shown) repeatable
+	for _, sname := range slices.Sorted(maps.Keys(cfg.McpServers)) {
+		sconfig := cfg.McpServers[sname] // already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
 		transportType, err := sconfig.TransportType()
 		// if transport type is not supported or error in config, do not connect to this MCP server
 		if err != nil {
+			closeAll()
 			return nil, fmt.Errorf("failed to determine transport type for server %s: %w", sname, err)
 		}
 		switch transportType {
 		case config.TransportStdio:
 			mcpConn, err := connectLocalMCPServer(ctx, sname, sconfig, cfg)
 			if err != nil {
+				closeAll()
 				return nil, err
 			}
 			mcpConns = append(mcpConns, mcpConn)
 		case config.TransportHTTP:
 			mcpConn, err := connectRemoteMCPServer(ctx, sname, sconfig, cfg)
 			if err != nil {
+				closeAll()
 				return nil, err
 			}
 			mcpConns = append(mcpConns, mcpConn)
 		default:
+			closeAll()
 			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
 		}
 	}

@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -249,6 +252,13 @@ func TestHelperMCPServer(t *testing.T) {
 	if os.Getenv("GO_WANT_MCP_HELPER") != "1" {
 		t.Skip("helper process for the connectLocalMCPServer test, not a real test")
 	}
+	// a test can ask the child to record its pid, to check later whether the process is still alive
+	if pidFile := os.Getenv("GO_MCP_HELPER_PIDFILE"); pidFile != "" {
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
+			os.Exit(1)
+		}
+	}
 	if err := newFakeMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "helper MCP server:", err)
 		os.Exit(1)
@@ -288,5 +298,58 @@ func Test_Unit_ConnectLocalMCP_BadCommand_ReturnsErrorNamingServer(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "broken") {
 		t.Errorf("expected the error to name the server, got %q", err)
+	}
+}
+
+// - Verify that when a later server fails, SetupMCPConns closes the connections it already made: the
+// good local server (a child process, sorted first by name) must be gone once SetupMCPConns returns,
+// whether the failure is a bad config entry or a server that cannot start
+func Test_Unit_SetupMCPConns_ServerFails_ClosesAlreadyConnectedServers(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	cases := map[string]config.McpServerConfig{
+		"cannot start": {Command: "definitely-not-a-real-command-xyz"},
+		"bad config":   {Command: "x", URL: "https://example.com/mcp"}, // both command and url: rejected before connecting
+	}
+	for name, bad := range cases {
+		t.Run(name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "child.pid")
+			t.Setenv("GO_WANT_MCP_HELPER", "1") // the children inherit our environment
+			t.Setenv("GO_MCP_HELPER_PIDFILE", pidFile)
+			cfg := config.Config{McpServers: map[string]config.McpServerConfig{
+				"a-good": {Command: exe, Args: []string{"-test.run=^TestHelperMCPServer$"}},
+				"z-bad":  bad,
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			conns, err := SetupMCPConns(ctx, cfg)
+
+			if err == nil || conns != nil {
+				t.Fatalf("expected (nil, error), got (%v, %v)", conns, err)
+			}
+			if !strings.Contains(err.Error(), "z-bad") {
+				t.Errorf("expected the error to name the failing server, got %q", err)
+			}
+			raw, readErr := os.ReadFile(pidFile)
+			if readErr != nil {
+				t.Fatalf("expected the good server to have started (and recorded its pid): %v", readErr)
+			}
+			pid, convErr := strconv.Atoi(string(raw))
+			if convErr != nil {
+				t.Fatalf("bad pid file contents %q: %v", raw, convErr)
+			}
+			// signal 0 checks that a process exists; ESRCH means it is gone
+			deadline := time.Now().Add(5 * time.Second)
+			for syscall.Kill(pid, 0) == nil {
+				if time.Now().After(deadline) {
+					syscall.Kill(pid, syscall.SIGKILL) // don't leave the leaked child behind
+					t.Fatalf("the already-connected server (pid %d) is still running after SetupMCPConns failed", pid)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
 }

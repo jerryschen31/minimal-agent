@@ -909,9 +909,18 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 - **Honest downsides.** The namespace is shared across primitives, so unexported names can collide;
   if the package grows past a thousand lines, split by primitive then (the connection type is
   already the shared base, so that is cheap).
-- **Known gap, not fixed:** `SetupMCPConns` returns `nil, err` on the first failing server, so
-  servers it already connected are dropped without being closed and their child processes outlive
-  the run. It should return what it connected (and close or hand back the partial list).
+- **`SetupMCPConns` closes what it connected when a later server fails (fixed 2026-10-07).** It used to
+  return `nil, err` at the first failing server, dropping the connections already made without
+  `Close()`, so their child processes outlived the failed setup. Now every error path (bad transport
+  config, connect failure, unsupported transport) closes the connections made so far and returns
+  `nil, err`; the error is returned, not swallowed, and `agent/` still prints it and carries on
+  without MCP tools. Servers are also connected **in sorted name order** (map order is random), so
+  which server fails first is repeatable. Rejected: returning the partial list alongside the error
+  (callers would have to remember to close it). Test: a good local server (the test binary
+  re-run as a child) plus a failing one; the good child's pid must be gone after the call, checked
+  for both a server that cannot start and a bad config entry, and it fails with `closeAll` disabled.
+  Remaining downside: a server that is slow to start delays the next one, because connecting is
+  sequential.
 
 ### Context window never hands out an orphaned tool result (2026-10-07)
 
