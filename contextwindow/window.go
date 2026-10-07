@@ -12,7 +12,8 @@ import (
 // ContextWindow
 // ****************************************
 
-// ContextWindow defines the interface for managing the chat history within the context window, allowing different strategies for handling the chat history.
+// ContextWindow defines the interface for managing the messages within the context window (let's call this message context),
+// allowing different strategies for handling the message context.
 type ContextWindow interface {
 	AddMessages(msgs []model.ChatMessage)
 	GetMessages() []model.ChatMessage
@@ -42,6 +43,10 @@ func NewContextWindow(maxContextWindow int, windowStrategy string) (ContextWindo
 // struct types that implement the ContextWindow interface
 //*********************************************************//
 
+//*********************************************//
+// OffsetWindow (the default)
+//*********************************************//
+
 // OffsetWindow is a context window strategy that stores messages as a slice and just shifts the window,
 // making the oldest messages at the beginning of the slice unreachable, when the maximum size is exceeded.
 type OffsetWindow struct {
@@ -69,8 +74,12 @@ func (w *OffsetWindow) AddMessages(msgs []model.ChatMessage) {
 	// After we have added the messages, we check if the total number of messages exceeds the maximum size and trim the oldest messages if necessary.
 	// In practice we want the maxSize to be a bit less than the max context window.
 	// If several messages are added, we don't want to hit the actual max context window before we trim.
+	// Also, when we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we clip them.
 	if len(w.messages) > w.maxSize {
 		w.messages = w.messages[len(w.messages)-w.maxSize:]
+		for len(w.messages) > 0 && w.messages[0].Role == "tool" {
+			w.messages = w.messages[1:]
+		}
 	}
 }
 
@@ -113,6 +122,10 @@ func (w *OffsetWindow) GetMaxSize() int {
 	return w.maxSize
 }
 
+//*********************************************//
+// InPlaceWindow
+//*********************************************//
+
 // InPlaceWindow is a context window strategy that stores messages in place and overwrites the oldest messages when the maximum size is exceeded.
 type InPlaceWindow struct {
 	mu       sync.Mutex
@@ -137,11 +150,15 @@ func (w *InPlaceWindow) AddMessages(msgs []model.ChatMessage) {
 	}
 	// similar to the offset window, we want maxSize < maxContextWindow so that there is a buffer and we never hit the actual max context window before trimming.
 	if len(w.messages) > w.maxSize {
-		// shift all messages to the left by one position to make room for the new message at the end
+		// note that when we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we clip them.
 		num2drop := len(w.messages) - w.maxSize
+		for num2drop < len(w.messages) && w.messages[num2drop].Role == "tool" {
+			num2drop++
+		}
 		n := copy(w.messages, w.messages[num2drop:])
 		w.messages = w.messages[:n]
 	}
+
 }
 
 func (w *InPlaceWindow) GetMessages() []model.ChatMessage {
@@ -178,6 +195,10 @@ func (w *InPlaceWindow) GetMaxSize() int {
 	return w.maxSize
 }
 
+//*********************************************//
+// RingBufferWindow
+//*********************************************//
+
 // RingBufferWindow is a context window strategy that uses a ring buffer to store messages.
 type RingBufferWindow struct {
 	mu       sync.Mutex
@@ -206,6 +227,13 @@ func (w *RingBufferWindow) AddMessages(msgs []model.ChatMessage) {
 		if w.count < w.maxSize {
 			w.count++
 		}
+	}
+	// When we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we remove them.
+	start := (w.head - w.count + w.maxSize) % w.maxSize
+	for w.count > 0 && w.messages[start].Role == "tool" {
+		w.messages[start] = model.ChatMessage{} // release the references
+		start = (start + 1) % w.maxSize
+		w.count--
 	}
 }
 
@@ -255,6 +283,10 @@ func (w *RingBufferWindow) GetMaxSize() int {
 	return w.maxSize
 }
 
+//*********************************************//
+// Linked-List Window
+//*********************************************//
+
 // LLWindow is a context window strategy that uses a doubly linked list to store messages.
 // A doubly linked list has head and tail pointers, so add and remove can happen from the front or back in O(1) time
 // This is useful for when we reach the context max and the new message needs to wrap around to the front (requiring us to remove the current head node and inserting new message in the front)
@@ -282,6 +314,10 @@ func (w *LLWindow) AddMessages(msgs []model.ChatMessage) {
 			w.messages.Remove(w.messages.Front())
 		}
 		w.messages.PushBack(msg)
+	}
+	// when we add new messages, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we remove them.
+	for e := w.messages.Front(); e != nil && e.Value.(model.ChatMessage).Role == "tool"; e = w.messages.Front() {
+		w.messages.Remove(e)
 	}
 }
 

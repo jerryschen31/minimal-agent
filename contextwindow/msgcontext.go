@@ -164,10 +164,15 @@ func clampToMax(msgs []model.ChatMessage, maxSize int) []model.ChatMessage {
 	if len(msgs) <= maxSize {
 		return msgs
 	}
+	// skip orphaned tool messages at the beginning (these are tool messages where the initial user / assistant messages were cut off because they fell outside the context)
+	start := len(msgs) - (maxSize - 1)
+	for start < len(msgs) && msgs[start].Role == "tool" {
+		start++
+	}
 	// allocate a fresh slice so we don't alias msgs' backing array
 	trimmed := make([]model.ChatMessage, 0, maxSize)
 	trimmed = append(trimmed, msgs[0])
-	return append(trimmed, msgs[len(msgs)-(maxSize-1):]...)
+	return append(trimmed, msgs[start:]...)
 }
 
 // creates a new chat context instance
