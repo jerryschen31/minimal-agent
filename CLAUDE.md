@@ -10,9 +10,12 @@ extensible ReAct agent in Go. Two generations live side by side:
 - `mvp1/` — a complete working reference agent (~1800 lines incl. tests, one third-party dep: the
   Anthropic Go SDK). Written for Jerry to read. Treat it as a reference design for this first building phase. mvp1/README.md is a good summary of the agent implementation.
 - `mvp2/` — the in-progress second generation. `mvp2/learn/` contains standalone `package main`
-  snapshots used to build the agent incrementally; the `mvp2/` root is a separate later track. Jerry
-  writes this code himself while being tutored step by step, so default behaviour is teach-then-let-him-type:
-  explain the concept, show the smallest next slice, and wait for him to write/confirm it.
+  snapshots used to build the agent incrementally (kept as reference; its big test file is not edited).
+  The code being migrated out of it is the **real mvp2 build, at the repo root** (`main.go`, `agent/`,
+  `config/`, `model/`, `memory/`, `contextwindow/`, `tools/`, `mcpconnect/` — see "Architecture for
+  mvp2" below). Jerry writes this code himself while being tutored step by step, so default behaviour
+  is teach-then-let-him-type: explain the concept, show the smallest next slice, and wait for him to
+  write/confirm it.
 - `mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs
@@ -98,6 +101,68 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
   open by a background child. MCP servers are closed via `defer` in `run()` — `main` returns errors
   through `run` instead of calling `os.Exit`, which would orphan them.
 
+## Commands for mvp2 (repo root)
+
+```sh
+go build ./... && go vet ./... && gofmt -l .     # mvp2/tool/builtin.go has two old syntax errors; ignore
+go test -race ./...                              # every package has its own tests; no network (fake provider)
+go test ./contextwindow -run OrphanedTool -v     # one test family
+go test -run XXX -bench . ./contextwindow        # window-strategy benchmarks
+go run . [-config file] [-model m] [-workdir dir]  # bare `go run .` = chat mode; read_file confined to -workdir (default .)
+```
+
+`mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
+
+## Architecture for mvp2 (repo-root code)
+
+The sections above describe mvp1 as a reference design. The code at the repo root uses the **opposite
+dependency direction** (see `DECISIONS.md § Package dependency direction` and `§ As built`):
+
+- **Capability packages are independent building blocks and never import `agent/`:**
+  `model/` (shared message/tool types, `Provider` interface, OpenAI-compatible adapter),
+  `memory/` (chat history), `contextwindow/` (`ChatContext` + the four window strategies +
+  summarize/compact), `tools/` (the `Tool` interface, `ToolRegistry`, built-in tool setup) with
+  `tools/builtin/` (`ReadFileTool`), and `mcpconnect/` (MCP client connections + the adapter that
+  wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts).
+- **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
+  `ShutdownAgent`), and **imports the capability packages**.
+- **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
+  so no capability needs a type defined in `agent/`. A capability that wants an `agent/` type is the
+  architectural regression to watch for (the compiler reports it as an import cycle).
+  `tools.Tool` lives in `tools/` (not `agent/`), because the registry, the built-ins and
+  `mcpconnect` all name it; `mcpconnect` imports `tools`, never the reverse.
+- `config/` is a leaf (Config, file loading, flag parsing and overlay); the capability `Setup*`
+  functions take a `config.Config`. `main.go` imports `agent` and `config`. Setup takes a `Config`
+  value — never `os.Args`, `flag.*` or `os.Exit`.
+- Config precedence is **flags > config file > defaults**; an unspecified flag is `nil`, never a
+  zero value.
+- **Test doubles shared across packages** live in `model/modeltest` (a normal package, like
+  `net/http/httptest`) because a `_test.go` file can't be imported. The session fixture
+  (`newChatSessionFixture`) is `agent`-only.
+
+### Invariants that are easy to break (mvp2)
+
+- **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
+  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`). It resolves symlinks first, checks the *resolved*
+  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
+  file-reading tool must reuse this, not call `os.Open` on a model-supplied path
+  (`DECISIONS.md § read_file is confined to workDir`).
+- **A context window must never hand out a leading `tool` message.** Windows trim by message count
+  and a turn is several messages, so a trim can land between an assistant tool call and its
+  results; providers reject an orphaned tool result, and since a failed turn is not added back, the
+  same bad context is re-sent forever. Each window strategy's `AddMessages` drops leading `tool`
+  messages after trimming, and `clampToMax` (compaction) does the same. A new window strategy must
+  do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages` runs every strategy.
+  See `DECISIONS.md § Context window never hands out an orphaned tool result`.
+- **Ctrl+C is one program-wide cancel signal for now.** `runChatLoop` reads stdin in a goroutine and
+  selects on `ctx.Done()`; per-turn interrupt / press-twice-to-exit is designed but deferred
+  (`DECISIONS.md § Chat loop and Ctrl+C`). Anything long-lived started per turn (e.g. auto-compaction)
+  must use the root context, not a future per-turn one.
+- **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
+  by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
+  0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
+  **`MaxTokens` is parsed and merged but not yet read**; don't assume `-maxtokens` takes effect.
+
 ## Conventions
 
 - Keep explanations clear, concise, accurate but avoid unnecessary technical jargon when possible. Explain things as if I am a generalist mid-level software engineer.
@@ -107,4 +172,8 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
 - State the trade-off, including the honest downside, whenever choosing a language, library, or design —
   a bare choice reads as arbitrary here (see `tradeoffs/language-scorecard.md` for the expected form).
 - New behaviour should arrive as a plug-in behind one of the five interfaces. If it can't, say why before
-  touching `agent/`.
+  touching `agent/`. (In `mvp1/` that means the kernel stays untouched; in mvp2, `agent/` may wire in
+  new capability packages, but the loop itself should still not grow cross-cutting features.)
+- When Jerry asks for a block of code, keep it simple: the most direct version that meets the request, with
+  no extra helpers, abstractions, options, or tests he didn't ask for. Prefer newer stdlib/language features
+  (go.mod targets Go 1.26) over hand-rolled helpers. Mention optional extras in a sentence instead of adding them.

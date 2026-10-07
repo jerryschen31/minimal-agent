@@ -1,4 +1,4 @@
-# DECISIONS.md — mvp2/learn/ design decision log
+# DECISIONS.md — mvp2 design decision log (mvp2/learn/ and the repo-root migration)
 
 This file is the durable record of *what was decided, why, and when* for the `mvp2/learn/`
 build-out. It is not a status report — for "what's in progress right now / what to do next,"
@@ -188,6 +188,17 @@ filter summaries out when searching real user messages.
   legitimate *architecture-taste* call (payload hygiene, not coupling persisted format to wire
   format) — but it's optional, not required for correctness.
 - Status: deferred / not built. Candidate file: `chat_w_history_context_session_structs.go`.
+- **Reversed 2026-10-07 (PR #6 review).** `ID`, `Timestamp` and `Type` are now tagged `json:"-"`, so they
+  are never sent to the provider (and never read from a response). The 2026-09-22 claim that servers
+  silently drop unknown message keys is not something we verified, and it is not safe to assume:
+  Copilot flagged it, and strict servers (OpenAI proper, Azure) can reject a request over an unexpected
+  message field, while Ollama's compat layer tolerates it. Not sending them is cheap and removes the
+  question. Chosen: the plain tag, not a separate wire struct, because `ChatMessage` is marshalled in
+  exactly one place (`model/openai.go`) and nothing persists it. Cost: if a persistent chat store is
+  added (`chatStoreType` has only `in-memory` today), `encoding/json` on `ChatMessage` would silently drop
+  the ID that compaction depends on, so that store needs its own storage type. Tests: the request body's
+  message keys are limited to `role`, `content`, `tool_calls`, `tool_call_id`; a response with extra keys
+  still decodes and does not fill our `ID`.
 
 ---
 
@@ -452,7 +463,8 @@ Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
   remember what a tool already did. Trigger to revisit: persistent history, or tools with side
   effects (write, shell). Then append each step to `MsgHistory` (the durable log) while still
   batching the context write.
-- **Step limit:** `MaxReActSteps = 10`. Exceeding it returns `ErrMaxSteps`, a sentinel error
+- **Step limit:** `MaxReActSteps = 10` (mvp2/learn; **superseded 2026-10-07**: the repo-root `agent/` has no constant,
+  the limit is `cfg.MaxSteps`, default 10 in `GetDefaultConfig`, overridable by `-maxsteps`; see `§ CLI flags`). Exceeding it returns `ErrMaxSteps`, a sentinel error
   wrapped with `%w` so callers and tests use `errors.Is` rather than comparing text. Nothing is
   persisted. Alternative not taken: persist the truncated turn with a synthetic closing assistant
   message, so tool side effects aren't lost.
@@ -753,23 +765,322 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ---
 
+## Package structure & CLI flags — `mvp2/` root migration (2026-10-05 → 10-07)
+
+### Package dependency direction: `agent/` imports the capability packages
+
+- **Status: active** (decided 2026-10-06). The arc is kept because the first two positions were
+  each argued for and then dropped.
+- **Position 1 — mvp1's design (reference, not adopted for mvp2).** `agent/` is a pure kernel that
+  imports nothing from the module; it owns the message model and the five interfaces, and every
+  plug-in (`llm/`, `memory/`, `harness/`, `hooks/`, `tool/`) imports `agent/`. Only `main.go`
+  knows concrete implementations. Upside: kernel is embeddable with zero extra deps. Downside:
+  capabilities are coupled to the agent package just to name `Message`/`Tool`.
+- **Position 2 — layered (proposed 2026-10-05, not adopted).** Keep the pure kernel, add
+  `config/` and `app/` (`Setup(cfg, opts...)`, mode drivers) and `cmd/<binary>/main.go`, so a
+  future daemon, eval runner or MCP-wrapper binary reuses `app/`. Rejected as more packages than
+  the design needs now; it also kept capabilities dependent on `agent/`.
+- **Position 3 — adopted.** Capabilities (`llm/`, `memory/`, `harness/`, `safety/`, `mcp/`,
+  `builtin/`, ...) are independent packages that provide functionality; they do **not** import
+  `agent/`. `agent/` holds the ReAct loop and the wiring and imports them. `main.go` →
+  `agent/` + `config/`.
+
+  ```
+  llm/       leaf: owns Message, ToolCall, ToolSpec, Response + provider adapters
+  memory/ harness/ safety/ mcp/ builtin/   import llm (shared types) only, never agent/
+  agent/     imports all of the above: loop, setup, wiring; defines Tool/Memory/Hook/... interfaces
+  config/    leaf: Config, file loading, flag parsing + overlay
+  main.go    imports agent, config
+  ```
+
+- **Why**: Jerry's view is that a capability (memory, safety, MCP) is functionality *offered to*
+  an agent, so it should be independent of any agent instance; the agent depends on the
+  capabilities, not the reverse. It also makes each capability testable and usable without
+  constructing an agent.
+- **How it stays acyclic.** Go interfaces are satisfied structurally, so `agent/` can define
+  `Tool`, `Memory`, `Hook`, `ContextBuilder` where they are consumed, and `mcp.Tool` etc. satisfy
+  them without importing `agent/`. The catch: any type in those method signatures must live
+  *below* the capabilities — hence `Message`/`ToolCall`/`ToolSpec` live in `llm/`, not `agent/`.
+  Rule: **no capability may need a type defined in `agent/`**; the compiler flags a violation as
+  an import cycle.
+- **Honest downsides.** (1) `llm/` becomes the foundation package, so `memory/` imports it only
+  to get `Message` — if that grates, extract a tiny `msg/` leaf later (mechanical move).
+  (2) `agent/` is no longer a pure kernel: it pulls in every concrete implementation including the
+  MCP SDK, so outside embedders carry that weight. Accepted: there is no planned external embedder.
+  (3) Test fakes need constructor overrides (e.g. `WithProvider`) since the agent builds its own
+  parts by default.
+- **Subagents** stay simple: `agent.Subagent` is a `Tool` living in `agent/`.
+- **Deferred, not decided:** extra binaries (`cmd/agentd`, eval runner) and an `app/` layer. If a
+  second binary appears, the wiring in `agent/` is what it would reuse; revisit then.
+- **Config / agent construction rule kept from Position 2:** setup takes a `Config` value, never
+  `os.Args` / `flag.*`, and never calls `os.Exit`, so a non-CLI caller could build an agent too.
+- Files affected: repo root (`main.go`, `config/`); `CLAUDE.md` gets a separate section for this
+  layout (the mvp1 section stays as the reference design).
+
+### As built: package names, where `Tool` lives, and a drift from the plan (2026-10-07)
+
+- **Status: active.** The adopted dependency direction above was implemented with different names
+  than the sketch used, and one interface landed somewhere other than planned.
+
+  | Sketch | As built | Holds |
+  |---|---|---|
+  | `llm/` | `model/` | `ChatMessage`, `ToolCall`, `ToolDef`, the `Provider` interface, `OpenAICompat`, `PrepareChatRequest`, `NewToolDef`, `CreateID`; `model/modeltest/` has the shared test doubles |
+  | `harness/` | `contextwindow/` | `ChatContext`, the four window strategies, summarize/compact |
+  | `memory/` | `memory/` | `ChatHistory` + in-memory implementation |
+  | `builtin/` + `mcp/` | `tools/builtin/` + `mcpconnect/` | built-in tools; MCP client (see its own entry) |
+  | (`agent/` defines `Tool`) | `tools/` defines `Tool` | `Tool` interface, `ToolRegistry`, `SetupBuiltinTools` |
+
+- **`Tool` lives in `tools/`, not `agent/`.** Three packages need to name it (the registry, the
+  built-ins, `mcpconnect`), all on the tools side; `agent/` only consumes it. Putting it in
+  `agent/` would have forced `mcpconnect` to import `agent/`, the exact cycle the design forbids.
+  Honest downside: "the consumer defines the interface" is weakened for `Tool`, and `mcpconnect`
+  now depends on `tools`.
+- **Capabilities also import `config/`.** `SetupProvider`, `SetupMemoryStore`, `SetupChatContext`
+  and `SetupMCPConns` take a `config.Config`, so the rule "capabilities import only the shared
+  types" is not literally true; `config/` is a leaf, so no cycle. Downside: each capability knows
+  `Config`'s shape. Narrower parameters are the cleanup if that grates.
+- **Names settled along the way.** A package called `context` was rejected (it shadows the stdlib
+  `context` and invites aliasing), so `contextwindow/`; `harness` was rejected as far too broad for
+  "the messages the model sees"; `msgcontext.go` is the file holding `ChatContext`. Import paths
+  are the module path plus the folder (`github.com/jerryschen31/minimal-agent/model`); Go has no
+  relative imports.
+- **Proposed but not applied:** rename `Provider.Chat` to `Complete` (it is one request/response
+  cycle used by every mode, not just chat) and drop the `Chat` prefix from `ChatMessage`,
+  `ChatRequest`, `ChatResponse`. The code still uses the `Chat*` names; the rename is mechanical, so
+  do it when nothing else is in flight.
+
+### Where "session" state lives (`ChatSession` vs mvp1's `Agent`)
+
+- **Status: leaning, not yet implemented.** mvp2/learn's `ChatSession` bundled capabilities
+  (`Provider`, `Tools`, `SystemMsg`), conversation state (`MsgHistory`, `MsgContext`) and terminal
+  I/O (`InBuffer`, `OutBuffer`, `Config`, `UserID`). mvp1 has no session type: capabilities are
+  `Agent` fields and the state is the injected `Memory` + `ContextBuilder`.
+- Direction: do not carry the grab-bag into `agent/`. Terminal I/O, slash commands and the REPL
+  belong to the mode drivers; compaction state belongs to the context-builder capability; MCP
+  connection lifetime belongs to setup/shutdown, not the agent struct.
+- Open trade-off to record when decided: mvp2/learn's `reActLoop` returns the turn's messages and
+  the caller commits them (a failed turn leaves history untouched); mvp1 appends as it goes
+  (better for resuming a crashed headless run, worse for a clean REPL after `ErrMaxSteps`).
+
+### CLI flags: precedence, "unspecified" semantics, and parsing
+
+- **Precedence: flags > config file > built-in defaults** (decided 2026-10-05). Flags are the most
+  specific, per-run signal; a config-wins rule would make a flag silently do nothing whenever the
+  file sets that field. The original comment in `main.go` said the opposite ("-config … overrides
+  flag values"); it was corrected to "flag values override config".
+- **Unspecified stays unspecified.** `Flags` fields are all pointers; `nil` = not passed, so
+  `-json=false` or `-maxsteps 5` are distinguishable from absence. Go's `flag` package cannot
+  report "was this set", so values are registered into throwaway variables and `fs.Visit` is used
+  to copy only the flags actually passed. Downside: callers nil-check before reading.
+- **`FlagsOverlay(cfg, flags)`** applies only `-model`, `-mode`, `-mission`, `-maxsteps`,
+  `-maxtokens`. Matching fields were added to `Config` (`mode`, `mission`, `maxSteps`,
+  `maxTokens`); default `Mode` is `chat`. `MaxTokens` defaults to 0 = unspecified and is not read yet.
+  `MaxSteps` defaults to 10 and **is** read (2026-10-07): `reActLoop` loops `cs.Config.MaxSteps` times and the
+  old `MaxReActSteps` constant is gone. A non-positive value (possible from a config file; the flag rejects it)
+  makes every turn fail immediately with `ErrMaxSteps (limit 0)` rather than being silently replaced by 10.
+- **Mode cross-checks** (`oneshot` needs `-query`, `headless` needs `-mission`, `-query`/`-mission`/
+  `--json` rejected where they don't apply) only run when `-mode` was passed explicitly, because
+  the effective mode may still come from the config file. **TODO:** re-validate the merged mode
+  after `FlagsOverlay`.
+- **No flags → chat mode, not usage.** Printing usage on empty args was tried and reverted
+  (2026-10-05): bare `minagent` is the chat shortcut; `-h`/`--help` print usage.
+- **`-x` and `--x` are both accepted** for every flag (Go `flag` default). Rejecting single-dash
+  `-json` was offered and declined.
+- **Flag parsing lives in `config/`** (`config.ParseFlags`, `config.FlagsOverlay`), a leaf package,
+  rather than `package main`. Note for context: in Go, all files of one package share a namespace,
+  so calls across files need no qualifier; only a real package needs `pkg.Name` with a capitalised
+  name.
+- **Context setup in `main`:** `signal.NotifyContext` alone is enough (`stop()` also cancels);
+  the extra `context.WithCancel` was redundant and only becomes useful if something needs to
+  cancel the run itself (e.g. a headless timeout).
+
+### MCP: `mcpconnect/` — one package for connections and tools (2026-10-07)
+
+- **Status: active.** Arc kept.
+- **First cut: two packages.** `mcpservers/` (connect, `MCPServer`, `Close`) and `tools/mcptools/`
+  (wrap an MCP tool as a `Tool`). Jerry's reason: an MCP server exposes more than tools —
+  resources and prompts today, plausibly other callable categories as the spec evolves — so the
+  connection should be a layer that several capability packages share.
+- **Why it felt clunky.** `mcptools` imported `mcpservers`, so any test that needs "connect, then
+  use" spans both packages: `checkEchoRoundTrip` (connect to a fake server, list tools, call one)
+  could live in neither without an import cycle. Every new primitive would also have added a
+  sibling package (`mcpresources`, `mcpprompts`) with the same problem.
+- **Decision: one package, split by file** — `mcpconnect/conn.go` (connect local/remote, headers,
+  `Close`) and `mcpconnect/tools.go` (tool adapter), with `resources.go` / `prompts.go` added
+  as files when needed. This keeps Jerry's goal (one shared connection layer for every primitive)
+  without the cross-package seams. Tests mirror the files: `conn_test.go`, `tools_test.go`.
+- **Dependencies:** imports `config`, `model` and `tools` (for the `Tool` interface, and
+  `GetMCPTools`/`SetupMCPTools` return `[]tools.Tool`); only `agent/` imports `mcpconnect`.
+  A variant was offered where `mcpconnect` does not import `tools` (export the concrete tool type,
+  have `agent/` convert the slice); not taken, because the extra conversion loop buys little.
+- **Names:** `McpConnection` (type), `SetupMCPConns`, `connectLocalMCPServer`,
+  `connectRemoteMCPServer`, variables `mcpConn` / `mcpConns`. (`MCPServer` → `McpConn` →
+  `McpConnection` along the way; the type is "our live session with one configured server", not the
+  server itself.)
+- **Honest downsides.** The namespace is shared across primitives, so unexported names can collide;
+  if the package grows past a thousand lines, split by primitive then (the connection type is
+  already the shared base, so that is cheap).
+- **`SetupMCPConns` closes what it connected when a later server fails (fixed 2026-10-07).** It used to
+  return `nil, err` at the first failing server, dropping the connections already made without
+  `Close()`, so their child processes outlived the failed setup. Now every error path (bad transport
+  config, connect failure, unsupported transport) closes the connections made so far and returns
+  `nil, err`; the error is returned, not swallowed, and `agent/` still prints it and carries on
+  without MCP tools. Servers are also connected **in sorted name order** (map order is random), so
+  which server fails first is repeatable. Rejected: returning the partial list alongside the error
+  (callers would have to remember to close it). Test: a good local server (the test binary
+  re-run as a child) plus a failing one; the good child's pid must be gone after the call, checked
+  for both a server that cannot start and a bad config entry, and it fails with `closeAll` disabled.
+  Remaining downside: a server that is slow to start delays the next one, because connecting is
+  sequential.
+
+### Context window never hands out an orphaned tool result (2026-10-07)
+
+- **Status: active.** Resolves the deferred item "Window and compaction can split a tool call from
+  its results". Fix commit `f7c9c88`; tests added afterwards.
+- **The bug.** The windows trim by message count (window of 8 with `MaxContextWindow = 10`) and a
+  turn is several messages (user, assistant tool call, tool result, ..., final). A trim can land
+  between a tool call and its result, so the context starts with a `role: tool` message. Providers
+  reject that (OpenAI: a tool message must follow an assistant message with a matching
+  `tool_calls` entry). It sticks: a failed turn is never added back, so the identical context is
+  re-sent every turn until `/clear` or `/compact`. Compaction's `clampToMax` had the same exposure.
+- **Options.** (1) Trim forward to the next `user` message, like mvp1's `harness.Window` widening
+  backwards to a user turn: simple invariant, but may drop a whole older turn. (2) Store and evict
+  whole turns: cleaner model, but changes the `ContextWindow` interface and all four strategies.
+  (3) Window by tokens: the right long-term answer (providers limit tokens, not messages), but a
+  separate piece of work that needs the same rule. (4) Raise the limits: only hides it.
+  (5) **Chosen:** after trimming from the front, drop leading `tool` messages.
+- **Why (5) is enough.** Trimming from the front removes tool calls *before* their results, so a
+  leading tool result is the only invalid shape; an assistant tool call at the front is fine
+  because its results follow it. It keeps more context than (1).
+- **Where, and why not in `ChatContext`.** Each strategy does it inside its own `AddMessages`, under
+  its existing lock: offset reslices; in-place extends the drop count before its single `copy`;
+  ring buffer advances its logical start (`count--`, slot zeroed); linked list pops the front.
+  Cost is O(k) per add, k = orphans dropped (usually 0–3), no allocation. A wrapper in
+  `ChatContext` (read everything, filter, `Clear`, refill) was rejected as O(n) per turn.
+  `clampToMax` skips leading tool survivors when it clamps.
+- **Downsides / limits.** The window may start with an assistant message that has no user message
+  before it; OpenAI accepts that, but a strict Anthropic adapter requires a user-first context, so
+  that adapter needs (1) or its own fix. A window can end up shorter than its max. A single turn
+  larger than the whole window is cut by count (its user message can be lost), though what remains
+  is valid. `RemoveLast(n)` can still strip results and leave a call without results (the opposite
+  orphan); nothing in `agent/` calls it, so it is left alone.
+- **Tests:** four tests over all four strategies (varied-length turns after every add; exact result
+  when the trim lands on a tool result; oversized batch; no over-trimming on a turn boundary) and
+  three for `clampToMax` / `Compact`. They fail against `f7c9c88^` and pass now.
+
+### Chat loop and Ctrl+C (2026-10-07)
+
+- **Status: active (option A); option B designed, deferred.** Resolves the deferred item "What
+  should Ctrl+C mean?".
+- **Problem.** `signal.NotifyContext` removes the default kill-on-SIGINT, and a blocked
+  `ReadString` can't see a cancelled context, so Ctrl+C did nothing at the prompt; after one
+  mid-turn Ctrl+C every later turn failed with `context canceled` while the prompt kept returning.
+- **Decision (A): Ctrl+C quits.** `runChatLoop` reads stdin in its own goroutine and sends lines on
+  a channel; the main loop `select`s on `ctx.Done()` and that channel. The reader sends any text
+  that arrives with `io.EOF`, so a final line with no trailing newline (piped input) is processed,
+  not dropped. `lines` is unbuffered, so the reader reads at most one line ahead while a turn runs.
+- **Option B (not built): interrupt only the current turn, press twice to exit** (Claude Code style).
+  It needs a per-turn child context, SIGINT owned by the chat loop (the root context would listen
+  for SIGTERM only) and a watcher goroutine per turn; the double-press needs a 2-second window and
+  Ctrl+D handling, and Ctrl+D is not a signal but EOF on a terminal, so the reader must report it,
+  keep reading when stdin is a TTY and exit when it is a pipe. The auto-compaction goroutine must
+  keep the root context or the turn's `cancel()` would kill it. About three times the code of A;
+  declined for now.
+- **Known cosmetic leftover:** after a mid-turn Ctrl+C the loop prints one more `>` before it exits.
+  A `ctx.Err()` check at the top of the loop removes it.
+
+### Test layout after the migration (2026-10-07)
+
+- **Status: active.** The single 2,680-line `mvp2/learn/chat_w_history_context_session_mcp_tools_test.go`
+  was copied (not moved; the original stays untouched) into per-package test files: `agent/`
+  (`chat_test.go`, `compaction_test.go`, `agent_test.go`, `fixture_test.go`), `contextwindow/`
+  (`window_test.go`, `window_bench_test.go`, `msgcontext_test.go`), `memory/`, `model/`
+  (`openai_test.go`, `provider_test.go`), `model/modeltest/`, `tools/`, `tools/builtin/`,
+  `config/` and `mcpconnect/` (`conn_test.go`, `tools_test.go`).
+- **Shared doubles** (`FakeProvider`, `AssistantText`, `AssistantToolCall`, `Msg`, `Msgs`) live in
+  `model/modeltest`, a regular package, because a `_test.go` file can't be imported by another
+  package. The session fixture stays `agent`-only. Tests that touch unexported code
+  (`handleUserInput`, `runToolCall`, `clampToMax`, `newMCPTool`, `connectLocalMCPServer`, ...) are
+  internal (`package x`), not `x_test`.
+- **Dropped on purpose:** the "empty filename reads `config.default.json`" test (there is no default
+  config file now: no `-config` means built-in defaults) and two `ChatHistory` tests that built the
+  whole session fixture just to reach a history object. **Added:** three `PrepareChatRequest` tests
+  (ordering, empty inputs, no aliasing of the caller's slices). `SetDefaultConfig` tests now pass
+  `Flags{Config: &path}`.
+
+### `/config` prints an allowlist, never the whole struct (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #6: `PrintConfig` used `%+v` on `Config`, which dumped
+  every MCP `Headers` value (e.g. `Authorization: Bearer ...`), `Env`, `Args` and URLs to the terminal and
+  any captured log.
+- **Decision:** print an explicit list of safe fields. MCP servers show as `name (transport)` only.
+  `ApiKeyName` is printed because it is the environment variable's *name*, not the key. An allowlist (not
+  a redacting copy of the struct) means a field added to `Config` later stays hidden until someone adds
+  it to `PrintConfig` deliberately. Rejected: redacting only `Headers` (misses `Env`, `Args` and tokens
+  in URLs). Downside: a new setting won't show up in `/config` until it is added by hand.
+- **Tests:** secrets in headers, env, args and URL never appear; the API key value never appears.
+
+### `read_file` is confined to `workDir` and has a deny list (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #6: the default-enabled tool opened any absolute or
+  relative path, and the sample config's `workDir` was not a real `Config` field, so nothing confined it.
+  This supersedes the old note "`read_file` can read any path; restricting paths belongs to hooks or
+  approval, later". Approval is still the long-term answer for going *outside* the boundary, but the
+  agent has no approval layer yet, so a hard boundary is the stand-in.
+- **Why it matters even though Claude Code can read any file:** Claude Code asks permission outside its
+  working directory and has deny rules for secrets. And the leak path is not stdout: tool results go to
+  the LLM provider, and a prompt-injected model (e.g. via text from a remote MCP tool) can ask for
+  `~/.ssh/id_rsa` and pass it on through another tool.
+- **Boundary:** new `Config.WorkDir` (JSON `workDir`, default `"."`, flag `-workdir <dir>`, flag wins
+  over the file; the flag must name an existing directory). `ReadFileTool` is built with
+  `NewReadFileTool(workDir)` (`SetupBuiltinTools` now takes the workDir), which resolves the directory to
+  an absolute, symlink-free root once and fails at startup if it is missing or not a directory. Every call
+  maps the requested path (relative or absolute) to a real path with `filepath.EvalSymlinks`, requires it to
+  be inside the root, and only then opens it through `os.Root`. Subdirectories are readable.
+- **Deny list (checked on the resolved path, every path component, case-insensitively):** `.env`, `.env.*`
+  (except `.env.example`), `*.pem`, `*.key`, `id_rsa*`, and any `.ssh` directory. Checking the *resolved*
+  path means a symlink named `notes.txt` that points at `.env` is refused. Case-insensitivity matters on
+  macOS and Windows, where `.ENV` is the same file as `.env`.
+- **Errors are for the model:** "`<path>` is outside the allowed directory" / "`<path>` is blocked: it
+  matches the sensitive-file deny list", with no file content in them, so the model can recover.
+- **Why `os.Root` as well as the resolve step:** `resolve` gives clear errors and the deny-list check;
+  `os.Root` refuses `..` and symlink escapes at open time, so a symlink swapped in between the check and
+  the open still cannot leave the root. Honest gap: the tests cannot exercise that race deterministically,
+  so the `os.Root` layer is defence in depth with no test that fails without it.
+- **Honest downsides.** Launching the agent in a subdirectory and asking about a sibling now fails until
+  `-workdir` is set. The deny list is by name, so it catches common secret files, not every secret (a
+  token in `config.json` is readable). Hard links are not detected (`os.Root` does not stop a hard link to
+  an outside file placed inside the root). Not covered: MCP filesystem servers have their own access
+  rules, and `workDir` does not restrict them.
+- **Tests:** a sandbox with secrets planted inside the root (every deny-list name, upper-case variants,
+  nested `.ssh`), outside it (`../`, absolute, a sibling directory sharing the root's name prefix,
+  `/etc/hosts`) and behind symlinks (to a file, a directory, the parent, an absolute target, a denied file,
+  a denied directory, and a root that is itself a symlink); allowed look-alikes (`.env.example`,
+  `environment.txt`, `monkey.txt`) must still read. Every refusal is checked to leak no secret text.
+  Disabling the deny list, the outside check, case-folding, or symlink resolution each makes tests fail.
+
+---
+
 ## Deferred / open decisions
 
-- **Window and compaction can split a tool call from its results (slice 1d-iv, next after the
-  loop tests).** The window trims by message count, and a turn is now several messages (user,
+- **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**
+  Original note: **Window and compaction can split a tool call from its results (slice 1d-iv, next
+  after the loop tests).** The window trims by message count, and a turn is now several messages (user,
   assistant, tool results, ..., final). With `MaxContextWindow = 10` (window of 8) a two-round
   turn is already 6 messages, and a longer one overflows and can drop the user message, leaving
   orphaned tool results that providers reject. Compaction has the same exposure. Options: make
   eviction turn-aware (widen backwards to a user turn, as mvp1's `harness.Window` does), treat a
   turn as one atomic unit, or simply raise the limits. Not yet decided.
-- **What should Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
+- **Resolved 2026-10-07 (option A) → see `§ Chat loop and Ctrl+C`.** Original note: **What should
+  Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
   ctx-aware, so at the prompt nothing happens until Enter, and `runLoop` never checks
   `ctx.Err()`, so afterward every turn fails with `context canceled` while the REPL keeps
   prompting. Option A: Ctrl+C quits (add a `ctx.Err()` check in `runLoop`). Option B: Ctrl+C
   interrupts only the current turn (a per-turn ctx in `runLoop`, with `os.Interrupt` removed from
   `main`'s registration). Leaning A first; revisit B when tools run long enough to be worth
   interrupting.
-- **`read_file` can read any path.** Restricting paths belongs to hooks or approval, later.
+- **Resolved 2026-10-07 → see `§ read_file is confined to workDir and has a deny list`.** Original note:
+  `read_file` can read any path; restricting paths belongs to hooks or approval, later.
 - **`createChatMessage` takes four positional `string` params,** so a swapped argument compiles.
   A narrower `newToolMessage(toolCallID, content)` was suggested; revisit if a second caller
   pattern appears or a swap bug bites.
@@ -865,6 +1176,77 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   compaction pass), or once the `IsSummary`-style marker field discussed under "Wire format /
   JSON tags" above gets built, since that marker is the prerequisite for `summarizeChatContext`
   to even know it's being asked to summarize a summary.
+
+### Deferred for Later
+
+Copilot review comments on PR #6 (https://github.com/jerryschen31/minimal-agent/pull/6) that Jerry
+replied to with "deferred" or "will do later" instead of fixing in that PR. Recorded 2026-10-07. Each
+entry has: what Copilot said, what the code does today, the fix, and when to pick it back up. The first
+three were answered literally "deferred"; the last two were answered "for debugging purposes, will
+switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
+`/config` printing, `ChatMessage` JSON tags and `read_file` confinement above).
+
+1. **`headless` and `oneshot` modes are advertised but not implemented** (`agent/agent.go`, `RunAgent`).
+   - *Copilot:* the parser and usage text accept both modes, but every such run reaches the
+     "unsupported agent mode" branch. Reject/unadvertise them until the drivers exist, or implement the
+     dispatch and carry the parsed query / mission / JSON options through.
+   - *Today:* `ParseFlags` validates `-mode oneshot|headless`, `-q`, `-mission`, `--json` and the usage
+     text lists them; `RunAgent` only handles `chat` and returns `unsupported agent mode: <mode>` for the
+     rest. `Config` has no fields for the query or JSON output, and `FlagsOverlay` does not carry them.
+   - *Fix:* implement the two drivers (the design is the headless brainstorming in `THOUGHTS.md`) and add
+     the missing `Config` fields; the stopgap alternative is to drop the two modes from the usage text and
+     the validator.
+   - *Revisit:* when the headless/oneshot drivers are built. Until then the failure is loud (an error and
+     a non-zero exit once item 3 is done), not silent.
+
+2. **Auto-compaction prints "complete" even when it failed** (`agent/chat.go`, the auto-compaction
+   goroutine in `handleUserInput`).
+   - *Copilot:* after reporting `[error] Auto-compaction error: ...` the goroutine still prints
+     `[system] Auto-compaction complete.`, which contradicts the error. Return after the failure.
+   - *Today:* the error branch does not `return`, so a failed compaction prints both lines.
+   - *Fix:* `return` inside the `if err != nil` block (the deferred `CompactWG.Done()` still runs).
+     A test needs the fake provider to fail an auto-compaction and check the output has no "complete".
+   - *Revisit:* the next time the compaction messages are touched; cosmetic, no state is affected (the
+     context is left unchanged on failure).
+
+3. **A failed start or run exits with status 0** (`main.go`).
+   - *Copilot:* on a setup or run error `main` prints the error and returns, so scripts and supervisors
+     see success. Move the lifecycle, including the deferred shutdown, into a `run() error` helper and have
+     `main` exit non-zero after it returns.
+   - *Today:* both error paths in `main` print to stderr and `return`. (Parse and config-load errors
+     already `os.Exit(2)`, because nothing needs shutting down yet.)
+   - *Constraint to keep:* `os.Exit` skips deferred calls, so `ShutdownAgent` (which waits for compaction
+     and closes MCP child processes) must run before the exit, which is why a `run() error` wrapper is the
+     shape suggested. An earlier request removed a `run()` wrapper from `main` for the flag-parsing part;
+     this one is about the agent lifecycle and is a different case.
+   - *Revisit:* before headless/oneshot (item 1), where callers rely on the exit code.
+
+4. **Remote MCP traffic is wrapped in `mcp.LoggingTransport`** (`mcpconnect/conn.go`, `connectRemoteMCPServer`).
+   - *Copilot:* the wrapper hides the SDK connection's `sessionUpdated` hook, so `Mcp-Protocol-Version`
+     is not sent after initialize and a strict server may reject later list/call requests. Use the
+     streamable transport directly or log at the `RoundTripper` layer.
+   - *Jerry's reply:* the logging transport is there for debugging; will switch later.
+   - *Status:* already analysed in full under "Bug found 2026-10-02: `LoggingTransport` hides the client's
+     `sessionUpdated` hook" (in the Remote MCP entry above), with the options and a test plan. This item
+     is the pointer; the decision is still open there.
+   - *Related, not deferred:* the same review also flags the **stdio** `LoggingTransport` (every JSON-RPC
+     request and result goes to stderr, which can include file contents or credentials). Both want the
+     same fix: logging off by default and enabled by an explicit debug setting.
+   - *Revisit:* before using a strict remote MCP server for real work, or when adding a debug setting.
+
+5. **`DebugChatContext` dumps the whole conversation to stdout every turn** (`agent/chat.go`,
+   `handleUserInput`).
+   - *Copilot:* the unconditional call writes the full prior conversation to process stdout instead of
+     `ChatSession.OutBuffer`, leaking chat content when output is redirected and corrupting structured or
+     piped output. Remove it from the normal path or gate it behind an explicit debug option that uses the
+     configured writer.
+   - *Jerry's reply:* debugging aid for now; will remove or refactor later.
+   - *Today:* it uses `fmt.Println`, so it bypasses `OutBuffer`, and the dump includes tool results, which
+     means a successful `read_file` prints the file's contents to the terminal.
+   - *Fix:* delete it, or behind a debug flag write to `cs.OutBuffer` (or stderr).
+   - *Revisit:* before `--json` / oneshot output or before sharing terminal logs; together with item 4's
+     debug setting, one `debug` switch could cover both.
+
 
 ---
 
