@@ -128,7 +128,7 @@ func GetMCPTools(ctx context.Context, mcpConn *McpConnection) ([]tools.Tool, err
 		mt, err := newMCPTool(mcpConn, t) // t is *mcp.Tool, mt is *mcpTool
 		if err != nil {
 			// warn and skip this one tool
-			fmt.Printf("warning: failed to create MCP tool from server %s: %v\n", mcpConn.Name, err)
+fmt.Fprintf(os.Stderr, "warning: failed to create MCP tool from server %s: %v\n", mcpConn.Name, err)
 			continue
 		}
 		mcpTools = append(mcpTools, mt)
