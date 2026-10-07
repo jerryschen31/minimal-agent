@@ -50,6 +50,7 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 	cfg := config.Config{
 		UserID:       "test-user",
 		SystemPrompt: "You are a helpful assistant.",
+		MaxSteps:     10,
 		InBuffer:     strings.NewReader(""),
 		OutBuffer:    out,
 	}

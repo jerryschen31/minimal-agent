@@ -1,4 +1,4 @@
-# DECISIONS.md — mvp2/learn/ design decision log
+# DECISIONS.md — mvp2 design decision log (mvp2/learn/ and the repo-root migration)
 
 This file is the durable record of *what was decided, why, and when* for the `mvp2/learn/`
 build-out. It is not a status report — for "what's in progress right now / what to do next,"
@@ -452,7 +452,8 @@ Files: `chat_w_history_context_session_mcp_tools.go` and its `_test.go` (gen 8).
   remember what a tool already did. Trigger to revisit: persistent history, or tools with side
   effects (write, shell). Then append each step to `MsgHistory` (the durable log) while still
   batching the context write.
-- **Step limit:** `MaxReActSteps = 10`. Exceeding it returns `ErrMaxSteps`, a sentinel error
+- **Step limit:** `MaxReActSteps = 10` (mvp2/learn; **superseded 2026-10-07**: the repo-root `agent/` has no constant,
+  the limit is `cfg.MaxSteps`, default 10 in `GetDefaultConfig`, overridable by `-maxsteps`; see `§ CLI flags`). Exceeding it returns `ErrMaxSteps`, a sentinel error
   wrapped with `%w` so callers and tests use `errors.Is` rather than comparing text. Nothing is
   persisted. Alternative not taken: persist the truncated turn with a synthetic closing assistant
   message, so tool side effects aren't lost.
@@ -753,7 +754,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ---
 
-## Package structure & CLI flags — `mvp2/` root migration (2026-10-05 → 10-06)
+## Package structure & CLI flags — `mvp2/` root migration (2026-10-05 → 10-07)
 
 ### Package dependency direction: `agent/` imports the capability packages
 
@@ -805,6 +806,38 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 - Files affected: repo root (`main.go`, `config/`); `CLAUDE.md` gets a separate section for this
   layout (the mvp1 section stays as the reference design).
 
+### As built: package names, where `Tool` lives, and a drift from the plan (2026-10-07)
+
+- **Status: active.** The adopted dependency direction above was implemented with different names
+  than the sketch used, and one interface landed somewhere other than planned.
+
+  | Sketch | As built | Holds |
+  |---|---|---|
+  | `llm/` | `model/` | `ChatMessage`, `ToolCall`, `ToolDef`, the `Provider` interface, `OpenAICompat`, `PrepareChatRequest`, `NewToolDef`, `CreateID`; `model/modeltest/` has the shared test doubles |
+  | `harness/` | `contextwindow/` | `ChatContext`, the four window strategies, summarize/compact |
+  | `memory/` | `memory/` | `ChatHistory` + in-memory implementation |
+  | `builtin/` + `mcp/` | `tools/builtin/` + `mcpconnect/` | built-in tools; MCP client (see its own entry) |
+  | (`agent/` defines `Tool`) | `tools/` defines `Tool` | `Tool` interface, `ToolRegistry`, `SetupBuiltinTools` |
+
+- **`Tool` lives in `tools/`, not `agent/`.** Three packages need to name it (the registry, the
+  built-ins, `mcpconnect`), all on the tools side; `agent/` only consumes it. Putting it in
+  `agent/` would have forced `mcpconnect` to import `agent/`, the exact cycle the design forbids.
+  Honest downside: "the consumer defines the interface" is weakened for `Tool`, and `mcpconnect`
+  now depends on `tools`.
+- **Capabilities also import `config/`.** `SetupProvider`, `SetupMemoryStore`, `SetupChatContext`
+  and `SetupMCPConns` take a `config.Config`, so the rule "capabilities import only the shared
+  types" is not literally true; `config/` is a leaf, so no cycle. Downside: each capability knows
+  `Config`'s shape. Narrower parameters are the cleanup if that grates.
+- **Names settled along the way.** A package called `context` was rejected (it shadows the stdlib
+  `context` and invites aliasing), so `contextwindow/`; `harness` was rejected as far too broad for
+  "the messages the model sees"; `msgcontext.go` is the file holding `ChatContext`. Import paths
+  are the module path plus the folder (`github.com/jerryschen31/minimal-agent/model`); Go has no
+  relative imports.
+- **Proposed but not applied:** rename `Provider.Chat` to `Complete` (it is one request/response
+  cycle used by every mode, not just chat) and drop the `Chat` prefix from `ChatMessage`,
+  `ChatRequest`, `ChatResponse`. The code still uses the `Chat*` names; the rename is mechanical, so
+  do it when nothing else is in flight.
+
 ### Where "session" state lives (`ChatSession` vs mvp1's `Agent`)
 
 - **Status: leaning, not yet implemented.** mvp2/learn's `ChatSession` bundled capabilities
@@ -830,7 +863,10 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   to copy only the flags actually passed. Downside: callers nil-check before reading.
 - **`FlagsOverlay(cfg, flags)`** applies only `-model`, `-mode`, `-mission`, `-maxsteps`,
   `-maxtokens`. Matching fields were added to `Config` (`mode`, `mission`, `maxSteps`,
-  `maxTokens`); default `Mode` is `chat`; `MaxSteps`/`MaxTokens` default to 0 = unspecified.
+  `maxTokens`); default `Mode` is `chat`. `MaxTokens` defaults to 0 = unspecified and is not read yet.
+  `MaxSteps` defaults to 10 and **is** read (2026-10-07): `reActLoop` loops `cs.Config.MaxSteps` times and the
+  old `MaxReActSteps` constant is gone. A non-positive value (possible from a config file; the flag rejects it)
+  makes every turn fail immediately with `ErrMaxSteps (limit 0)` rather than being silently replaced by 10.
 - **Mode cross-checks** (`oneshot` needs `-query`, `headless` needs `-mission`, `-query`/`-mission`/
   `--json` rejected where they don't apply) only run when `-mode` was passed explicitly, because
   the effective mode may still come from the config file. **TODO:** re-validate the merged mode
@@ -847,18 +883,125 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   the extra `context.WithCancel` was redundant and only becomes useful if something needs to
   cancel the run itself (e.g. a headless timeout).
 
+### MCP: `mcpconnect/` — one package for connections and tools (2026-10-07)
+
+- **Status: active.** Arc kept.
+- **First cut: two packages.** `mcpservers/` (connect, `MCPServer`, `Close`) and `tools/mcptools/`
+  (wrap an MCP tool as a `Tool`). Jerry's reason: an MCP server exposes more than tools —
+  resources and prompts today, plausibly other callable categories as the spec evolves — so the
+  connection should be a layer that several capability packages share.
+- **Why it felt clunky.** `mcptools` imported `mcpservers`, so any test that needs "connect, then
+  use" spans both packages: `checkEchoRoundTrip` (connect to a fake server, list tools, call one)
+  could live in neither without an import cycle. Every new primitive would also have added a
+  sibling package (`mcpresources`, `mcpprompts`) with the same problem.
+- **Decision: one package, split by file** — `mcpconnect/conn.go` (connect local/remote, headers,
+  `Close`) and `mcpconnect/tools.go` (tool adapter), with `resources.go` / `prompts.go` added
+  as files when needed. This keeps Jerry's goal (one shared connection layer for every primitive)
+  without the cross-package seams. Tests mirror the files: `conn_test.go`, `tools_test.go`.
+- **Dependencies:** imports `config`, `model` and `tools` (for the `Tool` interface, and
+  `GetMCPTools`/`SetupMCPTools` return `[]tools.Tool`); only `agent/` imports `mcpconnect`.
+  A variant was offered where `mcpconnect` does not import `tools` (export the concrete tool type,
+  have `agent/` convert the slice); not taken, because the extra conversion loop buys little.
+- **Names:** `McpConnection` (type), `SetupMCPConns`, `connectLocalMCPServer`,
+  `connectRemoteMCPServer`, variables `mcpConn` / `mcpConns`. (`MCPServer` → `McpConn` →
+  `McpConnection` along the way; the type is "our live session with one configured server", not the
+  server itself.)
+- **Honest downsides.** The namespace is shared across primitives, so unexported names can collide;
+  if the package grows past a thousand lines, split by primitive then (the connection type is
+  already the shared base, so that is cheap).
+- **Known gap, not fixed:** `SetupMCPConns` returns `nil, err` on the first failing server, so
+  servers it already connected are dropped without being closed and their child processes outlive
+  the run. It should return what it connected (and close or hand back the partial list).
+
+### Context window never hands out an orphaned tool result (2026-10-07)
+
+- **Status: active.** Resolves the deferred item "Window and compaction can split a tool call from
+  its results". Fix commit `f7c9c88`; tests added afterwards.
+- **The bug.** The windows trim by message count (window of 8 with `MaxContextWindow = 10`) and a
+  turn is several messages (user, assistant tool call, tool result, ..., final). A trim can land
+  between a tool call and its result, so the context starts with a `role: tool` message. Providers
+  reject that (OpenAI: a tool message must follow an assistant message with a matching
+  `tool_calls` entry). It sticks: a failed turn is never added back, so the identical context is
+  re-sent every turn until `/clear` or `/compact`. Compaction's `clampToMax` had the same exposure.
+- **Options.** (1) Trim forward to the next `user` message, like mvp1's `harness.Window` widening
+  backwards to a user turn: simple invariant, but may drop a whole older turn. (2) Store and evict
+  whole turns: cleaner model, but changes the `ContextWindow` interface and all four strategies.
+  (3) Window by tokens: the right long-term answer (providers limit tokens, not messages), but a
+  separate piece of work that needs the same rule. (4) Raise the limits: only hides it.
+  (5) **Chosen:** after trimming from the front, drop leading `tool` messages.
+- **Why (5) is enough.** Trimming from the front removes tool calls *before* their results, so a
+  leading tool result is the only invalid shape; an assistant tool call at the front is fine
+  because its results follow it. It keeps more context than (1).
+- **Where, and why not in `ChatContext`.** Each strategy does it inside its own `AddMessages`, under
+  its existing lock: offset reslices; in-place extends the drop count before its single `copy`;
+  ring buffer advances its logical start (`count--`, slot zeroed); linked list pops the front.
+  Cost is O(k) per add, k = orphans dropped (usually 0–3), no allocation. A wrapper in
+  `ChatContext` (read everything, filter, `Clear`, refill) was rejected as O(n) per turn.
+  `clampToMax` skips leading tool survivors when it clamps.
+- **Downsides / limits.** The window may start with an assistant message that has no user message
+  before it; OpenAI accepts that, but a strict Anthropic adapter requires a user-first context, so
+  that adapter needs (1) or its own fix. A window can end up shorter than its max. A single turn
+  larger than the whole window is cut by count (its user message can be lost), though what remains
+  is valid. `RemoveLast(n)` can still strip results and leave a call without results (the opposite
+  orphan); nothing in `agent/` calls it, so it is left alone.
+- **Tests:** four tests over all four strategies (varied-length turns after every add; exact result
+  when the trim lands on a tool result; oversized batch; no over-trimming on a turn boundary) and
+  three for `clampToMax` / `Compact`. They fail against `f7c9c88^` and pass now.
+
+### Chat loop and Ctrl+C (2026-10-07)
+
+- **Status: active (option A); option B designed, deferred.** Resolves the deferred item "What
+  should Ctrl+C mean?".
+- **Problem.** `signal.NotifyContext` removes the default kill-on-SIGINT, and a blocked
+  `ReadString` can't see a cancelled context, so Ctrl+C did nothing at the prompt; after one
+  mid-turn Ctrl+C every later turn failed with `context canceled` while the prompt kept returning.
+- **Decision (A): Ctrl+C quits.** `runChatLoop` reads stdin in its own goroutine and sends lines on
+  a channel; the main loop `select`s on `ctx.Done()` and that channel. The reader sends any text
+  that arrives with `io.EOF`, so a final line with no trailing newline (piped input) is processed,
+  not dropped. `lines` is unbuffered, so the reader reads at most one line ahead while a turn runs.
+- **Option B (not built): interrupt only the current turn, press twice to exit** (Claude Code style).
+  It needs a per-turn child context, SIGINT owned by the chat loop (the root context would listen
+  for SIGTERM only) and a watcher goroutine per turn; the double-press needs a 2-second window and
+  Ctrl+D handling, and Ctrl+D is not a signal but EOF on a terminal, so the reader must report it,
+  keep reading when stdin is a TTY and exit when it is a pipe. The auto-compaction goroutine must
+  keep the root context or the turn's `cancel()` would kill it. About three times the code of A;
+  declined for now.
+- **Known cosmetic leftover:** after a mid-turn Ctrl+C the loop prints one more `>` before it exits.
+  A `ctx.Err()` check at the top of the loop removes it.
+
+### Test layout after the migration (2026-10-07)
+
+- **Status: active.** The single 2,680-line `mvp2/learn/chat_w_history_context_session_mcp_tools_test.go`
+  was copied (not moved; the original stays untouched) into per-package test files: `agent/`
+  (`chat_test.go`, `compaction_test.go`, `agent_test.go`, `fixture_test.go`), `contextwindow/`
+  (`window_test.go`, `window_bench_test.go`, `msgcontext_test.go`), `memory/`, `model/`
+  (`openai_test.go`, `provider_test.go`), `model/modeltest/`, `tools/`, `tools/builtin/`,
+  `config/` and `mcpconnect/` (`conn_test.go`, `tools_test.go`).
+- **Shared doubles** (`FakeProvider`, `AssistantText`, `AssistantToolCall`, `Msg`, `Msgs`) live in
+  `model/modeltest`, a regular package, because a `_test.go` file can't be imported by another
+  package. The session fixture stays `agent`-only. Tests that touch unexported code
+  (`handleUserInput`, `runToolCall`, `clampToMax`, `newMCPTool`, `connectLocalMCPServer`, ...) are
+  internal (`package x`), not `x_test`.
+- **Dropped on purpose:** the "empty filename reads `config.default.json`" test (there is no default
+  config file now: no `-config` means built-in defaults) and two `ChatHistory` tests that built the
+  whole session fixture just to reach a history object. **Added:** three `PrepareChatRequest` tests
+  (ordering, empty inputs, no aliasing of the caller's slices). `SetDefaultConfig` tests now pass
+  `Flags{Config: &path}`.
+
 ---
 
 ## Deferred / open decisions
 
-- **Window and compaction can split a tool call from its results (slice 1d-iv, next after the
-  loop tests).** The window trims by message count, and a turn is now several messages (user,
+- **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**
+  Original note: **Window and compaction can split a tool call from its results (slice 1d-iv, next
+  after the loop tests).** The window trims by message count, and a turn is now several messages (user,
   assistant, tool results, ..., final). With `MaxContextWindow = 10` (window of 8) a two-round
   turn is already 6 messages, and a longer one overflows and can drop the user message, leaving
   orphaned tool results that providers reject. Compaction has the same exposure. Options: make
   eviction turn-aware (widen backwards to a user turn, as mvp1's `harness.Window` does), treat a
   turn as one atomic unit, or simply raise the limits. Not yet decided.
-- **What should Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
+- **Resolved 2026-10-07 (option A) → see `§ Chat loop and Ctrl+C`.** Original note: **What should
+  Ctrl+C mean?** Today it cancels the program-wide ctx: `stdin.ReadString` isn't
   ctx-aware, so at the prompt nothing happens until Enter, and `runLoop` never checks
   `ctx.Err()`, so afterward every turn fails with `context canceled` while the REPL keeps
   prompting. Option A: Ctrl+C quits (add a `ctx.Err()` check in `runLoop`). Option B: Ctrl+C

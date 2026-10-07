@@ -292,3 +292,10 @@ func Test_Unit_SetDefaultConfig_McpServers_DecodeAndInferTransport(t *testing.T)
 		t.Errorf("expected fs args and env to decode, got %+v", fs)
 	}
 }
+
+// - Verify the built-in default for the ReAct step limit is 10
+func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
+	if got := GetDefaultConfig().MaxSteps; got != 10 {
+		t.Errorf("expected default MaxSteps 10, got %d", got)
+	}
+}

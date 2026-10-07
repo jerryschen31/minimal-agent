@@ -15,9 +15,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/tools"
 )
 
-const MaxReActSteps = 10 // maximum number of steps in a single ReAct loop - prevents infinite reasoning cycles when model gets stuck
-
-// ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after MaxReActSteps steps.
+// ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after cfg.MaxSteps steps.
 // A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
 var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 
@@ -179,7 +177,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 
 	requestMsgs := []model.ChatMessage{initialMsg}
 	toolDefs := cs.Tools.GetToolDefs()
-	for stepNum := 0; stepNum < MaxReActSteps; stepNum++ {
+	for stepNum := 0; stepNum < cs.Config.MaxSteps; stepNum++ {
 		// if user cancels the operation (maybe the ReAct loop is taking too long), exit the loop immediately
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -211,5 +209,5 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 		}
 	}
 
-	return nil, fmt.Errorf("%w (limit %d)", ErrMaxSteps, MaxReActSteps)
+	return nil, fmt.Errorf("%w (limit %d)", ErrMaxSteps, cs.Config.MaxSteps)
 }

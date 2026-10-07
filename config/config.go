@@ -31,7 +31,7 @@ type Config struct {
 	AgentVersion string `json:"agentVersion"`
 	AgentMode    string `json:"agentMode"`   // "chat" | "headless" | "oneshot"
 	MissionFile  string `json:"missionFile"` // path to mission file, headless mode only
-	MaxSteps     int    `json:"maxSteps"`    // 0 = unspecified
+	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
 
 	// I/O configuration for the chat session
@@ -131,6 +131,7 @@ func GetDefaultConfig() Config {
 		InBuffer:      os.Stdin,
 		OutBuffer:     os.Stdout,
 		BuiltinTools:  []string{"ReadFile"},
+		MaxSteps:      10,
 	}
 }
 

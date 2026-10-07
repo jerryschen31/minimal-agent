@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/model/modeltest"
 )
 
 // panicTool is a Tool whose CallTool always panics with the given behavior.
@@ -55,5 +57,45 @@ func Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage(t *testing.T) {
 				t.Errorf("expected content like %q mentioning %q, got %q", "error: tool panicked: …", tc.wantErr, got.Content)
 			}
 		})
+	}
+}
+
+// - Verify the ReAct loop stops after cfg.MaxSteps provider calls and returns ErrMaxSteps when the
+// model keeps asking for tools (an unknown tool becomes an error observation, so the loop continues)
+func Test_ReActLoop_MaxStepsFromConfig_StopsAtLimit(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Session.Config.MaxSteps = 2
+	fx.Provider.Script = []model.ChatMessage{
+		modeltest.AssistantToolCall("c1", "no_such_tool", "{}"),
+		modeltest.AssistantToolCall("c2", "no_such_tool", "{}"),
+		modeltest.AssistantToolCall("c3", "no_such_tool", "{}"),
+	}
+
+	_, err := reActLoop(context.Background(), fx.Session, nil, modeltest.Msg("user", "u1", "hi"))
+
+	if !errors.Is(err, ErrMaxSteps) {
+		t.Fatalf("expected ErrMaxSteps, got %v", err)
+	}
+	if len(fx.Provider.Calls) != 2 {
+		t.Errorf("expected exactly MaxSteps (2) provider calls, got %d", len(fx.Provider.Calls))
+	}
+}
+
+// - Verify a turn that reaches a final answer within cfg.MaxSteps succeeds
+func Test_ReActLoop_MaxStepsFromConfig_FinishesWithinLimit(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Session.Config.MaxSteps = 2
+	fx.Provider.Script = []model.ChatMessage{
+		modeltest.AssistantToolCall("c1", "no_such_tool", "{}"),
+		modeltest.AssistantText("done"),
+	}
+
+	turn, err := reActLoop(context.Background(), fx.Session, nil, modeltest.Msg("user", "u1", "hi"))
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if last := turn[len(turn)-1]; last.Content != "done" {
+		t.Errorf("expected the final message to be %q, got %+v", "done", last)
 	}
 }
