@@ -98,6 +98,26 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
   open by a background child. MCP servers are closed via `defer` in `run()` — `main` returns errors
   through `run` instead of calling `os.Exit`, which would orphan them.
 
+## Architecture for mvp2 (repo-root code)
+
+The sections above describe mvp1 as a reference design. The in-progress code at the repo root
+(`main.go`, `config/`, and the packages that will join them) uses the **opposite dependency
+direction** (see `DECISIONS.md § Package dependency direction`):
+
+- **Capability packages** — `llm/`, `memory/`, `harness/`, `safety/`, `mcp/`, `builtin/`, ... — are
+  independent building blocks. They **never import `agent/`**.
+- **`agent/`** holds the ReAct loop and the wiring, and **imports the capability packages**. It
+  defines the `Tool` / `Memory` / `Hook` / `ContextBuilder` interfaces where it consumes them;
+  capabilities satisfy them structurally, so they need no import back.
+- **Shared types** (`Message`, `ToolCall`, `ToolSpec`, `Response`) live in `llm/`, below the
+  capabilities, so no capability needs a type defined in `agent/`. A capability that wants an
+  `agent/` type is the architectural regression to watch for (the compiler reports it as an
+  import cycle).
+- `config/` is a leaf (Config, file loading, flag parsing and overlay); `main.go` imports `agent`
+  and `config`. Setup takes a `Config` value — never `os.Args`, `flag.*` or `os.Exit`.
+- Config precedence is **flags > config file > defaults**; an unspecified flag is `nil`, never a
+  zero value.
+
 ## Conventions
 
 - Keep explanations clear, concise, accurate but avoid unnecessary technical jargon when possible. Explain things as if I am a generalist mid-level software engineer.
@@ -107,4 +127,8 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
 - State the trade-off, including the honest downside, whenever choosing a language, library, or design —
   a bare choice reads as arbitrary here (see `tradeoffs/language-scorecard.md` for the expected form).
 - New behaviour should arrive as a plug-in behind one of the five interfaces. If it can't, say why before
-  touching `agent/`.
+  touching `agent/`. (In `mvp1/` that means the kernel stays untouched; in mvp2, `agent/` may wire in
+  new capability packages, but the loop itself should still not grow cross-cutting features.)
+- When Jerry asks for a block of code, keep it simple: the most direct version that meets the request, with
+  no extra helpers, abstractions, options, or tests he didn't ask for. Prefer newer stdlib/language features
+  (go.mod targets Go 1.26) over hand-rolled helpers. Mention optional extras in a sentence instead of adding them.

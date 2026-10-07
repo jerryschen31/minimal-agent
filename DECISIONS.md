@@ -753,6 +753,102 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ---
 
+## Package structure & CLI flags — `mvp2/` root migration (2026-10-05 → 10-06)
+
+### Package dependency direction: `agent/` imports the capability packages
+
+- **Status: active** (decided 2026-10-06). The arc is kept because the first two positions were
+  each argued for and then dropped.
+- **Position 1 — mvp1's design (reference, not adopted for mvp2).** `agent/` is a pure kernel that
+  imports nothing from the module; it owns the message model and the five interfaces, and every
+  plug-in (`llm/`, `memory/`, `harness/`, `hooks/`, `tool/`) imports `agent/`. Only `main.go`
+  knows concrete implementations. Upside: kernel is embeddable with zero extra deps. Downside:
+  capabilities are coupled to the agent package just to name `Message`/`Tool`.
+- **Position 2 — layered (proposed 2026-10-05, not adopted).** Keep the pure kernel, add
+  `config/` and `app/` (`Setup(cfg, opts...)`, mode drivers) and `cmd/<binary>/main.go`, so a
+  future daemon, eval runner or MCP-wrapper binary reuses `app/`. Rejected as more packages than
+  the design needs now; it also kept capabilities dependent on `agent/`.
+- **Position 3 — adopted.** Capabilities (`llm/`, `memory/`, `harness/`, `safety/`, `mcp/`,
+  `builtin/`, ...) are independent packages that provide functionality; they do **not** import
+  `agent/`. `agent/` holds the ReAct loop and the wiring and imports them. `main.go` →
+  `agent/` + `config/`.
+
+  ```
+  llm/       leaf: owns Message, ToolCall, ToolSpec, Response + provider adapters
+  memory/ harness/ safety/ mcp/ builtin/   import llm (shared types) only, never agent/
+  agent/     imports all of the above: loop, setup, wiring; defines Tool/Memory/Hook/... interfaces
+  config/    leaf: Config, file loading, flag parsing + overlay
+  main.go    imports agent, config
+  ```
+
+- **Why**: Jerry's view is that a capability (memory, safety, MCP) is functionality *offered to*
+  an agent, so it should be independent of any agent instance; the agent depends on the
+  capabilities, not the reverse. It also makes each capability testable and usable without
+  constructing an agent.
+- **How it stays acyclic.** Go interfaces are satisfied structurally, so `agent/` can define
+  `Tool`, `Memory`, `Hook`, `ContextBuilder` where they are consumed, and `mcp.Tool` etc. satisfy
+  them without importing `agent/`. The catch: any type in those method signatures must live
+  *below* the capabilities — hence `Message`/`ToolCall`/`ToolSpec` live in `llm/`, not `agent/`.
+  Rule: **no capability may need a type defined in `agent/`**; the compiler flags a violation as
+  an import cycle.
+- **Honest downsides.** (1) `llm/` becomes the foundation package, so `memory/` imports it only
+  to get `Message` — if that grates, extract a tiny `msg/` leaf later (mechanical move).
+  (2) `agent/` is no longer a pure kernel: it pulls in every concrete implementation including the
+  MCP SDK, so outside embedders carry that weight. Accepted: there is no planned external embedder.
+  (3) Test fakes need constructor overrides (e.g. `WithProvider`) since the agent builds its own
+  parts by default.
+- **Subagents** stay simple: `agent.Subagent` is a `Tool` living in `agent/`.
+- **Deferred, not decided:** extra binaries (`cmd/agentd`, eval runner) and an `app/` layer. If a
+  second binary appears, the wiring in `agent/` is what it would reuse; revisit then.
+- **Config / agent construction rule kept from Position 2:** setup takes a `Config` value, never
+  `os.Args` / `flag.*`, and never calls `os.Exit`, so a non-CLI caller could build an agent too.
+- Files affected: repo root (`main.go`, `config/`); `CLAUDE.md` gets a separate section for this
+  layout (the mvp1 section stays as the reference design).
+
+### Where "session" state lives (`ChatSession` vs mvp1's `Agent`)
+
+- **Status: leaning, not yet implemented.** mvp2/learn's `ChatSession` bundled capabilities
+  (`Provider`, `Tools`, `SystemMsg`), conversation state (`MsgHistory`, `MsgContext`) and terminal
+  I/O (`InBuffer`, `OutBuffer`, `Config`, `UserID`). mvp1 has no session type: capabilities are
+  `Agent` fields and the state is the injected `Memory` + `ContextBuilder`.
+- Direction: do not carry the grab-bag into `agent/`. Terminal I/O, slash commands and the REPL
+  belong to the mode drivers; compaction state belongs to the context-builder capability; MCP
+  connection lifetime belongs to setup/shutdown, not the agent struct.
+- Open trade-off to record when decided: mvp2/learn's `reActLoop` returns the turn's messages and
+  the caller commits them (a failed turn leaves history untouched); mvp1 appends as it goes
+  (better for resuming a crashed headless run, worse for a clean REPL after `ErrMaxSteps`).
+
+### CLI flags: precedence, "unspecified" semantics, and parsing
+
+- **Precedence: flags > config file > built-in defaults** (decided 2026-10-05). Flags are the most
+  specific, per-run signal; a config-wins rule would make a flag silently do nothing whenever the
+  file sets that field. The original comment in `main.go` said the opposite ("-config … overrides
+  flag values"); it was corrected to "flag values override config".
+- **Unspecified stays unspecified.** `Flags` fields are all pointers; `nil` = not passed, so
+  `-json=false` or `-maxsteps 5` are distinguishable from absence. Go's `flag` package cannot
+  report "was this set", so values are registered into throwaway variables and `fs.Visit` is used
+  to copy only the flags actually passed. Downside: callers nil-check before reading.
+- **`FlagsOverlay(cfg, flags)`** applies only `-model`, `-mode`, `-mission`, `-maxsteps`,
+  `-maxtokens`. Matching fields were added to `Config` (`mode`, `mission`, `maxSteps`,
+  `maxTokens`); default `Mode` is `chat`; `MaxSteps`/`MaxTokens` default to 0 = unspecified.
+- **Mode cross-checks** (`oneshot` needs `-query`, `headless` needs `-mission`, `-query`/`-mission`/
+  `--json` rejected where they don't apply) only run when `-mode` was passed explicitly, because
+  the effective mode may still come from the config file. **TODO:** re-validate the merged mode
+  after `FlagsOverlay`.
+- **No flags → chat mode, not usage.** Printing usage on empty args was tried and reverted
+  (2026-10-05): bare `minagent` is the chat shortcut; `-h`/`--help` print usage.
+- **`-x` and `--x` are both accepted** for every flag (Go `flag` default). Rejecting single-dash
+  `-json` was offered and declined.
+- **Flag parsing lives in `config/`** (`config.ParseFlags`, `config.FlagsOverlay`), a leaf package,
+  rather than `package main`. Note for context: in Go, all files of one package share a namespace,
+  so calls across files need no qualifier; only a real package needs `pkg.Name` with a capitalised
+  name.
+- **Context setup in `main`:** `signal.NotifyContext` alone is enough (`stop()` also cancels);
+  the extra `context.WithCancel` was redundant and only becomes useful if something needs to
+  cancel the run itself (e.g. a headless timeout).
+
+---
+
 ## Deferred / open decisions
 
 - **Window and compaction can split a tool call from its results (slice 1d-iv, next after the
