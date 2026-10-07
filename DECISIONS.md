@@ -1177,6 +1177,77 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   JSON tags" above gets built, since that marker is the prerequisite for `summarizeChatContext`
   to even know it's being asked to summarize a summary.
 
+### Deferred for Later
+
+Copilot review comments on PR #6 (https://github.com/jerryschen31/minimal-agent/pull/6) that Jerry
+replied to with "deferred" or "will do later" instead of fixing in that PR. Recorded 2026-10-07. Each
+entry has: what Copilot said, what the code does today, the fix, and when to pick it back up. The first
+three were answered literally "deferred"; the last two were answered "for debugging purposes, will
+switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
+`/config` printing, `ChatMessage` JSON tags and `read_file` confinement above).
+
+1. **`headless` and `oneshot` modes are advertised but not implemented** (`agent/agent.go`, `RunAgent`).
+   - *Copilot:* the parser and usage text accept both modes, but every such run reaches the
+     "unsupported agent mode" branch. Reject/unadvertise them until the drivers exist, or implement the
+     dispatch and carry the parsed query / mission / JSON options through.
+   - *Today:* `ParseFlags` validates `-mode oneshot|headless`, `-q`, `-mission`, `--json` and the usage
+     text lists them; `RunAgent` only handles `chat` and returns `unsupported agent mode: <mode>` for the
+     rest. `Config` has no fields for the query or JSON output, and `FlagsOverlay` does not carry them.
+   - *Fix:* implement the two drivers (the design is the headless brainstorming in `THOUGHTS.md`) and add
+     the missing `Config` fields; the stopgap alternative is to drop the two modes from the usage text and
+     the validator.
+   - *Revisit:* when the headless/oneshot drivers are built. Until then the failure is loud (an error and
+     a non-zero exit once item 3 is done), not silent.
+
+2. **Auto-compaction prints "complete" even when it failed** (`agent/chat.go`, the auto-compaction
+   goroutine in `handleUserInput`).
+   - *Copilot:* after reporting `[error] Auto-compaction error: ...` the goroutine still prints
+     `[system] Auto-compaction complete.`, which contradicts the error. Return after the failure.
+   - *Today:* the error branch does not `return`, so a failed compaction prints both lines.
+   - *Fix:* `return` inside the `if err != nil` block (the deferred `CompactWG.Done()` still runs).
+     A test needs the fake provider to fail an auto-compaction and check the output has no "complete".
+   - *Revisit:* the next time the compaction messages are touched; cosmetic, no state is affected (the
+     context is left unchanged on failure).
+
+3. **A failed start or run exits with status 0** (`main.go`).
+   - *Copilot:* on a setup or run error `main` prints the error and returns, so scripts and supervisors
+     see success. Move the lifecycle, including the deferred shutdown, into a `run() error` helper and have
+     `main` exit non-zero after it returns.
+   - *Today:* both error paths in `main` print to stderr and `return`. (Parse and config-load errors
+     already `os.Exit(2)`, because nothing needs shutting down yet.)
+   - *Constraint to keep:* `os.Exit` skips deferred calls, so `ShutdownAgent` (which waits for compaction
+     and closes MCP child processes) must run before the exit, which is why a `run() error` wrapper is the
+     shape suggested. An earlier request removed a `run()` wrapper from `main` for the flag-parsing part;
+     this one is about the agent lifecycle and is a different case.
+   - *Revisit:* before headless/oneshot (item 1), where callers rely on the exit code.
+
+4. **Remote MCP traffic is wrapped in `mcp.LoggingTransport`** (`mcpconnect/conn.go`, `connectRemoteMCPServer`).
+   - *Copilot:* the wrapper hides the SDK connection's `sessionUpdated` hook, so `Mcp-Protocol-Version`
+     is not sent after initialize and a strict server may reject later list/call requests. Use the
+     streamable transport directly or log at the `RoundTripper` layer.
+   - *Jerry's reply:* the logging transport is there for debugging; will switch later.
+   - *Status:* already analysed in full under "Bug found 2026-10-02: `LoggingTransport` hides the client's
+     `sessionUpdated` hook" (in the Remote MCP entry above), with the options and a test plan. This item
+     is the pointer; the decision is still open there.
+   - *Related, not deferred:* the same review also flags the **stdio** `LoggingTransport` (every JSON-RPC
+     request and result goes to stderr, which can include file contents or credentials). Both want the
+     same fix: logging off by default and enabled by an explicit debug setting.
+   - *Revisit:* before using a strict remote MCP server for real work, or when adding a debug setting.
+
+5. **`DebugChatContext` dumps the whole conversation to stdout every turn** (`agent/chat.go`,
+   `handleUserInput`).
+   - *Copilot:* the unconditional call writes the full prior conversation to process stdout instead of
+     `ChatSession.OutBuffer`, leaking chat content when output is redirected and corrupting structured or
+     piped output. Remove it from the normal path or gate it behind an explicit debug option that uses the
+     configured writer.
+   - *Jerry's reply:* debugging aid for now; will remove or refactor later.
+   - *Today:* it uses `fmt.Println`, so it bypasses `OutBuffer`, and the dump includes tool results, which
+     means a successful `read_file` prints the file's contents to the terminal.
+   - *Fix:* delete it, or behind a debug flag write to `cs.OutBuffer` (or stderr).
+   - *Revisit:* before `--json` / oneshot output or before sharing terminal logs; together with item 4's
+     debug setting, one `debug` switch could cover both.
+
+
 ---
 
 ## Track 1 — `mvp2/` root (agent build, last touched 2026-09-12)
