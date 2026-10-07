@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -297,5 +298,50 @@ func Test_Unit_SetDefaultConfig_McpServers_DecodeAndInferTransport(t *testing.T)
 func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
 	if got := GetDefaultConfig().MaxSteps; got != 10 {
 		t.Errorf("expected default MaxSteps 10, got %d", got)
+	}
+}
+
+// - Verify PrintConfig never prints MCP credentials (headers, env, args, url) but still lists each
+// server by name and transport, and shows the ordinary settings
+func Test_Unit_PrintConfig_DoesNotPrintMcpSecrets(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.Model = "test-model"
+	cfg.McpServers = map[string]McpServerConfig{
+		"remote": {URL: "https://example.com/mcp?key=SECRET-URL", Headers: map[string]string{"Authorization": "Bearer SECRET-HEADER"}},
+		"local":  {Command: "npx", Args: []string{"--token", "SECRET-ARG"}, Env: map[string]string{"TOKEN": "SECRET-ENV"}},
+	}
+
+	PrintConfig(cfg)
+
+	got := out.String()
+	for _, secret := range []string{"SECRET-URL", "SECRET-HEADER", "SECRET-ARG", "SECRET-ENV", "Authorization", "Bearer"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("expected PrintConfig not to print %q, got:\n%s", secret, got)
+		}
+	}
+	for _, want := range []string{"Current agent configuration:", "test-model", "local (stdio)", "remote (http)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected PrintConfig output to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// - Verify PrintConfig does not print the API key itself, only the name of the environment variable
+func Test_Unit_PrintConfig_DoesNotPrintApiKeyValue(t *testing.T) {
+	t.Setenv("PRINTCONFIG_TEST_KEY", "sk-SECRET-VALUE")
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.ApiKeyName = "PRINTCONFIG_TEST_KEY"
+
+	PrintConfig(cfg)
+
+	if strings.Contains(out.String(), "sk-SECRET-VALUE") {
+		t.Errorf("expected the API key value not to be printed, got:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "PRINTCONFIG_TEST_KEY") {
+		t.Errorf("expected the variable name to be printed, got:\n%s", out.String())
 	}
 }

@@ -188,6 +188,17 @@ filter summaries out when searching real user messages.
   legitimate *architecture-taste* call (payload hygiene, not coupling persisted format to wire
   format) — but it's optional, not required for correctness.
 - Status: deferred / not built. Candidate file: `chat_w_history_context_session_structs.go`.
+- **Reversed 2026-10-07 (PR #6 review).** `ID`, `Timestamp` and `Type` are now tagged `json:"-"`, so they
+  are never sent to the provider (and never read from a response). The 2026-09-22 claim that servers
+  silently drop unknown message keys is not something we verified, and it is not safe to assume:
+  Copilot flagged it, and strict servers (OpenAI proper, Azure) can reject a request over an unexpected
+  message field, while Ollama's compat layer tolerates it. Not sending them is cheap and removes the
+  question. Chosen: the plain tag, not a separate wire struct, because `ChatMessage` is marshalled in
+  exactly one place (`model/openai.go`) and nothing persists it. Cost: if a persistent chat store is
+  added (`chatStoreType` has only `in-memory` today), `encoding/json` on `ChatMessage` would silently drop
+  the ID that compaction depends on, so that store needs its own storage type. Tests: the request body's
+  message keys are limited to `role`, `content`, `tool_calls`, `tool_call_id`; a response with extra keys
+  still decodes and does not fill our `ID`.
 
 ---
 
@@ -996,6 +1007,18 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   whole session fixture just to reach a history object. **Added:** three `PrepareChatRequest` tests
   (ordering, empty inputs, no aliasing of the caller's slices). `SetDefaultConfig` tests now pass
   `Flags{Config: &path}`.
+
+### `/config` prints an allowlist, never the whole struct (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #6: `PrintConfig` used `%+v` on `Config`, which dumped
+  every MCP `Headers` value (e.g. `Authorization: Bearer ...`), `Env`, `Args` and URLs to the terminal and
+  any captured log.
+- **Decision:** print an explicit list of safe fields. MCP servers show as `name (transport)` only.
+  `ApiKeyName` is printed because it is the environment variable's *name*, not the key. An allowlist (not
+  a redacting copy of the struct) means a field added to `Config` later stays hidden until someone adds
+  it to `PrintConfig` deliberately. Rejected: redacting only `Headers` (misses `Env`, `Args` and tokens
+  in URLs). Downside: a new setting won't show up in `/config` until it is added by hand.
+- **Tests:** secrets in headers, env, args and URL never appear; the API key value never appears.
 
 ---
 

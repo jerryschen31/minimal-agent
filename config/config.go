@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -204,6 +206,37 @@ func configJSONKeys() map[string]bool {
 	return keys
 }
 
+// PrintConfig prints an explicit allowlist of settings that are safe to show. MCP servers are listed by
+// name and transport only: their args, env, url and headers are left out because they commonly hold
+// credentials (e.g. an Authorization header or a token in a URL or argument). A field added to Config
+// stays hidden until it is added here on purpose.
 func PrintConfig(cfg Config) {
-	fmt.Fprintf(cfg.OutBuffer, "Current agent configuration: %+v\n", cfg)
+	w := cfg.OutBuffer
+	fmt.Fprintln(w, "Current agent configuration:")
+	fmt.Fprintf(w, "  userId:        %s\n", cfg.UserID)
+	fmt.Fprintf(w, "  provider:      %s\n", cfg.Provider)
+	fmt.Fprintf(w, "  model:         %s\n", cfg.Model)
+	fmt.Fprintf(w, "  baseUrl:       %s\n", cfg.BaseURL)
+	fmt.Fprintf(w, "  apiKeyName:    %s (name of the environment variable, not the key)\n", cfg.ApiKeyName)
+	fmt.Fprintf(w, "  agentName:     %s\n", cfg.AgentName)
+	fmt.Fprintf(w, "  agentVersion:  %s\n", cfg.AgentVersion)
+	fmt.Fprintf(w, "  agentMode:     %s\n", cfg.AgentMode)
+	fmt.Fprintf(w, "  missionFile:   %s\n", cfg.MissionFile)
+	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
+	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
+	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
+	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
+	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
+	if len(cfg.McpServers) == 0 {
+		fmt.Fprintln(w, "  mcpServers:    none")
+		return
+	}
+	fmt.Fprintln(w, "  mcpServers:")
+	for _, name := range slices.Sorted(maps.Keys(cfg.McpServers)) {
+		transport, err := cfg.McpServers[name].TransportType()
+		if err != nil {
+			transport = "invalid config"
+		}
+		fmt.Fprintf(w, "    %s (%s)\n", name, transport)
+	}
 }

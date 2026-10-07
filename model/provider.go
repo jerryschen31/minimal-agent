@@ -24,12 +24,17 @@ type OpenAICompat struct {
 	ApiKey  string // empty for Ollama
 }
 
+// ChatMessage is sent to the provider as-is, so only the fields the chat completions API defines
+// (role, content, tool_calls, tool_call_id) have JSON keys. ID, Timestamp and Type are the agent's own
+// bookkeeping (compaction matches messages by ID), so they are tagged `json:"-"`: never sent, and never
+// read back from a response. Anything that later serializes ChatMessage for storage (e.g. a persistent
+// chat store) must not rely on encoding/json to keep them; use a separate storage type.
 type ChatMessage struct {
-	ID         string     `json:"id"`
+	ID         string     `json:"-"`
 	Role       string     `json:"role"` // `json:"role"` is a tag indicating the JSON key for this field
 	Content    string     `json:"content"`
-	Timestamp  time.Time  `json:"timestamp"`
-	Type       string     `json:"type,omitempty"`         // flexible type field that indicates what kind of message this is (e.g., "user", "system", "summary")
+	Timestamp  time.Time  `json:"-"`
+	Type       string     `json:"-"`                      // flexible type field that indicates what kind of message this is (e.g., "user", "system", "summary")
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // records any tool invocations associated with this message
 	ToolCallID string     `json:"tool_call_id,omitempty"` // ID of the associated tool call, if any
 }
