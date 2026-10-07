@@ -9,11 +9,10 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
-	"github.com/jerryschen31/minimal-agent/mcpservers"
+	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
-	"github.com/jerryschen31/minimal-agent/tools/mcptools"
 )
 
 const MaxReActSteps = 10 // maximum number of steps in a single ReAct loop - prevents infinite reasoning cycles when model gets stuck
@@ -25,7 +24,7 @@ var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 type Agent struct {
 	session      *ChatSession
 	toolRegistry *tools.ToolRegistry
-	mcpServers   []*mcpservers.MCPServer
+	mcpConns     []*mcpconnect.McpConnection
 	agentMode    string
 }
 
@@ -59,15 +58,15 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	}
 
 	// 5. connect to MCP servers (if applicable)
-	mcpServers, err := mcpservers.SetupMCPServers(ctx, cfg)
+	mcpConns, err := mcpconnect.SetupMCPConns(ctx, cfg)
 	if err != nil {
 		// print errors on MCP server connect fails - but don't exit
 		fmt.Fprintf(cfg.OutBuffer, "error connecting to MCP servers: %v\n", err)
 	}
-	agent.mcpServers = mcpServers
+	agent.mcpConns = mcpConns
 
 	// 6. setup MCP tools (if applicable) - mcpTools satisfies Tool interface
-	mcpTools, err := mcptools.SetupMCPTools(ctx, mcpServers)
+	mcpTools, err := mcpconnect.SetupMCPTools(ctx, mcpConns)
 	if err != nil {
 		// print errors on MCP tools setup fails - but don't exit
 		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %v\n", err)
@@ -108,9 +107,9 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 		// wait for any in-flight background compaction to finish
 		agent.session.MsgContext.WaitForCompaction()
 	}
-	if len(agent.mcpServers) > 0 {
+	if len(agent.mcpConns) > 0 {
 		// close MCP servers
-		for _, m := range agent.mcpServers {
+		for _, m := range agent.mcpConns {
 			m.Close()
 		}
 	}

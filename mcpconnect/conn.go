@@ -1,4 +1,4 @@
-package mcpservers
+package mcpconnect
 
 import (
 	"context"
@@ -11,9 +11,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+type McpConnection struct {
+	Name    string // server name from config
+	Config  config.McpServerConfig
+	Session *mcp.ClientSession
+}
+
 // connects to all MCP servers listed in input config, if possible - returns list of MCP server objects
-func SetupMCPServers(ctx context.Context, cfg config.Config) ([]*MCPServer, error) {
-	var servers []*MCPServer
+func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
+	var mcpConns []*McpConnection
 	// note sconfig is already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
 	for sname, sconfig := range cfg.McpServers {
 		transportType, err := sconfig.TransportType()
@@ -23,32 +29,26 @@ func SetupMCPServers(ctx context.Context, cfg config.Config) ([]*MCPServer, erro
 		}
 		switch transportType {
 		case config.TransportStdio:
-			server, err := connectLocalMCP(ctx, sname, sconfig, cfg)
+			mcpConn, err := connectLocalMCPServer(ctx, sname, sconfig, cfg)
 			if err != nil {
 				return nil, err
 			}
-			servers = append(servers, server)
+			mcpConns = append(mcpConns, mcpConn)
 		case config.TransportHTTP:
-			server, err := connectRemoteMCP(ctx, sname, sconfig, cfg)
+			mcpConn, err := connectRemoteMCPServer(ctx, sname, sconfig, cfg)
 			if err != nil {
 				return nil, err
 			}
-			servers = append(servers, server)
+			mcpConns = append(mcpConns, mcpConn)
 		default:
 			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
 		}
 	}
-	return servers, nil
+	return mcpConns, nil
 }
 
-type MCPServer struct {
-	Name    string // server name from config
-	Config  config.McpServerConfig
-	Session *mcp.ClientSession
-}
-
-// [note2agent] note that I changed shape of connectLocalMCP()
-func connectLocalMCP(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*MCPServer, error) {
+// connects to a local MCP server
+func connectLocalMCPServer(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*McpConnection, error) {
 	command := config.Command
 	args := config.Args
 
@@ -71,10 +71,11 @@ func connectLocalMCP(ctx context.Context, name string, config config.McpServerCo
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
 
-	return &MCPServer{Name: name, Config: config, Session: session}, nil
+	return &McpConnection{Name: name, Config: config, Session: session}, nil
 }
 
-func connectRemoteMCP(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*MCPServer, error) {
+// connects to a remote MCP server
+func connectRemoteMCPServer(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*McpConnection, error) {
 	// Implementation for connecting to a remote MCP server
 	client := mcp.NewClient(&mcp.Implementation{Name: cfg.AgentName, Version: cfg.AgentVersion}, nil)
 
@@ -95,7 +96,7 @@ func connectRemoteMCP(ctx context.Context, name string, config config.McpServerC
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
-	return &MCPServer{Name: name, Config: config, Session: session}, nil
+	return &McpConnection{Name: name, Config: config, Session: session}, nil
 }
 
 // headerTransport adds fixed headers (e.g. Authorization) to every outgoing request.
@@ -116,6 +117,6 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // closes an MCP server connection
-func (s *MCPServer) Close() error {
+func (s *McpConnection) Close() error {
 	return s.Session.Close()
 }

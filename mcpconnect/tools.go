@@ -1,4 +1,4 @@
-package mcptools
+package mcpconnect
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/jerryschen31/minimal-agent/mcpservers"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -24,10 +23,10 @@ const MCPResultMaxBytes = 64 * 1024
 var _ tools.Tool = (*mcpTool)(nil) // placeholder to check for compile errors if interface is not fully implemented
 
 type mcpTool struct {
-	server      *mcpservers.MCPServer // shared connection (a pointer: every tool of a server uses the same session)
-	toolName    string                // the tool's name on the server (what tools/call needs); toolDef holds the prefixed name the model sees
-	toolDef     model.ToolDef         // tool definition
-	safeToRetry bool                  // are retries okay on this tool call (i.e., idempotent?)
+	mcpConn     *McpConnection // shared connection (a pointer: every tool of a server uses the same session)
+	toolName    string         // the tool's name on the server (what tools/call needs); toolDef holds the prefixed name the model sees
+	toolDef     model.ToolDef  // tool definition
+	safeToRetry bool           // are retries okay on this tool call (i.e., idempotent?)
 }
 
 func (t *mcpTool) GetToolDefinition() model.ToolDef {
@@ -36,7 +35,7 @@ func (t *mcpTool) GetToolDefinition() model.ToolDef {
 
 func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	toolParams := mcp.CallToolParams{Name: t.toolName, Arguments: args}
-	res, err := t.server.Session.CallTool(ctx, &toolParams)
+	res, err := t.mcpConn.Session.CallTool(ctx, &toolParams)
 	if err != nil {
 		return "", fmt.Errorf("CallTool error: %w", err)
 	}
@@ -89,7 +88,7 @@ func flattenMCPResult(res *mcp.CallToolResult) (string, error) {
 }
 
 // newMCPTool wraps one tool listed by an MCP server as a Tool the agent can register and call.
-func newMCPTool(server *mcpservers.MCPServer, t *mcp.Tool) (*mcpTool, error) {
+func newMCPTool(mcpConn *McpConnection, t *mcp.Tool) (*mcpTool, error) {
 	// get tool parameters as raw JSON from the mcp.Tool input schema
 	// InputSchema is an `any` (a map[string]any when it comes from a server), but ToolDef wants raw JSON.
 	// A nil schema is left empty so NewToolDef fills in its "no parameters" default; marshalling nil would send "null".
@@ -103,33 +102,33 @@ func newMCPTool(server *mcpservers.MCPServer, t *mcp.Tool) (*mcpTool, error) {
 	}
 
 	// name sent to the model - sees "<server label>_<tool name>"; avoids tool name conflicts across multiple servers
-	modelName := server.Name + "_" + t.Name
+	modelName := mcpConn.Name + "_" + t.Name
 
 	// annotations are optional (nil) and only hints; no annotations means "not known to be safe to retry"
 	safeToRetry := t.Annotations != nil && (t.Annotations.ReadOnlyHint || t.Annotations.IdempotentHint)
 
 	return &mcpTool{
-		server:      server,
+		mcpConn:     mcpConn,
 		toolName:    t.Name,
 		toolDef:     model.NewToolDef(modelName, t.Description, params),
 		safeToRetry: safeToRetry,
 	}, nil
 }
 
-func GetMCPTools(ctx context.Context, mcpserv *mcpservers.MCPServer) ([]tools.Tool, error) {
+func GetMCPTools(ctx context.Context, mcpConn *McpConnection) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
 	// query the server for available tools - t is of type *mcp.Tool (from the MCP official Go SDK)
-	for t, err := range mcpserv.Session.Tools(ctx, nil) {
+	for t, err := range mcpConn.Session.Tools(ctx, nil) {
 		// if there is an issue adding a tool, just continue with a warning
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to get tool from server %s: %v\n", mcpserv.Name, err)
+			fmt.Fprintf(os.Stderr, "warning: failed to get tool from server %s: %v\n", mcpConn.Name, err)
 			continue
 		}
 		// otherwise from t of type *mcp.Tool, create a variable that satifies the Tool interface (type mcpTool)
-		mt, err := newMCPTool(mcpserv, t) // t is *mcp.Tool, mt is *mcpTool
+		mt, err := newMCPTool(mcpConn, t) // t is *mcp.Tool, mt is *mcpTool
 		if err != nil {
 			// warn and skip this one tool
-			fmt.Printf("warning: failed to create MCP tool from server %s: %v\n", mcpserv.Name, err)
+			fmt.Printf("warning: failed to create MCP tool from server %s: %v\n", mcpConn.Name, err)
 			continue
 		}
 		mcpTools = append(mcpTools, mt)
@@ -137,14 +136,14 @@ func GetMCPTools(ctx context.Context, mcpserv *mcpservers.MCPServer) ([]tools.To
 	return mcpTools, nil
 }
 
-func SetupMCPTools(ctx context.Context, mcpservs []*mcpservers.MCPServer) ([]tools.Tool, error) {
+func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
-	if len(mcpservs) == 0 {
+	if len(mcpConns) == 0 {
 		return nil, nil
 	}
 
 	// for each server, we get the list of tools and then append to our tools object
-	for _, s := range mcpservs {
+	for _, s := range mcpConns {
 		sTools, err := GetMCPTools(ctx, s)
 		if err != nil {
 			return nil, err
