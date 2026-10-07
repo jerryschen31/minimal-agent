@@ -52,10 +52,11 @@ func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, er
 				return nil, err
 			}
 			mcpConns = append(mcpConns, mcpConn)
+case config.TransportSSE:
+			fmt.Fprintf(os.Stderr, "warning: skipping deprecated SSE MCP server %s\n", sname)
 		default:
 			closeAll()
 			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
-		}
 	}
 	return mcpConns, nil
 }
