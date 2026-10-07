@@ -103,22 +103,41 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 // Run loop for handling chat session
 // ***********************************************************//
 
-func runChatLoop(ctx context.Context, chatSession *ChatSession) {
+func runChatLoop(ctx context.Context, cs *ChatSession) {
+	lines := make(chan string)
 
-	stdin := bufio.NewReader(chatSession.InBuffer)
+	go func() {
+		defer close(lines)
+		r := bufio.NewReader(cs.InBuffer)
+		for {
+			lineRead, err := r.ReadString('\n') // read a line of user input from the input buffer (blocking)
+			if lineRead != "" {
+				select {
+				case lines <- lineRead: // send read line to the lines channel
+				case <-ctx.Done():
+					return // context cancel signal closes ctx.Done() channel, which exits this goroutine immediately
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 
 	for {
-		// read user input from stdin - /exit to quit
-		fmt.Print("\n> ")
-		line, err := stdin.ReadString('\n')
-		if err != nil {
+		fmt.Fprintf(cs.OutBuffer, "\n> ")
+		select {
+		// waits for context to be canceled (which closes the ctx.Done() channel), or for a new line of user input from the lines channel
+		case <-ctx.Done():
 			return
+		case line, ok := <-lines:
+			if !ok {
+				return
+			}
+			quitSignal := handleUserInput(ctx, cs, line)
+			if quitSignal {
+				return
+			}
 		}
-
-		quitSignal := handleUserInput(ctx, chatSession, line)
-		if quitSignal {
-			return
-		}
-
 	}
 }
