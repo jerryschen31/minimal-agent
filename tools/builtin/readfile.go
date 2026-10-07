@@ -147,7 +147,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	if len(data) > ReadFileMaxBytes {
 		// add a note clearly indicating the file output was truncated since the file exceeded the maximum allowed size
-		return string(data[:ReadFileMaxBytes]) + "\n[truncated: file is larger than 64 KB]", nil
+return string(bytes.ToValidUTF8(data[:ReadFileMaxBytes], nil)) + "\n[truncated: file is larger than 64 KB]", nil
 	}
 	return string(data), nil
 }
