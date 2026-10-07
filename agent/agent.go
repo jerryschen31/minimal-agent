@@ -193,7 +193,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 		}
 
 		// append the response as a ChatMessage to the request messages for the next iteration
-		fmt.Fprintf(cs.OutBuffer, "[assistant] %s\n", response)
+		fmt.Fprintf(cs.OutBuffer, "[assistant] %s\n", response.Content)
 		responseMsg := model.CreateChatMessage("assistant", "assistant", response.Content, "", response.ToolCalls)
 		requestMsgs = append(requestMsgs, responseMsg)
 
