@@ -345,3 +345,43 @@ func Test_Unit_PrintConfig_DoesNotPrintApiKeyValue(t *testing.T) {
 		t.Errorf("expected the variable name to be printed, got:\n%s", out.String())
 	}
 }
+
+// - Verify the built-in default for workDir is the current directory
+func Test_Unit_GetDefaultConfig_WorkDir_IsCurrentDirectory(t *testing.T) {
+	if got := GetDefaultConfig().WorkDir; got != "." {
+		t.Errorf("expected default WorkDir %q, got %q", ".", got)
+	}
+}
+
+// - Verify workDir is a recognized config file key (no unknown-field warning) and is applied
+func Test_Unit_SetDefaultConfig_WorkDir_AppliedWithoutWarning(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"workDir": "/some/project"}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.WorkDir != "/some/project" {
+		t.Errorf("expected WorkDir %q, got %q", "/some/project", cfg.WorkDir)
+	}
+	if out != "" {
+		t.Errorf("expected no warnings, got %q", out)
+	}
+}
+
+// - Verify /config shows the workDir, since the read_file boundary is something the user should be able to check
+func Test_Unit_PrintConfig_ShowsWorkDir(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.WorkDir = "/some/project"
+
+	PrintConfig(cfg)
+
+	if !strings.Contains(out.String(), "workDir:       /some/project") {
+		t.Errorf("expected the workDir to be printed, got:\n%s", out.String())
+	}
+}

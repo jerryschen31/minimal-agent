@@ -21,6 +21,7 @@ type Flags struct {
 	Query     *string
 	JSON      *bool
 	Model     *string
+	WorkDir   *string
 	Mission   *string
 	MaxSteps  *int
 	MaxTokens *int
@@ -38,9 +39,9 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.Usage = func() { printUsage(out) }
 
 	var (
-		configPath, mode, query, queryShort, model, mission string
-		asJSON                                              bool
-		maxSteps, maxTokens                                 int
+		configPath, mode, query, queryShort, model, mission, workDir string
+		asJSON                                                       bool
+		maxSteps, maxTokens                                          int
 	)
 	fs.StringVar(&configPath, "config", "", "")
 	fs.StringVar(&mode, "mode", "", "")
@@ -49,6 +50,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.BoolVar(&asJSON, "json", false, "")
 	fs.StringVar(&model, "model", "", "")
 	fs.StringVar(&mission, "mission", "", "")
+	fs.StringVar(&workDir, "workdir", "", "")
 	fs.IntVar(&maxSteps, "maxsteps", 0, "")
 	fs.IntVar(&maxTokens, "maxtokens", 0, "")
 
@@ -74,6 +76,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"mode", mode, &f.Mode},
 		{"model", model, &f.Model},
 		{"mission", mission, &f.Mission},
+		{"workdir", workDir, &f.WorkDir},
 	} {
 		if !set[s.name] {
 			continue
@@ -132,6 +135,12 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		}
 	}
 
+	if f.WorkDir != nil {
+		if err := requireDir("workdir", *f.WorkDir); err != nil {
+			return Flags{}, err
+		}
+	}
+
 	// validate each mode contains appropriate flags
 	if f.Mode != nil {
 		if err := f.validateMode(); err != nil {
@@ -168,6 +177,18 @@ func (f Flags) validateMode() error {
 	return nil
 }
 
+// checks that a required directory exists
+func requireDir(flagName, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("-%s: %w", flagName, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("-%s: %s is not a directory", flagName, path)
+	}
+	return nil
+}
+
 // checks that a required file exists
 func requireFile(flagName, path string) error {
 	info, err := os.Stat(path)
@@ -191,6 +212,7 @@ func printUsage(w io.Writer) {
   --json                 Output result as JSON (oneshot and headless modes)
   -model <name>          Language model to use
   -mission <file>        Mission file; with headless mode
+  -workdir <dir>         Directory the read_file tool may read from, with its subdirectories (default ".")
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
 `)
@@ -207,6 +229,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.Mission != nil {
 		cfg.MissionFile = *f.Mission
+	}
+	if f.WorkDir != nil {
+		cfg.WorkDir = *f.WorkDir
 	}
 	if f.MaxSteps != nil {
 		cfg.MaxSteps = *f.MaxSteps

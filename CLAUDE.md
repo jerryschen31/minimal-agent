@@ -108,7 +108,7 @@ go build ./... && go vet ./... && gofmt -l .     # mvp2/tool/builtin.go has two 
 go test -race ./...                              # every package has its own tests; no network (fake provider)
 go test ./contextwindow -run OrphanedTool -v     # one test family
 go test -run XXX -bench . ./contextwindow        # window-strategy benchmarks
-go run . [-config file] [-model m] [-mode chat]  # bare `go run .` = chat mode
+go run . [-config file] [-model m] [-workdir dir]  # bare `go run .` = chat mode; read_file confined to -workdir (default .)
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
@@ -142,6 +142,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 
 ### Invariants that are easy to break (mvp2)
 
+- **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
+  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`). It resolves symlinks first, checks the *resolved*
+  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
+  file-reading tool must reuse this, not call `os.Open` on a model-supplied path
+  (`DECISIONS.md § read_file is confined to workDir`).
 - **A context window must never hand out a leading `tool` message.** Windows trim by message count
   and a turn is several messages, so a trim can land between an assistant tool call and its
   results; providers reject an orphaned tool result, and since a failed turn is not added back, the

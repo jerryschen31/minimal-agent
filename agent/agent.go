@@ -50,7 +50,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	}
 
 	// 4. setup built-in tools -> builtinTools satisfies Tool interface
-	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools)
+	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir)
 	if err != nil {
 		return err
 	}

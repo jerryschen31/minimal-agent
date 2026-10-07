@@ -33,6 +33,7 @@ type Config struct {
 	AgentVersion string `json:"agentVersion"`
 	AgentMode    string `json:"agentMode"`   // "chat" | "headless" | "oneshot"
 	MissionFile  string `json:"missionFile"` // path to mission file, headless mode only
+	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
 
@@ -128,6 +129,7 @@ func GetDefaultConfig() Config {
 		AgentName:     "minagent",
 		AgentVersion:  "0.1.0",
 		AgentMode:     ModeChat,
+		WorkDir:       ".",
 		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
 		ChatStoreType: "in-memory",
 		InBuffer:      os.Stdin,
@@ -222,6 +224,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  agentVersion:  %s\n", cfg.AgentVersion)
 	fmt.Fprintf(w, "  agentMode:     %s\n", cfg.AgentMode)
 	fmt.Fprintf(w, "  missionFile:   %s\n", cfg.MissionFile)
+	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)

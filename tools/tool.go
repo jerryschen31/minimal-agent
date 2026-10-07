@@ -19,13 +19,17 @@ type Tool interface {
 }
 
 // setup built-in tools
-func SetupBuiltinTools(toolList []string) ([]Tool, error) {
+func SetupBuiltinTools(toolList []string, workDir string) ([]Tool, error) {
 	tools := []Tool{}
 	// add the built-in tools specified in the config
 	for _, t := range toolList {
 		switch t {
 		case "ReadFile":
-			tools = append(tools, builtin.ReadFileTool{})
+			readFile, err := builtin.NewReadFileTool(workDir)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, readFile)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)

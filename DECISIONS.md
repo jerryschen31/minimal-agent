@@ -1020,6 +1020,45 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   in URLs). Downside: a new setting won't show up in `/config` until it is added by hand.
 - **Tests:** secrets in headers, env, args and URL never appear; the API key value never appears.
 
+### `read_file` is confined to `workDir` and has a deny list (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #6: the default-enabled tool opened any absolute or
+  relative path, and the sample config's `workDir` was not a real `Config` field, so nothing confined it.
+  This supersedes the old note "`read_file` can read any path; restricting paths belongs to hooks or
+  approval, later". Approval is still the long-term answer for going *outside* the boundary, but the
+  agent has no approval layer yet, so a hard boundary is the stand-in.
+- **Why it matters even though Claude Code can read any file:** Claude Code asks permission outside its
+  working directory and has deny rules for secrets. And the leak path is not stdout: tool results go to
+  the LLM provider, and a prompt-injected model (e.g. via text from a remote MCP tool) can ask for
+  `~/.ssh/id_rsa` and pass it on through another tool.
+- **Boundary:** new `Config.WorkDir` (JSON `workDir`, default `"."`, flag `-workdir <dir>`, flag wins
+  over the file; the flag must name an existing directory). `ReadFileTool` is built with
+  `NewReadFileTool(workDir)` (`SetupBuiltinTools` now takes the workDir), which resolves the directory to
+  an absolute, symlink-free root once and fails at startup if it is missing or not a directory. Every call
+  maps the requested path (relative or absolute) to a real path with `filepath.EvalSymlinks`, requires it to
+  be inside the root, and only then opens it through `os.Root`. Subdirectories are readable.
+- **Deny list (checked on the resolved path, every path component, case-insensitively):** `.env`, `.env.*`
+  (except `.env.example`), `*.pem`, `*.key`, `id_rsa*`, and any `.ssh` directory. Checking the *resolved*
+  path means a symlink named `notes.txt` that points at `.env` is refused. Case-insensitivity matters on
+  macOS and Windows, where `.ENV` is the same file as `.env`.
+- **Errors are for the model:** "`<path>` is outside the allowed directory" / "`<path>` is blocked: it
+  matches the sensitive-file deny list", with no file content in them, so the model can recover.
+- **Why `os.Root` as well as the resolve step:** `resolve` gives clear errors and the deny-list check;
+  `os.Root` refuses `..` and symlink escapes at open time, so a symlink swapped in between the check and
+  the open still cannot leave the root. Honest gap: the tests cannot exercise that race deterministically,
+  so the `os.Root` layer is defence in depth with no test that fails without it.
+- **Honest downsides.** Launching the agent in a subdirectory and asking about a sibling now fails until
+  `-workdir` is set. The deny list is by name, so it catches common secret files, not every secret (a
+  token in `config.json` is readable). Hard links are not detected (`os.Root` does not stop a hard link to
+  an outside file placed inside the root). Not covered: MCP filesystem servers have their own access
+  rules, and `workDir` does not restrict them.
+- **Tests:** a sandbox with secrets planted inside the root (every deny-list name, upper-case variants,
+  nested `.ssh`), outside it (`../`, absolute, a sibling directory sharing the root's name prefix,
+  `/etc/hosts`) and behind symlinks (to a file, a directory, the parent, an absolute target, a denied file,
+  a denied directory, and a root that is itself a symlink); allowed look-alikes (`.env.example`,
+  `environment.txt`, `monkey.txt`) must still read. Every refusal is checked to leak no secret text.
+  Disabling the deny list, the outside check, case-folding, or symlink resolution each makes tests fail.
+
 ---
 
 ## Deferred / open decisions
@@ -1040,7 +1079,8 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   interrupts only the current turn (a per-turn ctx in `runLoop`, with `os.Interrupt` removed from
   `main`'s registration). Leaning A first; revisit B when tools run long enough to be worth
   interrupting.
-- **`read_file` can read any path.** Restricting paths belongs to hooks or approval, later.
+- **Resolved 2026-10-07 → see `§ read_file is confined to workDir and has a deny list`.** Original note:
+  `read_file` can read any path; restricting paths belongs to hooks or approval, later.
 - **`createChatMessage` takes four positional `string` params,** so a swapped argument compiles.
   A narrower `newToolMessage(toolCallID, content)` was suggested; revisit if a second caller
   pattern appears or a swap bug bites.
