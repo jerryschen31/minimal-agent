@@ -2,6 +2,7 @@ package contextwindow
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -211,4 +212,63 @@ func Test_ContextCompaction_CompactingEmptyContextReturnsError(t *testing.T) {
 	if chatContext.GetSize() != 0 {
 		t.Errorf("expected the context to stay empty, got %+v", chatContext.GetMessages())
 	}
+}
+
+// - Verify clampToMax drops survivors that start with a tool result whose tool call was clamped away
+func Test_Unit_ClampToMax_LeadingToolSurvivor_IsDropped(t *testing.T) {
+	// [summary, call, tool, final, user] clamped to 4 keeps the summary and the last 3,
+	// which would start at the tool result
+	messages := append([]model.ChatMessage{{ID: "summary", Role: "user", Type: "summary"}}, toolTurn("A", 1)[1:]...)
+	messages = append(messages, model.ChatMessage{ID: "B-user", Role: "user"})
+
+	clamped := clampToMax(messages, 4)
+
+	got := idsOf(clamped)
+	want := []string{"summary", "A-final", "B-user"}
+	if !slices.Equal(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+	assertNoOrphanedToolMsgs(t, clamped)
+}
+
+// - Verify clampToMax keeps just the summary when every survivor it would keep is a tool result
+func Test_Unit_ClampToMax_OnlyToolSurvivors_KeepsOnlySummary(t *testing.T) {
+	messages := []model.ChatMessage{
+		{ID: "summary", Role: "user", Type: "summary"},
+		{ID: "call", Role: "assistant", ToolCalls: []model.ToolCall{{ID: "call"}}},
+		{ID: "tool0", Role: "tool", ToolCallID: "call"},
+		{ID: "tool1", Role: "tool", ToolCallID: "call"},
+	}
+
+	clamped := clampToMax(messages, 3)
+
+	if got := idsOf(clamped); !slices.Equal(got, []string{"summary"}) {
+		t.Errorf("expected only the summary, got %v", got)
+	}
+}
+
+// - Verify compaction end to end: when messages that arrived during compaction start with an
+// assistant tool call, and the clamp cuts between that call and its result, the orphaned result
+// is dropped rather than left after the summary
+func Test_ContextCompaction_ClampCutsBetweenToolCallAndResult_NoOrphan(t *testing.T) {
+	chatContext, err := NewChatContext(NewOffsetWindow(5), 100)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+	state := chatContext.Snapshot() // empty: everything added next counts as "arrived during compaction"
+
+	// a window that legitimately starts with an assistant tool call (a previous trim landed there)
+	arrived := append(toolTurn("A", 1)[1:], toolTurn("B", 0)...)[:5] // call, tool, final, B-user, B-final
+	chatContext.AddMessages(arrived)
+
+	if !chatContext.Compact(state, model.ChatMessage{ID: "summary", Role: "user", Type: "summary"}) {
+		t.Fatalf("expected Compact() to succeed")
+	}
+
+	got := chatContext.GetMessages()
+	want := []string{"summary", "A-final", "B-user", "B-final"}
+	if !slices.Equal(idsOf(got), want) {
+		t.Errorf("expected %v, got %v", want, idsOf(got))
+	}
+	assertNoOrphanedToolMsgs(t, got)
 }

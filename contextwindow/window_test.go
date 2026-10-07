@@ -2,6 +2,7 @@ package contextwindow
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -235,6 +236,112 @@ func Test_Unit_ContextWindow_Clear_EmptiesWindow(t *testing.T) {
 		}
 		if len(w.GetMessages()) != 0 {
 			t.Errorf("expected 0 messages after clearing, got %d", len(w.GetMessages()))
+		}
+	})
+}
+
+//*********************************************//
+// Orphaned tool messages
+//*********************************************//
+
+// toolTurn builds one conversation turn: a user message, `rounds` pairs of (assistant tool call,
+// tool result), then a final assistant reply (2*rounds + 2 messages). IDs are "<name>-user",
+// "<name>-call<i>", "<name>-tool<i>" and "<name>-final"; each tool result's ToolCallID matches the
+// ID of the assistant message that asked for it.
+func toolTurn(name string, rounds int) []model.ChatMessage {
+	turn := []model.ChatMessage{{ID: name + "-user", Role: "user"}}
+	for i := 0; i < rounds; i++ {
+		callID := fmt.Sprintf("%s-call%d", name, i)
+		turn = append(turn,
+			model.ChatMessage{ID: callID, Role: "assistant", ToolCalls: []model.ToolCall{{ID: callID}}},
+			model.ChatMessage{ID: fmt.Sprintf("%s-tool%d", name, i), Role: "tool", ToolCallID: callID},
+		)
+	}
+	return append(turn, model.ChatMessage{ID: name + "-final", Role: "assistant"})
+}
+
+// idsOf returns the message IDs in order, for comparing and for readable failure messages.
+func idsOf(msgs []model.ChatMessage) []string {
+	ids := make([]string, len(msgs))
+	for i, m := range msgs {
+		ids[i] = m.ID
+	}
+	return ids
+}
+
+// assertNoOrphanedToolMsgs fails the test if any tool result has no earlier assistant tool call
+// with a matching ID in msgs. Providers reject such a request, so a window must never hand one out.
+func assertNoOrphanedToolMsgs(t *testing.T, msgs []model.ChatMessage) {
+	t.Helper()
+	seenCalls := map[string]bool{}
+	for i, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			seenCalls[tc.ID] = true
+		}
+		if m.Role == "tool" && !seenCalls[m.ToolCallID] {
+			t.Errorf("message %d (%s) is a tool result whose tool call is not in the window: %v", i, m.ID, idsOf(msgs))
+		}
+	}
+}
+
+// - Verify that after every add, for all window types, the window never exceeds its max size and
+// never contains a tool result without its tool call, using turns of varying length so the trim
+// point lands mid-turn at different places
+func Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages(t *testing.T) {
+	forEachWindow(t, 8, func(t *testing.T, w ContextWindow) {
+		for i, rounds := range []int{1, 0, 2, 1, 3, 0, 1, 2, 1, 1} {
+			w.AddMessages(toolTurn(fmt.Sprintf("T%d", i), rounds))
+
+			got := w.GetMessages()
+			if len(got) > w.GetMaxSize() {
+				t.Fatalf("after turn T%d: expected at most %d messages, got %d: %v", i, w.GetMaxSize(), len(got), idsOf(got))
+			}
+			assertNoOrphanedToolMsgs(t, got)
+		}
+	})
+}
+
+// - Verify the exact result when the trim point lands on a tool result: two 4-message tool turns
+// in a window of 6 trim to [tool A, final A, B...], and the leading tool result is dropped too,
+// leaving 5 messages that start at "final A"
+func Test_ContextWindow_AddMessages_TrimLandsOnToolMessage_DropsIt(t *testing.T) {
+	forEachWindow(t, 6, func(t *testing.T, w ContextWindow) {
+		w.AddMessages(toolTurn("A", 1))
+		w.AddMessages(toolTurn("B", 1))
+
+		got := idsOf(w.GetMessages())
+		want := []string{"A-final", "B-user", "B-call0", "B-tool0", "B-final"}
+		if !slices.Equal(got, want) {
+			t.Errorf("expected %v, got %v", want, got)
+		}
+	})
+}
+
+// - Verify a single batch bigger than the window still ends with a valid window: the last 4 of
+// [user, call0, tool0, call1, tool1, call2, tool2, final] start at tool1, which is dropped
+func Test_ContextWindow_AddMessages_OversizedBatch_DropsLeadingToolMessage(t *testing.T) {
+	forEachWindow(t, 4, func(t *testing.T, w ContextWindow) {
+		w.AddMessages(toolTurn("A", 3))
+
+		got := idsOf(w.GetMessages())
+		want := []string{"A-call2", "A-tool2", "A-final"}
+		if !slices.Equal(got, want) {
+			t.Errorf("expected %v, got %v", want, got)
+		}
+	})
+}
+
+// - Verify nothing extra is dropped when the trim point already falls on a turn boundary: a second
+// 4-message turn in a window of 4 replaces the first turn exactly
+func Test_ContextWindow_AddMessages_TrimOnTurnBoundary_DropsNothingExtra(t *testing.T) {
+	forEachWindow(t, 4, func(t *testing.T, w ContextWindow) {
+		w.AddMessages(toolTurn("A", 1))
+		w.AddMessages(toolTurn("B", 1))
+
+		got := idsOf(w.GetMessages())
+		want := idsOf(toolTurn("B", 1))
+		if !slices.Equal(got, want) {
+			t.Errorf("expected %v, got %v", want, got)
 		}
 	})
 }
