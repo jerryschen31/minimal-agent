@@ -109,6 +109,7 @@ func runChatLoop(ctx context.Context, cs *ChatSession) {
 	go func() {
 		defer close(lines)
 		r := bufio.NewReader(cs.InBuffer)
+		// this loops until a cancel signal is received
 		for {
 			lineRead, err := r.ReadString('\n') // read a line of user input from the input buffer (blocking)
 			if lineRead != "" {
