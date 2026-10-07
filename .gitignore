@@ -7,3 +7,4 @@ mvp2/learn/prompts/
 mvp1/minagent
 *scratch*
 .env.example
+prompts/
