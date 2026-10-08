@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -86,6 +88,16 @@ func checkEchoRoundTrip(ctx context.Context, t *testing.T, s *McpConnection) {
 	if err != nil || got != "hi" {
 		t.Fatalf("expected echo to return %q, got (%q, %v)", "hi", got, err)
 	}
+}
+
+// testOrigin returns the origin of rawURL, failing the test if it does not parse.
+func testOrigin(t *testing.T, rawURL string) origin {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parsing %q: %v", rawURL, err)
+	}
+	return originOf(u)
 }
 
 // stubRoundTripper records the request it receives and returns a canned response or error.
@@ -190,7 +202,7 @@ func Test_Unit_ConnectRemoteMCP_Unreachable_ReturnsErrorNamingServer(t *testing.
 func Test_Unit_HeaderTransport_AddsHeaders_WithoutMutatingOriginal(t *testing.T) {
 	want := &http.Response{StatusCode: http.StatusTeapot}
 	base := &stubRoundTripper{resp: want}
-	ht := &headerTransport{base: base, headers: map[string]string{"Authorization": "Bearer abc", "X-Example": "hello"}}
+	ht := &headerTransport{base: base, headers: map[string]string{"Authorization": "Bearer abc", "X-Example": "hello"}, origin: testOrigin(t, "http://example.invalid/mcp")}
 	orig, _ := http.NewRequest(http.MethodPost, "http://example.invalid/mcp", nil)
 	orig.Header.Set("Content-Type", "application/json")
 
@@ -216,7 +228,7 @@ func Test_Unit_HeaderTransport_AddsHeaders_WithoutMutatingOriginal(t *testing.T)
 // - Verify configured headers replace (Set, not Add) a same-named header already on the request.
 func Test_Unit_HeaderTransport_ReplacesExistingHeader(t *testing.T) {
 	base := &stubRoundTripper{resp: &http.Response{StatusCode: 200}}
-	ht := &headerTransport{base: base, headers: map[string]string{"Authorization": "Bearer new"}}
+	ht := &headerTransport{base: base, headers: map[string]string{"Authorization": "Bearer new"}, origin: testOrigin(t, "http://example.invalid/mcp")}
 	req, _ := http.NewRequest(http.MethodPost, "http://example.invalid/mcp", nil)
 	req.Header.Set("Authorization", "Bearer old")
 
@@ -233,7 +245,7 @@ func Test_Unit_HeaderTransport_ReplacesExistingHeader(t *testing.T) {
 func Test_Unit_HeaderTransport_NilHeaders_PassesThrough_AndPropagatesError(t *testing.T) {
 	boom := errors.New("network down")
 	base := &stubRoundTripper{err: boom}
-	ht := &headerTransport{base: base} // nil headers map
+	ht := &headerTransport{base: base, origin: testOrigin(t, "http://example.invalid/mcp")} // nil headers map
 	req, _ := http.NewRequest(http.MethodGet, "http://example.invalid/mcp", nil)
 
 	_, err := ht.RoundTrip(req)
@@ -349,6 +361,287 @@ func Test_Unit_SetupMCPConns_ServerFails_ClosesAlreadyConnectedServers(t *testin
 					t.Fatalf("the already-connected server (pid %d) is still running after SetupMCPConns failed", pid)
 				}
 				time.Sleep(20 * time.Millisecond)
+			}
+		})
+	}
+}
+
+//*************************************//
+// Remote MCP: redirects must stay on the configured origin
+//*************************************//
+
+// receivedRequest is what a recording server saw: the headers and body of one request.
+type receivedRequest struct {
+	header http.Header
+	body   string
+}
+
+// recordingServer starts a server that answers 200 to everything and records each request it receives.
+func recordingServer(t *testing.T) (*httptest.Server, func() []receivedRequest) {
+	t.Helper()
+	var mu sync.Mutex
+	var got []receivedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, receivedRequest{header: r.Header.Clone(), body: string(body)})
+		mu.Unlock()
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []receivedRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]receivedRequest(nil), got...)
+	}
+}
+
+var testCredentials = map[string]string{"Authorization": "Bearer SECRET", "X-Api-Key": "KEY-SECRET"}
+
+// post sends a POST with a JSON body (a 307/308 would replay it) through the client.
+func post(client *http.Client, url string) (*http.Response, error) {
+	return client.Post(url, "application/json", strings.NewReader(`{"tool":"args"}`))
+}
+
+// - Verify a redirect to a different origin (another port, or another host name) is refused and the
+// target receives nothing: not the token, not the API key, not the request body
+func Test_Unit_RemoteClient_CrossOriginRedirect_RejectedAndNothingSent(t *testing.T) {
+	target, targetHits := recordingServer(t)
+	targets := map[string]string{
+		"other port":      target.URL,
+		"other host name": strings.Replace(target.URL, "127.0.0.1", "localhost", 1),
+	}
+	for name, to := range targets {
+		t.Run(name, func(t *testing.T) {
+			redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, to, http.StatusTemporaryRedirect)
+			}))
+			defer redirector.Close()
+			client, err := newRemoteHTTPClient(redirector.URL+"/mcp", testCredentials)
+			if err != nil {
+				t.Fatalf("newRemoteHTTPClient: %v", err)
+			}
+
+			resp, err := post(client, redirector.URL+"/mcp")
+
+			if err == nil {
+				resp.Body.Close()
+				t.Fatalf("expected the cross-origin redirect to fail, got status %d", resp.StatusCode)
+			}
+			if !strings.Contains(err.Error(), "blocked") || !strings.Contains(err.Error(), redirector.URL[len("http://"):]) {
+				t.Errorf("expected an error saying the redirect was blocked and naming the allowed origin, got %q", err)
+			}
+			if hits := targetHits(); len(hits) != 0 {
+				t.Errorf("expected the redirect target to receive nothing, got %+v", hits)
+			}
+		})
+	}
+}
+
+// - Verify a redirect within the configured origin (a trailing-slash 307) is followed, and the headers
+// and the request body are carried to the new path, so the token keeps working
+func Test_Unit_RemoteClient_SameOriginRedirect_KeepsHeadersAndBody(t *testing.T) {
+	var mu sync.Mutex
+	var got []receivedRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			http.Redirect(w, r, "/mcp/", http.StatusTemporaryRedirect)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		got = append(got, receivedRequest{header: r.Header.Clone(), body: string(body)})
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	client, err := newRemoteHTTPClient(srv.URL+"/mcp", testCredentials)
+	if err != nil {
+		t.Fatalf("newRemoteHTTPClient: %v", err)
+	}
+
+	resp, err := post(client, srv.URL+"/mcp")
+	if err != nil {
+		t.Fatalf("expected the same-origin redirect to be followed, got %v", err)
+	}
+	resp.Body.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("expected the redirected path to be reached once, got %d requests", len(got))
+	}
+	if got[0].header.Get("Authorization") != "Bearer SECRET" || got[0].header.Get("X-Api-Key") != "KEY-SECRET" {
+		t.Errorf("expected the credentials on the redirected request, got %v", got[0].header)
+	}
+	if got[0].body != `{"tool":"args"}` {
+		t.Errorf("expected the body to be replayed, got %q", got[0].body)
+	}
+}
+
+// - Verify a chain that starts same-origin and then leaves (A -> A -> B) is refused at the hop that leaves,
+// so the check is against the configured origin and not just the previous hop
+func Test_Unit_RemoteClient_RedirectChainLeavingOrigin_Rejected(t *testing.T) {
+	target, targetHits := recordingServer(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/mcp" {
+			http.Redirect(w, r, "/step2", http.StatusTemporaryRedirect)
+			return
+		}
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	client, err := newRemoteHTTPClient(srv.URL+"/mcp", testCredentials)
+	if err != nil {
+		t.Fatalf("newRemoteHTTPClient: %v", err)
+	}
+
+	resp, err := post(client, srv.URL+"/mcp")
+
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected the chain to be refused, got status %d", resp.StatusCode)
+	}
+	if hits := targetHits(); len(hits) != 0 {
+		t.Errorf("expected the final target to receive nothing, got %+v", hits)
+	}
+}
+
+// - Verify the redirect limit still applies: a custom CheckRedirect replaces net/http's default of 10
+// hops, so an endless same-origin redirect loop must still stop
+func Test_Unit_RemoteClient_EndlessSameOriginRedirects_StopAtLimit(t *testing.T) {
+	var hops atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hops.Add(1)
+		http.Redirect(w, r, fmt.Sprintf("/hop%d", n), http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	client, err := newRemoteHTTPClient(srv.URL+"/mcp", nil)
+	if err != nil {
+		t.Fatalf("newRemoteHTTPClient: %v", err)
+	}
+
+	resp, err := post(client, srv.URL+"/mcp")
+
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("expected an endless redirect loop to fail")
+	}
+	if !strings.Contains(err.Error(), "10 redirects") {
+		t.Errorf("expected a 'stopped after 10 redirects' error, got %q", err)
+	}
+	if got := hops.Load(); got > maxRedirects+1 {
+		t.Errorf("expected at most %d requests, the server saw %d", maxRedirects+1, got)
+	}
+}
+
+// - Verify what counts as the same origin: path changes, an explicit default port and host-name case are
+// the same; a different scheme (https to http, AND http to https), port, host or subdomain are not
+func Test_Unit_RemoteClient_CheckRedirect_OriginRules(t *testing.T) {
+	cases := []struct {
+		name        string
+		configured  string
+		redirectTo  string
+		wantBlocked bool
+	}{
+		{"path change", "https://mcp.example.com/mcp", "https://mcp.example.com/mcp/", false},
+		{"explicit default https port", "https://mcp.example.com/mcp", "https://mcp.example.com:443/other", false},
+		{"explicit default http port", "http://mcp.example.com/mcp", "http://mcp.example.com:80/other", false},
+		{"host name case", "https://MCP.Example.com/mcp", "https://mcp.example.com/mcp", false},
+		{"IPv6 literal, same", "http://[::1]:8080/mcp", "http://[::1]:8080/other", false},
+		{"https to http (downgrade)", "https://mcp.example.com/mcp", "http://mcp.example.com/mcp", true},
+		{"http to https (upgrade, rejected for now)", "http://mcp.example.com/mcp", "https://mcp.example.com/mcp", true},
+		{"different port", "https://mcp.example.com/mcp", "https://mcp.example.com:8443/mcp", true},
+		{"different host", "https://mcp.example.com/mcp", "https://evil.example.net/mcp", true},
+		{"subdomain", "https://mcp.example.com/mcp", "https://evil.mcp.example.com/mcp", true},
+		{"look-alike prefix", "https://mcp.example.com/mcp", "https://mcp.example.com.evil.net/mcp", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, err := newRemoteHTTPClient(tc.configured, nil)
+			if err != nil {
+				t.Fatalf("newRemoteHTTPClient(%q): %v", tc.configured, err)
+			}
+			req, err := http.NewRequest(http.MethodGet, tc.redirectTo, nil)
+			if err != nil {
+				t.Fatalf("building request: %v", err)
+			}
+
+			err = client.CheckRedirect(req, nil)
+
+			if tc.wantBlocked && err == nil {
+				t.Errorf("expected a redirect from %s to %s to be blocked", tc.configured, tc.redirectTo)
+			}
+			if !tc.wantBlocked && err != nil {
+				t.Errorf("expected a redirect from %s to %s to be allowed, got %v", tc.configured, tc.redirectTo, err)
+			}
+		})
+	}
+}
+
+// - Verify the transport itself refuses a request for another origin (second line of defence) without
+// calling the base transport, and still adds the headers for the configured origin
+func Test_Unit_HeaderTransport_OtherOrigin_RefusedWithoutSending(t *testing.T) {
+	for _, other := range []string{
+		"https://other.example.com/mcp",    // other host
+		"http://mcp.example.com/mcp",       // other scheme
+		"https://mcp.example.com:8443/mcp", // other port
+	} {
+		t.Run(other, func(t *testing.T) {
+			base := &stubRoundTripper{resp: &http.Response{StatusCode: 200}}
+			ht := &headerTransport{base: base, headers: testCredentials, origin: testOrigin(t, "https://mcp.example.com/mcp")}
+			req, _ := http.NewRequest(http.MethodPost, other, nil)
+
+			resp, err := ht.RoundTrip(req)
+
+			if err == nil || resp != nil {
+				t.Fatalf("expected the request to be refused, got (%v, %v)", resp, err)
+			}
+			if base.got != nil {
+				t.Errorf("expected the base transport not to be called, but it saw %v", base.got.URL)
+			}
+		})
+	}
+
+	base := &stubRoundTripper{resp: &http.Response{StatusCode: 200}}
+	ht := &headerTransport{base: base, headers: testCredentials, origin: testOrigin(t, "https://mcp.example.com/mcp")}
+	req, _ := http.NewRequest(http.MethodPost, "https://mcp.example.com:443/elsewhere", nil)
+	if _, err := ht.RoundTrip(req); err != nil {
+		t.Fatalf("expected a same-origin request to be sent, got %v", err)
+	}
+	if base.got.Header.Get("Authorization") != "Bearer SECRET" {
+		t.Errorf("expected the Authorization header on a same-origin request, got %v", base.got.Header)
+	}
+}
+
+// - Verify connectRemoteMCPServer is wired to this: a server that redirects to another origin fails to
+// connect with an error naming the server, and the real server it pointed at sees no request at all
+func Test_Unit_ConnectRemoteMCP_CrossOriginRedirect_FailsAndSendsNothing(t *testing.T) {
+	targetURL, targetRequests := startFakeRemoteMCP(t)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, targetURL, http.StatusTemporaryRedirect)
+	}))
+	defer redirector.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	s, err := connectRemoteMCPServer(ctx, "redirected", config.McpServerConfig{URL: redirector.URL, Headers: testCredentials}, config.Config{})
+
+	if err == nil || s != nil {
+		t.Fatalf("expected (nil, error), got (%v, %v)", s, err)
+	}
+	if !strings.Contains(err.Error(), "redirected") {
+		t.Errorf("expected the error to name the server, got %q", err)
+	}
+	if reqs := targetRequests(); len(reqs) != 0 {
+		t.Errorf("expected the redirect target to receive no requests, got %d", len(reqs))
+	}
+}
+
+// - Verify an endpoint that is not an absolute URL is rejected up front with a clear error
+func Test_Unit_NewRemoteHTTPClient_InvalidEndpoint_ReturnsError(t *testing.T) {
+	for _, endpoint := range []string{"", "::bad", "/relative/path", "mcp.example.com/mcp", "https:///nohost"} {
+		t.Run(endpoint, func(t *testing.T) {
+			if client, err := newRemoteHTTPClient(endpoint, nil); err == nil {
+				t.Errorf("expected an error for %q, got a client %v", endpoint, client)
 			}
 		})
 	}

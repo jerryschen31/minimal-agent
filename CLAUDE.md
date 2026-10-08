@@ -142,6 +142,10 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 
 ### Invariants that are easy to break (mvp2)
 
+- **Remote MCP requests never leave the configured origin.** `newRemoteHTTPClient` refuses redirects to a
+  different scheme/host/port, and `headerTransport` refuses to send to one, because it re-adds the
+  token on every redirect hop (and a 307/308 replays the body). Keep both layers if you touch the HTTP
+  client; `http` -> `https` redirects are rejected for now (`DECISIONS.md § Deferred for Later`, item 6).
 - **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
   `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`). It resolves symlinks first, checks the *resolved*
   path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new

@@ -1059,6 +1059,40 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   `environment.txt`, `monkey.txt`) must still read. Every refusal is checked to leak no secret text.
   Disabling the deny list, the outside check, case-folding, or symlink resolution each makes tests fail.
 
+### Remote MCP requests never leave the configured origin (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #7 on `mcpconnect/conn.go`: the HTTP client followed
+  redirects and `headerTransport` re-added the configured headers on every hop.
+- **The comment is right; measured, not assumed.** With a 307 (method and body kept) to another host, a
+  client using our `headerTransport` delivered `Authorization`, `X-Api-Key`, `Mcp-Session-Id` and the
+  request body (tool arguments) to the other server. Plain `net/http` would have stripped `Authorization`
+  on a cross-host redirect, but our transport re-adds it on each hop, and `net/http` compares host *names*
+  only, so even without our transport a redirect to another port, or from `https` to `http` on the same
+  host, keeps the token. Stripping headers alone would not have been enough: the body and session id go
+  along too.
+- **What stays the same:** `headerTransport` is still how Bearer tokens and API keys reach the MCP server.
+  Redirects within the configured origin (a trailing-slash or path change) are followed and keep the
+  headers and the body.
+- **Decision, two layers.**
+  1. `newRemoteHTTPClient` sets `CheckRedirect`: a redirect whose origin (scheme, lower-cased host, port,
+     default ports filled in) differs from the origin of the **configured** `url` is refused with
+     "redirect to X blocked: MCP server redirects must stay on Y". It compares against the configured
+     origin on every hop, not the previous hop, so A -> A -> B is caught. A custom `CheckRedirect`
+     replaces net/http's built-in 10-hop limit, so the limit is restated (`maxRedirects`).
+  2. `headerTransport` refuses to send any request whose origin is not the one it was built for, instead
+     of sending it without headers (which would still leak the body). It is the second line of defence
+     if the redirect policy changes or the transport is reused.
+- **Limitation, deliberate for now:** an `http` -> `https` redirect on the same host is rejected too,
+  because scheme is part of the origin. It is safe but rejected, so a server must be configured with its
+  final `https` URL. Recorded under "Deferred for Later" item 6.
+- **Tests:** cross-origin redirect refused and the target receives nothing (other port, other host
+  name); same-origin 307 keeps the headers and replays the body; a chain A -> A -> B is refused; an endless
+  same-origin loop stops at 10; an origin-rule table (path change, explicit default ports, host-name case,
+  IPv6, https -> http, http -> https, other port, other host, subdomain, look-alike prefix); the transport
+  guard; `connectRemoteMCPServer` end to end against a redirecting server and a real fake MCP server; and
+  invalid endpoints. Each layer was disabled in turn and the tests failed; with only one layer
+  disabled the other still blocks the leak, which is the point of having two.
+
 ---
 
 ## Deferred / open decisions
@@ -1184,7 +1218,8 @@ replied to with "deferred" or "will do later" instead of fixing in that PR. Reco
 entry has: what Copilot said, what the code does today, the fix, and when to pick it back up. The first
 three were answered literally "deferred"; the last two were answered "for debugging purposes, will
 switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
-`/config` printing, `ChatMessage` JSON tags and `read_file` confinement above).
+`/config` printing, `ChatMessage` JSON tags and `read_file` confinement above). Item 6 is different: it
+is a limitation introduced on purpose by the PR #7 redirect fix and deferred by Jerry's own decision.
 
 1. **`headless` and `oneshot` modes are advertised but not implemented** (`agent/agent.go`, `RunAgent`).
    - *Copilot:* the parser and usage text accept both modes, but every such run reaches the
@@ -1247,6 +1282,25 @@ switch/remove later". Comments that were fixed in the PR are not listed here (se
    - *Revisit:* before `--json` / oneshot output or before sharing terminal logs; together with item 4's
      debug setting, one `debug` switch could cover both.
 
+
+6. **`http` -> `https` redirects from a remote MCP server are rejected** (`mcpconnect/conn.go`,
+   `newRemoteHTTPClient`; added with the PR #7 redirect fix, not a Copilot comment).
+   - *Today:* the allowed origin is scheme + host + port of the configured `url`, so a server configured as
+     `http://host/mcp` that answers with a redirect to `https://host/mcp` fails to connect with
+     "redirect to https://host:443 blocked: MCP server redirects must stay on http://host:80". The fix on
+     the user's side is to configure the `https` URL.
+   - *Why it is rejected now:* it is the simplest rule, and an upgrade is the one case where a "same host,
+     different scheme" redirect is safe, so it can be allowed later without weakening anything else.
+   - *Fix:* in `CheckRedirect`, allow exactly one exception: the previous hop was `http`, the target is
+     `https`, the host name is the same, and the port is the default 80 -> 443 mapping (or the same
+     explicit port). Never allow `https` -> `http`, a different host, or a different non-default port. The
+     `headerTransport` guard has to accept the upgraded origin too, so it needs to learn "the origin we
+     were redirected to within the allowed rule" rather than a single fixed origin.
+   - *Tests to change when built:* the "http to https (upgrade, rejected for now)" row of
+     `Test_Unit_RemoteClient_CheckRedirect_OriginRules` flips to allowed; add cases for the other port and
+     for `https` -> `http` staying blocked.
+   - *Revisit:* when a real server is hit that only offers an `http` entry point and upgrades; until then
+     configure `https` URLs.
 
 ---
 
