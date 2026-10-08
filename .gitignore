@@ -8,3 +8,4 @@ mvp1/minagent
 *scratch*
 .env.example
 prompts/
+graphify-out/
