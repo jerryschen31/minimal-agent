@@ -5,3 +5,6 @@ mvp2/learn/prompts/
 */.env
 .out-of-code-insights*
 mvp1/minagent
+*scratch*
+.env.example
+prompts/
