@@ -1246,8 +1246,9 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ### Deferred for Later
 
-Copilot review comments on PR #6 (https://github.com/jerryschen31/minimal-agent/pull/6) that Jerry
-replied to with "deferred" or "will do later" instead of fixing in that PR. Recorded 2026-10-07. Each
+Copilot review comments on PR #6 (https://github.com/jerryschen31/minimal-agent/pull/6) and PR #7
+(https://github.com/jerryschen31/minimal-agent/pull/7) that Jerry replied to with "deferred" or "will do
+later" instead of fixing in that PR. Recorded 2026-10-07. Each
 entry has: what Copilot said, what the code does today, the fix, and when to pick it back up. The first
 three were answered literally "deferred"; the last two were answered "for debugging purposes, will
 switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
@@ -1297,9 +1298,12 @@ is a limitation introduced on purpose by the PR #7 redirect fix and deferred by 
    - *Status:* already analysed in full under "Bug found 2026-10-02: `LoggingTransport` hides the client's
      `sessionUpdated` hook" (in the Remote MCP entry above), with the options and a test plan. This item
      is the pointer; the decision is still open there.
-   - *Related, not deferred:* the same review also flags the **stdio** `LoggingTransport` (every JSON-RPC
-     request and result goes to stderr, which can include file contents or credentials). Both want the
-     same fix: logging off by default and enabled by an explicit debug setting.
+   - *Also deferred (PR #7, `mcpconnect/conn.go`, reply "noted and deferred. LoggingTransport is currently used
+     for debugging and testing in this early phase"):* the same review flags protocol logging on **both**
+     transports, stdio and remote: every JSON-RPC request and result, including tool arguments and results
+     that may hold file contents or credentials, goes to stderr even when session output is routed elsewhere.
+     Copilot's fix: use the underlying transports directly in normal runs and require an explicit opt-in
+     for protocol logging. It is the same fix as above, so one `debug` setting covers both transports.
    - *Revisit:* before using a strict remote MCP server for real work, or when adding a debug setting.
 
 5. **`DebugChatContext` dumps the whole conversation to stdout every turn** (`agent/chat.go`,
@@ -1353,6 +1357,42 @@ is a limitation introduced on purpose by the PR #7 redirect fix and deferred by 
      need other variables).
    - *Revisit:* (a) any time `config.go` validation is next touched; (b) when a config file is shared or
      committed; (c) before running MCP servers that are not trusted with the provider key.
+
+8. **Auto-compaction writes to `cs.OutBuffer` concurrently with the chat loop** (`agent/chat.go`; PR #7, reply
+   "deferred, this is on the to-do list").
+   - *Copilot:* the background compaction goroutine prints status and errors to the same writer the chat loop
+     uses for the prompt and replies. `OutBuffer` is any `io.Writer`, and some (the test fixture's
+     `bytes.Buffer`) are not safe for concurrent use, so overlapping writes can race and corrupt output.
+     Serialize all session writes through one shared synchronized writer, including `cs.Config.OutBuffer`,
+     which `/config` (`PrintConfig`) uses.
+   - *Today:* with the real `os.Stdout` there is no data race (each `Write` is a single call) but lines can
+     interleave, for example a status line landing in the middle of the prompt. Output sent to a
+     non-thread-safe writer can race. The two fields hold separate copies of the same writer, so both must be wrapped.
+   - *Fix:* wrap the configured writer once, when the session is built, in a small mutex-guarded writer and
+     assign it to both `ChatSession.OutBuffer` and `ChatSession.Config.OutBuffer`; every `Fprint*` then goes
+     through it. Interleaving of whole lines remains possible, which is cosmetic; the race goes away. Test: a
+     compaction running while the loop prints, under `-race`, against a plain `bytes.Buffer`.
+   - *Revisit:* together with the larger output restructuring that headless/oneshot (item 1) will need.
+
+9. **A symlink swapped in after `resolve()` could still be opened** (`tools/builtin/readfile.go`; PR #7, reply
+   "deferred").
+   - *Copilot:* `os.Root` keeps the open inside `workDir` but still follows symlinks within it. If a permitted
+     file such as `notes.txt` is replaced with a symlink to `.env` after `resolve` checked it, the open follows
+     the new target and returns the secret. Enforce the deny list against the actually opened target, with
+     race-resistant traversal, and test the replacement between resolution and open.
+   - *Today:* `resolve` follows symlinks and checks the deny list on the real path, so a symlink that exists
+     beforehand is refused. Only the time-of-check/time-of-use window is open, and it needs something else
+     to write inside `workDir` at the right moment, for example the model using a write-capable MCP tool.
+     The earlier named-pipe fix already checks the type on the opened descriptor, which is the same style of
+     fix this needs.
+   - *Fix options:* (a) open the already-resolved path with `O_NOFOLLOW`, so a symlink appearing at the final
+     component makes the open fail (it still does not cover a directory component being replaced by a
+     symlink); (b) after opening, ask the OS for the real path of the descriptor (`F_GETPATH` on macOS,
+     `/proc/self/fd/N` on Linux) and run the root and deny-list checks on it, which closes the gap at the cost
+     of platform-specific code. Test: replace the file with a symlink to `.env` between `resolve` and the open
+     (a test hook between the two steps), and assert the secret is not returned.
+   - *Revisit:* before running the agent with write-capable tools (a filesystem MCP server, a shell tool)
+     enabled inside the same `workDir`.
 
 ---
 
