@@ -42,11 +42,15 @@ func main() {
 
 	// setup context - catch OS signals (e.g., Ctrl+C or process termination signal (kill)) and terminate gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// create the agent instance
 	myAgent := agent.Agent{}
-	defer myAgent.ShutdownAgent(ctx)
+	defer func() {
+		// context is passed to compaction, LLM requests, and other operations, so these should be canceled first, then we shutdown the agent
+		stop()
+		myAgent.ShutdownAgent(ctx)
+	}()
+
 	// setup the agent - make sure errors are handled properly
 	if err := myAgent.SetupAgent(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "error setting up agent:", err)
