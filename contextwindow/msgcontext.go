@@ -201,6 +201,12 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 	var transcript strings.Builder
 	for _, m := range msgs {
 		fmt.Fprintf(&transcript, "%s: %s\n", m.Role, m.Content)
+		for _, call := range m.ToolCalls {
+			fmt.Fprintf(&transcript, "tool_call %s: %s(%s)\n", call.ID, call.Function.Name, call.Function.Arguments)
+		}
+		if m.ToolCallID != "" {
+			fmt.Fprintf(&transcript, "tool_call_id: %s\n", m.ToolCallID)
+		}
 	}
 
 	// Create a brand-new model.ChatMessages slice, so we never touch the original backing array.
