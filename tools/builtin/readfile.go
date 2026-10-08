@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
@@ -65,6 +66,22 @@ func isDenied(rel string) bool {
 	return false
 }
 
+// fileKind names a non-regular file type for the error shown to the model.
+func fileKind(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeCharDevice != 0:
+		return "character device"
+	case mode&os.ModeDevice != 0:
+		return "device"
+	default:
+		return "special file"
+	}
+}
+
 // resolve turns the model's path (relative to root, or absolute) into a path relative to root with every
 // symlink followed, or returns an error if it ends up outside root or on the deny list. The deny list is
 // checked on the resolved path, so a symlink named notes.txt that points at .env is refused too.
@@ -117,6 +134,9 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("missing required argument: path")
 	}
 
+	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
+		return "", err
+	}
 	rel, err := t.resolve(params.Path)
 	if err != nil {
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
@@ -128,11 +148,26 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", err
 	}
 	defer root.Close()
-	f, err := root.Open(rel)
+	// Open with O_NONBLOCK: opening a named pipe (FIFO) normally waits for a writer, which would hang the whole
+	// agent turn (this call is synchronous and cannot be cancelled once inside open). With O_NONBLOCK the open
+	// returns at once, and the file type is checked on the opened descriptor below, not on the path, so a
+	// regular file swapped for a pipe after resolve() cannot be raced in. O_NONBLOCK does not change reads of
+	// regular files.
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	info, err := f.Stat() // fstat on the descriptor we actually opened
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory, not a file", params.Path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file (it is a %s)", params.Path, fileKind(info.Mode()))
+	}
 
 	// LimitReader is used to cap how much of the file is read into memory, preventing huge files from being fully loaded.
 	// Reading one byte past the cap is how we can tell that the file was cut off with the comparison below.
@@ -147,7 +182,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	if len(data) > ReadFileMaxBytes {
 		// add a note clearly indicating the file output was truncated since the file exceeded the maximum allowed size
-return string(bytes.ToValidUTF8(data[:ReadFileMaxBytes], nil)) + "\n[truncated: file is larger than 64 KB]", nil
+		return string(bytes.ToValidUTF8(data[:ReadFileMaxBytes], nil)) + "\n[truncated: file is larger than 64 KB]", nil
 	}
 	return string(data), nil
 }

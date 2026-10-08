@@ -271,6 +271,19 @@ func TestHelperMCPServer(t *testing.T) {
 			os.Exit(1)
 		}
 	}
+	// a test can ask the child to record the MCP_TEST_* variables it was started with
+	if envFile := os.Getenv("GO_MCP_HELPER_ENVFILE"); envFile != "" {
+		var seen []string
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "MCP_TEST_") {
+				seen = append(seen, kv)
+			}
+		}
+		if err := os.WriteFile(envFile, []byte(strings.Join(seen, "\n")), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
+			os.Exit(1)
+		}
+	}
 	if err := newFakeMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "helper MCP server:", err)
 		os.Exit(1)
@@ -284,7 +297,7 @@ func Test_Unit_ConnectLocalMCP_StdioServer_ListsAndCallsTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	// the child inherits our environment (connectLocalMCPServer does not apply config.Env), so set it here
+	// the child inherits our environment, so set it here
 	t.Setenv("GO_WANT_MCP_HELPER", "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -644,5 +657,72 @@ func Test_Unit_NewRemoteHTTPClient_InvalidEndpoint_ReturnsError(t *testing.T) {
 				t.Errorf("expected an error for %q, got a client %v", endpoint, client)
 			}
 		})
+	}
+}
+
+// childEnv starts the test binary as a local MCP server with the given configured env, in a parent
+// environment that has MCP_TEST_PARENT_ONLY=from-parent and MCP_TEST_OVERRIDDEN=parent-value, and returns
+// the MCP_TEST_* variables the child reported seeing.
+func childEnv(t *testing.T, configured map[string]string) map[string]string {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	envFile := filepath.Join(t.TempDir(), "child.env")
+	t.Setenv("GO_WANT_MCP_HELPER", "1") // the child inherits our environment
+	t.Setenv("GO_MCP_HELPER_ENVFILE", envFile)
+	t.Setenv("MCP_TEST_PARENT_ONLY", "from-parent")
+	t.Setenv("MCP_TEST_OVERRIDDEN", "parent-value")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	s, err := connectLocalMCPServer(ctx, "local", config.McpServerConfig{
+		Command: exe, Args: []string{"-test.run=^TestHelperMCPServer$"}, Env: configured,
+	}, config.Config{})
+	if err != nil {
+		t.Fatalf("connectLocalMCPServer: %v", err)
+	}
+	defer s.Close()
+
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("the child did not report its environment: %v", err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if key, value, ok := strings.Cut(line, "="); ok {
+			got[key] = value
+		}
+	}
+	return got
+}
+
+// - Verify the configured "env" reaches the local server's process, overrides a same-named variable from
+// our own environment, and does not stop the other variables of our environment from being inherited
+func Test_Unit_ConnectLocalMCP_Env_ReachesChildAndOverridesParent(t *testing.T) {
+	got := childEnv(t, map[string]string{
+		"MCP_TEST_CONFIGURED": "from-config",
+		"MCP_TEST_OVERRIDDEN": "config-value",
+	})
+
+	want := map[string]string{
+		"MCP_TEST_CONFIGURED":  "from-config",  // only exists in the config
+		"MCP_TEST_OVERRIDDEN":  "config-value", // config beats the parent's "parent-value"
+		"MCP_TEST_PARENT_ONLY": "from-parent",  // still inherited
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("child saw %s=%q, want %q (all seen: %v)", key, got[key], value, got)
+		}
+	}
+}
+
+// - Verify a server with no "env" block still inherits our whole environment (the behavior before env was applied)
+func Test_Unit_ConnectLocalMCP_NoEnv_StillInheritsParentEnvironment(t *testing.T) {
+	got := childEnv(t, nil)
+
+	if got["MCP_TEST_PARENT_ONLY"] != "from-parent" || got["MCP_TEST_OVERRIDDEN"] != "parent-value" {
+		t.Errorf("expected the parent's variables to be inherited unchanged, child saw %v", got)
 	}
 }

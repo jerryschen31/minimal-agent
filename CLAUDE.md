@@ -150,7 +150,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`). It resolves symlinks first, checks the *resolved*
   path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
   file-reading tool must reuse this, not call `os.Open` on a model-supplied path
-  (`DECISIONS.md § read_file is confined to workDir`).
+  (`DECISIONS.md § read_file is confined to workDir`). It also opens with `O_NONBLOCK` and accepts only regular
+  files (checked with `Stat` on the opened descriptor), because opening a named pipe blocks forever.
 - **A context window must never hand out a leading `tool` message.** Windows trim by message count
   and a turn is several messages, so a trim can land between an assistant tool call and its
   results; providers reject an orphaned tool result, and since a failed turn is not added back, the

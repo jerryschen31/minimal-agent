@@ -77,6 +77,18 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// This is the command that is executed to start a local MCP server
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
+	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
+	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.
+	// With no "env" block cmd.Env stays nil, which also means "inherit everything".
+	// TODO(deferred, see DECISIONS.md § Deferred for Later, item 7): (a) reject empty / "="-containing env keys in
+	// TransportType, (b) "${VAR}" values are passed literally, (c) the child inherits ALL of our environment,
+	// including the LLM provider's API key (cfg.ApiKeyName) - strip it or switch to a safe-list.
+	if len(config.Env) > 0 {
+		cmd.Env = os.Environ()
+		for _, key := range slices.Sorted(maps.Keys(config.Env)) { // sorted so the child's environment is repeatable
+			cmd.Env = append(cmd.Env, key+"="+config.Env[key])
+		}
+	}
 	// transport := &mcp.CommandTransport{Command: cmd}
 	// log all transport messages - just for debugging
 	transport := &mcp.LoggingTransport{

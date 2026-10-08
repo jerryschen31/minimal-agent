@@ -755,6 +755,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   is caught; flipping the SSE flag is **not** caught (that is the bug above).
 - `connectLocalMCP` never applies `config.Env`, so a configured `env` map doesn't reach the child
   process (the local test uses `t.Setenv`). Still open, SESSION.md "To do next" item 2.
+  **Fixed 2026-10-07 → see `§ Local MCP servers receive the configured env`.**
 - There is no `${VAR}` expansion in header values yet, so a token in `config.json` is literal.
   `os.ExpandEnv(v)` in `headerTransport.RoundTrip` is a one-line change when wanted.
 - The checked-in `config.default.json` has `deepwiki` configured with no auth header; don't put a
@@ -1052,12 +1053,28 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   token in `config.json` is readable). Hard links are not detected (`os.Root` does not stop a hard link to
   an outside file placed inside the root). Not covered: MCP filesystem servers have their own access
   rules, and `workDir` does not restrict them.
+- **Special files (added 2026-10-07, PR #7 review).** A named pipe inside `workDir` passed every check above,
+  and opening it with no writer blocks forever; the call is synchronous and cannot be cancelled from inside
+  `open`, so Ctrl+C could not unwind the turn, and the 64 KB cap does not help because nothing is ever read.
+  Reproduced before fixing. Fix: open with `O_NONBLOCK` (a FIFO then opens immediately), then `Stat` the
+  **opened descriptor** and accept only regular files; directories keep a "is a directory" message,
+  other types say "not a regular file (it is a named pipe / socket / device)". The type is checked on the
+  descriptor, not the path, so a regular file swapped for a pipe between the check and the open cannot
+  slip through. `O_NONBLOCK` does not change how regular files are read. A cancelled `ctx` is also checked
+  before reading starts. Rejected: a `Stat`/`Lstat` on the path before opening (races with a swap) and
+  running the read in a goroutine with a timeout (leaves a stuck goroutine and file descriptor behind).
+  Downsides: `syscall.O_NONBLOCK` ties the file to platforms that define it (fine on macOS and Linux), and
+  opening a device node can still have side effects before it is rejected, which only matters if someone
+  places one inside `workDir`.
 - **Tests:** a sandbox with secrets planted inside the root (every deny-list name, upper-case variants,
   nested `.ssh`), outside it (`../`, absolute, a sibling directory sharing the root's name prefix,
   `/etc/hosts`) and behind symlinks (to a file, a directory, the parent, an absolute target, a denied file,
   a denied directory, and a root that is itself a symlink); allowed look-alikes (`.env.example`,
   `environment.txt`, `monkey.txt`) must still read. Every refusal is checked to leak no secret text.
   Disabling the deny list, the outside check, case-folding, or symlink resolution each makes tests fail.
+  Special files (unix only): a pipe with no writer, a pipe with data waiting (which must stay unread), a
+  symlink to a pipe, a Unix socket, and a cancelled context; removing the `O_NONBLOCK` flag, the type check,
+  or the context check each makes tests fail.
 
 ### Remote MCP requests never leave the configured origin (2026-10-07)
 
@@ -1092,6 +1109,22 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   guard; `connectRemoteMCPServer` end to end against a redirecting server and a real fake MCP server; and
   invalid endpoints. Each layer was disabled in turn and the tests failed; with only one layer
   disabled the other still blocks the leak, which is the point of having two.
+
+### Local MCP servers receive the configured `env` (2026-10-07)
+
+- **Status: active.** From Copilot's review of PR #7 on `mcpconnect/conn.go`: `McpServerConfig.Env` was
+  validated (`TransportType` rejects it on remote servers) but never applied, so a token configured as
+  `"env": {"GITHUB_TOKEN": "..."}` never reached the stdio server's process.
+- **Decision:** when `env` is non-empty, `connectLocalMCPServer` sets `cmd.Env` to our own environment
+  (`os.Environ()`; `npx` and `node` need `PATH`, `HOME`, ...) followed by the configured `KEY=value`
+  entries in sorted key order. `os/exec` uses the **last** value of a duplicate key, so configured values
+  beat the parent's. With no `env` block `cmd.Env` stays nil, which already means "inherit everything", so
+  behavior for existing configs is unchanged.
+- **Tests:** the test binary re-run as the child reports its `MCP_TEST_*` variables to a file; checked that
+  a configured entry arrives, that it overrides a same-named parent variable, that the parent's other
+  variables are still inherited, and that a server with no `env` block still inherits. Disabling the
+  overlay, putting the configured entries before `os.Environ()`, and not inheriting each make them fail.
+- **Small follow-ups, not done:** see "Deferred for Later" item 7.
 
 ---
 
@@ -1301,6 +1334,25 @@ is a limitation introduced on purpose by the PR #7 redirect fix and deferred by 
      for `https` -> `http` staying blocked.
    - *Revisit:* when a real server is hit that only offers an `http` entry point and upgrades; until then
      configure `https` URLs.
+
+7. **Small follow-ups to applying the MCP server `env`** (`mcpconnect/conn.go`, `config/config.go`; added with the
+   PR #7 `env` fix, not Copilot comments). Marked in a `TODO(deferred ...)` comment in `connectLocalMCPServer`.
+   - **(a) Validate env keys.** An empty key, or one containing `=` or a NUL byte, produces a malformed
+     environment entry. Reject them in `McpServerConfig.TransportType()` with an error naming the key. It is the
+     user's own config, so this is low risk; it is a clearer error, not a security fix.
+   - **(b) No `${VAR}` expansion.** `"GITHUB_TOKEN": "${GITHUB_TOKEN}"` is passed to the child as the literal text.
+     Expanding values from our environment (`os.Expand` with a lookup) would let a config file name a token
+     without containing it. The same gap exists for `headers` on remote servers (see the older note about
+     `os.ExpandEnv` in `headerTransport`); do both together, and decide first whether an unset variable is an
+     error or an empty string.
+   - **(c) Children inherit the whole parent environment,** including the LLM provider's API key
+     (`apiKeyName`, e.g. `OPENAI_API_KEY`). That was already true before the `env` fix (nil `cmd.Env` inherits
+     everything) and the fix keeps it. Options: drop only that variable from the child's environment unless the
+     config sets it explicitly (cheap), or follow the official TypeScript MCP SDK and pass a safe list (`HOME`,
+     `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) plus the configured `env` (safer, but can break servers that
+     need other variables).
+   - *Revisit:* (a) any time `config.go` validation is next touched; (b) when a config file is shared or
+     committed; (c) before running MCP servers that are not trusted with the provider key.
 
 ---
 
