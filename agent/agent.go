@@ -27,7 +27,9 @@ type Agent struct {
 }
 
 func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
-
+	if cfg.MaxSteps <= 0 {
+		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
+	}
 	// agent mode
 	agent.agentMode = cfg.AgentMode
 
