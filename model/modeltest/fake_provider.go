@@ -21,6 +21,11 @@ import (
 // many times fails loudly instead of silently reusing Reply). With Script unset, every call
 // returns Reply, exactly as before. Err, if set, wins over both. ToolDefs records the tools
 // argument of each call, parallel to Calls.
+//
+// To pause a call partway (e.g. to interrupt a turn while the model is "thinking"), set Gate:
+// Chat then blocks until Gate is closed or ctx is cancelled (returning ctx.Err()). If Waiting is
+// also set, Chat sends on it once it starts blocking, so a test knows when the call is in progress.
+// The mutex is not held while blocked, so other calls (e.g. a background compaction) still work.
 type FakeProvider struct {
 	mu       sync.Mutex
 	Reply    string
@@ -29,14 +34,35 @@ type FakeProvider struct {
 	next     int // index of the next Script entry to play
 	Calls    [][]model.ChatMessage
 	ToolDefs [][]model.ToolDef
+	Gate     chan struct{} // if set, Chat blocks until Gate is closed or ctx is cancelled
+	Waiting  chan struct{} // if set, Chat sends on it once it starts blocking on Gate
 }
 
 func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
 	p.ToolDefs = append(p.ToolDefs, append([]model.ToolDef(nil), tools...))
+	gate, waiting := p.Gate, p.Waiting
+	p.mu.Unlock()
 
+	// wait on the gate without holding the mutex, so a concurrent call isn't blocked behind this one
+	if gate != nil {
+		if waiting != nil {
+			select {
+			case waiting <- struct{}{}:
+			case <-ctx.Done():
+				return model.ChatMessage{}, ctx.Err()
+			}
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return model.ChatMessage{}, ctx.Err()
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if ctx.Err() != nil {
 		return model.ChatMessage{}, ctx.Err()
 	}

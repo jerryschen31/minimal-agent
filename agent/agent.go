@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -90,12 +91,13 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 }
 
 // need to update this function to handle headless and oneshot modes, not just chat mode
-func (agent *Agent) RunAgent(ctx context.Context) error {
+// `intsigChRecv` of type `<-chan os.Signal` only receives OS interrupt signals (e.g., Ctrl+C)
+func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if agent.agentMode == "chat" {
-		runChatLoop(ctx, agent.session)
+		runChatLoop(ctx, intsigChRecv, agent.session)
 		return nil
 	}
 	return fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
@@ -190,7 +192,9 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 		// send the chat request to the LLM provider
 		response, err := cs.Provider.Chat(ctx, request2send, toolDefs)
 		if err != nil {
-			fmt.Fprintln(cs.OutBuffer, "error:", err)
+			if !errors.Is(err, context.Canceled) { // [agent] a Ctrl+C cancel is reported once, as [interrupted], by the caller
+				fmt.Fprintln(cs.OutBuffer, "error:", err)
+			}
 			return nil, err
 		}
 

@@ -159,10 +159,19 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   messages after trimming, and `clampToMax` (compaction) does the same. A new window strategy must
   do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages` runs every strategy.
   See `DECISIONS.md § Context window never hands out an orphaned tool result`.
-- **Ctrl+C is one program-wide cancel signal for now.** `runChatLoop` reads stdin in a goroutine and
-  selects on `ctx.Done()`; per-turn interrupt / press-twice-to-exit is designed but deferred
-  (`DECISIONS.md § Chat loop and Ctrl+C`). Anything long-lived started per turn (e.g. auto-compaction)
-  must use the root context, not a future per-turn one.
+- **Ctrl+C stops foreground work, never the program; only quitting stops background work.** The root
+  context listens for SIGTERM only. `main` registers `os.Interrupt` once, for the whole run, on a 1-slot
+  channel passed to `runChatLoop`, so Go's default "Ctrl+C kills the process" never returns between turns
+  (that would skip `ShutdownAgent` and orphan MCP servers). At the prompt, the line editor treats Ctrl+C as a
+  key and clears the input. Each turn gets `createTurnWatcher(ctx, interrupts)`: a child context cancelled
+  by Ctrl+C; `stop()` waits for the watcher to exit. `discardStrayInterrupts` runs *before* the watcher
+  starts. A cancelled turn prints `[interrupted]` and adds nothing to memory. **Anything long-lived
+  started from a turn (auto-compaction) must get the root context**, which is why `maybeStartAutoCompaction`
+  is called from the loop, not from `handleUserInput`. Quit = Ctrl+D, `/quit`, `/exit` (or SIGTERM). See
+  `DECISIONS.md § Chat loop and Ctrl+C`.
+- **Two prompt readers (`agent/input.go`):** `ttyReader` (go-multiline-ny line editor) only when stdin is a
+  real terminal; `plainReader` (line by line) for pipes, files and tests. Tests drive the editor through
+  `newTTYReaderWith(&auto.Pilot{...}, io.Discard)`; the terminal must be set before the first `BindKey`.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

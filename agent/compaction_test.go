@@ -236,8 +236,14 @@ func Test_ContextCompaction_AutoCompactionTriggeredWhenThresholdExceeded(t *test
 	fx.Provider.Reply = "ok"
 	ctx := context.Background()
 
-	handleUserInput(ctx, fx.Session, "first")  // 2 messages, size 2, below threshold
-	handleUserInput(ctx, fx.Session, "second") // 2 more, size 4, hits threshold -> triggers background compaction
+	// [agent] the chat loop calls maybeStartAutoCompaction after each input; the test does the same
+	handleUserInput(ctx, fx.Session, "first") // 2 messages, size 2, below threshold
+	maybeStartAutoCompaction(ctx, fx.Session)
+	if fx.Context.GetSize() != 2 {
+		t.Fatalf("expected no compaction below the threshold, got size %d", fx.Context.GetSize())
+	}
+	handleUserInput(ctx, fx.Session, "second") // 2 more, size 4, hits threshold
+	maybeStartAutoCompaction(ctx, fx.Session)  // -> triggers background compaction
 
 	fx.Context.WaitForCompaction() // deterministic: blocks until the background compaction actually finishes
 

@@ -40,8 +40,12 @@ func main() {
 	// flag values override any corresponding values from the config file
 	cfg = config.FlagsOverlay(cfg, flags)
 
-	// setup context - catch OS signals (e.g., Ctrl+C or process termination signal (kill)) and terminate gracefully
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// setup context - catch OS SIGTERM signals (e.g., process termination signal (kill)) and terminate gracefully
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+
+	// handle OS interrupt signals (e.g., Ctrl+C) through a separate channel
+	intsigCh := make(chan os.Signal, 1)
+	signal.Notify(intsigCh, os.Interrupt)
 
 	// create the agent instance
 	myAgent := agent.Agent{}
@@ -61,7 +65,7 @@ func main() {
 	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
 	// run the agent main loop (blocking call)
-	if err := myAgent.RunAgent(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	if err := myAgent.RunAgent(ctx, intsigCh); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "error running agent:", err)
 		return
 	}

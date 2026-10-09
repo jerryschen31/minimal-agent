@@ -971,7 +971,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ### Chat loop and Ctrl+C (2026-10-07)
 
-- **Status: active (option A); option B designed, deferred.** Resolves the deferred item "What
+- **Status: superseded by option B (built 2026-10-09, see "Revised" below); option A kept for the record.** Resolves the deferred item "What
   should Ctrl+C mean?".
 - **Problem.** `signal.NotifyContext` removes the default kill-on-SIGINT, and a blocked
   `ReadString` can't see a cancelled context, so Ctrl+C did nothing at the prompt; after one
@@ -989,6 +989,92 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   declined for now.
 - **Known cosmetic leftover:** after a mid-turn Ctrl+C the loop prints one more `>` before it exits.
   A `ctx.Err()` check at the top of the loop removes it.
+- **Revised 2026-10-08: option B chosen. Status: active, built 2026-10-09.**
+  The "3x the code" estimate above included press-twice-to-exit and Ctrl+D handling in the reader; the
+  line editor (next entry) now handles Ctrl+C/Ctrl+D at the prompt and quitting is Ctrl+D / `/exit` /
+  `/quit`, so what remains is a per-turn cancel, roughly 30-50 lines plus tests.
+  - **Rule: Ctrl+C stops foreground work; only quitting stops background work.** Foreground = a
+    model turn, `/compact`, `/summary` (cancelling `/compact` part-way is safe: the `gen`/`Snapshot`
+    design leaves the context unchanged). Background = auto-compaction, which Ctrl+C never touches;
+    it is cancelled only by the root context (Ctrl+D, `/exit`, `/quit`, SIGTERM), which `main`'s
+    deferred `stop()` already does.
+  - **Root context listens for SIGTERM only.** `main` registers `os.Interrupt` once for the whole run
+    on a buffered channel (`signal.Notify`) and passes it to `runChatLoop`. The registration never
+    ends, so Go's default "Ctrl+C kills the process" never comes back in the gaps between turns
+    (which would skip `ShutdownAgent` and leave MCP servers running). Tests pass their own channel.
+  - **Per turn:** drain any stale interrupt left in the buffer, `context.WithCancel(root)` plus a
+    watcher that cancels on an interrupt, run the turn, cancel. An interrupted turn prints
+    `[interrupted]` (not `[error]`) and is not added to memory, like any failed turn.
+  - **Auto-compaction moves from `handleUserInput` into `runChatLoop`** so it is started with the root
+    context; passing two contexts into `handleUserInput` was rejected as easy to mix up.
+  - **As built (2026-10-09):** `runChatLoop` = `ReadPrompt` → `discardStrayInterrupts` → `createTurnWatcher`
+    → `handleUserInput(turnCtx)` → `stop()` → quit check → `maybeStartAutoCompaction(ctx)`.
+    - **The discard runs before the watcher starts**, not after: otherwise the new watcher and the
+      discard would race for the stale press, and the watcher could win and cancel the new turn.
+    - **`stop()` waits for the watcher goroutine to exit** (an `exited` channel), added during testing.
+      Without it, a watcher that had not reached its `select` yet could wake after `stop()`, find both
+      `done` and a new Ctrl+C ready, and (select picks at random) swallow that press.
+    - **`reActLoop` no longer prints `error: context canceled`** on a cancel, so an interrupted turn shows
+      only `[interrupted]`. `[interrupted]` is checked with `errors.Is(err, context.Canceled)` after
+      `reActLoop`, `/summary` and `/compact`; every layer underneath returns or wraps with `%w`.
+    - **`maybeStartAutoCompaction` now runs after every input**, including slash commands and failed or
+      interrupted turns (it used to run only after a successful turn). Harmless: it only starts when the
+      context is over the threshold.
+    - **Tests:** `FakeProvider` gained `Gate` (block until closed or ctx cancelled) and `Waiting` (signal
+      that a call is blocked); the mutex is released while blocked so a concurrent compaction call isn't
+      stuck. Loop tests in `agent/chat_test.go`: interrupt mid-turn, stale interrupt discarded, interrupt
+      does not cancel auto-compaction, `/quit` and `/exit`, EOF; plus `createTurnWatcher` unit tests. A
+      mutex-guarded `syncBuffer` is the output writer because the loop and compaction write concurrently
+      (deferred item 8). Checked by breaking the code: compaction given `turnCtx`, the discard removed, and
+      the `[interrupted]` check removed each make a test fail (the discard test 20/20 after it was made to
+      hold the turn at the model briefly). 100 runs under `-race` pass.
+
+### Line editor: `go-multiline-ny` (2026-10-08)
+
+- **Status: active, wired in 2026-10-09** (`agent/input.go`, `ttyReader`). Chosen after a throwaway test program
+  passed the key checklist below. Pinned to the tested commit: `v0.23.2-0.20260509051138-60a7d8e7d356`.
+  Unit-tested without a real terminal through the library's own fake terminal (`ttyadapter/auto.Pilot`),
+  injected by `newTTYReaderWith(tty, out)`; the terminal must be set before the first `BindKey`, which sets
+  the editor up. The prompt is the named function `writePrompt`, shared with `plainReader` (pipes, files,
+  tests), which is used whenever stdin is not a terminal (`term.IsTerminal`).
+- **Want:** ←/→, Ctrl+A/E, ↑/↓ moving between lines of a multi-line prompt (history at the edges),
+  a new-line key, Option+←/→ by word, history across prompts. The `bufio` reader does none of it: the
+  terminal in its default "cooked" mode has no history and echoes arrows as `^[[A`.
+- **Decision:** `github.com/hymkor/go-multiline-ny` (MIT, built on `nyaosorg/go-readline-ny`). Bindings
+  swapped to chat style: Enter submits, Ctrl+J and Alt/Option+Enter insert a new line (the library's
+  default is the reverse). Ctrl+D on an empty prompt returns `io.EOF` and quits.
+- **Ctrl+C at the prompt clears the prompt, it does not quit** (Jerry, 2026-10-08). The editor returns
+  `readline.CtrlC`; the terminal reader discards the input and reads again, so the chat loop never sees
+  it. Ctrl+C *during a turn* still cancels the program-wide context and quits (option A in "Chat loop and
+  Ctrl+C"), so Ctrl+C now means different things at the prompt and mid-turn. Option B (Ctrl+C cancels
+  only the current turn and returns to `>`) would make it consistent: "abandon what's happening now".
+  Quit is Ctrl+D, `/exit` or `/quit` (`/quit` added as an alias, 2026-10-08); Ctrl+C never quits at the
+  prompt, even when the prompt is empty.
+- **Rejected:**
+  - `golang.org/x/term`: Go-team package with history and single-line editing built in, but no
+    multi-line editing. Ctrl+J is treated as Enter and a lone Esc is swallowed as the start of an
+    escape sequence. Getting Ctrl+J/Esc/Option+arrows meant a byte-rewriting reader in front of it;
+    too much rework.
+  - `rlwrap`: no code, but every user has to install it and run the agent through it.
+  - `reeflective/readline`: the most complete (multi-line, `.inputrc`, vi mode) but larger than needed.
+  - `ergochat/readline`: maintained fork of `chzyer/readline`, but mainly single-line.
+  - `bubbline` / Bubble Tea `textarea`: Bubble Tea runs its own event loop and its author documents
+    input loss when it is used one line at a time, which is how the chat loop reads.
+- **Accepted downsides:** the library's `go.mod` pulls in six direct modules (go-readline-ny,
+  go-ttyadapter, go-box, go-runewidth, go-colorable, clipboard) and five indirect ones (go-tty, go-isatty,
+  uax29, x/term, x/sys); a small single-maintainer project.
+  Shift+Enter can't be a new-line key because most terminals send the same byte as Enter. Esc can't
+  clear the prompt because the library uses Esc as a prefix key (Esc+p/n history, Esc+arrows by word);
+  Ctrl+U is the substitute.
+- **Known gap, accepted: SIGTERM at the prompt.** No context-cancellation handling was found in go-readline-ny,
+  so `ed.Read(ctx)` probably doesn't return when the root context is cancelled; a `kill` while sitting at
+  `>` likely takes effect only after the next keypress. To verify by hand. Accepted for chat mode:
+  headless mode won't use the editor, and Ctrl+D / `/quit` still work.
+- **Constraints when wiring it in:** keep the `bufio` path when stdin is not a terminal (tests feed
+  `cs.InBuffer`, piped input); map `io.EOF` onto the existing quit path; the
+  terminal must be back in normal mode between reads so Ctrl+C during a turn still cancels it
+  (see "Chat loop and Ctrl+C" above); the reader goroutine currently reads one line ahead
+  while a turn runs, which a raw-mode editor must not do.
 
 ### Test layout after the migration (2026-10-07)
 
@@ -1254,6 +1340,7 @@ three were answered literally "deferred"; the last two were answered "for debugg
 switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
 `/config` printing, `ChatMessage` JSON tags and `read_file` confinement above). Item 6 is different: it
 is a limitation introduced on purpose by the PR #7 redirect fix and deferred by Jerry's own decision.
+Item 7 came out of the PR #7 `env` fix, and item 10 is a topic Jerry deferred outside any review.
 
 1. **`headless` and `oneshot` modes are advertised but not implemented** (`agent/agent.go`, `RunAgent`).
    - *Copilot:* the parser and usage text accept both modes, but every such run reaches the
@@ -1393,6 +1480,53 @@ is a limitation introduced on purpose by the PR #7 redirect fix and deferred by 
      (a test hook between the two steps), and assert the secret is not returned.
    - *Revisit:* before running the agent with write-capable tools (a filesystem MCP server, a shell tool)
      enabled inside the same `workDir`.
+
+10. **Dependency hardening for the line editor (and the module graph in general)** (`go.mod`, `go.sum`,
+    `agent/input.go`; deferred by Jerry 2026-10-09, not a Copilot comment).
+    - *Concern:* a dependency of `go-multiline-ny` (e.g. `clipperhouse/uax29/v2`) being deleted from GitHub,
+      tampered with, or abandoned, and breaking the agent.
+    - *What the editor actually pulls in* (measured 2026-10-09 at the pinned commit
+      `v0.23.2-0.20260509051138-60a7d8e7d356`, with `go mod graph` and `go list -deps`): its `go.mod` lists 11
+      modules, but only 7 are compiled into the binary: go-multiline-ny, go-readline-ny (packages `readline`,
+      `keys`, `moji`, `simplehistory`), go-ttyadapter, go-runewidth, uax29/v2, x/term, x/sys. `atotto/clipboard`,
+      `go-colorable`, `go-box`, `go-tty` and `go-isatty` are only reached from sub-packages the agent doesn't
+      import (completion, examples, Windows code), so they are recorded in `go.sum` but never built. Go
+      compiles by package, not by module: a module whose packages are not in the import chain costs nothing.
+      In the repo (after `go get ...@60a7d8e7d356`, 2026-10-09) the versions are exactly what go-multiline-ny
+      asks for: go-readline-ny v1.15.1, go-ttyadapter v0.6.2. (The throwaway test module had resolved
+      v1.16.1 / v0.7.0, because `go mod tidy` there added the directly imported packages at their latest
+      versions; the key tests pass on both.)
+    - *What already protects us, with no action taken:*
+      - **Deletion:** `go` downloads through `proxy.golang.org` by default, which keeps every version it has
+        served; the pinned commit is already cached there (fetched through it on 2026-10-09). Plus the local
+        cache in `~/go/pkg/mod`. Caveat: the proxy can drop a module for legal reasons, so it is not a
+        guaranteed archive.
+      - **Tampering:** `go.sum` plus the checksum database (`sum.golang.org`, an append-only log). Changed
+        content behind a pinned version fails the build; it can never compile silently.
+      - **Deprecation/abandonment:** the pinned version keeps building (Go 1 compatibility promise); the risk
+        is only missing future fixes, e.g. for a new terminal or OS.
+      - **Containment:** the editor sits behind the `promptReader` interface in `agent/input.go`, with the
+        `bufio` reader as a working fallback, so replacing it means rewriting one file.
+      - **No automatic upgrades:** versions change only with `go get -u` / `go get ...@newer`.
+    - *Options when picked back up:*
+      - (a) **`go mod vendor`**: copies the source of every dependency into `vendor/`, used by `go build`
+        automatically, no network. Measured: 9.6 MB in total, of which 8.8 MB is `golang.org/x` (x/sys);
+        the third-party editor code is under 1 MB. Downsides: about 10 MB more in the repo, noisy diffs on every
+        upgrade, and it covers all dependencies including the MCP SDK.
+      - (b) **Fork** go-multiline-ny (and possibly go-readline-ny) to Jerry's GitHub and point at it with a
+        `replace`. Little extra protection given the proxy and checksums; useful only to carry local patches.
+      - (c) **Private `GOPROXY`** (Athens or similar). Only worth it for an organization.
+      - (d) **Trim the graph:** swap the editor for one with fewer modules, or drop to `golang.org/x/term`
+        (Go-team only, but single-line; see the line-editor entry for why it was rejected).
+      - Related small choice, settled for now: `term.IsTerminal` (x/term is compiled in anyway, so a direct
+        import adds nothing to the binary) vs. the standard-library `os.ModeCharDevice` check (no import; a
+        harmless quirk where `/dev/null` counts as a terminal).
+    - *Useful commands:* `go list -deps -f '{{with .Module}}{{.Path}}{{end}}' . | sort -u` (modules actually
+      compiled in); `go mod graph | grep <module>` (who requires it); `go mod why -m <module>` (the import
+      path that pulls it in); `go tool nm -size -sort size <binary> | head` (largest symbols in the binary).
+    - *Revisit:* before builds must work offline or without outside services (CI in a locked-down
+      network, a release), if a dependency is retracted, deprecated or removed from the proxy, or when the
+      module graph grows noticeably (e.g. a sandbox or tracing dependency).
 
 ---
 
