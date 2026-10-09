@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-02)
+# SESSION.md — mvp2 progress (last updated 2026-10-09)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -92,6 +92,24 @@ several sessions have worked well; keep doing it this way.
   writes*, not for chat responses or this file.
 
 ## Current state
+
+> **2026-10-09, repo-root build (`agent/`, branch `build`): line editor + per-turn Ctrl+C done.**
+> The sections below this box still describe the older `mvp2/learn/` work and are partly stale.
+> - **Built:** `agent/input.go` (`promptReader`: `ttyReader` = go-multiline-ny editor at a terminal,
+>   `plainReader` for pipes/files/tests); `runChatLoop` with per-turn Ctrl+C (`discardStrayInterrupts`,
+>   `createTurnWatcher`, `[interrupted]`), auto-compaction moved to `maybeStartAutoCompaction(rootCtx)`;
+>   `/quit` alias; `main` registers Ctrl+C once, root ctx is SIGTERM-only. `FakeProvider.Gate/Waiting`.
+>   All tests pass under `go test -race ./...`. See `DECISIONS.md § Chat loop and Ctrl+C` and
+>   `§ Line editor: go-multiline-ny`; CLAUDE.md invariants updated.
+> - **Still to do (manual, Jerry):** `go run .` pass: editing keys, Ctrl+J / Alt+Enter, Option+arrows,
+>   Ctrl+C at the prompt and mid-turn and during `/compact`, `/quit`, Ctrl+D; `kill <pid>` at `>` (known
+>   gap: the editor probably doesn't notice SIGTERM until a key; see the line-editor entry).
+> - **Next small fixes:** drop `mcp.LoggingTransport` (the `read error: EOF` on exit; deferred item 4);
+>   auto-compaction prints "complete" after an error (item 2); background output vs. the editor in raw
+>   mode can garble the prompt line (item 8).
+> - **Then, per the 2026-10-08 plan:** concurrent MCP connection setup → hook interface + tracing hook →
+>   sandboxed shell (OS sandbox or an srt-wrapped / sandbox-exec-wrapped shell MCP server such as
+>   `tumf/mcp-shell-server`) → headless mode. Deferred: dependency hardening (`DECISIONS.md` item 10).
 
 > **Active work moved to gen 8 on 2026-09-25:**
 > `mvp2/learn/chat_w_history_context_session_mcp_tools.go` + `..._mcp_tools_test.go` (tool
