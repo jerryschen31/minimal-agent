@@ -28,7 +28,7 @@ type promptReader interface {
 func newPromptReader(ctx context.Context, in io.Reader, out io.Writer) promptReader {
 	// if this is a chat terminal, use the ttyReader which supports multiline input and history
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		return newTTYReader()
+		return newTTYReaderWith(nil, out)
 	} else {
 		// otherwise this is a non-terminal input (pipe or file)
 		return newPlainReader(ctx, in, out)
