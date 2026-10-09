@@ -1339,7 +1339,8 @@ three were answered literally "deferred"; the last two were answered "for debugg
 switch/remove later". Comments that were fixed in the PR are not listed here (see the entries on
 `/config` printing, `ChatMessage` JSON tags and `read_file` confinement above). Item 6 is different: it
 is a limitation introduced on purpose by the PR #7 redirect fix and deferred by Jerry's own decision.
-Item 7 came out of the PR #7 `env` fix, and item 10 is a topic Jerry deferred outside any review.
+Item 7 came out of the PR #7 `env` fix, item 10 is a topic Jerry deferred outside any review, and item 11
+is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
 
 1. **`headless` and `oneshot` modes are advertised but not implemented** (`agent/agent.go`, `RunAgent`).
    - *Copilot:* the parser and usage text accept both modes, but every such run reaches the
@@ -1526,6 +1527,28 @@ Item 7 came out of the PR #7 `env` fix, and item 10 is a topic Jerry deferred ou
     - *Revisit:* before builds must work offline or without outside services (CI in a locked-down
       network, a release), if a dependency is retracted, deprecated or removed from the proxy, or when the
       module graph grows noticeably (e.g. a sandbox or tracing dependency).
+
+11. **Prompt-reader errors other than EOF are swallowed** (`agent/chat.go`, `runChatLoop`; `agent/agent.go`,
+    `RunAgent`; PR #9, deferred by Jerry 2026-10-09).
+    - *Copilot:* all prompt-reader errors are silently treated as normal EOF. The TTY editor can return
+      terminal initialization/runtime failures, so the process then exits successfully without explaining
+      why the REPL disappeared. Propagate non-EOF, non-cancellation errors from `runChatLoop` through
+      `RunAgent`; this requires updating both function return paths.
+    - *Today:* `runChatLoop` returns on *any* `ReadPrompt` error (`if err != nil { return }`) and has no
+      return value; `RunAgent` then returns `nil`. So a real failure (e.g. go-multiline-ny failing to put the
+      terminal into raw mode or to read its size: `multiline.init: ...`, `readline.Editor.Tty.Open: ...`, or a
+      read error on a pipe) looks exactly like Ctrl+D: the agent quits quietly with status 0. The same
+      happens if `newTTYReaderWith`'s ignored `BindKey` error was real, since `Read` reports it again.
+    - *Fix:* give `runChatLoop` an `error` return. On a `ReadPrompt` error: `io.EOF` → `return nil` (Ctrl+D /
+      end of input); `ctx.Err() != nil` / `errors.Is(err, context.Canceled)` → `return nil` (SIGTERM or quit);
+      anything else → `return fmt.Errorf("reading prompt: %w", err)`. `RunAgent` returns
+      `runChatLoop(...)` instead of `nil`; `main` already prints a non-cancel error from `RunAgent`. Tests:
+      a fake `promptReader` (or an `auto.Pilot` whose `OnGetKey` returns an error) makes `runChatLoop` return
+      that error; `io.EOF` and a cancelled ctx still return `nil`.
+    - *Related:* item 3. Once the error reaches `main`, the process still exits 0 until `main` exits
+      non-zero on a run error, so do both together for the full fix.
+    - *Revisit:* together with item 3 (before headless/oneshot), or as soon as an unexplained quit of the
+      REPL is seen.
 
 ---
 
