@@ -1045,9 +1045,8 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   default is the reverse). Ctrl+D on an empty prompt returns `io.EOF` and quits.
 - **Ctrl+C at the prompt clears the prompt, it does not quit** (Jerry, 2026-10-08). The editor returns
   `readline.CtrlC`; the terminal reader discards the input and reads again, so the chat loop never sees
-  it. Ctrl+C *during a turn* still cancels the program-wide context and quits (option A in "Chat loop and
-  Ctrl+C"), so Ctrl+C now means different things at the prompt and mid-turn. Option B (Ctrl+C cancels
-  only the current turn and returns to `>`) would make it consistent: "abandon what's happening now".
+  it. Ctrl+C *during a turn* cancels only the current turn and returns to a fresh prompt, so Ctrl+C
+  consistently means "abandon what's happening now".
   Quit is Ctrl+D, `/exit` or `/quit` (`/quit` added as an alias, 2026-10-08); Ctrl+C never quits at the
   prompt, even when the prompt is empty.
 - **Rejected:**
