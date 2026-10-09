@@ -86,7 +86,9 @@ func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error) {
 			return "", err // Ctrl+D on an empty prompt arrives as io.EOF, which the loop treats as quit
 		}
 		text := strings.Join(lines, "\n")
-		r.history.Add(text)
+		if strings.TrimSpace(text) != "" {
+			r.history.Add(text)
+		}
 		return text, nil
 	}
 }
