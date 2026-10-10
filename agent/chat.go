@@ -1,9 +1,10 @@
 package agent
 
 import (
-	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -27,7 +28,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// parse slash commands
 	if strings.HasPrefix(lineFirst, "/") {
 		switch lineFirst {
-		case "/exit":
+		case "/exit", "/quit":
 			return true
 		case "/clear":
 			cs.MsgContext.Clear()
@@ -35,6 +36,10 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/summary", "/summarize":
 			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.Provider, msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
+					return false
+				}
 				fmt.Fprintln(cs.OutBuffer, "[error] Summarization error:", err)
 				return false
 			}
@@ -48,6 +53,10 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...")
 			summaryMsg, err := contextwindow.CompactChatContext(ctx, cs.MsgContext, cs.Provider, strings.TrimSpace(lineRest))
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
+					return false
+				}
 				fmt.Fprintln(cs.OutBuffer, "[error] Compaction error:", err)
 				return false
 			}
@@ -75,6 +84,10 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
 	turnMsgs, err := reActLoop(ctx, cs, msgContext, userMsg)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn; nothing is added to memory
+			return false
+		}
 		fmt.Fprintln(cs.OutBuffer, "[error] ReAct loop error:", err)
 		return false
 	}
@@ -83,7 +96,11 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	cs.MsgHistory.Append(turnMsgs)
 	cs.MsgContext.AddMessages(turnMsgs)
 
-	// check if the chat history has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
+	return false
+}
+
+// check if the context has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
+func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
 		cs.MsgContext.CompactWG.Add(1) // must be here synchronously BEFORE we enter the goroutine
 		go func() {
@@ -96,49 +113,66 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction complete.")
 		}()
 	}
-	return false
 }
 
 // ***********************************************************//
 // Run loop for handling chat session
 // ***********************************************************//
 
-func runChatLoop(ctx context.Context, cs *ChatSession) {
-	lines := make(chan string)
-
-	go func() {
-		defer close(lines)
-		r := bufio.NewReader(cs.InBuffer)
-		// this loops until a cancel signal is received
-		for {
-			lineRead, err := r.ReadString('\n') // read a line of user input from the input buffer (blocking)
-			if lineRead != "" {
-				select {
-				case lines <- lineRead: // send read line to the lines channel
-				case <-ctx.Done():
-					return // context cancel signal closes ctx.Done() channel, which exits this goroutine immediately
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
+func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) {
+	reader := newPromptReader(ctx, cs.InBuffer, cs.OutBuffer)
 
 	for {
-		fmt.Fprintf(cs.OutBuffer, "\n> ")
-		select {
-		// waits for context to be canceled (which closes the ctx.Done() channel), or for a new line of user input from the lines channel
-		case <-ctx.Done():
+		line, err := reader.ReadPrompt(ctx)
+		if err != nil {
 			return
-		case line, ok := <-lines:
-			if !ok {
-				return
-			}
-			quitSignal := handleUserInput(ctx, cs, line)
-			if quitSignal {
-				return
-			}
 		}
+
+		// this is here to drain any stray Ctrl+C presses from the previous turn (e.g., the user gets impatient when canceling a turn and presses Ctrl+C a bunch of times; the 1-buffer channel absorbs that second press and ignores the rest)
+		discardStrayInterrupts(intsigChRecv)
+
+		// turnCtx is a cancellable context for the current turn (i.e. turn can be cancelled using Ctrl+C)
+		turnCtx, stop := createTurnWatcher(ctx, intsigChRecv)
+		quit := handleUserInput(turnCtx, cs, line)
+		// stop is called when a turn is done; it releases the watcher so it can't take a later interrupt.
+		stop()
+		if quit || ctx.Err() != nil {
+			return
+		}
+
+		// use non-interruptible root context; this way, interrupting a turn with Ctrl+C doesn't affect background compaction
+		maybeStartAutoCompaction(ctx, cs)
 	}
+}
+
+// drops stray Ctrl+C key presses left over from before this turn (e.g. a second press
+// after the previous turn was already cancelled), so it can't cancel the turn about to start
+func discardStrayInterrupts(interrupts <-chan os.Signal) {
+	select {
+	case <-interrupts:
+	default:
+	}
+}
+
+// createTurnWatcher starts a watcher goroutine and returns a child of the root agent context  (cancelled by SIGTERM or on quit) that can be cancelled when an interrupt (Ctrl+C) arrives.
+func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		select {
+		case <-interrupts:
+			cancel()
+		case <-done:
+		}
+	}()
+	stop := func() {
+		close(done)
+		cancel()
+		// [agent] wait until the watcher has really exited: if it hadn't reached its select yet, it could
+		// otherwise wake up later, find both channels ready, and (select picks at random) take a later Ctrl+C
+		<-exited
+	}
+	return ctx, stop
 }

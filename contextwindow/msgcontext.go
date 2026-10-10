@@ -14,7 +14,7 @@ import (
 
 const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
 const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
-const MaxContextWindow = 10          // maximum number of messages to keep in the sliding context window
+const MaxContextWindow = 50          // maximum number of messages to keep in the sliding context window
 const AutoCompactThresholdFrac = 0.9 // fraction threshold of the context window at which automatic compaction is triggered
 
 // Context for a chat session

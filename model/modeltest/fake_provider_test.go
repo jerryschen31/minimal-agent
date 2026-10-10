@@ -2,6 +2,7 @@ package modeltest
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -62,5 +63,60 @@ func Test_FakeProvider_NoScript_ReturnsReplyEveryCall(t *testing.T) {
 		if err != nil || got.Role != "assistant" || got.Content != "same" {
 			t.Fatalf("call %d: expected assistant %q, got (%+v, %v)", i+1, "same", got, err)
 		}
+	}
+}
+
+// - Verify a gated Chat blocks while the gate is closed, does not hold the mutex while blocked
+// (so a concurrent call, e.g. background compaction, isn't stuck behind it), and returns
+// ctx.Err() when cancelled
+func Test_FakeProvider_Gate_BlocksUntilCancelledThenReturnsCtxErr(t *testing.T) {
+	p := &FakeProvider{Reply: "ok", Gate: make(chan struct{}), Waiting: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := p.Chat(ctx, nil, nil)
+		errCh <- err
+	}()
+
+	<-p.Waiting // the call is now blocked on the gate
+	select {
+	case err := <-errCh:
+		t.Fatalf("expected Chat to block on the gate, it returned early with %v", err)
+	default:
+	}
+
+	// the mutex must not be held while blocked; if it were, this Lock would hang the test
+	p.mu.Lock()
+	calls := len(p.Calls)
+	p.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 recorded call while blocked, got %d", calls)
+	}
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled after cancel, got %v", err)
+	}
+}
+
+// - Verify closing the gate releases a blocked Chat, which then returns the normal reply
+func Test_FakeProvider_Gate_ClosingReleasesWithReply(t *testing.T) {
+	p := &FakeProvider{Reply: "released", Gate: make(chan struct{}), Waiting: make(chan struct{})}
+
+	type result struct {
+		msg string
+		err error
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		m, err := p.Chat(context.Background(), nil, nil)
+		resCh <- result{m.Content, err}
+	}()
+
+	<-p.Waiting
+	close(p.Gate)
+	if r := <-resCh; r.err != nil || r.msg != "released" {
+		t.Fatalf("expected (%q, nil) after the gate opened, got (%q, %v)", "released", r.msg, r.err)
 	}
 }
