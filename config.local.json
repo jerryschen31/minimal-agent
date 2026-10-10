@@ -7,6 +7,5 @@
   "systemPrompt": "You are a helpful assistant. Keep your responses concise and relevant.",
   "maxSteps": 10,
   "workDir": ".",
-  "memory": "in-memory",
-  "contextWindow": 10
+  "chatStoreType": "in-memory"
 }
