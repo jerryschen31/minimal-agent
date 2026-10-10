@@ -15,7 +15,7 @@ import (
 const ResponseTimeout = 5 * time.Minute
 
 type Provider interface {
-	Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error)
+	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
 
 type OpenAICompat struct {
