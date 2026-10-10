@@ -726,3 +726,19 @@ func Test_Unit_ConnectLocalMCP_NoEnv_StillInheritsParentEnvironment(t *testing.T
 		t.Errorf("expected the parent's variables to be inherited unchanged, child saw %v", got)
 	}
 }
+
+// - Verify MCP protocol logging wraps the transport only in debug mode; normal runs use it directly
+func Test_Unit_WithDebugLogging_OnlyWrapsInDebugMode(t *testing.T) {
+	base := &mcp.CommandTransport{}
+
+	if got := withDebugLogging(base, false); got != mcp.Transport(base) {
+		t.Errorf("debug off: expected the transport unchanged, got %T", got)
+	}
+	logged, ok := withDebugLogging(base, true).(*mcp.LoggingTransport)
+	if !ok {
+		t.Fatalf("debug on: expected *mcp.LoggingTransport, got %T", withDebugLogging(base, true))
+	}
+	if logged.Transport != mcp.Transport(base) || logged.Writer != os.Stderr {
+		t.Errorf("debug on: expected the original transport logged to stderr, got %+v", logged)
+	}
+}

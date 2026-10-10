@@ -3,6 +3,7 @@ package contextwindow
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -266,11 +267,11 @@ func CompactChatContext(ctx context.Context, chatctx *ChatContext, p model.Provi
 	}
 }
 
-// print the current chat context, just for debugging purposes - prints to the standard output (console)
-func DebugChatContext(msgContext []model.ChatMessage) {
-	fmt.Println("[debug] --- context window ---")
+// DebugChatContext prints the current chat context to w, for debugging (shown only with -debug / "debug": true)
+func DebugChatContext(w io.Writer, msgContext []model.ChatMessage) {
+	fmt.Fprintln(w, "[debug] --- context window ---")
 	for i, msg := range msgContext {
-		fmt.Printf("[%d] %s: %s\n", i, msg.Role, msg.Content)
+		fmt.Fprintf(w, "[%d] %s: %s\n", i, msg.Role, msg.Content)
 	}
-	fmt.Println("[debug] --- end ---")
+	fmt.Fprintln(w, "[debug] --- end ---")
 }

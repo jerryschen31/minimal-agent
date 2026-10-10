@@ -27,12 +27,19 @@ type promptReader interface {
 // initializes a new prompt reader instance, that reads user input keystroke by keystroke from a terminal (if this input is coming from a terminal) OR per-line from a non-terminal read stream (if input is coming from a pipe or a file)
 func newPromptReader(ctx context.Context, in io.Reader, out io.Writer) promptReader {
 	// if this is a chat terminal, use the ttyReader which supports multiline input and history
-	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+	if isTerminal(in) {
 		return newTTYReaderWith(nil, out)
 	} else {
 		// otherwise this is a non-terminal input (pipe or file)
 		return newPlainReader(ctx, in, out)
 	}
+}
+
+// isTerminal reports whether v (an input or output) is an *os.File connected to a terminal, rather than a
+// pipe, a file on disk, or an in-memory buffer
+func isTerminal(v any) bool {
+	f, ok := v.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
 }
 
 // ---- terminal: go-multiline-ny ----

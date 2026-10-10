@@ -85,6 +85,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	chatSession.ShowProgress = shouldShowProgress(cfg)
 	agent.session = chatSession
 
 	return nil
@@ -190,7 +191,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 		request2send := model.PrepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
 
 		// send the chat request to the LLM provider
-		response, err := cs.Provider.Chat(ctx, request2send, toolDefs)
+		response, err := chatWithProgress(ctx, cs, request2send, toolDefs) // prints thinking dots in chat mode
 		if err != nil {
 			if !errors.Is(err, context.Canceled) { // [agent] a Ctrl+C cancel is reported once, as [interrupted], by the caller
 				fmt.Fprintln(cs.OutBuffer, "error:", err)
