@@ -5,14 +5,16 @@
 
 Building a minimal AI agent harness that is easily extensible with third-party tools and harness components. Written in Go.
 
+To clone this repo and start the agent:
+
 ```sh
 git clone https://github.com/jerryschen31/minimal-agent.git
 cd minimal-agent
-export OPENAI_API_KEY=...   # default config uses OpenAI; see config.local.json for an example using a local model
-go run .                    # starts the chat
+go run .
 ```
-
 `go run . -h` lists all of the flags.
+
+In your environment, make sure you configure your API keys for your LLM of choice, for remote-hosted models. See `config.local.json` for an example using a local model.
 
 [Running thoughts](THOUGHTS.md)<br>
 [Running decisions](DECISIONS.md)<br>
