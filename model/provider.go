@@ -18,12 +18,6 @@ type Provider interface {
 	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
 
-type OpenAICompat struct {
-	BaseURL string
-	Model   string
-	ApiKey  string // empty for Ollama
-}
-
 // ChatMessage is sent to the provider as-is, so only the fields the chat completions API defines
 // (role, content, tool_calls, tool_call_id) have JSON keys. ID, Timestamp and Type are the agent's own
 // bookkeeping (compaction matches messages by ID), so they are tagged `json:"-"`: never sent, and never
