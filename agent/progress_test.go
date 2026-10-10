@@ -18,7 +18,7 @@ import (
 func Test_StartProgressDots_PrintsDotsThenEndsLine(t *testing.T) {
 	out := &syncBuffer{}
 	stop := startProgressDots(out, 10*time.Millisecond)
-	time.Sleep(55 * time.Millisecond) // about 5 ticks
+	waitForOutput(t, out, "..") // wait for two ticks to actually happen, not for a fixed time
 	stop()
 
 	if !regexp.MustCompile(`^\.{2,}\n$`).MatchString(out.String()) {
@@ -41,7 +41,7 @@ func Test_StartProgressDots_StopBeforeFirstTick_PrintsNothing(t *testing.T) {
 func Test_StartProgressDots_NothingPrintedAfterStop(t *testing.T) {
 	out := &syncBuffer{}
 	stop := startProgressDots(out, 5*time.Millisecond)
-	time.Sleep(20 * time.Millisecond)
+	waitForOutput(t, out, ".") // make sure the ticker is really running before stopping it
 	stop()
 	afterStop := out.String()
 	time.Sleep(30 * time.Millisecond) // several more intervals
@@ -81,7 +81,7 @@ func Test_ChatWithProgress_ShowProgress_PrintsDotsWhileWaiting(t *testing.T) {
 	}()
 
 	receiveOrFail(t, fx.Provider.Waiting, "the model call to start")
-	time.Sleep(45 * time.Millisecond) // the model is "thinking"
+	waitForOutput(t, out, "..") // the model is "thinking": hold it until dots have been printed
 	close(fx.Provider.Gate)
 	res := <-resCh
 
@@ -112,7 +112,7 @@ func Test_ChatWithProgress_Cancelled_EndsDotLine(t *testing.T) {
 	}()
 
 	receiveOrFail(t, fx.Provider.Waiting, "the model call to start")
-	time.Sleep(35 * time.Millisecond)
+	waitForOutput(t, out, ".") // cancel only once a dot line has been started
 	cancel()
 
 	if err := <-errCh; !errors.Is(err, context.Canceled) {

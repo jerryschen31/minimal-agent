@@ -152,7 +152,10 @@ func (o origin) String() string {
 const maxRedirects = 10 // net/http's default limit; a custom CheckRedirect replaces that default, so it is restated here
 
 // newRemoteHTTPClient builds the HTTP client for a remote MCP server. Every request gets the configured
-// headers (e.g. a Bearer token), but only the headers' own server may ever receive them (no redirects).
+// headers (e.g. a Bearer token), and only the configured origin (scheme + host + port) may ever receive them:
+// redirects within that origin are followed (up to maxRedirects, keeping headers and, for 307/308, the
+// body); a redirect to any other origin, including http -> https, is refused. headerTransport enforces the
+// same origin as a second layer.
 func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -162,7 +165,7 @@ func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Clie
 		return nil, fmt.Errorf("invalid url %q: want an absolute URL such as https://host/mcp", endpoint)
 	}
 	allowed := originOf(u)
-	// return transport with headers included, block redirects
+	// return transport with headers included; follow same-origin redirects only, refuse cross-origin ones
 	return &http.Client{
 		Transport: &headerTransport{base: http.DefaultTransport, headers: headers, origin: allowed},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
