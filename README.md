@@ -1,6 +1,20 @@
+[![Last commit](https://img.shields.io/github/last-commit/jerryschen31/minimal-agent)](https://github.com/jerryschen31/minimal-agent/commits)
+[![Go](https://img.shields.io/badge/Go-%E2%89%A5%201.26.3-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
+
 # minimal-agent
 
 Building a minimal AI agent harness that is easily extensible with third-party tools and harness components. Written in Go.
+
+To clone this repo and start the agent:
+
+```sh
+git clone https://github.com/jerryschen31/minimal-agent.git
+cd minimal-agent
+go run .
+```
+`go run . -h` lists all of the flags.
+
+In your environment, make sure you configure your API keys for your LLM of choice, for remote-hosted models. See `config.local.json` for an example using a local model.
 
 [Running thoughts](THOUGHTS.md)<br>
 [Running decisions](DECISIONS.md)<br>
