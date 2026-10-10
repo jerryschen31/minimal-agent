@@ -21,6 +21,10 @@ type ChatSession struct {
 	UserID     string
 	InBuffer   io.Reader
 	OutBuffer  io.Writer
+
+	// ShowProgress prints "thinking" dots while waiting for the model (see chatWithProgress).
+	// Set by SetupAgent only for chat mode on a terminal; tests leave it off.
+	ShowProgress bool
 }
 
 func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, cfg config.Config) (*ChatSession, error) {

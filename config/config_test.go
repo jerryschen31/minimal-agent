@@ -385,3 +385,52 @@ func Test_Unit_PrintConfig_ShowsWorkDir(t *testing.T) {
 		t.Errorf("expected the workDir to be printed, got:\n%s", out.String())
 	}
 }
+
+// - Verify debug is off by default, and "debug": true in a config file is applied without a warning
+func Test_Unit_SetDefaultConfig_Debug_AppliedWithoutWarning(t *testing.T) {
+	if GetDefaultConfig().Debug {
+		t.Fatalf("expected debug to be off by default")
+	}
+	path := writeTempFile(t, "config.json", []byte(`{"debug": true}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if !cfg.Debug {
+		t.Errorf("expected Debug to be true")
+	}
+	if out != "" {
+		t.Errorf("expected no warnings, got %q", out)
+	}
+}
+
+// - Verify a quoted "debug": "true" is rejected with a parse error rather than silently ignored
+// (JSON booleans are unquoted)
+func Test_Unit_SetDefaultConfig_Debug_StringValue_ReturnsError(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"debug": "true"}`))
+
+	var err error
+	captureStdout(t, func() { _, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err == nil || !strings.Contains(err.Error(), "debug") {
+		t.Errorf("expected a parse error naming the debug field, got %v", err)
+	}
+}
+
+// - Verify /config shows whether debug mode is on
+func Test_Unit_PrintConfig_ShowsDebug(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.Debug = true
+
+	PrintConfig(cfg)
+
+	if !strings.Contains(out.String(), "debug:         true") {
+		t.Errorf("expected debug to be printed, got:\n%s", out.String())
+	}
+}

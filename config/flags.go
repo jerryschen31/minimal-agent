@@ -25,6 +25,7 @@ type Flags struct {
 	Mission   *string
 	MaxSteps  *int
 	MaxTokens *int
+	Debug     *bool
 }
 
 // ParseFlags parses args (os.Args[1:]) into Flags and validates each value that was given.
@@ -40,7 +41,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 
 	var (
 		configPath, mode, query, queryShort, model, mission, workDir string
-		asJSON                                                       bool
+		asJSON, debug                                                bool
 		maxSteps, maxTokens                                          int
 	)
 	fs.StringVar(&configPath, "config", "", "")
@@ -53,6 +54,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.StringVar(&workDir, "workdir", "", "")
 	fs.IntVar(&maxSteps, "maxsteps", 0, "")
 	fs.IntVar(&maxTokens, "maxtokens", 0, "")
+	fs.BoolVar(&debug, "debug", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		return Flags{}, err
@@ -105,6 +107,11 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	// --json
 	if set["json"] {
 		f.JSON = new(asJSON)
+	}
+
+	// -debug (also accepts -debug=false, so a flag can switch off "debug": true from the config file)
+	if set["debug"] {
+		f.Debug = new(debug)
 	}
 
 	// -maxsteps
@@ -215,6 +222,7 @@ func printUsage(w io.Writer) {
   -workdir <dir>         Directory the read_file tool may read from, with its subdirectories (default ".")
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
+  -debug                 Print the context window each turn and log MCP protocol messages to stderr
 `)
 }
 
@@ -238,6 +246,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.MaxTokens != nil {
 		cfg.MaxTokens = *f.MaxTokens
+	}
+	if f.Debug != nil {
+		cfg.Debug = *f.Debug
 	}
 	return cfg
 }

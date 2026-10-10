@@ -36,6 +36,7 @@ type Config struct {
 	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
+	Debug        bool   `json:"debug"`       // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
 	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
@@ -227,6 +228,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
+	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)

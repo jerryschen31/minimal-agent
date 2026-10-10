@@ -104,9 +104,13 @@ several sessions have worked well; keep doing it this way.
 > - **Still to do (manual, Jerry):** `go run .` pass: editing keys, Ctrl+J / Alt+Enter, Option+arrows,
 >   Ctrl+C at the prompt and mid-turn and during `/compact`, `/quit`, Ctrl+D; `kill <pid>` at `>` (known
 >   gap: the editor probably doesn't notice SIGTERM until a key; see the line-editor entry).
-> - **Next small fixes:** drop `mcp.LoggingTransport` (the `read error: EOF` on exit; deferred item 4);
->   auto-compaction prints "complete" after an error (item 2); background output vs. the editor in raw
->   mode can garble the prompt line (item 8).
+> - **Done 2026-10-09:** `-debug` flag / `"debug": true` config option. The per-turn context dump and the MCP
+>   protocol log (`LoggingTransport`) are shown only in debug mode (DECISIONS.md "Debug output behind
+>   `-debug`"; resolves deferred item 5 and most of item 4).
+> - **Done 2026-10-09:** "thinking" dots every 2s while a chat turn waits for the model (`agent/progress.go`;
+>   DECISIONS.md "Thinking dots"); only in chat mode on a terminal.
+> - **Next small fixes:** auto-compaction prints "complete" after an error (item 2); background output vs.
+>   the editor in raw mode can garble the prompt line (item 8); prompt-reader errors are swallowed (item 11).
 > - **Then, per the 2026-10-08 plan:** concurrent MCP connection setup → hook interface + tracing hook →
 >   sandboxed shell (OS sandbox or an srt-wrapped / sandbox-exec-wrapped shell MCP server such as
 >   `tumf/mcp-shell-server`) → headless mode. Deferred: dependency hardening (`DECISIONS.md` item 10).

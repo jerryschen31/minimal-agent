@@ -72,3 +72,45 @@ func Test_Unit_FlagsOverlay_WorkDir(t *testing.T) {
 		t.Errorf("expected -workdir to win over the config file, got %q", got)
 	}
 }
+
+// - Verify -debug is nil when not passed, true when passed, and false with -debug=false (so a flag
+// can switch off "debug": true from the config file)
+func Test_Unit_ParseFlags_Debug(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want *bool
+	}{
+		{"not passed", nil, nil},
+		{"-debug", []string{"-debug"}, new(true)},
+		{"--debug", []string{"--debug"}, new(true)},
+		{"-debug=false", []string{"-debug=false"}, new(false)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flags, err := ParseFlags(tc.args, io.Discard)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			switch {
+			case tc.want == nil && flags.Debug != nil:
+				t.Errorf("expected nil Debug, got %v", *flags.Debug)
+			case tc.want != nil && (flags.Debug == nil || *flags.Debug != *tc.want):
+				t.Errorf("expected Debug %v, got %v", *tc.want, flags.Debug)
+			}
+		})
+	}
+}
+
+// - Verify FlagsOverlay lets -debug override the config value, and leaves it alone when not passed
+func Test_Unit_FlagsOverlay_Debug(t *testing.T) {
+	cfg := GetDefaultConfig()
+	cfg.Debug = true // as if "debug": true came from the config file
+
+	if !FlagsOverlay(cfg, Flags{}).Debug {
+		t.Errorf("expected Debug to stay true when -debug is not passed")
+	}
+	if FlagsOverlay(cfg, Flags{Debug: new(false)}).Debug {
+		t.Errorf("expected -debug=false to win over the config file")
+	}
+}
