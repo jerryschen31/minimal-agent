@@ -1075,6 +1075,53 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   (see "Chat loop and Ctrl+C" above); the reader goroutine currently reads one line ahead
   while a turn runs, which a raw-mode editor must not do.
 
+### Debug output behind `-debug` / `"debug": true` (2026-10-09)
+
+- **Status: active.** Jerry: the per-turn context dump and the MCP startup/protocol log were printed on every
+  run; put them behind a debug switch.
+- **Decision:** `Config.Debug` (`"debug": true` in a config file; a JSON boolean, so `"debug": "true"` is a
+  parse error, which a test checks) and a `-debug` flag. Precedence as for every other setting: flag >
+  config file > default (`false`); `-debug=false` switches off `"debug": true` from the file. Shown by
+  `/config`.
+- **Gated by it:**
+  - the `[debug] --- context window ---` dump in `handleUserInput`. `DebugChatContext` now takes an
+    `io.Writer` and is given `cs.OutBuffer`, instead of printing to process stdout (Deferred item 5).
+  - `mcp.LoggingTransport` on both MCP transports, through `withDebugLogging(transport, debug)` in
+    `mcpconnect/conn.go`. Normal runs use the transports directly (Deferred item 4).
+- **Not gated (conversation output, always shown):** `[assistant] ...`, `[tool] Tool called: ...`,
+  `[system]`/`[error]`/`[interrupted]` lines, the welcome text and "Using model ...". MCP warnings
+  (skipped SSE server, a tool that failed to load) still go to stderr.
+- **Trade-off:** one switch for two different kinds of output (a chat-context dump on stdout and a protocol
+  log on stderr). Finer switches (e.g. `-debug=context,mcp`) were not needed yet; the tracing hook planned
+  next is where structured, selective output belongs.
+- **Tests:** flag parsing (`-debug`, `--debug`, `-debug=false`, not passed), `FlagsOverlay`, the config key
+  (applied without warning; quoted string rejected), `/config` output, the dump only in debug mode, and
+  `withDebugLogging` wrapping only in debug mode.
+
+### "Thinking" dots while waiting for the model (2026-10-09)
+
+- **Status: active.** In chat mode, a `.` is printed every 2 seconds while a turn waits for the model; the
+  line is ended before `[assistant] ...` (or `[tool] ...`, `[interrupted]`).
+- **Where:** `agent/progress.go`. `reActLoop`'s model call is `chatWithProgress(ctx, cs, ...)`, which starts
+  `startProgressDots` only when `cs.ShowProgress` is set; the loops themselves contain no dot code.
+  `ShowProgress` is set in `SetupAgent` by `shouldShowProgress(cfg)`: chat mode **and** output is a real
+  terminal (`isTerminal(cfg.OutBuffer)`, the same helper `newPromptReader` uses for input).
+- **Only around the turn's model calls, not every provider call.** A wrapper around the whole `Provider`
+  would also show dots for background auto-compaction, printing into the prompt while the user types.
+  `/compact` and `/summary` (foreground, also slow) don't show dots yet; adding `chatWithProgress`-style
+  calls there is the same two lines.
+- **Never in headless/oneshot (JSON or machine-read output), pipes, files or tests** (`ShowProgress` is
+  off unless set by `SetupAgent`; the test fixture never sets it).
+- **`stop()` waits for the dot goroutine to exit** (same pattern as `createTurnWatcher`), so a tick
+  firing as the reply arrives can't print a dot after it. Stopping before the first tick prints nothing.
+- **Dots on their own line rather than a spinner overwritten in place (`\r` + `|/-\`):** a spinner breaks as
+  soon as anything else prints mid-turn (`[tool]` lines, background compaction messages).
+- **Tests (`agent/progress_test.go`):** dots then a newline; nothing if stopped before the first tick;
+  nothing after stop; `chatWithProgress` with a gated `FakeProvider` (dots while waiting; line ended on
+  Ctrl+C; nothing when `ShowProgress` is off); `shouldShowProgress` false for buffers, files and
+  non-chat modes. `progressDotInterval` is a variable so tests can use 10ms. Removing the newline, the wait
+  in `stop`, or the `ShowProgress` check each makes a test fail (10/10 runs).
+
 ### Test layout after the migration (2026-10-07)
 
 - **Status: active.** The single 2,680-line `mvp2/learn/chat_w_history_context_session_mcp_tools_test.go`
@@ -1392,6 +1439,10 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
      Copilot's fix: use the underlying transports directly in normal runs and require an explicit opt-in
      for protocol logging. It is the same fix as above, so one `debug` setting covers both transports.
    - *Revisit:* before using a strict remote MCP server for real work, or when adding a debug setting.
+   - **Mostly resolved 2026-10-09** by the `-debug` switch (see "Debug output behind `-debug`"): normal runs
+     use both transports directly, so the protocol log, the `read error: EOF` on exit and the hidden
+     `sessionUpdated` hook are gone. **Still open in debug mode:** with `-debug`, the remote transport is
+     wrapped again and the hook problem returns; logging at the `RoundTripper` layer would fix that too.
 
 5. **`DebugChatContext` dumps the whole conversation to stdout every turn** (`agent/chat.go`,
    `handleUserInput`).
@@ -1405,6 +1456,8 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
    - *Fix:* delete it, or behind a debug flag write to `cs.OutBuffer` (or stderr).
    - *Revisit:* before `--json` / oneshot output or before sharing terminal logs; together with item 4's
      debug setting, one `debug` switch could cover both.
+   - **Resolved 2026-10-09** (see "Debug output behind `-debug`"): printed only in debug mode, and to
+     `cs.OutBuffer` (`DebugChatContext` now takes a writer) instead of process stdout.
 
 
 6. **`http` -> `https` redirects from a remote MCP server are rejected** (`mcpconnect/conn.go`,

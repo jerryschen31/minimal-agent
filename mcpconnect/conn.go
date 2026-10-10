@@ -79,22 +79,13 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	cmd.Stderr = os.Stderr
 	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
 	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.
-	// With no "env" block cmd.Env stays nil, which also means "inherit everything".
-	// TODO(deferred, see DECISIONS.md § Deferred for Later, item 7): (a) reject empty / "="-containing env keys in
-	// TransportType, (b) "${VAR}" values are passed literally, (c) the child inherits ALL of our environment,
-	// including the LLM provider's API key (cfg.ApiKeyName) - strip it or switch to a safe-list.
 	if len(config.Env) > 0 {
 		cmd.Env = os.Environ()
 		for _, key := range slices.Sorted(maps.Keys(config.Env)) { // sorted so the child's environment is repeatable
 			cmd.Env = append(cmd.Env, key+"="+config.Env[key])
 		}
 	}
-	// transport := &mcp.CommandTransport{Command: cmd}
-	// log all transport messages - just for debugging
-	transport := &mcp.LoggingTransport{
-		Transport: &mcp.CommandTransport{Command: cmd},
-		Writer:    os.Stderr,
-	}
+	transport := withDebugLogging(&mcp.CommandTransport{Command: cmd}, cfg.Debug)
 
 	// Create client-server connection (session)
 	session, err := client.Connect(ctx, transport, nil)
@@ -103,6 +94,14 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	}
 
 	return &McpConnection{Name: name, Config: config, Session: session}, nil
+}
+
+// withDebugLogging wraps the transport so every JSON-RPC message is written to stderr, but only in debug mode.
+func withDebugLogging(t mcp.Transport, debug bool) mcp.Transport {
+	if !debug {
+		return t
+	}
+	return &mcp.LoggingTransport{Transport: t, Writer: os.Stderr}
 }
 
 // connects to a remote MCP server
@@ -115,14 +114,11 @@ func connectRemoteMCPServer(ctx context.Context, name string, config config.McpS
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
 
-	transport := &mcp.LoggingTransport{
-		Transport: &mcp.StreamableClientTransport{
-			Endpoint:             config.URL,
-			HTTPClient:           httpClient,
-			DisableStandaloneSSE: true, // [agent] see DECISIONS.md: no server push needed
-		},
-		Writer: os.Stderr,
-	}
+	transport := withDebugLogging(&mcp.StreamableClientTransport{
+		Endpoint:             config.URL,
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true, // standalone SSE via initial GET request to MCP server has been deprecated
+	}, cfg.Debug)
 
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
@@ -131,9 +127,9 @@ func connectRemoteMCPServer(ctx context.Context, name string, config config.McpS
 	return &McpConnection{Name: name, Config: config, Session: session}, nil
 }
 
-// origin identifies where a URL points: scheme, lower-cased host and port (default ports filled in).
+// origin identifies where a URL points: (1) scheme, (2) lower-cased host and (3) port (default ports filled in).
 // Two URLs are the same origin only if all three match, which is stricter than net/http's own redirect
-// rule (it compares host names only, so a redirect to another port, or from https to http, keeps the token).
+// rule, where same host name but different port or scheme (https<->http) is considered same origin)
 type origin struct{ scheme, host, port string }
 
 func originOf(u *url.URL) origin {
@@ -156,10 +152,7 @@ func (o origin) String() string {
 const maxRedirects = 10 // net/http's default limit; a custom CheckRedirect replaces that default, so it is restated here
 
 // newRemoteHTTPClient builds the HTTP client for a remote MCP server. Every request gets the configured
-// headers (e.g. a Bearer token), but only the headers' own server may ever receive them: a redirect to a
-// different origin is refused outright, because following it would replay the credentials, the session
-// id and (on a 307/308) the request body, which holds tool arguments, to whoever the server named.
-// Redirects within the configured origin (a trailing-slash or path change) are followed normally.
+// headers (e.g. a Bearer token), but only the headers' own server may ever receive them (no redirects).
 func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -169,6 +162,7 @@ func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Clie
 		return nil, fmt.Errorf("invalid url %q: want an absolute URL such as https://host/mcp", endpoint)
 	}
 	allowed := originOf(u)
+	// return transport with headers included, block redirects
 	return &http.Client{
 		Transport: &headerTransport{base: http.DefaultTransport, headers: headers, origin: allowed},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -185,9 +179,6 @@ func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Clie
 
 // headerTransport adds fixed headers (e.g. Authorization) to every outgoing request to its origin.
 // this is needed because the request shape in Go MCP SDK does not include a headers field, so we need to manually add it to each request
-// It runs on every hop of a redirect chain, so it also refuses any request to a different origin: that is
-// the second line of defence behind the client's CheckRedirect, and keeps the credentials safe even if the
-// redirect policy is later changed or the transport is reused.
 type headerTransport struct {
 	base    http.RoundTripper
 	headers map[string]string

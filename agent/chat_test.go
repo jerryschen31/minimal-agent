@@ -436,3 +436,19 @@ func Test_CreateTurnWatcher_ParentCancelCancelsTurn(t *testing.T) {
 	cancelRoot()
 	receiveOrFail(t, turnCtx.Done(), "the turn context to follow its parent")
 }
+
+// - Verify the per-turn context-window dump is printed only in debug mode, and goes to the session's
+// output (not process stdout)
+func Test_HandleUserInput_ContextDump_OnlyInDebugMode(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		fx := newChatSessionFixture(t, 10, 100)
+		fx.Provider.Reply = "ok"
+		fx.Session.Config.Debug = debug
+
+		handleUserInput(context.Background(), fx.Session, "hello")
+
+		if got := strings.Contains(fx.Out.String(), "[debug] --- context window ---"); got != debug {
+			t.Errorf("debug=%v: expected context dump printed=%v, output:\n%s", debug, debug, fx.Out.String())
+		}
+	}
+}

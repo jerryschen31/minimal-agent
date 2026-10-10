@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
@@ -32,7 +33,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			return true
 		case "/clear":
 			cs.MsgContext.Clear()
-			fmt.Fprintln(cs.OutBuffer, "[system] Chat history cleared")
+			fmt.Fprintln(cs.OutBuffer, "[system] Chat context cleared")
 		case "/summary", "/summarize":
 			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.Provider, msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
@@ -68,15 +69,12 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Unrecognized command:", lineFirst)
 		}
 		return false
-		// user may have entered a prompt following the slash command (e.g., /clear <A brand new prompt>)
-		// line = strings.TrimSpace(lineRest)
-		// if line == "" {
-		// 	return false
-		// }
 	}
 
 	// [debug] print the current chat context before sending the prompt to the chat provider
-	contextwindow.DebugChatContext(msgContext)
+	if cs.Config.Debug {
+		contextwindow.DebugChatContext(cs.OutBuffer, msgContext)
+	}
 
 	// initial user message
 	userMsg := model.CreateChatMessage("user", "user", line, "", nil)
@@ -157,10 +155,13 @@ func discardStrayInterrupts(interrupts <-chan os.Signal) {
 // createTurnWatcher starts a watcher goroutine and returns a child of the root agent context  (cancelled by SIGTERM or on quit) that can be cancelled when an interrupt (Ctrl+C) arrives.
 func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	exited := make(chan struct{})
+	done := make(chan struct{}) // this channel is closed when the turn is done (i.e., stop() is called)
+
+	var watcher sync.WaitGroup
+	// watcher goroutine checks for either an interrupt (Ctrl+C) or the turn being done (done channel closed)
+	watcher.Add(1)
 	go func() {
-		defer close(exited)
+		defer watcher.Done()
 		select {
 		case <-interrupts:
 			cancel()
@@ -170,9 +171,7 @@ func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (contex
 	stop := func() {
 		close(done)
 		cancel()
-		// [agent] wait until the watcher has really exited: if it hadn't reached its select yet, it could
-		// otherwise wake up later, find both channels ready, and (select picks at random) take a later Ctrl+C
-		<-exited
+		watcher.Wait() // this waits until the watcher goroutine has exited
 	}
 	return ctx, stop
 }
