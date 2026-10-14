@@ -208,6 +208,13 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 
 ## Next up
 
+**▶ NEWEST (2026-10-13), branch `feat/autonomous-mode`: designing step 1, `-mode autonomous`.** A
+director LLM plus `objective.md` replaces the human prompter; still one agent instance. Step 2
+(orchestrator/worker over MCP) is parked. See `DECISIONS.md § Autonomous, orchestrator and worker
+modes`. **The full plan, with build slices, is `PLAN-autonomous-mode.md` (repo root); read it first.** The step 1 design is decided. **`§ Step 1: task-driven flow` is the current design**; the
+subsections before it are partly superseded. Nothing is open. Coding order: renames + `run() error` → `runTurn` refactor → objective parsing →
+director session (phases + tools) → autonomous loop + report.
+
 The test-suite build-out (previously the whole content of this section, tracked as sections C/D)
 is **done** — see "Current state" above. What's actually next, in Jerry's stated priority order:
 
