@@ -1,0 +1,15 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a research assistant. Use your tools; when finished, answer in plain text with what you found.",
+  "builtinTools": ["ReadFile", "WriteFile", "ListDir"],
+  "mcpServers": {
+    "deepwiki": { "url": "https://mcp.deepwiki.com/mcp" }
+  },
+  "director": {
+    "model": "gpt-4o-mini",
+    "maxTurnsPerTask": 3
+  }
+}

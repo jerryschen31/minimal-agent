@@ -208,7 +208,27 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 
 ## Next up
 
-**▶ NEWEST (2026-10-13), branch `feat/autonomous-mode`: designing step 1, `-mode autonomous`.** A
+**▶ NEWEST (2026-10-14, later still): `director.maxTasks` is a config key** (default 20). See `DECISIONS.md § mvp3
+reference build`, item 26.
+
+**▶ NEWEST (2026-10-14, later): the director can no longer stop a run by mistake with `task_failed`.**
+While the worker has turns left, the first `task_failed` of a task is refused. The instructions now
+explain that text written next to a tool call is never sent. See `DECISIONS.md § mvp3 reference build`,
+item 25.
+
+**▶ NEWEST (2026-10-14): `run_command` added to `mvp3/`.** It's one built-in tool (`"RunCommand"`) that runs
+`go`, `python3`, `python` or `pytest` in `workDir`. It isn't a shell, and it has a timeout, an output cap,
+a process-group kill and a filtered environment. It's also code execution with the user's permissions, not a sandbox. Also: the
+director is now told that a failed worker turn may still have changed files. See
+`DECISIONS.md § mvp3 reference build`, items 22–24 and the 2026-10-14 observations.
+
+**▶ NEWEST (2026-10-13, later): Claude built autonomous mode in full in `mvp3/`** (a separate Go module
+copied from the root agent), tested (`go test -race ./...` in `mvp3/`) and run for real five times with
+gpt-4o-mini and claude-haiku-5-5. Read `mvp3/README.md` and `DECISIONS.md § mvp3 reference build`
+(21 tweaks and decisions). Jerry's next step is his own build at the root, slice by slice, using mvp3 as
+the template; decide which mvp3 tweaks to adopt as each slice comes up.
+
+**(earlier the same day) branch `feat/autonomous-mode`: designing step 1, `-mode autonomous`.** A
 director LLM plus `objective.md` replaces the human prompter; still one agent instance. Step 2
 (orchestrator/worker over MCP) is parked. See `DECISIONS.md § Autonomous, orchestrator and worker
 modes`. **The full plan, with build slices, is `PLAN-autonomous-mode.md` (repo root); read it first.** The step 1 design is decided. **`§ Step 1: task-driven flow` is the current design**; the

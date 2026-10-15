@@ -1437,6 +1437,170 @@ section and the overall-only `maxTurns`. Their reasoning is kept above as the ea
   - turns used.
 - **Exit codes:** 0 = finished and success; 1 = anything else except an interrupt; 130 = interrupted.
 
+### mvp3 reference build: tweaks and extra decisions (2026-10-13)
+
+Claude built autonomous mode in full in `mvp3/` (a copy of the root agent, as its own Go module) at
+Jerry's request, as a run-through and template for his own build at the root, like `mvp1/` before
+mvp2. These are the places where the build differs from, or adds to, the decisions above. Items marked
+*(real run)* came from live runs with gpt-4o-mini and claude-haiku-5-5. Each is a candidate for the root
+build, not yet adopted there.
+
+**Flow and director**
+1. **Every accepted control tool ends the director's turn**, including `set_tasks` and `task_done` on a
+   non-last task. This drops D12 ("task_done's result names the next task and the reply is its
+   prompt"). *Why:* contexts are cleared per task, so the next task's first prompt should be written in
+   that task's fresh context, not at the end of the previous task's. *Cost:* one extra director call
+   per task.
+2. **The turn that writes a task's first prompt offers the director no tools at all** *(real run)*,
+   so its only possible answer is text. Offered file tools, gpt-4o-mini listed an empty directory until
+   it ran out of steps. Offered only `task_done`/`task_failed`, it called `task_failed` before the worker
+   had tried anything. Judging "is it done?" only makes sense after a worker turn.
+3. **The director's read-only tools are `read_file` and `list_dir`**, offered when planning, when judging
+   a worker turn, and in review.
+4. **The director's system prompt also lists the worker's tool names and the per-task turn limit**, so it
+   writes prompts the worker can carry out.
+5. **More built-in instruction text** *(real run)*: "say what to achieve and how it will be checked;
+   leave the content (code, prose) to the worker" (gpt-4o-mini was writing the code itself inside its
+   prompts), and "file tools are for checking results, not exploring".
+6. **`finish(success=true)` is refused while any task is not `done`.** This keeps the consistency check
+   from the superseded checklist design. The director gets an error and answers again.
+7. **Per-task limit handling:** when the director replies with a follow-up after the worker has used
+   all its turns, it gets one reminder (`NudgeLimit`). After that, the code fails the task itself
+   ("turn limit reached").
+8. **Reminders ("nudges"):** at most 2 (`maxNudges`) when the director replies with text in PLAN or
+   REVIEW, or with nothing in WORK. After that the run ends with `error`.
+9. **Per-task context clearing waits for any background compaction first** (`WaitForCompaction`, then
+   `Clear`). `ChatContext`'s generation counter would also discard a late compaction result.
+10. **Known limit:** a director *commentary* reply in WORK ("the task looks done") is sent to the worker
+    as a prompt, because the code can't tell it apart from an instruction. The instructions guard
+    against it; no code does.
+
+**Startup, config, CLI**
+
+11. **The unattended-tools warning lists every worker tool except `read_file`/`list_dir`**, not only MCP
+    tools, because `write_file`/`edit_file` change things too.
+12. **Autonomous mode checks at startup that the worker's and the director's API-key environment variables
+    are set**, instead of failing with a 401 halfway through a run.
+13. **`-directormodel` flag** (new). `-objective`, `-maxturnspertask`, `-timeout` and `-directormodel` are
+    refused with an explicit non-autonomous `-mode`. `--json` is refused for autonomous mode until it
+    exists. `"timeout"` can also be set in the config file.
+14. **The unknown-key warning also checks keys inside `"director"`** (e.g. `director.maxTurnPerTask`).
+15. **SIGTERM exits 143** (the open item in the plan). `main` became `run() int`, which also fixes
+    Deferred item 3 in mvp3: chat mode now exits 1 when setup fails, instead of 0.
+16. **`tools.ErrEndTurn` lives in `tools/`**, next to the `Tool` interface. `reActLoop` uses
+    `runToolCallEnd`, and tool calls after an ending tool in the same reply are skipped.
+
+**Objective parsing (details the plan left open)**
+
+17. Text before `# Objective` is ignored. Any other `#` heading is an error. Lines inside ``` fences
+    are never headings or bullets. `###` and deeper are body text. Non-bullet text under `## Tasks`
+    before the first bullet is kept as `TaskNotes` and shown to the director.
+
+**Output and model**
+
+18. **Output labels:** `ChatSession.Name` gives `[worker]`, `[worker:tool]`, `[director]` and
+    `[director:tool]` (chat keeps `[assistant]`/`[tool]`). An empty `[assistant]` line is no longer
+    printed when a reply contains only tool calls.
+19. **The report shows the error text only for reason `error`.** For `interrupted`/`timeout` it would
+    only say "context canceled".
+20. **An HTTP error from the OpenAI-compatible adapter includes the start of the response body**
+    (collapsed to one line), e.g. "the model `x` does not exist".
+
+**New built-in tools** (Jerry asked for write/edit)
+
+21. **`write_file`, `edit_file` and `list_dir`, opt-in through `builtinTools`** (`"WriteFile"`, `"EditFile"`,
+    `"ListDir"`; the default is still only `ReadFile`).
+    - All of them are confined to `workDir` with the same deny list as `read_file`.
+    - `write_file` can't use `resolve()` (the file may not exist yet), so it uses `resolveTarget`: it
+      resolves symlinks on the deepest existing ancestor, then checks the path is inside `workDir`. The
+      write itself goes through `os.Root` (`MkdirAll` + `WriteFile`), the second line of defence.
+    - `edit_file` replaces an exact `old_string` that must match once (or `replace_all`), and keeps the
+      file's permissions.
+    - There is a 1 MB cap. `read_file`'s open-and-check code became `readRegularFile`, shared with
+      `edit_file`.
+
+22. **`run_command`: one built-in tool that runs `go`, `python3`, `python` or `pytest`** (2026-10-14;
+    opt-in as `"RunCommand"`; `tools/builtin/runcommand.go`). Jerry asked for a way to run Go and Python
+    so coding tasks can be tested.
+    - **One combined tool rather than `run_go` + `run_python`:** one schema and one set of rules (timeout,
+      output cap, environment); adding a program is one line in `RunCommandPrograms`. The `command`
+      argument is a JSON-schema enum of the programs actually found on `PATH` when the tool is built,
+      each resolved to an absolute path then, so a file named `go` written into `workDir` can't be run instead.
+    - **Not a shell.** The program starts directly with an argument list (no `sh -c`), so pipes, `&&`,
+      `$VAR` and `$(...)` are literal text. Downside: the model can't chain commands, so `go mod init`
+      then `go test` is two calls.
+    - **Optional `dir`**, a subdirectory checked with `read_file`'s `resolve()` (inside `workDir`, not
+      deny-listed).
+    - **Limits:** 3-minute timeout per call; 32 KB of combined output, and the program is killed past
+      that; stdin is empty. It runs in its own process group, killed on timeout and again after it exits,
+      so a background child can't outlive the call (mvp1's `tool.Shell` design). A Ctrl+C of the turn
+      returns the turn's error, kept apart from the tool's own timeout.
+    - **A non-zero exit is a normal result** (output plus `[exit status N]`), not a tool error: a failing
+      test is information for the model.
+    - **The environment is rebuilt from an allowlist** (`RunCommandEnv`: `PATH`, `HOME`, Go and Python
+      settings), so `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` don't reach the program.
+    - **Honest downside: this is code execution, not a sandbox.** `go run`/`python3` run code the model
+      wrote, with the user's permissions: they can read outside `workDir` (the deny list doesn't apply),
+      use the network, delete files. That's why it is opt-in and appears in the unattended-tools warning.
+      Real isolation is a container/VM runner behind the same tool name (deferred).
+23. **The director is told what a failed worker turn means** (`WrapTurn`; *real run 2026-10-14*). A
+    failed turn (for example the worker hitting `maxSteps`) isn't added to the worker's memory and its
+    tool list is lost. The director used to read "failed … Tools called: none" as "nothing happened" and
+    called `task_failed`, although the worker's tests were in fact passing. The message now says files
+    the worker changed are kept, the worker won't remember the turn, and the director should check
+    the files before deciding. The "Tools called" line is left out for a failed turn rather than saying
+    "none".
+24. **The coding example configs set the worker's `maxSteps` to 20** (`config.openai.json`,
+    `config.claude-director.json`, `config.ollama.json`; the default stays 10). A write → test → fix →
+    test loop uses steps quickly. These configs also enable `RunCommand`, and `objective-fib.md` now has
+    the worker create the module and run `go run .`/`go test ./...` itself.
+
+25. **The director's control tools are guarded against "I meant to send the worker back"** (*real run
+    2026-10-14*, `run-20261014-0216.log`, 19-task transpiler with a Haiku director, stopped on task 2).
+    - **What happened:** Haiku wrote "I'm sending the worker back to fix that" *in the same message as a
+      `list_dir` call*. Text that comes with a tool call is never sent to the worker, because only a final
+      text-only reply is. Then, still in that turn, it called `task_failed` with the reason "this call was
+      an error; the task has not failed". The earlier "`task_done` with a note saying 'Not yet done'"
+      observation is the same confusion. (An outside diagnosis Jerry pasted caught the `task_failed`
+      misuse and the director's over-strict style review, but not the text-with-tool-call cause.)
+    - **Instructions now say:** your instruction is sent only when your turn ends with plain text and no
+      tool call, and text next to a tool call reaches no one. `task_failed` stops the whole run and is
+      never a way to ask for fixes. Judge work against what the task states and against real checks, not
+      unstated design preferences. The `task_done`/`task_failed` tool descriptions say the same.
+    - **Code guard:** while the worker still has turns, the **first `task_failed` of a task is refused**
+      with that explanation, as an ordinary tool error, so the director can recover in the same turn. A
+      second call is accepted. `Plan.WorkerTurnsLeft` is set by `runTask` before each director turn.
+      The refusal is **once per task, not once per director turn**. The per-turn version was tried first:
+      Haiku treated each refusal as "use up the turns first" and spent 3 extra worker turns before it
+      could give up. Per task, a real give-up (missing-input example) costs one extra director call and
+      0 extra worker turns.
+    - Not guarded in code: `task_done` with a "not done" note. Refusing `task_done` would add a director
+      call to every task; the instruction and description changes are meant to cover it.
+
+26. **`director.maxTasks` is configurable** (Jerry, 2026-10-14; default 20, must be positive; there's no flag).
+    It replaces the `director.MaxTasks` constant. The same limit applies to a given `## Tasks` list
+    (`ParseObjective(data, maxTasks)`, so a longer list is a bad objective file, exit 2) and to
+    `set_tasks` (`Plan.MaxTasks`, set by `NewPlan(tasks, maxTasks)`). The set_tasks description and the
+    PLAN-phase prompt show the configured number. Trade-off: a bigger limit makes the run longer
+    (the worst case is maxTasks × maxTurnsPerTask worker turns), and every director call costs more, because
+    the system prompt lists every task and its note.
+
+**Observed in real runs (not changed)**
+
+- A review can find a real defect and still report `success=true` with the defect listed under gaps
+  (glossary run: a duplicated bullet). The run can't go back and fix it. This is the deferred "turn gaps
+  into new tasks" round.
+- With small models, the objective's `## Context` decides success. The DeepWiki example failed until
+  Context said the repository is *not* in the working directory, because the worker tried `read_file`
+  on paths DeepWiki had mentioned.
+- *(2026-10-14, with `run_command`)* gpt-4o-mini as worker spent a whole task failing to fix its own
+  test (it compared `[]int` with `int`). The gpt-4o-mini director then gave wrong advice (it said the
+  last element of `fib(10)` is 55) and called `task_failed`. `go test` caught it honestly, which is the point.
+- *(same day)* With a Haiku director, the worker put `fib_test.go` in a stray `fib/` subdirectory. The director
+  noticed, but then called **`task_done` with a note that began "Not yet done"** instead of
+  sending a follow-up prompt. Possible fixes, not made: make the `task_done` description say "only when
+  the task is complete; to continue, reply with a prompt", or have review turn such notes into gaps.
+
 ## Deferred / open decisions
 
 - **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**
