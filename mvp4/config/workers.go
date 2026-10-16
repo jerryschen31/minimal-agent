@@ -106,6 +106,9 @@ func ApplyWorkerFile(cfg Config, path string) (Config, error) {
 		if lower == "mcpservers" {
 			cfg.McpServers = nil // replace, don't merge (and never write into the map the caller's config shares)
 		}
+		if lower == "builtintools" {
+			cfg.BuiltinTools = nil // likewise: decoding into the shared backing array would overwrite the caller's slice
+		}
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse worker type file %s: %w", path, err)

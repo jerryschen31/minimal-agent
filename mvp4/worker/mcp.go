@@ -82,6 +82,8 @@ func childArgs(cfg config.Config) []string {
 	}
 	if cfg.Debug {
 		args = append(args, "-debug")
+	} else if cfg.ConfigFile != "" {
+		args = append(args, "-debug=false") // the child reloads the file, which may say "debug": true
 	}
 	return args
 }
