@@ -1714,6 +1714,142 @@ while building, beyond the answers above:
     raw check: at end of input the server exits without answering requests still queued; harmless for the
     orchestrator, which waits for each reply.
 
+### Slice D (parallel tasks): answers decided 2026-10-16
+
+Plan: `PLAN-orchestrator-mode-parallel.md`. Jerry's answers to Claude's open questions:
+
+1. **One director conversation per running task** (Claude's recommendation; Jerry asked how they're coordinated).
+   The LLM API is stateless: every request carries its whole conversation, so N conversations are just N
+   independent requests to the same model endpoint and need no coordination in our code. They coordinate only
+   through shared Go state (the task list, status and notes, under a mutex), which is rebuilt into each
+   director's system prompt every turn. Downside: N× director cost, and a director doesn't see a sibling
+   task's live progress, only its status and notes. Rejected: one director in an event loop with a
+   `send_to_worker(task_id, …)` tool (bigger rewrite; one context mixing several tasks).
+2. **One shared workdir** for the MVP. The planning prompt tells the director to split tasks by file and use
+   `depends_on` for anything shared. Downside: races on shared files (`go.mod`) and concurrent builds. Declared
+   write sets + locks (2026-10-15 note above) or a worktree per task stay later options.
+3. **A failed task drains the round:** no new tasks start, running ones finish, then review. Rejected:
+   cancelling the siblings (cheaper, but throws away nearly-finished work).
+4. **Worker pool = N `-mode worker` child processes, each running one task at a time.** `localWorker` is
+   unchanged. Downside: N processes, each starting its own MCP tool servers.
+5. **Parallel only in orchestrator mode.** Autonomous mode stays "a director plus the in-process worker";
+   `maxParallel > 1` there is refused.
+6. **Shared board stays deferred.**
+7. **Built in `mvp4/`,** not a new copy: `maxParallel: 1` behaves exactly like the serial MVP.
+8. **Rate limits (429):** observations for now; retries with backoff later.
+9. **The director plans for the parallelism it has** (Jerry): with N > 1 workers, a director may shape the task
+   list differently (more independent tasks, fewer chains), so the PLAN and gap-planning prompts and the
+   `## Worker` section say how many tasks can run at once and that tasks without `depends_on` between them
+   may run at the same time in the shared workdir.
+
+**Second round (Jerry: "These five are fine", 2026-10-16):** Claude's recommendations from the plan's § 4:
+
+10. **Tasks given in `## Tasks` are chained** (each depends on the one before) when `maxParallel > 1`; with 1
+    they stay unchained, so the serial prompts and report are unchanged. A hand-written list can't run in
+    parallel yet.
+11. **One lock** for the plan and its tasks (in `director.Plan`), never held during an LLM or worker call.
+12. **All N workers start with the run**, so a child that can't start fails the run before any work.
+13. **Hard errors drain too** (see "As built", item c, for how this ended up).
+14. **The name is `director.maxParallel`** (a maximum), with a `-maxparallel` flag.
+
+**As built (Claude, 2026-10-16), beyond the answers above:**
+
+a. **Plan still owns the transitions:** `StartNext` returns nil when nothing can start (none ready, a task
+   failed, or the phase is over); `TaskDone` / `TaskFailed` act on a `TaskRun` (the per-task state: task,
+   worker turns left, the once-per-task `task_failed` refusal) and move to REVIEW only when no task is
+   running and none will start. So `Plan.Current` is gone, and the tools' schema didn't change.
+b. **A director conversation per task** (`newDirector`): its own memory and context, the shared provider. PLAN
+   and REVIEW keep `r.dir`.
+c. **Hard errors (a failed director turn) stop new tasks, wait for the running ones, then end the round
+   without a review**, as in the serial run. This differs from the plan's "drain, then review": a review after
+   a failed director turn (often a 401 or an outage) would usually fail too, and it keeps `maxParallel: 1`
+   identical to slices A–C. Easy to change if a real run shows otherwise.
+d. **Output:** a `lineWriter` per task prefixes `[t3 w2] ` and writes whole lines under one shared mutex; each
+   child's stderr goes through one with `[w2] ` (only when N > 1). Serial output is unchanged.
+e. **Report:** `PeakTasks` ("up to 2 tasks at once", shown when > 1). The "TASK t3 (3/5)" counter is taken when
+   the task starts.
+f. **Verified:** `go test -race ./...` (all earlier tests unchanged = the serial regression check); new
+   `agent/parallel_test.go` (two tasks provably overlap, a dependent task waits, drain after a failure,
+   Ctrl+C ends all tasks, `lineWriter`), director drain and prompt tests, config tests; parallel tests
+   repeated 20× under `-race`. A full `-mode orchestrator -maxparallel 2` run against a threaded fake server:
+   t1 and t2 overlapped on w1/w2, t3 waited for both, exit 0, both children exited. `-mode autonomous
+   -maxparallel 2` is refused (exit 2). Not yet: a real-provider parallel run.
+
+### Slice E (worker types): decided and built 2026-10-16
+
+Plan: `PLAN-orchestrator-worker-types.md`. Jerry asked for worker types such as a "software engineer" and a
+"code test and review" agent, with eager start first ("Let's build the worker types with eager start first"),
+and asked how a type could differ by its prompt alone.
+
+1. **A `"workers"` list in the main config:** `{type, count, config, description}`; the first entry is the
+   default type. A list, not a map, so the default is well defined (JSON maps have no order).
+2. **A worker type's `config` is a partial file applied over the top-level config** (Claude's answer to "how do
+   I just use different worker prompts"): `{"systemPrompt": "You are a tester..."}` is a whole type. The run's
+   keys are refused there; `builtinTools` and `mcpServers` replace rather than merge (merging would make
+   "fewer tools" impossible). Its path is relative to the main config file. Rejected: full config files per
+   type (every shared setting copied N times) and inline overrides in the main file (Jerry pictured separate
+   files; easy to add later).
+3. **Children get `-config <main> -workerconfig <type file>`;** the parent applies the same file to compute
+   each type's `-model` / `-maxsteps` flags, so a type's `model` wins over the parent's `-model`.
+4. **Eager start:** every worker of every type starts with the run (`count` is how many, not a maximum).
+   Lazy start is the planned follow-up (Claude's suggestion: one per type at setup, more on demand).
+5. **`description` is shown to the director;** the worker's system prompt is not (it can be long, and the
+   director only needs to know what the type is for).
+6. **`"workers"` replaces `director.maxParallel`:** setting both (`maxParallel > 1`) is a config error; tasks at
+   once = the sum of the counts. `"workers"` in autonomous mode is refused, like `maxParallel > 1`.
+7. **Scheduling:** one idle pool per type; the first ready task whose type has a free worker starts
+   (`tasks.Manager.NextFor`). Worker IDs are `<type><n>` (`engineer2`) with a `"workers"` section, `w<n>` without.
+8. **Verified:** `go test -race ./...` (earlier tests unchanged), new config tests (partial files, refused and
+   unknown keys, path resolution, `-workerconfig`), director tests (unknown type, a ready tester task starts
+   while engineers are busy, the prompt's type list), `Test_Parallel_WorkerTypes` (two engineer tasks never
+   share the one engineer, the tester runs beside them). A fake-server run with `engineer ×2` + `tester ×1`:
+   the tester child's requests carried the tester system prompt from its file, the engineers' the top-level
+   one; exit 0, all children exited. Example: `mvp4/examples/config.worker-types.json` with
+   `worker-engineer.json` and `worker-tester.json`.
+9. **First real-provider run (2026-10-16, Jerry):** `config.worker-types.json` (engineer ×4 + tester ×2,
+   gpt-5-mini workers, claude-sonnet-5-5 director) on `examples/objective-build-minisearch.md`, result in
+   `mvp4/scratch-test-13/`, log `mvp4/run-minisearch-20261016-1046.log`. Finished with success in one round,
+   in about 11 minutes. There were 14 tasks (9 engineer, 5 tester) and 17 worker turns, with up to 5 tasks
+   at once.
+   - **Typing was right.** Every implementation task went to an engineer and every test task to a tester. Each
+     tester task started as soon as its own implementation finished. The 2 testers were the bottleneck.
+   - **What it shows and what it doesn't.** The objective itself asked for implement-then-verify pairs and
+     separate verifier agents, so the run shows the director *following* such a structure with types. It
+     doesn't show the director inventing one. The four packages didn't overlap, so the shared workdir never
+     clashed. Nothing failed and no tester reported a bug, so drain, retries and "fix it in a later engineer
+     task" were not exercised against a real model.
+   - **Smaller observations:** the director sent the README task back twice because its examples didn't match
+     the real CLI output, which is review working as designed. The README went to an engineer because there
+     was no docs type.
+   - **The `count` question (Jerry, 2026-10-16):** with `"workers"`, `maxParallel` is implied (the sum of the
+     counts) and is left out. The sum is a ceiling: dependencies keep the real peak lower (5 of 6 here).
+
+Slice D also had its first real-provider runs (Jerry, 2026-10-16): `objective-build-backup-archiver.md` with
+`maxParallel` built a working `dedupbackup` CLI in `mvp4/scratch-test-12/`. The finding from that run: the
+objective didn't ask for a README or usage examples, so none were written. It is worth adding a "README with
+example commands" requirement to objectives (not yet done for that file).
+
+## Porting autonomous / orchestrator mode into the root code (decided 2026-10-16)
+
+Jerry, at the end of the slice E session: "Next up is to incorporate these into the main codebase, using mvp3/
+and mvp4/ as good templates and AI as a pair programmer / thought partner / teacher."
+
+- **mvp3/ and mvp4/ are reading templates, not code to copy.** This works the way mvp1 preceded mvp2. Jerry
+  builds the root version himself, with the usual style: concepts, then small examples, then a TODO skeleton he
+  fills in (`SESSION.md § How to work in this session`).
+- **Suggested order (Claude's, open to change):**
+  1. autonomous mode (mvp3: `tasks/`, `director/`, the round loop in `agent/autonomous.go`);
+  2. the `Worker` interface with a local worker;
+  3. `-mode worker` over MCP plus `-mode orchestrator`, serial (slices A–C);
+  4. parallel tasks (D);
+  5. worker types (E).
+
+  Each step runs on its own before the next, so each one is a working checkpoint. The honest downside: it is
+  slower than porting mvp4 in one go, and some steps get reworked (e.g. `Plan`'s per-task state moves into
+  `TaskRun` in step 4). That rework is the lesson, since it shows why the mvp4 shape exists.
+- **Where the mvp4 design is still open, decide it during the port, not before:** lazy worker start, retries
+  on 429, isolation (a worktree per task), the shared board, reviewer types without write tools.
+
 ## Deferred / open decisions
 
 - **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**

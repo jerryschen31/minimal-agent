@@ -19,9 +19,9 @@ const Instructions = `You are the director of an autonomous AI agent run. You do
 worker agent does it. You talk only to the worker, and the worker has its own tools (listed below).
 
 How the run works:
-- The run works through a task list, one task at a time; a task starts once the tasks it depends on are
-  done. The code tracks the list and moves between phases; your job in each phase is described under
-  "Current phase".
+- The run works through a task list; a task starts once the tasks it depends on are done (the Worker
+  section says how many tasks run at once). The code tracks the list and moves between phases; your job
+  in each phase is described under "Current phase".
 - To instruct the worker, end your turn with a plain-text reply and no tool call. That final reply is
   sent to the worker word for word as its next prompt, so write it as a direct instruction to the
   worker, never as commentary. Text you write in the same reply as a tool call is NOT sent to anyone:
@@ -50,7 +50,8 @@ How the run works:
 type PromptInput struct {
 	Objective       Objective
 	Plan            *Plan
-	Worker          worker.Info // the worker's model and tools, so the director writes feasible prompts
+	Current         *tasks.Task   // the task this director conversation works on (PhaseWork only)
+	Workers         []WorkerGroup // the worker types (the first is the default), so the director assigns and prompts feasibly
 	MaxTurnsPerTask int
 	Extra           string // director.additionalInstructions
 
@@ -60,6 +61,7 @@ type PromptInput struct {
 
 // SystemPrompt builds the director's system prompt. It is rebuilt before every director turn, so the
 // task statuses and notes in it are always current and survive context clearing and compaction.
+// It reads the plan's tasks: while tasks run in parallel, call it with the plan locked.
 func SystemPrompt(in PromptInput) string {
 	var b strings.Builder
 	b.WriteString(Instructions)
@@ -68,13 +70,13 @@ func SystemPrompt(in PromptInput) string {
 	}
 
 	b.WriteString("\n\n## Worker\n")
-	fmt.Fprintf(&b, "One worker type, %q (the default for worker_type). Its tools: ", worker.DefaultType)
-	if len(in.Worker.Tools) == 0 {
-		b.WriteString("none; the worker can only answer from its own knowledge.")
-	} else {
-		b.WriteString(strings.Join(in.Worker.Tools, ", ") + ".")
-	}
+	writeWorkers(&b, in.Workers)
 	fmt.Fprintf(&b, "\nThe worker gets at most %d turns per task.", in.MaxTurnsPerTask)
+	if n := in.Plan.Parallel; n > 1 {
+		fmt.Fprintf(&b, "\nThere are %d workers, so up to %d tasks run at the same time, each on its own worker with its own director "+
+			"conversation: any task whose depends_on tasks are all done may start. Tasks marked [running] may be in progress "+
+			"right now. All workers share one working directory.", n, n)
+	}
 
 	b.WriteString("\n\n## Objective\n" + in.Objective.Text)
 	for _, s := range in.Objective.Sections {
@@ -117,8 +119,8 @@ func SystemPrompt(in PromptInput) string {
 		}
 	case PhaseWork:
 		id := ""
-		if in.Plan.Current != nil {
-			id = in.Plan.Current.ID
+		if in.Current != nil {
+			id = in.Current.ID
 		}
 		fmt.Fprintf(&b, "WORK, task %s. Reply with the worker's next prompt for this task, or call task_done or task_failed.", id)
 	case PhaseReview:
@@ -133,10 +135,56 @@ func SystemPrompt(in PromptInput) string {
 	return b.String()
 }
 
+// WorkerGroup is one worker type as the director sees it.
+type WorkerGroup struct {
+	Type        string
+	Description string // what the type is for (config "description"); may be empty
+	Count       int    // how many workers of this type run
+	Info        worker.Info
+}
+
+// writeWorkers writes the worker types: with only the default type (no "workers" config) the one-line
+// form the serial and slice D runs always had, otherwise one line per type.
+func writeWorkers(b *strings.Builder, groups []WorkerGroup) {
+	tools := func(info worker.Info) string {
+		if len(info.Tools) == 0 {
+			return "none; it can only answer from its own knowledge."
+		}
+		return strings.Join(info.Tools, ", ") + "."
+	}
+	if len(groups) == 0 {
+		groups = []WorkerGroup{{Type: worker.DefaultType, Count: 1}}
+	}
+	if len(groups) == 1 && groups[0].Type == worker.DefaultType {
+		fmt.Fprintf(b, "One worker type, %q (the default for worker_type). Its tools: ", worker.DefaultType)
+		if len(groups[0].Info.Tools) == 0 {
+			b.WriteString("none; the worker can only answer from its own knowledge.")
+		} else {
+			b.WriteString(tools(groups[0].Info))
+		}
+		return
+	}
+	// [agent] the description is the director's only clue to what a type is for (its system prompt stays in
+	// the worker), so a type without one is assigned by name alone
+	fmt.Fprintf(b, "Worker types: give each task in set_tasks the worker_type that fits it (the default is %q). "+
+		"A task runs only on a worker of its type, so it waits while all of them are busy.\n", groups[0].Type)
+	for _, g := range groups {
+		fmt.Fprintf(b, "- %s (%d worker(s), model %s)", g.Type, g.Count, g.Info.Model)
+		if d := strings.TrimSpace(g.Description); d != "" {
+			fmt.Fprintf(b, ": %s", d)
+		}
+		fmt.Fprintf(b, " Tools: %s\n", tools(g.Info))
+	}
+	b.WriteString("Each task's worker only sees your prompts; say what its type should do (e.g. a reviewer reports problems rather than rewriting code).")
+}
+
 // writeTasks writes a plan's task list with IDs, statuses, dependencies and notes.
 func writeTasks(b *strings.Builder, p *Plan) {
 	for _, t := range p.Tasks.Tasks {
 		fmt.Fprintf(b, "- %s [%s] %s", t.ID, t.Status, t.Text)
+		if len(p.Tasks.WorkerTypes) > 1 {
+			fmt.Fprintf(b, " (worker_type: %s)", t.WorkerType)
+		}
 		if len(t.DependsOn) > 0 {
 			fmt.Fprintf(b, " (after %s)", strings.Join(t.DependsOn, ", "))
 		}
@@ -147,9 +195,23 @@ func writeTasks(b *strings.Builder, p *Plan) {
 	}
 }
 
-// PlanPrompt asks the director for the task list (PLAN phase).
-func PlanPrompt() string {
-	return "Create the task list for the objective and call set_tasks. You may look at the working directory first with your file tools."
+// PlanPrompt asks the director for the task list (PLAN phase). parallel is how many tasks may run at once.
+func PlanPrompt(parallel int) string {
+	return "Create the task list for the objective and call set_tasks. You may look at the working directory first with your file tools." + parallelHint(parallel)
+}
+
+// parallelHint tells a planning director how to shape the task list when tasks run in parallel ("" when
+// they don't).
+// [agent] Jerry's point (DECISIONS.md § Slice D, item 9): a director that knows N tasks can run at once
+// may plan differently: more independent tasks, fewer long chains, and dependencies where files are shared.
+func parallelHint(parallel int) string {
+	if parallel <= 1 {
+		return ""
+	}
+	return fmt.Sprintf("\n\nUp to %d tasks can run at the same time. Where the work allows, make tasks independent so they can run "+
+		"side by side. Tasks with no depends_on path between them may run at the same time in the shared working directory: "+
+		"give them separate files, and if two tasks change the same file (for example go.mod or a shared config), make one "+
+		"depend on the other.", parallel)
 }
 
 // GapsPlanPrompt asks the director for the next round's task list, built from the last review's gaps.
@@ -161,6 +223,7 @@ func GapsPlanPrompt(last *Plan, iteration, maxIterations int) string {
 	}
 	b.WriteString("\nCreate a task list that closes only these gaps and call set_tasks. Build on the existing files " +
 		"(check them with your file tools first) rather than starting over, and don't redo work that is already done.")
+	b.WriteString(parallelHint(last.Parallel))
 	return b.String()
 }
 

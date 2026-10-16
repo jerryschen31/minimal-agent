@@ -1,9 +1,12 @@
-# mvp4: orchestrator mode (serial MVP), reference build
+# mvp4: orchestrator mode, reference build
 
 A copy of `mvp3/` (autonomous mode) with **orchestrator mode** added: the director stays in this process,
-and the worker runs as a separate `-mode worker` process reached over MCP on stdin/stdout. Tasks still
-run one at a time. Built by Claude on 2026-10-15 from `../PLAN-orchestrator-mode-serial.md` (slices A–C);
-decisions in `../DECISIONS.md § Step 2 MVP` and `§ mvp4 reference build`. Everything about autonomous
+and each worker runs as a separate `-mode worker` process reached over MCP on stdin/stdout. Built by Claude
+on 2026-10-15 from `../PLAN-orchestrator-mode-serial.md` (slices A–C, one task at a time); decisions in
+`../DECISIONS.md § Step 2 MVP` and `§ mvp4 reference build`. **Parallel tasks** (slice D, 2026-10-16,
+`../PLAN-orchestrator-mode-parallel.md`, `../DECISIONS.md § Slice D`): with `"maxParallel": N` in the
+`"director"` block (or `-maxparallel N`), N worker processes run up to N ready tasks at once, each task with
+its own director conversation; the default 1 is the serial run. Everything about autonomous
 mode below still applies: orchestrator mode is "autonomous mode with the worker moved out of process".
 
 - Separate Go module (`github.com/jerryschen31/minimal-agent/mvp4`).
@@ -24,8 +27,24 @@ go test ./agent -run 'Worker|Orchestrator' -v   # the worker protocol over in-me
 ```sh
 ./minagent -mode autonomous   -objective <objective.md> [-config file] [-workdir dir]
            [-maxturnspertask N] [-timeout 30m] [-directormodel name] [-model worker-model]
-./minagent -mode orchestrator -objective <objective.md> ...same flags...
+./minagent -mode orchestrator -objective <objective.md> ...same flags... [-maxparallel N]
 ```
+
+Parallel tasks (orchestrator mode only):
+- The director is told N when it plans, so it can make tasks independent; tasks with no `depends_on` path
+  between them may run at the same time, in **one shared workdir** (two tasks editing the same file can
+  clash: the planning prompt asks the director to avoid that with `depends_on`).
+- Tasks given in `## Tasks` are chained (each depends on the one before) when N > 1, so they still run in order.
+- Output lines are labelled `[t3 w2]` (task, worker); each child's stderr lines `[w2]`.
+- A failed task drains the round: running tasks finish, nothing new starts, then the review.
+- **Worker types** (slice E, `../PLAN-orchestrator-worker-types.md`): a `"workers"` list in the main config
+  gives each type a count, a description for the director, and an optional partial config file applied over
+  the top-level config. A type that differs only by its prompt is a file with one key:
+  `{"systemPrompt": "You are a tester..."}`. See `examples/config.worker-types.json`, `worker-engineer.json`
+  and `worker-tester.json`; the director assigns `worker_type` per task, and a task waits for a free worker
+  of its type. Replaces `maxParallel` (tasks at once = the sum of the counts).
+- N directors and N workers call the provider at once: expect N× tokens per minute, and 429s as errors (no
+  retries yet). A local Ollama queues parallel requests unless `OLLAMA_NUM_PARALLEL` is raised.
 
 In orchestrator mode this process starts `./minagent -mode worker -config <same file> -workdir <same dir>
 -model <m> -maxsteps <n>` and talks to it over MCP (tools `run_task`, `end_task`, `worker_info`). The
@@ -91,10 +110,11 @@ rounds in total.
 | `tasks/` (new package) | `Manager` (the TaskManager): task IDs, `depends_on`, worker type and ID, status, per-task turn history; `Set` checks IDs, dependencies and cycles; `Next` = first ready task in list order |
 | `agent/localworker.go` (new) | `localWorker`: the `ChatSession` behind `Worker`; one conversation per task ID |
 | `agent/workerserver.go` (new) | `-mode worker`: `run_task`, `end_task`, `worker_info` on an MCP server over stdin and the real stdout |
-| `agent/autonomous.go` | the run holds `[]worker.Worker`; `runTask` starts the next ready task, calls `RunTurn`, records history, ends the task; `pickWorker`; report shows IDs |
+| `agent/autonomous.go` | the run holds `[]worker.Worker`; `runTask` starts the next ready task, calls `RunTurn`, records history, ends the task; report shows IDs (slice D replaced `pickWorker` with an idle-worker channel) |
 | `agent/agent.go` | orchestrator mode starts the MCP worker and the director only; worker mode serves the local worker; `ShutdownAgent` closes workers |
 | `director/` | `Plan` keeps phase, current task and review, with `Tasks *tasks.Manager`; `set_tasks` takes `{id, task, depends_on, worker_type}`; prompts show IDs, dependencies, the worker section and a `Status:` line |
-| `config/` | modes `orchestrator` and `worker`; `UsesDirector`; runtime fields `ConfigFile`, `ProtocolOut` |
+| `config/` | modes `orchestrator` and `worker`; `UsesDirector`; runtime fields `ConfigFile`, `ProtocolOut`; `director.maxParallel` / `-maxparallel` (> 1 only in orchestrator mode) |
+| slice D: parallel | `agent/autonomous.go`: `runWork` (the scheduler: idle-worker channel, drain, waits for every task), `runTask` per goroutine with its own director (`newDirector`); `agent/linewriter.go` (the `[t3 w2]` labels); `director/plan.go`: one lock, `TaskRun` (per-task state), `StartNext` returns nil when nothing can start, REVIEW once nothing runs; task tools bound to a `TaskRun`; prompts state N; `agent/parallel_test.go` |
 | `main.go` | for `-mode worker`, `os.Stdout` points at stderr and the real stdout is kept for MCP |
 
 ## What mvp3 added compared to the repo root

@@ -12,12 +12,11 @@ import (
 // task statuses with notes, and the current phase
 func Test_SystemPrompt_Contents(t *testing.T) {
 	obj := Objective{Text: "Ship it.", Sections: []Section{{"Constraints", "No deletes."}}}
-	p := NewPlan(nil, testMaxTasks)
+	p := NewPlan(nil, testMaxTasks, 1, nil)
 	p.SetTasks([]tasks.Spec{{ID: "t1", Task: "first"}, {ID: "t2", Task: "second", DependsOn: []string{"t1"}}})
-	p.StartNext()
-	p.TaskDone("found X")
-	p.StartNext()
-	got := SystemPrompt(PromptInput{Objective: obj, Plan: p, Worker: worker.Info{Tools: []string{"read_file", "write_file"}}, MaxTurnsPerTask: 4, Extra: "Be brief."})
+	p.TaskDone(p.StartNext(anyWorker), "found X")
+	run := p.StartNext(anyWorker)
+	got := SystemPrompt(PromptInput{Objective: obj, Plan: p, Current: run.Task, Workers: []WorkerGroup{{Type: worker.DefaultType, Count: 1, Info: worker.Info{Tools: []string{"read_file", "write_file"}}}}, MaxTurnsPerTask: 4, Extra: "Be brief."})
 	for _, want := range []string{
 		Instructions, "Additional instructions:\nBe brief.", `One worker type, "general"`, "read_file, write_file.", "at most 4 turns",
 		"## Objective\nShip it.", "## Constraints\nNo deletes.",
@@ -31,12 +30,11 @@ func Test_SystemPrompt_Contents(t *testing.T) {
 
 // - Verify the phase text for PLAN and REVIEW (with a Done section)
 func Test_SystemPrompt_PlanAndReviewPhases(t *testing.T) {
-	if got := SystemPrompt(PromptInput{Plan: NewPlan(nil, testMaxTasks)}); !strings.Contains(got, "PLAN.") || !strings.Contains(got, "(no tasks yet)") {
+	if got := SystemPrompt(PromptInput{Plan: NewPlan(nil, testMaxTasks, 1, nil)}); !strings.Contains(got, "PLAN.") || !strings.Contains(got, "(no tasks yet)") {
 		t.Errorf("plan phase prompt:\n%s", got)
 	}
-	p := NewPlan([]string{"a"}, testMaxTasks)
-	p.StartNext()
-	p.TaskDone("")
+	p := NewPlan([]string{"a"}, testMaxTasks, 1, nil)
+	p.TaskDone(p.StartNext(anyWorker), "")
 	obj := Objective{Text: "x", Sections: []Section{{"Done when", "- y"}}}
 	if got := SystemPrompt(PromptInput{Objective: obj, Plan: p}); !strings.Contains(got, "REVIEW. Check the results against the objective and its Done criteria") {
 		t.Errorf("review phase prompt:\n%s", got)
@@ -73,25 +71,43 @@ func Test_WrapTurn(t *testing.T) {
 
 // - Verify the review prompt names a failed task, or says all tasks are done
 func Test_ReviewPrompt(t *testing.T) {
-	p := NewPlan([]string{"a", "b"}, testMaxTasks)
-	p.StartNext()
-	p.TaskDone("")
-	p.StartNext()
-	p.TaskFailed("disk full")
+	p := NewPlan([]string{"a", "b"}, testMaxTasks, 1, nil)
+	p.TaskDone(p.StartNext(anyWorker), "")
+	p.TaskFailed(p.StartNext(anyWorker), "disk full")
 	if got := ReviewPrompt(p, false, 0); !strings.Contains(got, "task t2 failed: disk full") {
 		t.Errorf("failed review prompt: %s", got)
 	}
-	p = NewPlan([]string{"a"}, testMaxTasks)
-	p.StartNext()
-	p.TaskDone("")
+	p = NewPlan([]string{"a"}, testMaxTasks, 1, nil)
+	p.TaskDone(p.StartNext(anyWorker), "")
 	if got := ReviewPrompt(p, true, 0); !strings.Contains(got, "All 1 tasks are done") || !strings.Contains(got, "Done criteria") {
 		t.Errorf("success review prompt: %s", got)
 	}
 }
 
+// - Verify the worker count and the planning hint appear only when tasks run in parallel, and that given
+// tasks are chained then
+func Test_Prompts_Parallel(t *testing.T) {
+	serial, par := NewPlan(nil, testMaxTasks, 1, nil), NewPlan(nil, testMaxTasks, 3, nil)
+	if got := SystemPrompt(PromptInput{Plan: serial}); strings.Contains(got, "workers") || PlanPrompt(1) != PlanPrompt(0) || strings.Contains(PlanPrompt(1), "same time") {
+		t.Errorf("serial prompts mention parallel work:\n%s\n%s", got, PlanPrompt(1))
+	}
+	if got := SystemPrompt(PromptInput{Plan: par}); !strings.Contains(got, "There are 3 workers, so up to 3 tasks run at the same time") {
+		t.Errorf("parallel system prompt:\n%s", got)
+	}
+	if got := PlanPrompt(3); !strings.Contains(got, "Up to 3 tasks can run at the same time") || !strings.Contains(got, "go.mod") {
+		t.Errorf("parallel plan prompt: %s", got)
+	}
+	if got := GapsPlanPrompt(par, 2, 3); !strings.Contains(got, "Up to 3 tasks") {
+		t.Errorf("parallel gaps prompt: %s", got)
+	}
+	if got := SystemPrompt(PromptInput{Plan: NewPlan([]string{"a", "b"}, testMaxTasks, 2, nil)}); !strings.Contains(got, "- t2 [pending] b (after t1)") {
+		t.Errorf("given tasks not chained with parallel > 1:\n%s", got)
+	}
+}
+
 // - Verify the review prompt mentions further rounds only when some are left
 func Test_ReviewPrompt_RoundsLeft(t *testing.T) {
-	p := NewPlan([]string{"a"}, testMaxTasks)
+	p := NewPlan([]string{"a"}, testMaxTasks, 1, nil)
 	if got := ReviewPrompt(p, false, 0); strings.Contains(got, "new round") {
 		t.Errorf("no rounds left, but:\n%s", got)
 	}

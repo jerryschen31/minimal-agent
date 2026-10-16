@@ -4,7 +4,11 @@
 // See PLAN-orchestrator-mode-serial.md.
 package worker
 
-import "context"
+import (
+	"context"
+
+	"github.com/jerryschen31/minimal-agent/mvp4/config"
+)
 
 // Status is how a worker turn ended. It is set by Go code, never by the worker LLM
 // (DECISIONS.md § Step 2 MVP).
@@ -16,8 +20,8 @@ const (
 	StatusError     Status = "error"      // anything else: an LLM error, a failed MCP call, the call timeout
 )
 
-// DefaultType is the only worker type for now (named worker types are deferred).
-const DefaultType = "general"
+// DefaultType is the worker type used when the config names none (no "workers" section).
+const DefaultType = config.DefaultWorkerType
 
 // Result is one worker turn's outcome. It is also run_task's JSON result.
 type Result struct {

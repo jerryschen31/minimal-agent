@@ -21,4 +21,9 @@ func Test_ChildArgs(t *testing.T) {
 	if got := childArgs(cfg); !slices.Equal(got, want) {
 		t.Errorf("childArgs = %q, want %q", got, want)
 	}
+	cfg.WorkerConfigFile = "examples/worker-tester.json"
+	want = slices.Insert(want, len(want)-1, "-workerconfig", "examples/worker-tester.json")
+	if got := childArgs(cfg); !slices.Equal(got, want) {
+		t.Errorf("childArgs with a worker type file = %q, want %q", got, want)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -46,15 +47,16 @@ var _ Worker = (*MCPWorker)(nil)
 
 // StartMCPWorker starts this program again as `-mode worker` and connects to it over stdio.
 // [agent] The child reads the same config file, so the top-level config is the worker's (DECISIONS.md
-// § Step 2 MVP: no third config block). It inherits the environment (API keys) and our stderr, so its
-// [worker] lines show in the same terminal; its stdout carries only MCP messages.
-func StartMCPWorker(ctx context.Context, cfg config.Config) (*MCPWorker, error) {
+// § Step 2 MVP: no third config block). It inherits the environment (API keys); its stderr goes to stderr
+// (our own, or a writer that labels its lines), so its [worker] lines show in the same terminal. Its
+// stdout carries only MCP messages.
+func StartMCPWorker(ctx context.Context, cfg config.Config, stderr io.Writer) (*MCPWorker, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("finding this program to start the worker: %w", err)
 	}
 	cmd := exec.Command(exe, childArgs(cfg)...)
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = stderr
 	client := mcp.NewClient(&mcp.Implementation{Name: cfg.AgentName + "-orchestrator", Version: cfg.AgentVersion}, nil)
 	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
@@ -74,6 +76,9 @@ func childArgs(cfg config.Config) []string {
 	args := []string{"-mode", config.ModeWorker, "-workdir", cfg.WorkDir, "-model", cfg.Model, "-maxsteps", strconv.Itoa(cfg.MaxSteps)}
 	if cfg.ConfigFile != "" {
 		args = append(args, "-config", cfg.ConfigFile)
+		if cfg.WorkerConfigFile != "" {
+			args = append(args, "-workerconfig", cfg.WorkerConfigFile) // this worker's type, over the main config
+		}
 	}
 	if cfg.Debug {
 		args = append(args, "-debug")

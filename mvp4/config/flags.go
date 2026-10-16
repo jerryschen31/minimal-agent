@@ -42,6 +42,8 @@ type Flags struct {
 
 	// autonomous mode
 	MaxTurnsPerTask *int
+	MaxParallel     *int
+	WorkerConfig    *string // -mode worker only: the worker type's file, set by the orchestrator
 	Timeout         *string
 	DirectorModel   *string
 }
@@ -59,9 +61,9 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 
 	var (
 		configPath, mode, query, queryShort, model, objective, workDir string
-		timeout, directorModel                                         string
+		timeout, directorModel, workerConfig                           string
 		asJSON, debug                                                  bool
-		maxSteps, maxTokens, maxTurnsPerTask                           int
+		maxSteps, maxTokens, maxTurnsPerTask, maxParallel              int
 	)
 	fs.StringVar(&configPath, "config", "", "")
 	fs.StringVar(&mode, "mode", "", "")
@@ -75,8 +77,10 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.IntVar(&maxTokens, "maxtokens", 0, "")
 	fs.BoolVar(&debug, "debug", false, "")
 	fs.IntVar(&maxTurnsPerTask, "maxturnspertask", 0, "")
+	fs.IntVar(&maxParallel, "maxparallel", 0, "")
 	fs.StringVar(&timeout, "timeout", "", "")
 	fs.StringVar(&directorModel, "directormodel", "", "")
+	fs.StringVar(&workerConfig, "workerconfig", "", "")
 
 	if err := fs.Parse(args); err != nil {
 		return Flags{}, err
@@ -103,6 +107,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"workdir", workDir, &f.WorkDir},
 		{"timeout", timeout, &f.Timeout},
 		{"directormodel", directorModel, &f.DirectorModel},
+		{"workerconfig", workerConfig, &f.WorkerConfig},
 	} {
 		if !set[s.name] {
 			continue
@@ -162,6 +167,14 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		f.MaxTurnsPerTask = new(maxTurnsPerTask)
 	}
 
+	// -maxparallel ("> 1 needs orchestrator mode" is checked by Validate, after the config merge)
+	if set["maxparallel"] {
+		if maxParallel <= 0 {
+			return Flags{}, fmt.Errorf("-maxparallel must be a positive integer, got %d", maxParallel)
+		}
+		f.MaxParallel = new(maxParallel)
+	}
+
 	// -timeout: a Go duration such as 30m or 1h30m
 	if f.Timeout != nil {
 		if _, err := (Config{Timeout: *f.Timeout}).TimeoutDuration(); err != nil {
@@ -177,6 +190,14 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	}
 	if f.Objective != nil {
 		if err := requireFile("objective", *f.Objective); err != nil {
+			return Flags{}, err
+		}
+	}
+	if f.WorkerConfig != nil {
+		if f.Config == nil || f.Mode == nil || *f.Mode != ModeWorker {
+			return Flags{}, fmt.Errorf("-workerconfig needs -mode %s and -config (the orchestrator sets it)", ModeWorker)
+		}
+		if err := requireFile("workerconfig", *f.WorkerConfig); err != nil {
 			return Flags{}, err
 		}
 	}
@@ -214,13 +235,17 @@ func (f Flags) validateMode() error {
 	autonomousOnly := map[string]bool{
 		"objective":       f.Objective != nil,
 		"maxturnspertask": f.MaxTurnsPerTask != nil,
+		"maxparallel":     f.MaxParallel != nil,
 		"timeout":         f.Timeout != nil,
 		"directormodel":   f.DirectorModel != nil,
 	}
-	for _, name := range []string{"objective", "maxturnspertask", "timeout", "directormodel"} {
+	for _, name := range []string{"objective", "maxturnspertask", "maxparallel", "timeout", "directormodel"} {
 		if autonomousOnly[name] && !UsesDirector(mode) {
 			return fmt.Errorf("-%s only applies to -mode %s or %s, not %s", name, ModeAutonomous, ModeOrchestrator, mode)
 		}
+	}
+	if f.WorkerConfig != nil && mode != ModeWorker {
+		return fmt.Errorf("-workerconfig only applies to -mode %s (the orchestrator sets it)", ModeWorker)
 	}
 	if f.JSON != nil && mode != ModeOneshot {
 		return fmt.Errorf("--json only applies to -mode %s, not %s (autonomous JSON output is not built yet)", ModeOneshot, mode)
@@ -272,10 +297,12 @@ func printUsage(w io.Writer) {
   -maxturnspertask <n>   Worker turns allowed per task (positive integer, default 5)
   -timeout <duration>    Stop the whole run after this long, e.g. 30m (default: no limit)
   -directormodel <name>  The director's language model
+  -maxparallel <n>       Tasks run at once, each on its own worker process (orchestrator mode only, default 1)
 
   Orchestrator mode is autonomous mode with the worker in a child process: it starts this program again
   with -mode worker (same -config and -workdir) and talks to it over MCP on stdin/stdout. The top-level
   config is the worker's. -mode worker is only for that; it reads MCP messages until end of input.
+  With a "workers" list in the config, each worker type's processes also get -workerconfig <type file>.
 `)
 }
 
@@ -293,6 +320,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.MaxTurnsPerTask != nil {
 		cfg.Director.MaxTurnsPerTask = *f.MaxTurnsPerTask
+	}
+	if f.MaxParallel != nil {
+		cfg.Director.MaxParallel = *f.MaxParallel
 	}
 	if f.Timeout != nil {
 		cfg.Timeout = *f.Timeout

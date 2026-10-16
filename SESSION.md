@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-09)
+# SESSION.md — mvp2 progress (last updated 2026-10-16)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -208,7 +208,39 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 
 ## Next up
 
-**▶ NEWEST (2026-10-15, later): orchestrator mode (serial MVP) built in `mvp4/`** (a fresh copy of mvp3; mvp3 is
+**▶ NEWEST (2026-10-16, end of day): next is porting autonomous + orchestrator mode into the root code.**
+Jerry builds it, with mvp3/ and mvp4/ as reading templates and Claude as pair programmer and teacher: concepts,
+then small examples, then a TODO skeleton (see "How to work" above). The suggested order and the open design
+points are in `DECISIONS.md § Porting autonomous / orchestrator mode into the root code`. Start the next
+session by agreeing on step 1, autonomous mode: which mvp3 packages to read first (`tasks/`, then
+`director/`, then `agent/autonomous.go`), and the first skeleton.
+- **Real runs worked.** Slice D built `dedupbackup` (`mvp4/scratch-test-12/`). Slice E with engineer ×4 +
+  tester ×2 built `minisearch` (`mvp4/scratch-test-13/`, log `mvp4/run-minisearch-20261016-1046.log`): 14
+  tasks, typing correct, ~11 min, up to 5 tasks at once. The findings are in `DECISIONS.md § Slice E`,
+  item 9.
+- **Loose ends:**
+  - add a "README with example commands + usage()" requirement to
+    `mvp4/examples/objective-build-backup-archiver.md` (offered, not done);
+  - lazy worker start;
+  - try a vague objective (only the first paragraph of the minisearch objective) to see how the director plans
+    on its own;
+  - consider a `docs` worker type;
+  - commit the slice D + E work (nothing committed since `595623e`).
+- The session transcript was exported to `mvp4/prompts/20261016-session-worker-types-1.md`. It is gitignored,
+  like `prompts/`.
+
+**▶ (2026-10-16, later): slice E, worker types, built in `mvp4/`.** A `"workers"` list (type, count,
+description, partial config file per type) starts e.g. 3 engineers + 1 tester; tasks run on a worker of their
+`worker_type`. Example: `mvp4/examples/config.worker-types.json`. Plan: `PLAN-orchestrator-worker-types.md`;
+decisions: `DECISIONS.md § Slice E`. Next: lazy start (one per type at setup, more on demand), a real run.
+
+**▶ (2026-10-16): slice D, parallel tasks, built in `mvp4/`.** `"director": {"maxParallel": N}` (or
+`-maxparallel N`, orchestrator mode only) starts N worker processes and runs up to N ready tasks at once, each with
+its own director conversation. Plan: `PLAN-orchestrator-mode-parallel.md`; decisions: `DECISIONS.md § Slice D`.
+Verified with `go test -race` and a fake-server run with 2 workers. Not yet done: a real-provider parallel run,
+commit. Later: write sets + locks or a worktree per task, retries on 429, the shared board.
+
+**▶ (2026-10-15, later): orchestrator mode (serial MVP) built in `mvp4/`** (a fresh copy of mvp3; mvp3 is
 now frozen). `-mode orchestrator` runs the director here and the worker as a `-mode worker` child over MCP
 stdio. Plan: `PLAN-orchestrator-mode-serial.md`. Decisions: `DECISIONS.md § Step 2 MVP` and `§ mvp4 reference
 build`. Not yet done: a real-provider run (only a fake-server run so far), a hand check of Ctrl+C, commit.

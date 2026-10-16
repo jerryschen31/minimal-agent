@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +103,8 @@ func newAutoFixture(t *testing.T, objective string, maxTurnsPerTask int) *autoFi
 	cfg := fx.Session.Config
 	cfg.AgentMode = config.ModeAutonomous
 	cfg.ObjectiveFile = "objective.md"
-	cfg.Director = config.DirectorConfig{Model: "fake-director", MaxSteps: 10, MaxTurnsPerTask: maxTurnsPerTask, MaxTasks: 20, MaxIterations: 1}
+	cfg.Director = config.DirectorConfig{Model: "fake-director", MaxSteps: 10, MaxTurnsPerTask: maxTurnsPerTask, MaxTasks: 20, MaxIterations: 1, MaxParallel: 1}
+	cfg.ChatStoreType = "in-memory" // each task's director conversation is built with memory.SetupMemoryStore
 
 	dprov := &modeltest.FakeProvider{}
 	hist, _ := memory.NewInMemoryChatHistory()
@@ -119,11 +121,21 @@ func newAutoFixture(t *testing.T, objective string, maxTurnsPerTask int) *autoFi
 	}
 	lw := newLocalWorker(context.Background(), fx.Session)
 	run := &autonomousRun{
-		workers: []worker.Worker{lw}, workerInfo: lw.Info(), dir: dir, objective: obj,
-		plan: director.NewPlan(obj.Tasks, config.GetDefaultDirectorConfig().MaxTasks), fileTools: fileTools, cfg: cfg, out: fx.Out,
+		dir: dir, dirProv: dprov, dcfg: cfg, objective: obj,
+		plan: director.NewPlan(obj.Tasks, config.GetDefaultDirectorConfig().MaxTasks, 1, nil), fileTools: fileTools, cfg: cfg, out: fx.Out,
 		rootCtx: context.Background(),
 	}
+	setWorkers(run, lw)
 	return &autoFixture{run: run, worker: fx.Provider, director: dprov, fx: fx}
+}
+
+// setWorkers replaces a run's workers with ws, all of the default type (w1, w2, …).
+func setWorkers(r *autonomousRun, ws ...worker.Worker) {
+	r.slots = nil
+	for i, w := range ws {
+		r.slots = append(r.slots, workerSlot{w, fmt.Sprintf("w%d", i+1), worker.DefaultType})
+	}
+	r.groups = workerGroups(r.cfg, r.slots)
 }
 
 const twoTasks = "# Objective\nDo A and B.\n\n## Tasks\n- Task A\n- Task B\n"

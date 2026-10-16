@@ -11,7 +11,7 @@ func newTestManager() *Manager { return New(5, []string{"general"}) }
 // previous list in place
 func Test_Manager_Set_Rejects(t *testing.T) {
 	m := newTestManager()
-	if err := m.FromTexts([]string{"keep me"}); err != nil {
+	if err := m.FromTexts([]string{"keep me"}, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -65,13 +65,19 @@ func Test_Manager_Next_DependencyOrder(t *testing.T) {
 	}
 }
 
-// - Verify FromTexts numbers the given tasks t1, t2, … with no dependencies
+// - Verify FromTexts numbers the given tasks t1, t2, … with no dependencies, or chained with chain set
 func Test_Manager_FromTexts(t *testing.T) {
 	m := newTestManager()
-	if err := m.FromTexts([]string{"a", "b"}); err != nil {
+	if err := m.FromTexts([]string{"a", "b"}, false); err != nil {
 		t.Fatal(err)
 	}
-	if m.Tasks[0].ID != "t1" || m.Tasks[1].ID != "t2" || m.Next().ID != "t1" {
+	if m.Tasks[0].ID != "t1" || m.Tasks[1].ID != "t2" || m.Next().ID != "t1" || m.Tasks[1].DependsOn != nil {
 		t.Errorf("tasks = %+v %+v", m.Tasks[0], m.Tasks[1])
+	}
+	if err := m.FromTexts([]string{"a", "b", "c"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if d := m.Tasks[2].DependsOn; m.Tasks[0].DependsOn != nil || len(d) != 1 || d[0] != "t2" {
+		t.Errorf("chained tasks = %+v %+v", m.Tasks[0], m.Tasks[2])
 	}
 }

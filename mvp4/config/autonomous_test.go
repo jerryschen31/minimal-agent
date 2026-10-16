@@ -59,6 +59,9 @@ func Test_Unit_Validate(t *testing.T) {
 		"orchestrator ok":       {func(*Config) {}, orch, ""},
 		"orchestrator no file":  {func(c *Config) { c.ObjectiveFile = "" }, orch, "-mode orchestrator requires an objective file"},
 		"orchestrator director": {func(c *Config) { c.Director.MaxTasks = 0 }, orch, "director.maxTasks"},
+		"orchestrator parallel": {func(c *Config) { c.Director.MaxParallel = 3 }, orch, ""},
+		"parallel zero":         {func(c *Config) { c.Director.MaxParallel = 0 }, orch, "director.maxParallel must be a positive"},
+		"autonomous parallel":   {func(c *Config) { c.Director.MaxParallel = 2 }, auto, "needs -mode orchestrator"},
 		"worker ok":             {func(*Config) {}, worker, ""},
 		"worker no objective":   {func(c *Config) { c.Director.MaxTurnsPerTask = 0 }, worker, ""},
 	}
@@ -89,8 +92,12 @@ func Test_Unit_ParseFlags_AutonomousFlags(t *testing.T) {
 		t.Errorf("overlaid config: mode=%s objective=%s turns=%d timeout=%s directorModel=%s",
 			cfg.AgentMode, cfg.ObjectiveFile, cfg.Director.MaxTurnsPerTask, cfg.Timeout, cfg.Director.Model)
 	}
-	if _, err := ParseFlags([]string{"-mode", "orchestrator", "-objective", obj, "-timeout", "5m"}, io.Discard); err != nil {
+	f, err = ParseFlags([]string{"-mode", "orchestrator", "-objective", obj, "-timeout", "5m", "-maxparallel", "3"}, io.Discard)
+	if err != nil {
 		t.Errorf("orchestrator mode takes the autonomous flags: %v", err)
+	}
+	if cfg := FlagsOverlay(GetDefaultConfig(), f); cfg.Director.MaxParallel != 3 {
+		t.Errorf("-maxparallel 3 overlaid as %d", cfg.Director.MaxParallel)
 	}
 	if _, err := ParseFlags([]string{"-mode", "worker", "-model", "m", "-maxsteps", "5"}, io.Discard); err != nil {
 		t.Errorf("worker mode with the flags the orchestrator passes: %v", err)
@@ -100,6 +107,8 @@ func Test_Unit_ParseFlags_AutonomousFlags(t *testing.T) {
 		{"-mode", "chat", "-objective", obj},
 		{"-mode", "chat", "-timeout", "1m"},
 		{"-maxturnspertask", "0"},
+		{"-maxparallel", "0"},
+		{"-mode", "chat", "-maxparallel", "2"},
 		{"-timeout", "soon"},
 		{"-objective", obj + ".missing"},
 		{"-mode", "headless"},

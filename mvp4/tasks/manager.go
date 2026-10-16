@@ -47,7 +47,8 @@ type Task struct {
 	History    []Turn
 }
 
-// Manager owns the task list. Not safe for concurrent use: the run works on one task at a time.
+// Manager owns the task list. Not safe for concurrent use: with parallel tasks, director.Plan's lock
+// guards it and its tasks.
 type Manager struct {
 	Tasks       []*Task
 	MaxTasks    int      // the most tasks Set accepts (director.maxTasks)
@@ -59,11 +60,15 @@ func New(maxTasks int, workerTypes []string) *Manager {
 	return &Manager{MaxTasks: maxTasks, WorkerTypes: workerTypes}
 }
 
-// FromTexts sets the tasks given in objective.md's ## Tasks: IDs t1, t2, …, no dependencies.
-func (m *Manager) FromTexts(texts []string) error {
+// FromTexts sets the tasks given in objective.md's ## Tasks: IDs t1, t2, …, with no dependencies, or
+// with chain set, each depending on the one before (so they run in order even when tasks run in parallel).
+func (m *Manager) FromTexts(texts []string, chain bool) error {
 	specs := make([]Spec, len(texts))
 	for i, t := range texts {
 		specs[i] = Spec{ID: fmt.Sprintf("t%d", i+1), Task: t}
+		if chain && i > 0 {
+			specs[i].DependsOn = []string{specs[i-1].ID}
+		}
 	}
 	return m.Set(specs)
 }
@@ -154,12 +159,17 @@ func allIn(ids []string, set map[string]bool) bool {
 // Next returns the first pending task, in list order, whose dependencies are all done; nil if none.
 // [agent] With no dependencies this is plain list order, exactly the mvp3 behaviour.
 func (m *Manager) Next() *Task {
+	return m.NextFor(func(*Task) bool { return true })
+}
+
+// NextFor is Next limited to the ready tasks ok accepts (e.g. those whose worker type has a free worker).
+func (m *Manager) NextFor(ok func(*Task) bool) *Task {
 	done := map[string]bool{}
 	for _, t := range m.Tasks {
 		done[t.ID] = t.Status == Done
 	}
 	for _, t := range m.Tasks {
-		if t.Status == Pending && allIn(t.DependsOn, done) {
+		if t.Status == Pending && allIn(t.DependsOn, done) && ok(t) {
 			return t
 		}
 	}

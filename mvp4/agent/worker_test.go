@@ -121,8 +121,8 @@ func Test_MCPWorker_RoundTrip(t *testing.T) {
 // worker's reply and status, and the report shows the worker ID
 func Test_Orchestrator_RunOverMCP(t *testing.T) {
 	f := newAutoFixture(t, twoTasks, 5)
-	w := connectMCPWorker(t, f.run.workers[0].(*localWorker))
-	f.run.workers, f.run.workerInfo = []worker.Worker{w}, w.Info()
+	w := connectMCPWorker(t, f.run.slots[0].w.(*localWorker))
+	setWorkers(f.run, w)
 	f.run.cfg.AgentMode = config.ModeOrchestrator
 	f.director.Script = []model.ChatMessage{
 		text("Do A"), call("d1", "task_done", `{"note":"A done"}`),
@@ -162,7 +162,7 @@ func (failingWorker) Close() error                          { return nil }
 // - Verify a worker that can't be reached is an observation for the director (status error), not a crash
 func Test_Autonomous_UnreachableWorker_IsObservation(t *testing.T) {
 	f := newAutoFixture(t, "# Objective\nx\n## Tasks\n- Task A\n", 5)
-	f.run.workers = []worker.Worker{failingWorker{}}
+	setWorkers(f.run, failingWorker{})
 	f.director.Script = []model.ChatMessage{
 		text("Do A"),
 		call("x", "task_failed", `{"reason":"worker gone"}`), call("y", "task_failed", `{"reason":"worker gone"}`),

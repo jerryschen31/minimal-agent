@@ -47,6 +47,9 @@ type Config struct {
 	// ConfigFile is the config file this Config was read from ("" = defaults only); orchestrator mode
 	// passes it on to the worker process.
 	ConfigFile string `json:"-"`
+	// WorkerConfigFile is -mode worker's worker-type file (-workerconfig), already applied over ConfigFile;
+	// orchestrator mode passes each worker process its type's file.
+	WorkerConfigFile string `json:"-"`
 	// ProtocolOut is -mode worker's MCP channel: the real stdout. main points os.Stdout at stderr in that
 	// mode, so a stray print can't corrupt the protocol stream.
 	ProtocolOut io.WriteCloser `json:"-"`
@@ -65,6 +68,10 @@ type Config struct {
 	// fields above configure the worker (in orchestrator mode, the worker child process reads them).
 	// Fields missing from the file keep the defaults from GetDefaultConfig.
 	Director DirectorConfig `json:"director"`
+
+	// orchestrator mode: the worker types and how many of each to start (see workers.go). Empty = one
+	// type, "general", configured by the top-level fields, with director.maxParallel workers.
+	Workers []WorkerType `json:"workers"`
 }
 
 // DirectorConfig configures the director in autonomous mode.
@@ -80,6 +87,7 @@ type DirectorConfig struct {
 	MaxTurnsPerTask        int    `json:"maxTurnsPerTask"`        // worker turns allowed per task; must be positive
 	MaxTasks               int    `json:"maxTasks"`               // the most tasks a plan may have (given in ## Tasks or from set_tasks); must be positive
 	MaxIterations          int    `json:"maxIterations"`          // plan → work → review rounds; a round's gaps become the next round's tasks; must be positive
+	MaxParallel            int    `json:"maxParallel"`            // tasks run at once, each on its own worker process (orchestrator mode only); must be positive
 	AdditionalInstructions string `json:"additionalInstructions"` // appended to the built-in director instructions
 }
 
@@ -124,6 +132,20 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Director.MaxSteps <= 0 {
 		return fmt.Errorf("director.maxSteps must be a positive integer, got %d", cfg.Director.MaxSteps)
+	}
+	if cfg.Director.MaxParallel <= 0 {
+		return fmt.Errorf("director.maxParallel must be a positive integer, got %d", cfg.Director.MaxParallel)
+	}
+	// [agent] autonomous mode is a director plus the in-process worker: one worker, so one task at a time
+	// (DECISIONS.md § Slice D, item 5)
+	if cfg.Director.MaxParallel > 1 && cfg.AgentMode != ModeOrchestrator {
+		return fmt.Errorf("director.maxParallel %d needs -mode %s; -mode %s runs one task at a time", cfg.Director.MaxParallel, ModeOrchestrator, cfg.AgentMode)
+	}
+	if len(cfg.Workers) > 0 && cfg.AgentMode != ModeOrchestrator {
+		return fmt.Errorf(`"workers" (worker types) needs -mode %s; -mode %s has one in-process worker`, ModeOrchestrator, cfg.AgentMode)
+	}
+	if err := validateWorkers(cfg); err != nil {
+		return err
 	}
 	if _, err := cfg.TimeoutDuration(); err != nil {
 		return err
@@ -231,6 +253,7 @@ func GetDefaultDirectorConfig() DirectorConfig {
 		MaxTurnsPerTask: 5,
 		MaxTasks:        20,
 		MaxIterations:   1,
+		MaxParallel:     1,
 	}
 }
 
@@ -281,8 +304,23 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 			unknown = append(unknown, key)
 		}
 	}
-	// [agent] one level down for the "director" block, so a typo like "maxTurnPerTask" is reported too
+	// [agent] one level down for the "director" block and each "workers" entry, so a typo like
+	// "maxTurnPerTask" or "cout" is reported too
 	for key, val := range raw {
+		if strings.ToLower(key) == "workers" {
+			var entries []map[string]json.RawMessage
+			if json.Unmarshal(val, &entries) == nil {
+				knownW := jsonKeys(reflect.TypeOf(WorkerType{}))
+				for i, e := range entries {
+					for k := range e {
+						if !knownW[strings.ToLower(k)] {
+							unknown = append(unknown, fmt.Sprintf("%s[%d].%s", key, i, k))
+						}
+					}
+				}
+			}
+			continue
+		}
 		if strings.ToLower(key) != "director" {
 			continue
 		}
@@ -302,6 +340,15 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 		fmt.Fprintf(cfg.OutBuffer, "[warning] config file %s: ignoring unrecognized field %q\n", filename, key)
 	}
 	cfg.ConfigFile = filename
+	resolveWorkerFiles(&cfg, filename)
+
+	// -mode worker started for a worker type: that type's file goes over the main config (flags go over both)
+	if flags.WorkerConfig != nil {
+		if cfg, err = ApplyWorkerFile(cfg, *flags.WorkerConfig); err != nil {
+			return Config{}, err
+		}
+		cfg.WorkerConfigFile = *flags.WorkerConfig
+	}
 	return cfg, nil
 }
 
@@ -344,8 +391,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
 	d := cfg.Director
-	fmt.Fprintf(w, "  director:      provider=%s model=%s baseUrl=%s apiKeyName=%s maxSteps=%d maxTurnsPerTask=%d maxTasks=%d maxIterations=%d\n",
-		d.Provider, d.Model, d.BaseURL, d.ApiKeyName, d.MaxSteps, d.MaxTurnsPerTask, d.MaxTasks, d.MaxIterations)
+	fmt.Fprintf(w, "  director:      provider=%s model=%s baseUrl=%s apiKeyName=%s maxSteps=%d maxTurnsPerTask=%d maxTasks=%d maxIterations=%d maxParallel=%d\n",
+		d.Provider, d.Model, d.BaseURL, d.ApiKeyName, d.MaxSteps, d.MaxTurnsPerTask, d.MaxTasks, d.MaxIterations, d.MaxParallel)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/mvp4/config"
@@ -38,15 +40,14 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	// agent mode
 	agent.agentMode = cfg.AgentMode
 
-	// [agent] orchestrator mode: the top-level config is the worker's, and the worker child process sets it
+	// [agent] orchestrator mode: the top-level config is the worker's, and each worker child process sets it
 	// up itself (provider, tools, MCP servers). This process runs only the director and the run loop.
 	if cfg.AgentMode == config.ModeOrchestrator {
-		w, err := worker.StartMCPWorker(ctx, cfg)
+		slots, err := agent.startWorkers(ctx, cfg)
 		if err != nil {
 			return err
 		}
-		agent.workers = []worker.Worker{w}
-		auto, err := setupAutonomous(ctx, cfg, agent.workers)
+		auto, err := setupAutonomous(ctx, cfg, slots)
 		if err != nil {
 			return err
 		}
@@ -112,8 +113,9 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	// worker mode: the same in-process worker, served over MCP by RunAgent
 	switch cfg.AgentMode {
 	case config.ModeAutonomous:
-		agent.workers = []worker.Worker{newLocalWorker(ctx, chatSession)}
-		auto, err := setupAutonomous(ctx, cfg, agent.workers)
+		lw := newLocalWorker(ctx, chatSession)
+		agent.workers = []worker.Worker{lw}
+		auto, err := setupAutonomous(ctx, cfg, []workerSlot{{lw, "w1", worker.DefaultType}})
 		if err != nil {
 			return err
 		}
@@ -123,6 +125,52 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	}
 
 	return nil
+}
+
+// startWorkers starts orchestrator mode's worker processes: Count of each worker type (cfg.WorkerPool),
+// each child with the main config plus its type's file. All start now (eager start), so a child that
+// can't start fails the run before any work (DECISIONS.md § Slice D, item 12).
+// Worker IDs are w1, w2, … without a "workers" section, else the type and a number (engineer1, tester1).
+func (agent *Agent) startWorkers(ctx context.Context, cfg config.Config) ([]workerSlot, error) {
+	pool := cfg.WorkerPool()
+	// every type's file is checked before any process starts
+	typeCfgs := make([]config.Config, len(pool))
+	total := 0
+	for i, wt := range pool {
+		typeCfgs[i] = cfg
+		if wt.Config != "" {
+			tcfg, err := config.ApplyWorkerFile(cfg, wt.Config)
+			if err != nil {
+				return nil, fmt.Errorf("worker type %s: %w", wt.Type, err)
+			}
+			tcfg.WorkerConfigFile = wt.Config
+			typeCfgs[i] = tcfg
+		}
+		total += wt.Count
+	}
+
+	var slots []workerSlot
+	var stderrMu sync.Mutex
+	for i, wt := range pool {
+		for k := range wt.Count {
+			id := fmt.Sprintf("w%d", len(slots)+1)
+			if len(cfg.Workers) > 0 {
+				id = fmt.Sprintf("%s%d", wt.Type, k+1)
+			}
+			var stderr io.Writer = os.Stderr
+			if total > 1 {
+				// [agent] the children share our stderr: label each child's lines with its worker ID
+				stderr = &lineWriter{w: os.Stderr, mu: &stderrMu, prefix: "[" + id + "] "}
+			}
+			w, err := worker.StartMCPWorker(ctx, typeCfgs[i], stderr)
+			if err != nil {
+				return nil, fmt.Errorf("worker %s: %w", id, err)
+			}
+			agent.workers = append(agent.workers, w) // closed by ShutdownAgent, even if a later one fails
+			slots = append(slots, workerSlot{w, id, wt.Type})
+		}
+	}
+	return slots, nil
 }
 
 // RunAgent runs the configured mode. oneshot is still not implemented.
