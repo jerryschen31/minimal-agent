@@ -314,9 +314,18 @@ func stopReason(ctx context.Context, err error) string {
 }
 
 // resetContext clears a session's context window (not its history), after any background compaction
-// of it has finished.
-func resetContext(cs *ChatSession) {
-	cs.MsgContext.WaitForCompaction()
+// of it has finished, or once ctx is done. [agent] A compaction still running then is harmless: Clear bumps
+// the context generation, so its summary is discarded, and shutdown still waits for it (ShutdownAgent).
+func resetContext(ctx context.Context, cs *ChatSession) {
+	done := make(chan struct{})
+	go func() {
+		cs.MsgContext.WaitForCompaction()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 	cs.MsgContext.Clear()
 }
 
@@ -360,7 +369,7 @@ func (r *autonomousRun) phaseTools(phase director.Phase, run *director.TaskRun) 
 
 // runPlan asks the director for the task list (only when objective.md has no ## Tasks).
 func (r *autonomousRun) runPlan(ctx context.Context) error {
-	resetContext(r.dir)
+	resetContext(ctx, r.dir)
 	fmt.Fprintln(r.out, "[run] === PLAN: the director writes the task list ===")
 	prompt := director.PlanPrompt(r.plan.Parallel)
 	if n := len(r.earlier); n > 0 {
@@ -543,7 +552,7 @@ func (r *autonomousRun) runTask(ctx context.Context, run *director.TaskRun, slot
 
 // runReview asks the director for the final review (finish).
 func (r *autonomousRun) runReview(ctx context.Context) error {
-	resetContext(r.dir)
+	resetContext(ctx, r.dir)
 	fmt.Fprintln(r.out, "[run] === REVIEW ===")
 	prompt := director.ReviewPrompt(r.plan, r.objective.HasDone(), r.cfg.Director.MaxIterations-r.iteration)
 	for range maxNudges + 1 {

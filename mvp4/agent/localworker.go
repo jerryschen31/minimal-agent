@@ -38,7 +38,7 @@ func (w *localWorker) RunTurn(ctx context.Context, taskID, prompt string) (worke
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if taskID != w.task {
-		resetContext(w.cs)
+		resetContext(ctx, w.cs)
 		w.task = taskID
 	}
 	res, err := runTurn(ctx, w.cs, prompt)
@@ -55,11 +55,11 @@ func (w *localWorker) RunTurn(ctx context.Context, taskID, prompt string) (worke
 	return worker.Result{Status: worker.StatusError, Error: err.Error()}, nil
 }
 
-func (w *localWorker) EndTask(_ context.Context, taskID string) error {
+func (w *localWorker) EndTask(ctx context.Context, taskID string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if taskID == w.task {
-		resetContext(w.cs)
+		resetContext(ctx, w.cs)
 		w.task = ""
 	}
 	return nil
