@@ -38,7 +38,7 @@ import (
 // same name, not a change to the loop (DECISIONS.md § mvp3 reference build).
 
 // RunCommandPrograms are the programs run_command may start, looked up on PATH when the tool is built.
-var RunCommandPrograms = []string{"go", "gofmt", "python3", "python", "pytest", "pip", "pip3", "uv", "gcc", "cmake", "make", "jq", "grep"}
+var RunCommandPrograms = []string{"go", "gofmt", "python3", "python", "pytest", "pip", "pip3", "uv", "gcc", "cmake", "make", "jq", "grep", "node"}
 
 // RunCommandEnv lists the environment variables passed through to the program; everything else is dropped.
 var RunCommandEnv = []string{
