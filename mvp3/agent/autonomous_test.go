@@ -100,7 +100,7 @@ func newAutoFixture(t *testing.T, objective string, maxTurnsPerTask int) *autoFi
 	cfg := fx.Session.Config
 	cfg.AgentMode = config.ModeAutonomous
 	cfg.ObjectiveFile = "objective.md"
-	cfg.Director = config.DirectorConfig{Model: "fake-director", MaxSteps: 10, MaxTurnsPerTask: maxTurnsPerTask}
+	cfg.Director = config.DirectorConfig{Model: "fake-director", MaxSteps: 10, MaxTurnsPerTask: maxTurnsPerTask, MaxTasks: 20, MaxIterations: 1}
 
 	dprov := &modeltest.FakeProvider{}
 	hist, _ := memory.NewInMemoryChatHistory()
@@ -409,5 +409,72 @@ func Test_Autonomous_SlashTextGoesToWorkerAsPrompt(t *testing.T) {
 	f.run.run(context.Background())
 	if len(f.worker.Calls) != 1 || lastContent(f.worker, 0) != "/clear" {
 		t.Errorf("worker calls = %+v", f.worker.Calls)
+	}
+}
+
+// ---- rounds (director.maxIterations) ----
+
+// - Verify a review with gaps starts a new round: the gaps reach the plan prompt, the earlier round stays in
+// the system prompt, the review is told rounds are left, and success in round 2 makes the run a success
+func Test_Autonomous_Iterations_GapsBecomeNextRound(t *testing.T) {
+	f := newAutoFixture(t, "# Objective\nx\n## Tasks\n- Task A\n", 5)
+	f.run.cfg.Director.MaxIterations = 3
+	f.director.Script = []model.ChatMessage{
+		text("Do A"), call("d1", "task_done", `{"note":"A is in a.go"}`),
+		call("f1", "finish", `{"success":false,"summary":"A works, tests missing","gaps":["no tests for A"]}`),
+		call("p", "set_tasks", `{"tasks":["Add tests for A"]}`),
+		text("Write a_test.go"), call("d2", "task_done", `{"note":"tests pass"}`),
+		call("f2", "finish", `{"success":true,"summary":"done","gaps":[]}`),
+	}
+	f.worker.Script = []model.ChatMessage{text("A written"), text("tests written")}
+
+	rep := f.run.run(context.Background())
+
+	if rep.Reason != ReasonFinished || !rep.Plan.Success || len(rep.Earlier) != 1 || rep.WorkerTurns != 2 || rep.runError() != nil {
+		t.Fatalf("report = %+v, runError = %v", rep, rep.runError())
+	}
+	if got := lastContent(f.director, 2); !strings.Contains(got, "2 more round(s)") {
+		t.Errorf("round 1 review prompt doesn't mention the rounds left:\n%s", got)
+	}
+	if got := lastContent(f.director, 3); !strings.Contains(got, "Round 2 of 3") || !strings.Contains(got, "- no tests for A") {
+		t.Errorf("round 2 plan prompt:\n%s", got)
+	}
+	if sys := f.director.Calls[3][0].Content; !strings.Contains(sys, "## Earlier rounds") || !strings.Contains(sys, "note: A is in a.go") ||
+		!strings.Contains(sys, "gap: no tests for A") || !strings.Contains(sys, "Break the gaps") {
+		t.Errorf("round 2 system prompt lacks round 1:\n%s", sys)
+	}
+	if got := lastContent(f.director, 6); !strings.Contains(got, "1 more round(s)") {
+		t.Errorf("round 2 review prompt:\n%s", got)
+	}
+	var out strings.Builder
+	printReport(&out, rep)
+	if s := out.String(); !strings.Contains(s, "after 2 rounds") || !strings.Contains(s, "Round 1:  objective not met: A works") {
+		t.Errorf("report:\n%s", s)
+	}
+}
+
+// - Verify rounds stop at maxIterations, and earlier when the review lists no gaps (nothing to plan from)
+func Test_Autonomous_Iterations_Stop(t *testing.T) {
+	notMet := func(id, gaps string) model.ChatMessage {
+		return call(id, "finish", `{"success":false,"summary":"not yet","gaps":`+gaps+`}`)
+	}
+	f := newAutoFixture(t, "# Objective\nx\n## Tasks\n- Task A\n", 5)
+	f.run.cfg.Director.MaxIterations = 2
+	f.director.Script = []model.ChatMessage{
+		text("Do A"), call("d1", "task_done", `{"note":"ok"}`), notMet("f1", `["gap"]`),
+		call("p", "set_tasks", `{"tasks":["Fix gap"]}`), text("Fix it"), call("d2", "task_done", `{"note":"ok"}`), notMet("f2", `["gap"]`),
+	}
+	f.worker.Script = []model.ChatMessage{text("r1"), text("r2")}
+	rep := f.run.run(context.Background())
+	if rep.Reason != ReasonFinished || rep.Plan.Success || len(rep.Earlier) != 1 || !errors.Is(rep.runError(), ErrObjectiveNotMet) {
+		t.Errorf("at the limit: report = %+v", rep)
+	}
+
+	f = newAutoFixture(t, "# Objective\nx\n## Tasks\n- Task A\n", 5)
+	f.run.cfg.Director.MaxIterations = 3
+	f.director.Script = []model.ChatMessage{text("Do A"), call("d1", "task_done", `{"note":"ok"}`), notMet("f1", `[]`)}
+	f.worker.Script = []model.ChatMessage{text("r1")}
+	if rep := f.run.run(context.Background()); len(rep.Earlier) != 0 || len(f.director.Calls) != 3 {
+		t.Errorf("no gaps: earlier rounds %d, director calls %d; want 0, 3", len(rep.Earlier), len(f.director.Calls))
 	}
 }

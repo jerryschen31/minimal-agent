@@ -1584,12 +1584,29 @@ build, not yet adopted there.
     PLAN-phase prompt show the configured number. Trade-off: a bigger limit makes the run longer
     (the worst case is maxTasks × maxTurnsPerTask worker turns), and every director call costs more, because
     the system prompt lists every task and its note.
+27. **Rounds: `director.maxIterations`** (Jerry asked, 2026-10-15; default 1, which is the old behavior;
+    must be positive; no flag). A round is plan → work → review. Another round starts when the review
+    succeeded, said "not met", listed at least one gap, and rounds are left. That includes a round that
+    ended in `task_failed`, because a turn-limit failure is often fixable with a fresh plan.
+    - **Next round's input:** a PLAN phase that always runs (the objective's `## Tasks` only seeds round
+      1), prompted with the last review's summary and gaps (`GapsPlanPrompt`). Files stay in the workdir.
+    - **Earlier rounds** (tasks, notes, review summary, gaps) go in the director's system prompt under
+      `## Earlier rounds`, because contexts are cleared per task.
+    - **Picky-reviewer guard:** while rounds are left, the review prompt says the gaps become a new
+      round, so list only what the objective and its quality bar require. Further stop conditions, such as
+      measuring the size of the gap, are for later (Jerry).
+    - **Report:** one section per round; the run succeeds if the last round does; worker turns are counted
+      across rounds. `maxTasks` applies per round.
+    - **Named `maxIterations`, not Jerry's `maxSessionIterations`:** "session" already means `ChatSession`.
+    - **Downsides:** cost grows with each round; a task that truly can't be done (missing input) is retried
+      until the limit; the system prompt grows with every round.
 
 **Observed in real runs (not changed)**
 
 - A review can find a real defect and still report `success=true` with the defect listed under gaps
   (glossary run: a duplicated bullet). The run can't go back and fix it. This is the deferred "turn gaps
-  into new tasks" round.
+  into new tasks" round. *(Built 2026-10-15 as item 27, but only for success=false: a success=true review
+  with gaps still ends the run.)*
 - With small models, the objective's `## Context` decides success. The DeepWiki example failed until
   Context said the repository is *not* in the working directory, because the worker tried `read_file`
   on paths DeepWiki had mentioned.
@@ -1600,6 +1617,40 @@ build, not yet adopted there.
   noticed, but then called **`task_done` with a note that began "Not yet done"** instead of
   sending a follow-up prompt. Possible fixes, not made: make the `task_done` description say "only when
   the task is complete; to continue, reply with a prompt", or have review turn such notes into gaps.
+
+### Step 2 (`-mode orchestrator`): direction from Jerry (2026-10-15)
+
+- **Status: direction agreed, not designed in detail.** Transcript: `mvp3/prompts/` (2026-10-15 session).
+- **Flow:** (1) the director plans tasks, with dependencies, from a catalog of available worker agent
+  types; (2) an LLM (probably the director) assigns each task an agent type; (3) a **plain-Go
+  orchestrator** (no LLM) starts MCP worker agents and sends the tasks whose dependencies are done, within
+  resource limits; (4) replies go to the director, which decides "done" or "follow-up", and the
+  orchestrator delivers the follow-up to the same worker; (5) repeat until all tasks are finished, then
+  review the objective.
+- **No local worker LLM in this mode:** the local process is the director plus the Go orchestrator.
+- **Workers are MCP servers** (agent as an MCP tool), not A2A for now. Plain request/response, with a
+  `status` field in the JSON result (completed / question / failed …) standing in for A2A's task
+  lifecycle. A2A stays a later option, for long-running or remote tasks.
+- **Task state lives in Go, not in the director's context** (a `TaskManager`: task ID, worker ID,
+  status, history). Jerry's analogy: a team lead with hundreds of reports can't track it in their head.
+- **Before step 2:** add session iterations to mvp3. A review with gaps becomes a new plan → work →
+  review round, up to `maxSessionIterations` rounds; the first session counts as 1. *(Built 2026-10-15 as
+  `director.maxIterations`: § mvp3 reference build, item 27.)*
+- **Shared files: tasks run one at a time first** (agreed 2026-10-15), to prove the flow with one MCP worker.
+  Parallel tasks come later, with declared write sets plus locks.
+- **The local worker stays (proposed by Claude, 2026-10-15):** a `Worker` interface (run a task, send a
+  follow-up) with two implementations: the in-process worker (today's `ChatSession` and its config) and
+  an MCP worker. The local worker is then just one worker in the pool, and the orchestrator can be built
+  and tested with it before any MCP code. `-mode worker` serves that same in-process worker over MCP.
+- **Decentralized mode is deferred** (Jerry, 2026-10-15): the architecture needs research first.
+- **A shared board for worker-to-worker messages: wanted, design proposed (Claude, 2026-10-15).**
+  - The orchestrator owns the board and serves it as MCP tools (`board_post`, `board_read`). Workers
+    already have an MCP client, so each worker connects to it like any other MCP server.
+  - Entries are append-only and structured: id, author, task, topic, text, time. They are kept in
+    memory and written to a JSONL file, for debugging and for resuming a run.
+  - Not a file that agents edit directly: that only works for local workers, needs file locking, and
+    one bad write by an agent corrupts the board.
+- **Open:** a shared filesystem across parallel workers (code, documents, data).
 
 ## Deferred / open decisions
 

@@ -47,6 +47,7 @@ func Test_Unit_Validate(t *testing.T) {
 		"turns per task zero":   {func(c *Config) { c.Director.MaxTurnsPerTask = 0 }, auto, "maxTurnsPerTask"},
 		"director steps zero":   {func(c *Config) { c.Director.MaxSteps = 0 }, auto, "director.maxSteps"},
 		"max tasks zero":        {func(c *Config) { c.Director.MaxTasks = 0 }, auto, "director.maxTasks"},
+		"max iterations zero":   {func(c *Config) { c.Director.MaxIterations = 0 }, auto, "director.maxIterations"},
 		"bad timeout":           {func(c *Config) { c.Timeout = "soon" }, auto, "timeout"},
 		"negative timeout":      {func(c *Config) { c.Timeout = "-1m" }, auto, "negative"},
 		"worker steps zero":     {func(c *Config) { c.MaxSteps = 0 }, ok, "maxSteps"},

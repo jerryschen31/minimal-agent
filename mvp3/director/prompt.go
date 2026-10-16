@@ -49,6 +49,9 @@ type PromptInput struct {
 	WorkerTools     []string // names of the worker's tools, so the director writes feasible prompts
 	MaxTurnsPerTask int
 	Extra           string // director.additionalInstructions
+
+	Iteration, MaxIterations int     // the current plan → work → review round (from 1), and the limit
+	Earlier                  []*Plan // the plans of the earlier rounds, oldest first
 }
 
 // SystemPrompt builds the director's system prompt. It is rebuilt before every director turn, so the
@@ -73,29 +76,40 @@ func SystemPrompt(in PromptInput) string {
 		fmt.Fprintf(&b, "\n\n## %s\n%s", s.Heading, s.Body)
 	}
 
-	b.WriteString("\n\n## Tasks\n")
+	if len(in.Earlier) > 0 {
+		// [agent] contexts are cleared per task, so the system prompt is the only place earlier rounds can live
+		b.WriteString("\n\n## Earlier rounds\nThe files from these rounds are still in the working directory.\n")
+		for k, p := range in.Earlier {
+			fmt.Fprintf(&b, "\nRound %d:\n", k+1)
+			writeTasks(&b, p)
+			fmt.Fprintf(&b, "Review: %s\n", p.Summary)
+			for _, g := range p.Gaps {
+				fmt.Fprintf(&b, "- gap: %s\n", g)
+			}
+		}
+	}
+
+	b.WriteString("\n\n## Tasks")
+	if in.Iteration > 1 {
+		fmt.Fprintf(&b, " (round %d of %d)", in.Iteration, in.MaxIterations)
+	}
+	b.WriteString("\n")
 	if notes := strings.TrimSpace(in.Objective.TaskNotes); notes != "" {
 		b.WriteString(notes + "\n")
 	}
 	if len(in.Plan.Tasks) == 0 {
 		b.WriteString("(no tasks yet)")
 	}
-	for i, t := range in.Plan.Tasks {
-		status := string(t.Status)
-		if in.Plan.Phase == PhaseWork && i == in.Plan.Current {
-			status = "current"
-		}
-		fmt.Fprintf(&b, "%d. [%s] %s", i+1, status, t.Text)
-		if t.Note != "" {
-			fmt.Fprintf(&b, "\n   note: %s", t.Note)
-		}
-		b.WriteString("\n")
-	}
+	writeTasks(&b, in.Plan)
 
 	b.WriteString("\n## Current phase\n")
 	switch in.Plan.Phase {
 	case PhasePlan:
-		fmt.Fprintf(&b, "PLAN. Break the objective into 1-%d concrete tasks for the worker, in order, and call set_tasks.", in.Plan.MaxTasks)
+		if len(in.Earlier) > 0 {
+			fmt.Fprintf(&b, "PLAN. Break the gaps from the last review into 1-%d concrete tasks for the worker, in order, and call set_tasks.", in.Plan.MaxTasks)
+		} else {
+			fmt.Fprintf(&b, "PLAN. Break the objective into 1-%d concrete tasks for the worker, in order, and call set_tasks.", in.Plan.MaxTasks)
+		}
 	case PhaseWork:
 		fmt.Fprintf(&b, "WORK, task %d of %d. Reply with the worker's next prompt for this task, or call task_done or task_failed.", in.Plan.Current+1, len(in.Plan.Tasks))
 	case PhaseReview:
@@ -110,9 +124,36 @@ func SystemPrompt(in PromptInput) string {
 	return b.String()
 }
 
+// writeTasks writes a plan's numbered task list with statuses and notes.
+func writeTasks(b *strings.Builder, p *Plan) {
+	for i, t := range p.Tasks {
+		status := string(t.Status)
+		if p.Phase == PhaseWork && i == p.Current {
+			status = "current"
+		}
+		fmt.Fprintf(b, "%d. [%s] %s", i+1, status, t.Text)
+		if t.Note != "" {
+			fmt.Fprintf(b, "\n   note: %s", t.Note)
+		}
+		b.WriteString("\n")
+	}
+}
+
 // PlanPrompt asks the director for the task list (PLAN phase).
 func PlanPrompt() string {
 	return "Create the task list for the objective and call set_tasks. You may look at the working directory first with your file tools."
+}
+
+// GapsPlanPrompt asks the director for the next round's task list, built from the last review's gaps.
+func GapsPlanPrompt(last *Plan, iteration, maxIterations int) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Round %d of %d. The last review found the objective not met:\n%s\n\nGaps:\n", iteration, maxIterations, last.Summary)
+	for _, g := range last.Gaps {
+		fmt.Fprintf(&b, "- %s\n", g)
+	}
+	b.WriteString("\nCreate a task list that closes only these gaps and call set_tasks. Build on the existing files " +
+		"(check them with your file tools first) rather than starting over, and don't redo work that is already done.")
+	return b.String()
 }
 
 // TaskStartPrompt asks the director for the worker's first prompt for a task.
@@ -160,8 +201,9 @@ func WrapTurn(i, n int, task string, o WorkerOutcome) string {
 	return b.String()
 }
 
-// ReviewPrompt asks the director for the final review (REVIEW phase).
-func ReviewPrompt(p *Plan, hasDone bool) string {
+// ReviewPrompt asks the director for the round's review (REVIEW phase). roundsLeft is how many more
+// rounds can follow this one.
+func ReviewPrompt(p *Plan, hasDone bool, roundsLeft int) string {
 	var b strings.Builder
 	if p.Failed() {
 		for i, t := range p.Tasks {
@@ -177,6 +219,11 @@ func ReviewPrompt(p *Plan, hasDone bool) string {
 		b.WriteString(" and its Done criteria")
 	}
 	b.WriteString(". You may check files with your read-only file tools. Then call finish: success=true only if the objective is met, a short summary for the user, and gaps listing anything missing or incomplete.")
+	if roundsLeft > 0 {
+		// [agent] the guard against a picky reviewer: gaps cost a whole new round, so ask only for real ones
+		fmt.Fprintf(&b, "\n\nIf the objective is not met, the gaps you list become the tasks of a new round of work (%d more round(s) allowed). "+
+			"So make each gap concrete and fixable, and list only what the objective and its quality bar actually require: no nice-to-haves or style preferences.", roundsLeft)
+	}
 	return b.String()
 }
 

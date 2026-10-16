@@ -38,7 +38,7 @@ import (
 // same name, not a change to the loop (DECISIONS.md § mvp3 reference build).
 
 // RunCommandPrograms are the programs run_command may start, looked up on PATH when the tool is built.
-var RunCommandPrograms = []string{"go", "python3", "python", "pytest"}
+var RunCommandPrograms = []string{"go", "gofmt", "python3", "python", "pytest", "pip", "pip3", "uv", "gcc", "cmake", "make", "jq", "grep"}
 
 // RunCommandEnv lists the environment variables passed through to the program; everything else is dropped.
 var RunCommandEnv = []string{
@@ -48,8 +48,8 @@ var RunCommandEnv = []string{
 }
 
 const (
-	RunCommandTimeout  = 3 * time.Minute // per call; `go test` with a cold build cache can take a while
-	RunCommandMaxBytes = 32 * 1024       // combined stdout+stderr returned to the model; the program is killed past this
+	RunCommandTimeout  = 5 * time.Minute // per call; `go test` with a cold build cache can take a while
+	RunCommandMaxBytes = 64 * 1024       // combined stdout+stderr returned to the model; the program is killed past this
 )
 
 // RunCommandTool runs an allowlisted program with arguments in workDir (or a subdirectory of it).

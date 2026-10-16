@@ -70,6 +70,10 @@ mkdir -p /tmp/agent-work/{fib,glossary,missing,deepwiki}
   -directormodel gpt-nonexistent                              # exit 1: the 404 reason is shown
 ```
 
+Rounds: set `"maxIterations": 3` in the `"director"` block (default 1). When a review says the objective
+is not met and lists gaps, the gaps are planned as new tasks, worked and reviewed again, up to that many
+rounds in total.
+
 ## What's new compared to the repo root
 
 | Where | What |

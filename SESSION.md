@@ -208,6 +208,11 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 
 ## Next up
 
+**▶ NEWEST (2026-10-15): rounds, `director.maxIterations`** (default 1). A review with gaps becomes a new
+plan → work → review round. See `DECISIONS.md § mvp3 reference build`, item 27. Orchestrator-mode direction:
+`DECISIONS.md § Step 2 (-mode orchestrator)`. Next for orchestrator mode: the `Worker` interface
+(local worker + MCP worker), serial tasks first. Open: the decentralized-mode questions (Jerry will answer).
+
 **▶ NEWEST (2026-10-14, later still): `director.maxTasks` is a config key** (default 20). See `DECISIONS.md § mvp3
 reference build`, item 26.
 

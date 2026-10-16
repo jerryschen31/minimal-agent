@@ -66,12 +66,23 @@ func Test_ReviewPrompt(t *testing.T) {
 	p := NewPlan([]string{"a", "b"}, testMaxTasks)
 	p.TaskDone("")
 	p.TaskFailed("disk full")
-	if got := ReviewPrompt(p, false); !strings.Contains(got, "task 2 failed: disk full") {
+	if got := ReviewPrompt(p, false, 0); !strings.Contains(got, "task 2 failed: disk full") {
 		t.Errorf("failed review prompt: %s", got)
 	}
 	p = NewPlan([]string{"a"}, testMaxTasks)
 	p.TaskDone("")
-	if got := ReviewPrompt(p, true); !strings.Contains(got, "All 1 tasks are done") || !strings.Contains(got, "Done criteria") {
+	if got := ReviewPrompt(p, true, 0); !strings.Contains(got, "All 1 tasks are done") || !strings.Contains(got, "Done criteria") {
 		t.Errorf("success review prompt: %s", got)
+	}
+}
+
+// - Verify the review prompt mentions further rounds only when some are left
+func Test_ReviewPrompt_RoundsLeft(t *testing.T) {
+	p := NewPlan([]string{"a"}, testMaxTasks)
+	if got := ReviewPrompt(p, false, 0); strings.Contains(got, "new round") {
+		t.Errorf("no rounds left, but:\n%s", got)
+	}
+	if got := ReviewPrompt(p, false, 2); !strings.Contains(got, "2 more round(s)") || !strings.Contains(got, "no nice-to-haves") {
+		t.Errorf("2 rounds left:\n%s", got)
 	}
 }

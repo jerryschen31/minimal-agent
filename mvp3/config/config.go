@@ -71,6 +71,7 @@ type DirectorConfig struct {
 	MaxSteps               int    `json:"maxSteps"`               // the director's own ReAct step limit per director turn
 	MaxTurnsPerTask        int    `json:"maxTurnsPerTask"`        // worker turns allowed per task; must be positive
 	MaxTasks               int    `json:"maxTasks"`               // the most tasks a plan may have (given in ## Tasks or from set_tasks); must be positive
+	MaxIterations          int    `json:"maxIterations"`          // plan → work → review rounds; a round's gaps become the next round's tasks; must be positive
 	AdditionalInstructions string `json:"additionalInstructions"` // appended to the built-in director instructions
 }
 
@@ -111,6 +112,9 @@ func Validate(cfg Config) error {
 	}
 	if cfg.Director.MaxTasks <= 0 {
 		return fmt.Errorf("director.maxTasks must be a positive integer, got %d", cfg.Director.MaxTasks)
+	}
+	if cfg.Director.MaxIterations <= 0 {
+		return fmt.Errorf("director.maxIterations must be a positive integer, got %d", cfg.Director.MaxIterations)
 	}
 	if cfg.Director.MaxSteps <= 0 {
 		return fmt.Errorf("director.maxSteps must be a positive integer, got %d", cfg.Director.MaxSteps)
@@ -220,6 +224,7 @@ func GetDefaultDirectorConfig() DirectorConfig {
 		MaxSteps:        10,
 		MaxTurnsPerTask: 5,
 		MaxTasks:        20,
+		MaxIterations:   1,
 	}
 }
 
@@ -332,8 +337,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
 	d := cfg.Director
-	fmt.Fprintf(w, "  director:      provider=%s model=%s baseUrl=%s apiKeyName=%s maxSteps=%d maxTurnsPerTask=%d maxTasks=%d\n",
-		d.Provider, d.Model, d.BaseURL, d.ApiKeyName, d.MaxSteps, d.MaxTurnsPerTask, d.MaxTasks)
+	fmt.Fprintf(w, "  director:      provider=%s model=%s baseUrl=%s apiKeyName=%s maxSteps=%d maxTurnsPerTask=%d maxTasks=%d maxIterations=%d\n",
+		d.Provider, d.Model, d.BaseURL, d.ApiKeyName, d.MaxSteps, d.MaxTurnsPerTask, d.MaxTasks, d.MaxIterations)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return

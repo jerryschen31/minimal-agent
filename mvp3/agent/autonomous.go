@@ -19,6 +19,8 @@ import (
 
 // Autonomous mode: a director LLM works through objective.md's task list with the worker agent,
 // one task at a time (PLAN → WORK → REVIEW). See PLAN-autonomous-mode.md.
+// With director.maxIterations > 1, a review that finds gaps starts another round: the gaps are
+// planned as new tasks, worked and reviewed again.
 
 var (
 	// ErrBadObjective wraps any problem reading or parsing the objective file (a usage error: exit 2).
@@ -49,13 +51,14 @@ const (
 	ReasonError       = "error"
 )
 
-// RunReport is the outcome of an autonomous run.
+// RunReport is the outcome of an autonomous run. Reason, Reviewed and Err describe the last round.
 type RunReport struct {
-	Reason      string // finished | task_failed | interrupted | timeout | error
-	Plan        *director.Plan
-	WorkerTurns int   // worker turns across the whole run
-	Reviewed    bool  // the REVIEW call (finish) succeeded, so Plan.Summary and Plan.Gaps are the director's
-	Err         error // what went wrong, for interrupted | timeout | error, or a failed review after task_failed
+	Reason      string           // finished | task_failed | interrupted | timeout | error
+	Plan        *director.Plan   // the last round's plan
+	Earlier     []*director.Plan // the plans of the earlier rounds, oldest first (each one reviewed, with gaps)
+	WorkerTurns int              // worker turns across the whole run
+	Reviewed    bool             // the REVIEW call (finish) succeeded, so Plan.Summary and Plan.Gaps are the director's
+	Err         error            // what went wrong, for interrupted | timeout | error, or a failed review after task_failed
 }
 
 // autonomousRun holds everything one run needs. The worker is the agent's normal ChatSession.
@@ -63,9 +66,11 @@ type autonomousRun struct {
 	worker      *ChatSession
 	dir         *ChatSession // the director: its own provider, context and (per-phase) tools
 	objective   director.Objective
-	plan        *director.Plan
-	fileTools   []tools.Tool // the director's read-only file tools, offered in every phase
-	workerTools []string     // tool names, shown to the director
+	plan        *director.Plan   // the current round's plan
+	earlier     []*director.Plan // the plans of the finished rounds
+	iteration   int              // the current round, from 1
+	fileTools   []tools.Tool     // the director's read-only file tools, offered in every phase
+	workerTools []string         // tool names, shown to the director
 	cfg         config.Config
 	out         io.Writer
 	rootCtx     context.Context // for auto-compaction, which must outlive a cancelled run (CLAUDE.md invariant)
@@ -144,8 +149,8 @@ func setupAutonomous(ctx context.Context, cfg config.Config, worker *ChatSession
 // printStart prints the run header and the unattended-tools warning.
 func (r *autonomousRun) printStart() {
 	fmt.Fprintf(r.out, "[run] autonomous mode: objective %s\n", r.cfg.ObjectiveFile)
-	fmt.Fprintf(r.out, "[run] worker model %s, director model %s, max %d worker turns per task\n",
-		r.cfg.Model, r.cfg.Director.Model, r.cfg.Director.MaxTurnsPerTask)
+	fmt.Fprintf(r.out, "[run] worker model %s, director model %s, max %d worker turns per task, max %d round(s)\n",
+		r.cfg.Model, r.cfg.Director.Model, r.cfg.Director.MaxTurnsPerTask, r.cfg.Director.MaxIterations)
 	var risky []string
 	for _, name := range r.workerTools {
 		if !readOnlyTools[name] {
@@ -160,23 +165,45 @@ func (r *autonomousRun) printStart() {
 	}
 }
 
-// run works through the phases and returns the report. ctx is the run's context: cancelled by Ctrl+C,
+// run works through the rounds and returns the report. ctx is the run's context: cancelled by Ctrl+C,
 // SIGTERM or the -timeout.
+// [agent] Another round starts only after a successful review that says "not met" and lists gaps, while
+// rounds are left. The gaps are the next round's input; with none there is nothing to plan from. A round
+// that ended with task_failed counts too: a turn-limit failure is often fixable with a fresh plan.
+// Honest downside: a task that truly can't be done (missing input) is retried until maxIterations.
 func (r *autonomousRun) run(ctx context.Context) RunReport {
-	report := RunReport{Plan: r.plan}
-	stop := func(err error) RunReport {
+	var report RunReport
+	for r.iteration = 1; ; r.iteration++ {
+		report.Plan, report.Earlier = r.plan, r.earlier
+		r.runRound(ctx, &report)
+		p := r.plan
+		if r.iteration >= r.cfg.Director.MaxIterations || !report.Reviewed || p.Success || len(p.Gaps) == 0 {
+			return report
+		}
+		r.earlier = append(r.earlier, p)
+		r.plan = director.NewPlan(nil, r.cfg.Director.MaxTasks)
+		fmt.Fprintf(r.out, "[run] === ROUND %d of %d: %d gap(s) from the review become new tasks ===\n",
+			r.iteration+1, r.cfg.Director.MaxIterations, len(p.Gaps))
+	}
+}
+
+// runRound runs one round, plan → work → review, and records its outcome in report.
+func (r *autonomousRun) runRound(ctx context.Context, report *RunReport) {
+	report.Reason, report.Reviewed, report.Err = "", false, nil
+	stop := func(err error) {
 		report.Reason, report.Err = stopReason(ctx, err), err
-		return report
 	}
 
 	if r.plan.Phase == director.PhasePlan {
 		if err := r.runPlan(ctx); err != nil {
-			return stop(err)
+			stop(err)
+			return
 		}
 	}
 	for r.plan.Phase == director.PhaseWork {
-		if err := r.runTask(ctx, &report); err != nil {
-			return stop(err)
+		if err := r.runTask(ctx, report); err != nil {
+			stop(err)
+			return
 		}
 	}
 
@@ -185,15 +212,14 @@ func (r *autonomousRun) run(ctx context.Context) RunReport {
 	report.Reviewed = err == nil
 	switch {
 	case err != nil && ctx.Err() != nil:
-		return stop(err) // interrupted or timed out during the review
+		stop(err) // interrupted or timed out during the review
 	case r.plan.Failed():
 		report.Reason, report.Err = ReasonTaskFailed, err // err: a failed best-effort review, if any
 	case err != nil:
-		return stop(err)
+		stop(err)
 	default:
 		report.Reason = ReasonFinished
 	}
-	return report
 }
 
 // stopReason classifies why a run stopped early. The run's own ctx tells a Ctrl+C or SIGTERM
@@ -228,6 +254,9 @@ func (r *autonomousRun) directorTurn(ctx context.Context, prompt string, offered
 		WorkerTools:     r.workerTools,
 		MaxTurnsPerTask: r.cfg.Director.MaxTurnsPerTask,
 		Extra:           r.cfg.Director.AdditionalInstructions,
+		Iteration:       r.iteration,
+		MaxIterations:   r.cfg.Director.MaxIterations,
+		Earlier:         r.earlier,
 	}))
 	res, err := runTurn(ctx, r.dir, prompt)
 	if err != nil {
@@ -248,6 +277,9 @@ func (r *autonomousRun) runPlan(ctx context.Context) error {
 	resetContext(r.dir)
 	fmt.Fprintln(r.out, "[run] === PLAN: the director writes the task list ===")
 	prompt := director.PlanPrompt()
+	if n := len(r.earlier); n > 0 {
+		prompt = director.GapsPlanPrompt(r.earlier[n-1], r.iteration, r.cfg.Director.MaxIterations)
+	}
 	for range maxNudges + 1 {
 		if _, err := r.directorTurn(ctx, prompt, r.phaseTools()); err != nil {
 			return err
@@ -341,7 +373,7 @@ func (r *autonomousRun) runTask(ctx context.Context, report *RunReport) error {
 func (r *autonomousRun) runReview(ctx context.Context) error {
 	resetContext(r.dir)
 	fmt.Fprintln(r.out, "[run] === REVIEW ===")
-	prompt := director.ReviewPrompt(r.plan, r.objective.HasDone())
+	prompt := director.ReviewPrompt(r.plan, r.objective.HasDone(), r.cfg.Director.MaxIterations-r.iteration)
 	for range maxNudges + 1 {
 		if _, err := r.directorTurn(ctx, prompt, r.phaseTools()); err != nil {
 			return err
@@ -367,6 +399,9 @@ func printReport(w io.Writer, rep RunReport) {
 	case rep.Reason == ReasonError && rep.Err != nil:
 		result += ": " + rep.Err.Error() // interrupted/timeout errors are just "context canceled": not shown
 	}
+	if len(rep.Earlier) > 0 {
+		result += fmt.Sprintf(", after %d rounds", len(rep.Earlier)+1)
+	}
 	fmt.Fprintf(w, "Result:   %s\n", result)
 	switch {
 	case rep.Reviewed:
@@ -376,6 +411,19 @@ func printReport(w io.Writer, rep RunReport) {
 	default:
 		fmt.Fprintln(w, "Summary:  no review")
 	}
+	for k, ep := range rep.Earlier {
+		fmt.Fprintf(w, "Round %d:  objective not met: %s\n", k+1, ep.Summary)
+		printTasks(w, ep)
+	}
+	if len(rep.Earlier) > 0 {
+		fmt.Fprintf(w, "Round %d (last):\n", len(rep.Earlier)+1)
+	}
+	printTasks(w, p)
+	fmt.Fprintf(w, "Turns:    %d worker turns\n", rep.WorkerTurns)
+}
+
+// printTasks writes one round's tasks (with notes) and gaps.
+func printTasks(w io.Writer, p *director.Plan) {
 	fmt.Fprintln(w, "Tasks:")
 	if len(p.Tasks) == 0 {
 		fmt.Fprintln(w, "  (none)")
@@ -392,7 +440,6 @@ func printReport(w io.Writer, rep RunReport) {
 			fmt.Fprintf(w, "  - %s\n", g)
 		}
 	}
-	fmt.Fprintf(w, "Turns:    %d worker turns\n", rep.WorkerTurns)
 }
 
 // runError turns a report into RunAgent's return value: nil only for a finished, successful run.
