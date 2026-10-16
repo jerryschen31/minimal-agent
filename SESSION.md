@@ -208,7 +208,13 @@ truth; `ChatContext` is a rebuildable cache over it (event-sourcing/CQRS pattern
 
 ## Next up
 
-**▶ NEWEST (2026-10-15): rounds, `director.maxIterations`** (default 1). A review with gaps becomes a new
+**▶ NEWEST (2026-10-15, later): orchestrator mode (serial MVP) built in `mvp4/`** (a fresh copy of mvp3; mvp3 is
+now frozen). `-mode orchestrator` runs the director here and the worker as a `-mode worker` child over MCP
+stdio. Plan: `PLAN-orchestrator-mode-serial.md`. Decisions: `DECISIONS.md § Step 2 MVP` and `§ mvp4 reference
+build`. Not yet done: a real-provider run (only a fake-server run so far), a hand check of Ctrl+C, commit.
+Next options: slice D (parallel tasks / worker pool), named worker types, or Jerry's own build at the root.
+
+**▶ (2026-10-15): rounds, `director.maxIterations`** (default 1). A review with gaps becomes a new
 plan → work → review round. See `DECISIONS.md § mvp3 reference build`, item 27. Orchestrator-mode direction:
 `DECISIONS.md § Step 2 (-mode orchestrator)`. Next for orchestrator mode: the `Worker` interface
 (local worker + MCP worker), serial tasks first. Open: the decentralized-mode questions (Jerry will answer).

@@ -21,6 +21,10 @@ extensible ReAct agent in Go. Two generations live side by side:
   at the root, the way `mvp1/` preceded mvp2. A separate Go module copied from the root code; see
   `mvp3/README.md`, `PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
   is for reading; don't fold it into the root code unasked.
+- `mvp4/` — a copy of `mvp3/` with **orchestrator mode** (serial MVP) added: `-mode orchestrator` runs the
+  director and starts the worker as a `-mode worker` child process over MCP stdio. Written by Claude on
+  2026-10-15; see `mvp4/README.md`, `PLAN-orchestrator-mode-serial.md` and `DECISIONS.md § mvp4 reference
+  build`. Also for reading; mvp3 stays the frozen autonomous-mode reference.
 - `mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs

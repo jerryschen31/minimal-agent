@@ -1652,6 +1652,68 @@ build, not yet adopted there.
     one bad write by an agent corrupts the board.
 - **Open:** a shared filesystem across parallel workers (code, documents, data).
 
+### Step 2 MVP: answers decided 2026-10-15
+
+- **Built in `mvp4/`,** a fresh copy of `mvp3/` (module `.../minimal-agent/mvp4`, copied 2026-10-15 without run
+  logs, scratch dirs or prompts). mvp3 stays the frozen autonomous-mode reference.
+- **The seam:** `runTask`'s `resetContext(worker)` + `runTurn(worker, prompt)` go behind a `Worker` interface,
+  with an in-process worker first and an MCP worker (`-mode worker`) second. Everything else (director,
+  phases, control tools, rounds, report) stays.
+- **Dependencies:** `set_tasks` takes `depends_on` and a worker type per task now. Go checks that the IDs
+  exist and that there are no cycles. Tasks still run one at a time, in dependency order.
+- **`TaskManager` owns the task list** (ID, depends on, worker type, worker ID, status, history, notes).
+  `director.Plan` keeps only the phase and the review state.
+- **Task IDs are short strings chosen by the director** (`"t1"`), not list indexes, so dependencies and
+  follow-ups refer to tasks reliably.
+- **One shared worker config** for all workers in the MVP.
+- **stdio only** for the MVP. HTTP waits: auth, and a worker with `run_command` behind a port is a remote shell.
+- **Each MCP worker call has a 10-minute timeout**; the run's `-timeout` still applies on top.
+- **No shared board in the MVP.** The TaskManager `notes` field, written by the director and pushed into
+  task prompts, is enough until there's a clear need.
+- **No token/cost field in the worker reply yet;** maybe later.
+- **Worker protocol:** MCP tools `run_task {task_id, prompt}` (first call for an ID starts a fresh worker
+  conversation; later calls are follow-ups) and `end_task {task_id}`. The result's `structuredContent` is
+  `{status, reply, error, tools_called}`. The director sees mvp3's `WrapTurn` text plus a `Status:` line.
+- **Go sets `status`, not the worker LLM** (Jerry, 2026-10-15): `completed` / `step_limit` / `error`, derived
+  from how `runTurn` ended. Always present, needs no LLM cooperation, and the orchestrator can act on it
+  (retry, fail after N errors). A worker's question is reply text the director reads. Rejected for now: a
+  worker `report(status, message)` tool (small models forget to call it, it duplicates the director's
+  judgment); revisit if Go code must route questions without the director.
+- **No third config block (Jerry: "config sprawl"):** in orchestrator mode the top-level config *is* the
+  worker config, as the turn LLM already was the worker in autonomous mode. The orchestrator starts
+  `<same binary> -mode worker -config <same file> -workdir <same dir>`, forwarding worker flags
+  (`-model`, `-maxsteps`); the child ignores `"director"`. Downside: the top-level config configures nothing in
+  the parent process, so the start banner must say where the worker runs. Named worker types (overlays of
+  the top-level part) are deferred until a second type is needed.
+
+### mvp4 reference build: orchestrator mode, slices A–C (2026-10-15)
+
+Built by Claude in `mvp4/` from `PLAN-orchestrator-mode-serial.md`, at Jerry's request. Choices made
+while building, beyond the answers above:
+
+1. **Packages:** `worker/` (interface, `Result`, `Info`, protocol types, `MCPWorker`) and `tasks/` (`tasks.Manager`
+   is the TaskManager). Both are capability packages; `director` imports them, `agent` wires them.
+2. **A third MCP tool, `worker_info`** (model + tool names). In orchestrator mode the parent never sets up the
+   worker's tools, so the director's prompt gets them from the child.
+3. **`localWorker` holds one conversation:** a new task ID clears the context, `EndTask` (deferred in `runTask`)
+   clears it too. Round 2 reusing `t1` is safe because of that `EndTask`.
+4. **`RunTurn`'s error becomes an observation** (`status: error`) unless the run itself was cancelled; the
+   per-task turn limit bounds a dead worker.
+5. **stdout in `-mode worker`:** `main` points `os.Stdout` at stderr before loading the config and keeps the real
+   stdout in `cfg.ProtocolOut`. So `-mode worker` must be a flag; `"agentMode": "worker"` in a file is refused (exit 2).
+6. **Child flags come from the merged config** (`-model`, `-maxsteps`, `-workdir`, `-config`, `-debug`), not by
+   re-forwarding the parent's argv.
+7. **`set_tasks` takes objects only** (`id` and `task` required). No plain-string fallback: simpler, at the cost
+   of small directors needing to get the shape right (the error says what to fix).
+8. **Task status `running`** replaces mvp3's computed `[current]` in the director's task list.
+9. **Ctrl+C:** the child ignores SIGINT (`main` registers it); the parent cancels the MCP call (the SDK sends
+   `notifications/cancelled`) and closing the session ends the child. Not yet checked by hand with a real Ctrl+C.
+10. **Verified:** `go test -race ./...`; a raw JSON-RPC check that `-mode worker` writes only JSON-RPC to stdout
+    (a config warning went to stderr); a full `-mode orchestrator` run against a scripted fake OpenAI-compatible
+    server (planning with `depends_on` reversed in the list, two tasks, review, exit 0, child exited). Seen in the
+    raw check: at end of input the server exits without answering requests still queued; harmless for the
+    orchestrator, which waits for each reply.
+
 ## Deferred / open decisions
 
 - **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**
