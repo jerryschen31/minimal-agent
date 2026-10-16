@@ -1,0 +1,13 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a careful software engineer. Use your tools to do the work; when finished, answer in plain text with a short summary of what you did.",
+  "maxSteps": 20,
+  "builtinTools": ["ReadFile", "WriteFile", "EditFile", "ListDir", "RunCommand"],
+  "director": {
+    "model": "gpt-4o-mini",
+    "maxTurnsPerTask": 3
+  }
+}

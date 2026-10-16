@@ -1,0 +1,21 @@
+{
+  "userId": "default_user",
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a helpful assistant. Keep your responses concise and relevant. Use tools when they help; when finished, answer in plain text.",
+  "maxSteps": 10,
+  "workDir": ".",
+  "memory": "in-memory",
+  "contextWindow": 10,
+  "mcpServers": {
+    "fs": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31", "/tmp"]
+    },
+    "deepwiki": {
+      "url": "https://mcp.deepwiki.com/mcp"
+    }
+  }
+}

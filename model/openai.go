@@ -8,12 +8,18 @@ import (
 	"net/http"
 )
 
-func (p OpenAICompat) Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error) {
+type OpenAICompat struct {
+	BaseURL string
+	Model   string
+	ApiKey  string // empty for Ollama
+}
+
+func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	// make a request to the OpenAI-compatible server
-	// 1. build a chatRequest with p.Model and the provided chat history
+	// 1. build a chatRequest with p.Model and the provided chat context
 	reqRaw := ChatRequest{
 		Model:    p.Model,
-		Messages: chatHistory,
+		Messages: chatContext,
 		Tools:    tools, // omitempty: nil tools send no "tools" key at all
 	}
 

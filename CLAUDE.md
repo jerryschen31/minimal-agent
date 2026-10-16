@@ -16,6 +16,16 @@ extensible ReAct agent in Go. Two generations live side by side:
   mvp2" below). Jerry writes this code himself while being tutored step by step, so default behaviour
   is teach-then-let-him-type: explain the concept, show the smallest next slice, and wait for him to
   write/confirm it.
+- `mvp3/` — a reference build of **autonomous mode** (a director LLM works through `objective.md`'s
+  tasks with the agent as worker), written by Claude on 2026-10-13 as a template for Jerry's own build
+  at the root, the way `mvp1/` preceded mvp2. A separate Go module copied from the root code; see
+  `mvp3/README.md`, `PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
+  is for reading; don't fold it into the root code unasked.
+- `mvp4/` — a copy of `mvp3/` with **orchestrator mode** added: `-mode orchestrator` runs the
+  director and starts each worker as a `-mode worker` child process over MCP stdio. Written by Claude on
+  2026-10-15 (serial) and 2026-10-16 (parallel tasks, `director.maxParallel`; worker types, `"workers"`); see
+  `mvp4/README.md`, `PLAN-orchestrator-mode-serial.md`, `PLAN-orchestrator-mode-parallel.md`,
+  `PLAN-orchestrator-worker-types.md` and `DECISIONS.md § mvp4 reference build` / `§ Slice D` / `§ Slice E`. Also for reading; mvp3 stays the frozen autonomous-mode reference.
 - `mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs
