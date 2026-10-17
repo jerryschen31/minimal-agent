@@ -1,4 +1,4 @@
-[![Last commit](https://img.shields.io/github/last-commit/jerryschen31/minimal-agent)](https://github.com/jerryschen31/minimal-agent/commits)
+[![Last commit](https://img.shields.io/github/last-commit/jerryschen31/minimal-agent/master)](https://github.com/jerryschen31/minimal-agent/commits)
 [![Go](https://img.shields.io/badge/Go-%E2%89%A5%201.26.3-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 
 # minimal-agent
