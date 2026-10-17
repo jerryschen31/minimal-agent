@@ -1260,6 +1260,596 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 
 ---
 
+## Autonomous, orchestrator and worker modes
+
+### Staged: autonomous (one agent) first, orchestrator/worker later (2026-10-13)
+
+- **Status: decided (the split); step 1 details being worked out.** Brainstorm transcript:
+  `prompts/20261012-auto-mode-brainstorming.md`.
+- **Step 1, `-mode autonomous`:** a second LLM (the *director*), guided by `objective.md`, replaces
+  the human who types prompts in the REPL. Still a **single agent instance**, a single process. The
+  objective file must say clearly what "done" means (`# Objective` + `## Done when` required).
+- **Step 2, later and still to be designed:** `-mode orchestrator` = autonomous mode where the main
+  agent delegates tasks to worker instances; `-mode worker` = an agent that only listens for MCP
+  requests (JSON-RPC), does the work and replies. No worker-to-worker messaging.
+- **Renames:** `headless` → `autonomous`, `mission` → `objective`. "Headless" only means "no UI",
+  which `oneshot` also is.
+- **Why staged (reversal of the 2026-10-12 direction):** the 2026-10-12 brainstorm went straight to
+  multi-process workers (MCP over stdio/HTTP, worker pools, launchers, Kubernetes). Jerry judged that
+  too much at once. Step 1 holds the core idea, "an LLM replaces the human prompter", with no
+  protocol or process management. The step 2 ideas are parked, not rejected: stateless tasks, the
+  LLM deciding *what* to delegate while a pool decides *how many* instances, a `workers` config
+  section reusing `McpServerConfig`, and Kubernetes "pattern B" (Deployments + Services, the
+  orchestrator connects by URL) first. Step 1 should keep the director behind a small interface, so
+  step 2 can reuse it unchanged.
+
+### Step 1 (`-mode autonomous`): answers decided 2026-10-13
+
+Questions Q1–Q17 were put to Jerry on 2026-10-13 (see the brainstorm transcript). Decided:
+
+- **Flow:** the director LLM gets a system prompt with `objective.md` and its instructions. Its reply is
+  the worker's next prompt. The worker runs one normal ReAct turn, and its outcome goes back to the
+  director. This repeats until the director judges the objective met; the user then gets a final report.
+- **What the director sees of a worker turn (Q2):** the reply text, a short line naming the tools that
+  were called, any error, and other important facts from the turn, capped so one reply can't flood the
+  director's context.
+- **The worker never sees the objective (Q3).** It sees only the director's prompts, so a task is the
+  unit of text the worker gets.
+- **The director has its own built-in tools (Q4)**, at least `read_file`, but not the worker's tools.
+  Which other built-ins it gets is still open.
+- **Stop conditions (Q5/Q7):** the director decides the objective is met, `maxTurns` (default 15), or
+  cancellation (Ctrl+C, SIGTERM, timeout).
+- **The director judges "done" (Q6).**
+- **`objective.md` (Q8/Q9):** `# Objective` and a "done" section are required; `## Constraints`,
+  `## Context` and `## Tasks` are optional. A `## Tasks` section is what the user intends to be done,
+  so it is treated as a checklist, not as hints.
+- **Director memory (Q10):** its own `ChatContext`, **with** compaction when its window fills.
+- **Ctrl+C (Q11):** ends the whole run, prints the report for the current state, then shuts down
+  cleanly.
+- **Tools and safety (Q12):** the worker keeps its MCP tools; autonomous mode prints a warning that
+  tool calls run unattended, with no refusal or opt-in flag.
+- **No slash commands from the director (Q13).** Its text always goes to the worker as an ordinary prompt.
+- **Output (Q14):** `[director]` lines during the run; the final report goes to stdout. `-json` is deferred.
+- **Code layout (Q17):** the director is a separate capability package.
+- ~~Still open: config shape (Q15), how the director signals "next prompt" vs "finished" (Q1).~~
+  Resolved in the next subsection.
+
+### Step 1: director mechanics, checklist, config (decided 2026-10-13, second round)
+
+*Partly superseded the same day by `§ Step 1: task-driven flow` (`mark_item`, the combined checklist,
+rejecting `finish`). Still current: the director as a second `ChatSession`, text reply = worker prompt,
+ending the turn on a terminal tool without an extra call, the system prompt rebuilt each director turn,
+and the config shape, except that `maxTurns` became `maxTurnsPerTask` with no run-wide limit.*
+
+- **The director is a small ReAct agent: a second `ChatSession`** with its own provider, `ChatContext`
+  (auto-compaction included) and tool registry. A director turn and a worker turn both go through the
+  same `runTurn`. The director's tools: `read_file` (confined to the same `workDir` as the worker),
+  `mark_item` and `finish`.
+- **Its final text reply is the worker's next prompt.** It is passed as a value, not through
+  `InBuffer`/`OutBuffer`. Those stay the terminal you watch the run on; stdin is unused in autonomous mode.
+- **`finish(success, summary)` ends the run, and an accepted `finish` is the last director LLM call.**
+  In a ReAct loop a tool call normally means "run it and send me the result", which would cost one more
+  call. An accepted `finish` instead ends the director's turn immediately (the mechanism, such as a
+  sentinel error from the tool, is decided when coding). A **rejected** `finish(success=true)` (the
+  checklist has unfinished items) comes back to the director as an ordinary tool error, and its turn
+  continues. `finish(success=false)` ("can't be done, here's why") is always accepted.
+- **Progress lives in a checklist that is shown in the director's system prompt** (Jerry's choice), so
+  compaction can't lose it. The checklist = every `## Tasks` item plus every done-condition, each
+  `pending`/`done` with a short note. The director changes an item with `mark_item(id, status, note)`.
+  The loop rebuilds `SystemMsg` from the objective plus the checklist before each director turn.
+  - *Trade-off:* changing the system prompt breaks provider-side prompt caching for that call, so a turn
+    after a change pays for the full prompt again. That's acceptable at ≤ 15 turns, and local models don't
+    cache anyway. The cache-friendly alternative, putting the checklist into each new message to the
+    director instead, was not chosen.
+- **Config:** a `"director"` block inside the existing config. The top level stays the worker's, so
+  chat configs work unchanged. Empty director fields come from a separate **default director config**,
+  not from the worker's values. Precedence: flag > director block > director defaults. The director's
+  instruction text is built into the code; `director.additionalInstructions` adds to it, never
+  replaces it. `maxTurns` (default 15, must be > 0) lives in the director block, and `-maxturns`
+  overrides it.
+
+### Step 1: defaults (proposed by Claude 2026-10-13; Jerry asked for defaults on these)
+
+*Partly superseded by `§ Step 1: task-driven flow`: "done = every checklist item", the required `## Done`
+section and the report reasons changed. The timeout flag, the bullet-parsing rules (now for `## Tasks`),
+the size limit and the exit codes still apply.*
+
+- **Done = every checklist item `done`** (all tasks and all done-conditions). The task order is a
+  suggestion, not enforced. In step 1 the director cannot add items (the checklist is the user's
+  intent); it can still split work freely in its prompts.
+- **`-timeout <duration>`** (Go duration such as `30m`; default 0 = none) → run reason `timeout`.
+- **`objective.md` parsing:**
+  - Exactly one `# Objective` H1 is required, plus one `##` heading that starts with "Done"
+    (case-insensitive: `## Done`, `## Done when`, `## Done criteria`, …) with ≥ 1 bullet.
+  - `## Tasks`, `## Constraints` and `## Context` are optional; other sections are allowed and passed
+    through as text.
+  - Checklist items are top-level bullets (`-`, `*`, `1.`). A `[ ]`/`[x]` box is stripped and ignored,
+    so every item starts `pending`; nested bullets belong to their parent item.
+  - The file must exist and be non-empty, and at most 20 KB. A bad file is a startup error (exit 2).
+- **Confirmed by Jerry (2026-10-13):**
+  - Report contents: reason `finished|max_turns|interrupted|timeout|error`, success, summary, checklist
+    with notes, turns used.
+  - Exit codes: 0 met / 1 not met or error / 130 interrupted.
+  - A failed director turn ends the run with `error`, because there are no retries yet.
+- **Worker history: per task, not kept across tasks** (Jerry). The worker needs only the current task's
+  context. If a later task needs something from an earlier one, the director's instructions tell it to
+  put that into the worker prompt.
+
+### Step 1: task-driven flow (decided 2026-10-13) — the current design
+
+The feature plan (flow, config, types, build slices, and a D1–D29 decision summary) is in
+`PLAN-autonomous-mode.md`. This log stays authoritative where the two disagree.
+
+This supersedes parts of the two subsections above: the `mark_item` tool, the checklist of tasks *plus*
+done-conditions, "done = every checklist item", rejecting `finish(success=true)`, the required `## Done`
+section and the overall-only `maxTurns`. Their reasoning is kept above as the earlier version.
+
+- **Why (Jerry):** a run is a task list worked through **one task at a time**. The code owns the plan
+  (the list plus the current-task pointer), and the director LLM answers one narrow question at a time:
+  "does this reply complete the current task?" That is easier for an LLM to get right and easier to
+  test than the LLM keeping track of the whole checklist itself.
+- **`objective.md`:** only `# Objective` is required. `## Tasks` (used exactly as written: no rewriting
+  or splitting by the director), `## Done` (any `##` heading starting with "Done"), `## Constraints`
+  and `## Context` are optional. The objective stays in the director's system prompt for the whole run,
+  because judging a task, honouring constraints and writing good worker prompts all need the "why", not
+  just the task list.
+- **Three phases, driven by code.** The director is offered only the tools for the current phase
+  (all phases also have `read_file`):
+  - **PLAN** (only if there is no `## Tasks`): `set_tasks(tasks)`, 1–20 non-empty tasks. The plan is
+    printed and is fixed for the run (re-planning is deferred). Work discovered later becomes follow-ups
+    within a task.
+  - **WORK**, for each task in order: the director writes the worker prompt; the worker runs a turn;
+    the code wraps the reply ("Task i of n: <task>. Worker reply: …, tools called: …, error: … Is the
+    task complete?"). The director then either
+    - calls `task_done(note)` → next task. The tool result names the next task, and the director's text
+      reply becomes that task's worker prompt, so one director turn both judges a task and starts the next;
+    - replies with text → a follow-up prompt to the worker for the same task;
+    - calls `task_failed(reason)` → the run stops (see below).
+  - **REVIEW**, after the last task: the director checks the completed tasks and their notes against
+    `# Objective` (and `## Done` if present) and calls `finish(success, summary, gaps)`. `gaps` is a
+    list of strings, so it is easy to read out in a later `-json` mode and to turn into new tasks in a
+    follow-up run.
+- **Ending a director turn early:** `task_done` on the last task, `task_failed` and `finish` end the
+  director's turn at once, with no extra LLM call to acknowledge the tool result.
+- **Memory:** the worker's *and* the director's context are cleared at the start of each task (the
+  worker's full `MsgHistory` is still appended to). The director carries information forward through
+  its `task_done` notes, which appear with each task's status in its system prompt, rebuilt before every
+  director turn. The director's instructions tell it to write notes later tasks will need, and to pass
+  earlier results to the worker in the prompt. Compaction stays on as a safety net for a long task.
+  *Downside:* anything not written into a note is gone; the director can still `read_file` what the
+  worker produced.
+- **Limits and stopping:**
+  - `maxTurnsPerTask` (director block, default 5) caps worker turns per task. Hitting it counts as the
+    task failing.
+  - **No run-wide turn limit** (Jerry, 2026-10-13). The run is already bounded by `maxTurnsPerTask` ×
+    number of tasks (≤ 20 tasks). This replaces the earlier `maxTurns` (default 15). Flag:
+    `-maxturnspertask`, in the same style as `-maxsteps`. *Downside:* the worst case is large: 20 × 5 = 100
+    worker turns, each up to `MaxSteps` LLM calls. `-timeout` is the wall-clock safety net.
+  - A failed task (`task_failed`, or the per-task limit) **stops the run** and reports progress. It still
+    makes a best-effort REVIEW call for the summary and gaps; if that call fails, the report is built
+    from the code's own state. Interrupt, timeout and error skip the REVIEW call and use the code's state.
+- **Report:**
+  - reason: `finished | task_failed | interrupted | timeout | error` (hitting the per-task limit is
+    reported as `task_failed`);
+  - success, summary;
+  - every task with its status (`done | failed | pending`) and note;
+  - gaps;
+  - turns used.
+- **Exit codes:** 0 = finished and success; 1 = anything else except an interrupt; 130 = interrupted.
+
+### mvp3 reference build: tweaks and extra decisions (2026-10-13)
+
+Claude built autonomous mode in full in `mvp3/` (a copy of the root agent, as its own Go module) at
+Jerry's request, as a run-through and template for his own build at the root, like `mvp1/` before
+mvp2. These are the places where the build differs from, or adds to, the decisions above. Items marked
+*(real run)* came from live runs with gpt-4o-mini and claude-haiku-5-5. Each is a candidate for the root
+build, not yet adopted there.
+
+**Flow and director**
+1. **Every accepted control tool ends the director's turn**, including `set_tasks` and `task_done` on a
+   non-last task. This drops D12 ("task_done's result names the next task and the reply is its
+   prompt"). *Why:* contexts are cleared per task, so the next task's first prompt should be written in
+   that task's fresh context, not at the end of the previous task's. *Cost:* one extra director call
+   per task.
+2. **The turn that writes a task's first prompt offers the director no tools at all** *(real run)*,
+   so its only possible answer is text. Offered file tools, gpt-4o-mini listed an empty directory until
+   it ran out of steps. Offered only `task_done`/`task_failed`, it called `task_failed` before the worker
+   had tried anything. Judging "is it done?" only makes sense after a worker turn.
+3. **The director's read-only tools are `read_file` and `list_dir`**, offered when planning, when judging
+   a worker turn, and in review.
+4. **The director's system prompt also lists the worker's tool names and the per-task turn limit**, so it
+   writes prompts the worker can carry out.
+5. **More built-in instruction text** *(real run)*: "say what to achieve and how it will be checked;
+   leave the content (code, prose) to the worker" (gpt-4o-mini was writing the code itself inside its
+   prompts), and "file tools are for checking results, not exploring".
+6. **`finish(success=true)` is refused while any task is not `done`.** This keeps the consistency check
+   from the superseded checklist design. The director gets an error and answers again.
+7. **Per-task limit handling:** when the director replies with a follow-up after the worker has used
+   all its turns, it gets one reminder (`NudgeLimit`). After that, the code fails the task itself
+   ("turn limit reached").
+8. **Reminders ("nudges"):** at most 2 (`maxNudges`) when the director replies with text in PLAN or
+   REVIEW, or with nothing in WORK. After that the run ends with `error`.
+9. **Per-task context clearing waits for any background compaction first** (`WaitForCompaction`, then
+   `Clear`). `ChatContext`'s generation counter would also discard a late compaction result.
+10. **Known limit:** a director *commentary* reply in WORK ("the task looks done") is sent to the worker
+    as a prompt, because the code can't tell it apart from an instruction. The instructions guard
+    against it; no code does.
+
+**Startup, config, CLI**
+
+11. **The unattended-tools warning lists every worker tool except `read_file`/`list_dir`**, not only MCP
+    tools, because `write_file`/`edit_file` change things too.
+12. **Autonomous mode checks at startup that the worker's and the director's API-key environment variables
+    are set**, instead of failing with a 401 halfway through a run.
+13. **`-directormodel` flag** (new). `-objective`, `-maxturnspertask`, `-timeout` and `-directormodel` are
+    refused with an explicit non-autonomous `-mode`. `--json` is refused for autonomous mode until it
+    exists. `"timeout"` can also be set in the config file.
+14. **The unknown-key warning also checks keys inside `"director"`** (e.g. `director.maxTurnPerTask`).
+15. **SIGTERM exits 143** (the open item in the plan). `main` became `run() int`, which also fixes
+    Deferred item 3 in mvp3: chat mode now exits 1 when setup fails, instead of 0.
+16. **`tools.ErrEndTurn` lives in `tools/`**, next to the `Tool` interface. `reActLoop` uses
+    `runToolCallEnd`, and tool calls after an ending tool in the same reply are skipped.
+
+**Objective parsing (details the plan left open)**
+
+17. Text before `# Objective` is ignored. Any other `#` heading is an error. Lines inside ``` fences
+    are never headings or bullets. `###` and deeper are body text. Non-bullet text under `## Tasks`
+    before the first bullet is kept as `TaskNotes` and shown to the director.
+
+**Output and model**
+
+18. **Output labels:** `ChatSession.Name` gives `[worker]`, `[worker:tool]`, `[director]` and
+    `[director:tool]` (chat keeps `[assistant]`/`[tool]`). An empty `[assistant]` line is no longer
+    printed when a reply contains only tool calls.
+19. **The report shows the error text only for reason `error`.** For `interrupted`/`timeout` it would
+    only say "context canceled".
+20. **An HTTP error from the OpenAI-compatible adapter includes the start of the response body**
+    (collapsed to one line), e.g. "the model `x` does not exist".
+
+**New built-in tools** (Jerry asked for write/edit)
+
+21. **`write_file`, `edit_file` and `list_dir`, opt-in through `builtinTools`** (`"WriteFile"`, `"EditFile"`,
+    `"ListDir"`; the default is still only `ReadFile`).
+    - All of them are confined to `workDir` with the same deny list as `read_file`.
+    - `write_file` can't use `resolve()` (the file may not exist yet), so it uses `resolveTarget`: it
+      resolves symlinks on the deepest existing ancestor, then checks the path is inside `workDir`. The
+      write itself goes through `os.Root` (`MkdirAll` + `WriteFile`), the second line of defence.
+    - `edit_file` replaces an exact `old_string` that must match once (or `replace_all`), and keeps the
+      file's permissions.
+    - There is a 1 MB cap. `read_file`'s open-and-check code became `readRegularFile`, shared with
+      `edit_file`.
+
+22. **`run_command`: one built-in tool that runs `go`, `python3`, `python` or `pytest`** (2026-10-14;
+    opt-in as `"RunCommand"`; `tools/builtin/runcommand.go`). Jerry asked for a way to run Go and Python
+    so coding tasks can be tested.
+    - **One combined tool rather than `run_go` + `run_python`:** one schema and one set of rules (timeout,
+      output cap, environment); adding a program is one line in `RunCommandPrograms`. The `command`
+      argument is a JSON-schema enum of the programs actually found on `PATH` when the tool is built,
+      each resolved to an absolute path then, so a file named `go` written into `workDir` can't be run instead.
+    - **Not a shell.** The program starts directly with an argument list (no `sh -c`), so pipes, `&&`,
+      `$VAR` and `$(...)` are literal text. Downside: the model can't chain commands, so `go mod init`
+      then `go test` is two calls.
+    - **Optional `dir`**, a subdirectory checked with `read_file`'s `resolve()` (inside `workDir`, not
+      deny-listed).
+    - **Limits:** 3-minute timeout per call; 32 KB of combined output, and the program is killed past
+      that; stdin is empty. It runs in its own process group, killed on timeout and again after it exits,
+      so a background child can't outlive the call (mvp1's `tool.Shell` design). A Ctrl+C of the turn
+      returns the turn's error, kept apart from the tool's own timeout.
+    - **A non-zero exit is a normal result** (output plus `[exit status N]`), not a tool error: a failing
+      test is information for the model.
+    - **The environment is rebuilt from an allowlist** (`RunCommandEnv`: `PATH`, `HOME`, Go and Python
+      settings), so `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` don't reach the program.
+    - **Honest downside: this is code execution, not a sandbox.** `go run`/`python3` run code the model
+      wrote, with the user's permissions: they can read outside `workDir` (the deny list doesn't apply),
+      use the network, delete files. That's why it is opt-in and appears in the unattended-tools warning.
+      Real isolation is a container/VM runner behind the same tool name (deferred).
+23. **The director is told what a failed worker turn means** (`WrapTurn`; *real run 2026-10-14*). A
+    failed turn (for example the worker hitting `maxSteps`) isn't added to the worker's memory and its
+    tool list is lost. The director used to read "failed … Tools called: none" as "nothing happened" and
+    called `task_failed`, although the worker's tests were in fact passing. The message now says files
+    the worker changed are kept, the worker won't remember the turn, and the director should check
+    the files before deciding. The "Tools called" line is left out for a failed turn rather than saying
+    "none".
+24. **The coding example configs set the worker's `maxSteps` to 20** (`config.openai.json`,
+    `config.claude-director.json`, `config.ollama.json`; the default stays 10). A write → test → fix →
+    test loop uses steps quickly. These configs also enable `RunCommand`, and `objective-fib.md` now has
+    the worker create the module and run `go run .`/`go test ./...` itself.
+
+25. **The director's control tools are guarded against "I meant to send the worker back"** (*real run
+    2026-10-14*, `run-20261014-0216.log`, 19-task transpiler with a Haiku director, stopped on task 2).
+    - **What happened:** Haiku wrote "I'm sending the worker back to fix that" *in the same message as a
+      `list_dir` call*. Text that comes with a tool call is never sent to the worker, because only a final
+      text-only reply is. Then, still in that turn, it called `task_failed` with the reason "this call was
+      an error; the task has not failed". The earlier "`task_done` with a note saying 'Not yet done'"
+      observation is the same confusion. (An outside diagnosis Jerry pasted caught the `task_failed`
+      misuse and the director's over-strict style review, but not the text-with-tool-call cause.)
+    - **Instructions now say:** your instruction is sent only when your turn ends with plain text and no
+      tool call, and text next to a tool call reaches no one. `task_failed` stops the whole run and is
+      never a way to ask for fixes. Judge work against what the task states and against real checks, not
+      unstated design preferences. The `task_done`/`task_failed` tool descriptions say the same.
+    - **Code guard:** while the worker still has turns, the **first `task_failed` of a task is refused**
+      with that explanation, as an ordinary tool error, so the director can recover in the same turn. A
+      second call is accepted. `Plan.WorkerTurnsLeft` is set by `runTask` before each director turn.
+      The refusal is **once per task, not once per director turn**. The per-turn version was tried first:
+      Haiku treated each refusal as "use up the turns first" and spent 3 extra worker turns before it
+      could give up. Per task, a real give-up (missing-input example) costs one extra director call and
+      0 extra worker turns.
+    - Not guarded in code: `task_done` with a "not done" note. Refusing `task_done` would add a director
+      call to every task; the instruction and description changes are meant to cover it.
+
+26. **`director.maxTasks` is configurable** (Jerry, 2026-10-14; default 20, must be positive; there's no flag).
+    It replaces the `director.MaxTasks` constant. The same limit applies to a given `## Tasks` list
+    (`ParseObjective(data, maxTasks)`, so a longer list is a bad objective file, exit 2) and to
+    `set_tasks` (`Plan.MaxTasks`, set by `NewPlan(tasks, maxTasks)`). The set_tasks description and the
+    PLAN-phase prompt show the configured number. Trade-off: a bigger limit makes the run longer
+    (the worst case is maxTasks × maxTurnsPerTask worker turns), and every director call costs more, because
+    the system prompt lists every task and its note.
+27. **Rounds: `director.maxIterations`** (Jerry asked, 2026-10-15; default 1, which is the old behavior;
+    must be positive; no flag). A round is plan → work → review. Another round starts when the review
+    succeeded, said "not met", listed at least one gap, and rounds are left. That includes a round that
+    ended in `task_failed`, because a turn-limit failure is often fixable with a fresh plan.
+    - **Next round's input:** a PLAN phase that always runs (the objective's `## Tasks` only seeds round
+      1), prompted with the last review's summary and gaps (`GapsPlanPrompt`). Files stay in the workdir.
+    - **Earlier rounds** (tasks, notes, review summary, gaps) go in the director's system prompt under
+      `## Earlier rounds`, because contexts are cleared per task.
+    - **Picky-reviewer guard:** while rounds are left, the review prompt says the gaps become a new
+      round, so list only what the objective and its quality bar require. Further stop conditions, such as
+      measuring the size of the gap, are for later (Jerry).
+    - **Report:** one section per round; the run succeeds if the last round does; worker turns are counted
+      across rounds. `maxTasks` applies per round.
+    - **Named `maxIterations`, not Jerry's `maxSessionIterations`:** "session" already means `ChatSession`.
+    - **Downsides:** cost grows with each round; a task that truly can't be done (missing input) is retried
+      until the limit; the system prompt grows with every round.
+
+**Observed in real runs (not changed)**
+
+- A review can find a real defect and still report `success=true` with the defect listed under gaps
+  (glossary run: a duplicated bullet). The run can't go back and fix it. This is the deferred "turn gaps
+  into new tasks" round. *(Built 2026-10-15 as item 27, but only for success=false: a success=true review
+  with gaps still ends the run.)*
+- With small models, the objective's `## Context` decides success. The DeepWiki example failed until
+  Context said the repository is *not* in the working directory, because the worker tried `read_file`
+  on paths DeepWiki had mentioned.
+- *(2026-10-14, with `run_command`)* gpt-4o-mini as worker spent a whole task failing to fix its own
+  test (it compared `[]int` with `int`). The gpt-4o-mini director then gave wrong advice (it said the
+  last element of `fib(10)` is 55) and called `task_failed`. `go test` caught it honestly, which is the point.
+- *(same day)* With a Haiku director, the worker put `fib_test.go` in a stray `fib/` subdirectory. The director
+  noticed, but then called **`task_done` with a note that began "Not yet done"** instead of
+  sending a follow-up prompt. Possible fixes, not made: make the `task_done` description say "only when
+  the task is complete; to continue, reply with a prompt", or have review turn such notes into gaps.
+
+### Step 2 (`-mode orchestrator`): direction from Jerry (2026-10-15)
+
+- **Status: direction agreed, not designed in detail.** Transcript: `mvp3/prompts/` (2026-10-15 session).
+- **Flow:** (1) the director plans tasks, with dependencies, from a catalog of available worker agent
+  types; (2) an LLM (probably the director) assigns each task an agent type; (3) a **plain-Go
+  orchestrator** (no LLM) starts MCP worker agents and sends the tasks whose dependencies are done, within
+  resource limits; (4) replies go to the director, which decides "done" or "follow-up", and the
+  orchestrator delivers the follow-up to the same worker; (5) repeat until all tasks are finished, then
+  review the objective.
+- **No local worker LLM in this mode:** the local process is the director plus the Go orchestrator.
+- **Workers are MCP servers** (agent as an MCP tool), not A2A for now. Plain request/response, with a
+  `status` field in the JSON result (completed / question / failed …) standing in for A2A's task
+  lifecycle. A2A stays a later option, for long-running or remote tasks.
+- **Task state lives in Go, not in the director's context** (a `TaskManager`: task ID, worker ID,
+  status, history). Jerry's analogy: a team lead with hundreds of reports can't track it in their head.
+- **Before step 2:** add session iterations to mvp3. A review with gaps becomes a new plan → work →
+  review round, up to `maxSessionIterations` rounds; the first session counts as 1. *(Built 2026-10-15 as
+  `director.maxIterations`: § mvp3 reference build, item 27.)*
+- **Shared files: tasks run one at a time first** (agreed 2026-10-15), to prove the flow with one MCP worker.
+  Parallel tasks come later, with declared write sets plus locks.
+- **The local worker stays (proposed by Claude, 2026-10-15):** a `Worker` interface (run a task, send a
+  follow-up) with two implementations: the in-process worker (today's `ChatSession` and its config) and
+  an MCP worker. The local worker is then just one worker in the pool, and the orchestrator can be built
+  and tested with it before any MCP code. `-mode worker` serves that same in-process worker over MCP.
+- **Decentralized mode is deferred** (Jerry, 2026-10-15): the architecture needs research first.
+- **A shared board for worker-to-worker messages: wanted, design proposed (Claude, 2026-10-15).**
+  - The orchestrator owns the board and serves it as MCP tools (`board_post`, `board_read`). Workers
+    already have an MCP client, so each worker connects to it like any other MCP server.
+  - Entries are append-only and structured: id, author, task, topic, text, time. They are kept in
+    memory and written to a JSONL file, for debugging and for resuming a run.
+  - Not a file that agents edit directly: that only works for local workers, needs file locking, and
+    one bad write by an agent corrupts the board.
+- **Open:** a shared filesystem across parallel workers (code, documents, data).
+
+### Step 2 MVP: answers decided 2026-10-15
+
+- **Built in `mvp4/`,** a fresh copy of `mvp3/` (module `.../minimal-agent/mvp4`, copied 2026-10-15 without run
+  logs, scratch dirs or prompts). mvp3 stays the frozen autonomous-mode reference.
+- **The seam:** `runTask`'s `resetContext(worker)` + `runTurn(worker, prompt)` go behind a `Worker` interface,
+  with an in-process worker first and an MCP worker (`-mode worker`) second. Everything else (director,
+  phases, control tools, rounds, report) stays.
+- **Dependencies:** `set_tasks` takes `depends_on` and a worker type per task now. Go checks that the IDs
+  exist and that there are no cycles. Tasks still run one at a time, in dependency order.
+- **`TaskManager` owns the task list** (ID, depends on, worker type, worker ID, status, history, notes).
+  `director.Plan` keeps only the phase and the review state.
+- **Task IDs are short strings chosen by the director** (`"t1"`), not list indexes, so dependencies and
+  follow-ups refer to tasks reliably.
+- **One shared worker config** for all workers in the MVP.
+- **stdio only** for the MVP. HTTP waits: auth, and a worker with `run_command` behind a port is a remote shell.
+- **Each MCP worker call has a 10-minute timeout**; the run's `-timeout` still applies on top.
+- **No shared board in the MVP.** The TaskManager `notes` field, written by the director and pushed into
+  task prompts, is enough until there's a clear need.
+- **No token/cost field in the worker reply yet;** maybe later.
+- **Worker protocol:** MCP tools `run_task {task_id, prompt}` (first call for an ID starts a fresh worker
+  conversation; later calls are follow-ups) and `end_task {task_id}`. The result's `structuredContent` is
+  `{status, reply, error, tools_called}`. The director sees mvp3's `WrapTurn` text plus a `Status:` line.
+- **Go sets `status`, not the worker LLM** (Jerry, 2026-10-15): `completed` / `step_limit` / `error`, derived
+  from how `runTurn` ended. Always present, needs no LLM cooperation, and the orchestrator can act on it
+  (retry, fail after N errors). A worker's question is reply text the director reads. Rejected for now: a
+  worker `report(status, message)` tool (small models forget to call it, it duplicates the director's
+  judgment); revisit if Go code must route questions without the director.
+- **No third config block (Jerry: "config sprawl"):** in orchestrator mode the top-level config *is* the
+  worker config, as the turn LLM already was the worker in autonomous mode. The orchestrator starts
+  `<same binary> -mode worker -config <same file> -workdir <same dir>`, forwarding worker flags
+  (`-model`, `-maxsteps`); the child ignores `"director"`. Downside: the top-level config configures nothing in
+  the parent process, so the start banner must say where the worker runs. Named worker types (overlays of
+  the top-level part) are deferred until a second type is needed.
+
+### mvp4 reference build: orchestrator mode, slices A–C (2026-10-15)
+
+Built by Claude in `mvp4/` from `PLAN-orchestrator-mode-serial.md`, at Jerry's request. Choices made
+while building, beyond the answers above:
+
+1. **Packages:** `worker/` (interface, `Result`, `Info`, protocol types, `MCPWorker`) and `tasks/` (`tasks.Manager`
+   is the TaskManager). Both are capability packages; `director` imports them, `agent` wires them.
+2. **A third MCP tool, `worker_info`** (model + tool names). In orchestrator mode the parent never sets up the
+   worker's tools, so the director's prompt gets them from the child.
+3. **`localWorker` holds one conversation:** a new task ID clears the context, `EndTask` (deferred in `runTask`)
+   clears it too. Round 2 reusing `t1` is safe because of that `EndTask`.
+4. **`RunTurn`'s error becomes an observation** (`status: error`) unless the run itself was cancelled; the
+   per-task turn limit bounds a dead worker.
+5. **stdout in `-mode worker`:** `main` points `os.Stdout` at stderr before loading the config and keeps the real
+   stdout in `cfg.ProtocolOut`. So `-mode worker` must be a flag; `"agentMode": "worker"` in a file is refused (exit 2).
+6. **Child flags come from the merged config** (`-model`, `-maxsteps`, `-workdir`, `-config`, `-debug`), not by
+   re-forwarding the parent's argv.
+7. **`set_tasks` takes objects only** (`id` and `task` required). No plain-string fallback: simpler, at the cost
+   of small directors needing to get the shape right (the error says what to fix).
+8. **Task status `running`** replaces mvp3's computed `[current]` in the director's task list.
+9. **Ctrl+C:** the child ignores SIGINT (`main` registers it); the parent cancels the MCP call (the SDK sends
+   `notifications/cancelled`) and closing the session ends the child. Not yet checked by hand with a real Ctrl+C.
+10. **Verified:** `go test -race ./...`; a raw JSON-RPC check that `-mode worker` writes only JSON-RPC to stdout
+    (a config warning went to stderr); a full `-mode orchestrator` run against a scripted fake OpenAI-compatible
+    server (planning with `depends_on` reversed in the list, two tasks, review, exit 0, child exited). Seen in the
+    raw check: at end of input the server exits without answering requests still queued; harmless for the
+    orchestrator, which waits for each reply.
+
+### Slice D (parallel tasks): answers decided 2026-10-16
+
+Plan: `PLAN-orchestrator-mode-parallel.md`. Jerry's answers to Claude's open questions:
+
+1. **One director conversation per running task** (Claude's recommendation; Jerry asked how they're coordinated).
+   The LLM API is stateless: every request carries its whole conversation, so N conversations are just N
+   independent requests to the same model endpoint and need no coordination in our code. They coordinate only
+   through shared Go state (the task list, status and notes, under a mutex), which is rebuilt into each
+   director's system prompt every turn. Downside: N× director cost, and a director doesn't see a sibling
+   task's live progress, only its status and notes. Rejected: one director in an event loop with a
+   `send_to_worker(task_id, …)` tool (bigger rewrite; one context mixing several tasks).
+2. **One shared workdir** for the MVP. The planning prompt tells the director to split tasks by file and use
+   `depends_on` for anything shared. Downside: races on shared files (`go.mod`) and concurrent builds. Declared
+   write sets + locks (2026-10-15 note above) or a worktree per task stay later options.
+3. **A failed task drains the round:** no new tasks start, running ones finish, then review. Rejected:
+   cancelling the siblings (cheaper, but throws away nearly-finished work).
+4. **Worker pool = N `-mode worker` child processes, each running one task at a time.** `localWorker` is
+   unchanged. Downside: N processes, each starting its own MCP tool servers.
+5. **Parallel only in orchestrator mode.** Autonomous mode stays "a director plus the in-process worker";
+   `maxParallel > 1` there is refused.
+6. **Shared board stays deferred.**
+7. **Built in `mvp4/`,** not a new copy: `maxParallel: 1` behaves exactly like the serial MVP.
+8. **Rate limits (429):** observations for now; retries with backoff later.
+9. **The director plans for the parallelism it has** (Jerry): with N > 1 workers, a director may shape the task
+   list differently (more independent tasks, fewer chains), so the PLAN and gap-planning prompts and the
+   `## Worker` section say how many tasks can run at once and that tasks without `depends_on` between them
+   may run at the same time in the shared workdir.
+
+**Second round (Jerry: "These five are fine", 2026-10-16):** Claude's recommendations from the plan's § 4:
+
+10. **Tasks given in `## Tasks` are chained** (each depends on the one before) when `maxParallel > 1`; with 1
+    they stay unchained, so the serial prompts and report are unchanged. A hand-written list can't run in
+    parallel yet.
+11. **One lock** for the plan and its tasks (in `director.Plan`), never held during an LLM or worker call.
+12. **All N workers start with the run**, so a child that can't start fails the run before any work.
+13. **Hard errors drain too** (see "As built", item c, for how this ended up).
+14. **The name is `director.maxParallel`** (a maximum), with a `-maxparallel` flag.
+
+**As built (Claude, 2026-10-16), beyond the answers above:**
+
+a. **Plan still owns the transitions:** `StartNext` returns nil when nothing can start (none ready, a task
+   failed, or the phase is over); `TaskDone` / `TaskFailed` act on a `TaskRun` (the per-task state: task,
+   worker turns left, the once-per-task `task_failed` refusal) and move to REVIEW only when no task is
+   running and none will start. So `Plan.Current` is gone, and the tools' schema didn't change.
+b. **A director conversation per task** (`newDirector`): its own memory and context, the shared provider. PLAN
+   and REVIEW keep `r.dir`.
+c. **Hard errors (a failed director turn) stop new tasks, wait for the running ones, then end the round
+   without a review**, as in the serial run. This differs from the plan's "drain, then review": a review after
+   a failed director turn (often a 401 or an outage) would usually fail too, and it keeps `maxParallel: 1`
+   identical to slices A–C. Easy to change if a real run shows otherwise.
+d. **Output:** a `lineWriter` per task prefixes `[t3 w2] ` and writes whole lines under one shared mutex; each
+   child's stderr goes through one with `[w2] ` (only when N > 1). Serial output is unchanged.
+e. **Report:** `PeakTasks` ("up to 2 tasks at once", shown when > 1). The "TASK t3 (3/5)" counter is taken when
+   the task starts.
+f. **Verified:** `go test -race ./...` (all earlier tests unchanged = the serial regression check); new
+   `agent/parallel_test.go` (two tasks provably overlap, a dependent task waits, drain after a failure,
+   Ctrl+C ends all tasks, `lineWriter`), director drain and prompt tests, config tests; parallel tests
+   repeated 20× under `-race`. A full `-mode orchestrator -maxparallel 2` run against a threaded fake server:
+   t1 and t2 overlapped on w1/w2, t3 waited for both, exit 0, both children exited. `-mode autonomous
+   -maxparallel 2` is refused (exit 2). Not yet: a real-provider parallel run.
+
+### Slice E (worker types): decided and built 2026-10-16
+
+Plan: `PLAN-orchestrator-worker-types.md`. Jerry asked for worker types such as a "software engineer" and a
+"code test and review" agent, with eager start first ("Let's build the worker types with eager start first"),
+and asked how a type could differ by its prompt alone.
+
+1. **A `"workers"` list in the main config:** `{type, count, config, description}`; the first entry is the
+   default type. A list, not a map, so the default is well defined (JSON maps have no order).
+2. **A worker type's `config` is a partial file applied over the top-level config** (Claude's answer to "how do
+   I just use different worker prompts"): `{"systemPrompt": "You are a tester..."}` is a whole type. The run's
+   keys are refused there; `builtinTools` and `mcpServers` replace rather than merge (merging would make
+   "fewer tools" impossible). Its path is relative to the main config file. Rejected: full config files per
+   type (every shared setting copied N times) and inline overrides in the main file (Jerry pictured separate
+   files; easy to add later).
+3. **Children get `-config <main> -workerconfig <type file>`;** the parent applies the same file to compute
+   each type's `-model` / `-maxsteps` flags, so a type's `model` wins over the parent's `-model`.
+4. **Eager start:** every worker of every type starts with the run (`count` is how many, not a maximum).
+   Lazy start is the planned follow-up (Claude's suggestion: one per type at setup, more on demand).
+5. **`description` is shown to the director;** the worker's system prompt is not (it can be long, and the
+   director only needs to know what the type is for).
+6. **`"workers"` replaces `director.maxParallel`:** setting both (`maxParallel > 1`) is a config error; tasks at
+   once = the sum of the counts. `"workers"` in autonomous mode is refused, like `maxParallel > 1`.
+7. **Scheduling:** one idle pool per type; the first ready task whose type has a free worker starts
+   (`tasks.Manager.NextFor`). Worker IDs are `<type><n>` (`engineer2`) with a `"workers"` section, `w<n>` without.
+8. **Verified:** `go test -race ./...` (earlier tests unchanged), new config tests (partial files, refused and
+   unknown keys, path resolution, `-workerconfig`), director tests (unknown type, a ready tester task starts
+   while engineers are busy, the prompt's type list), `Test_Parallel_WorkerTypes` (two engineer tasks never
+   share the one engineer, the tester runs beside them). A fake-server run with `engineer ×2` + `tester ×1`:
+   the tester child's requests carried the tester system prompt from its file, the engineers' the top-level
+   one; exit 0, all children exited. Example: `mvp4/examples/config.worker-types.json` with
+   `worker-engineer.json` and `worker-tester.json`.
+9. **First real-provider run (2026-10-16, Jerry):** `config.worker-types.json` (engineer ×4 + tester ×2,
+   gpt-5-mini workers, claude-sonnet-5-5 director) on `examples/objective-build-minisearch.md`, result in
+   `mvp4/scratch-test-13/`, log `mvp4/run-minisearch-20261016-1046.log`. Finished with success in one round,
+   in about 11 minutes. There were 14 tasks (9 engineer, 5 tester) and 17 worker turns, with up to 5 tasks
+   at once.
+   - **Typing was right.** Every implementation task went to an engineer and every test task to a tester. Each
+     tester task started as soon as its own implementation finished. The 2 testers were the bottleneck.
+   - **What it shows and what it doesn't.** The objective itself asked for implement-then-verify pairs and
+     separate verifier agents, so the run shows the director *following* such a structure with types. It
+     doesn't show the director inventing one. The four packages didn't overlap, so the shared workdir never
+     clashed. Nothing failed and no tester reported a bug, so drain, retries and "fix it in a later engineer
+     task" were not exercised against a real model.
+   - **Smaller observations:** the director sent the README task back twice because its examples didn't match
+     the real CLI output, which is review working as designed. The README went to an engineer because there
+     was no docs type.
+   - **The `count` question (Jerry, 2026-10-16):** with `"workers"`, `maxParallel` is implied (the sum of the
+     counts) and is left out. The sum is a ceiling: dependencies keep the real peak lower (5 of 6 here).
+
+Slice D also had its first real-provider runs (Jerry, 2026-10-16): `objective-build-backup-archiver.md` with
+`maxParallel` built a working `dedupbackup` CLI in `mvp4/scratch-test-12/`. The finding from that run: the
+objective didn't ask for a README or usage examples, so none were written. It is worth adding a "README with
+example commands" requirement to objectives (not yet done for that file).
+
+## Porting autonomous / orchestrator mode into the root code (decided 2026-10-16)
+
+Jerry, at the end of the slice E session: "Next up is to incorporate these into the main codebase, using mvp3/
+and mvp4/ as good templates and AI as a pair programmer / thought partner / teacher."
+
+- **mvp3/ and mvp4/ are reading templates, not code to copy.** This works the way mvp1 preceded mvp2. Jerry
+  builds the root version himself, with the usual style: concepts, then small examples, then a TODO skeleton he
+  fills in (`SESSION.md § How to work in this session`).
+- **Suggested order (Claude's, open to change):**
+  1. autonomous mode (mvp3: `tasks/`, `director/`, the round loop in `agent/autonomous.go`);
+  2. the `Worker` interface with a local worker;
+  3. `-mode worker` over MCP plus `-mode orchestrator`, serial (slices A–C);
+  4. parallel tasks (D);
+  5. worker types (E).
+
+  Each step runs on its own before the next, so each one is a working checkpoint. The honest downside: it is
+  slower than porting mvp4 in one go, and some steps get reworked (e.g. `Plan`'s per-task state moves into
+  `TaskRun` in step 4). That rework is the lesson, since it shows why the mvp4 shape exists.
+- **Where the mvp4 design is still open, decide it during the port, not before:** lazy worker start, retries
+  on 429, isolation (a worktree per task), the shared board, reviewer types without write tools.
+
 ## Deferred / open decisions
 
 - **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**
@@ -1602,6 +2192,18 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
       non-zero on a run error, so do both together for the full fix.
     - *Revisit:* together with item 3 (before headless/oneshot), or as soon as an unexplained quit of the
       REPL is seen.
+
+12. **Autonomous mode (step 1) extras, left out of the first version** (decided 2026-10-13; see
+    `§ Autonomous, orchestrator and worker modes`).
+    - `-json` final report (report as JSON on stdout, logs on stderr).
+    - Saving a run transcript to a file. `ChatMessage` drops `ID`/`Timestamp` from JSON, so this needs its
+      own storage type. Until then: `| tee run.log`.
+    - Multiple agent instances, MCP server ("worker") mode, and orchestration: these are step 2.
+    - A tasks state file (`update_tasks` tool) that persists across runs; resuming a crashed run.
+    - A separate verifier LLM that double-checks the director's "done" verdict.
+    - Human takeover: Ctrl+C pauses the run and hands the user the REPL, instead of ending the run.
+    - A token or cost budget (`MaxTokens` is still unread).
+    - *Revisit:* after step 1 works end to end.
 
 ---
 

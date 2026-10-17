@@ -1,0 +1,18 @@
+{
+  "provider": "openai",
+  "model": "gpt-4o-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a careful software engineer. Use your tools to do the work; when finished, answer in plain text with a short summary of what you did.",
+  "maxSteps": 20,
+  "builtinTools": ["ReadFile", "WriteFile", "EditFile", "ListDir", "RunCommand"],
+  "director": {
+    "provider": "openai",
+    "model": "claude-haiku-5-5",
+    "baseUrl": "https://api.anthropic.com/v1",
+    "apiKeyName": "ANTHROPIC_API_KEY",
+    "maxSteps": 10,
+    "maxTurnsPerTask": 4,
+    "additionalInstructions": "Keep the task list short (at most 5 tasks). Ask the worker to read files back after writing them."
+  }
+}

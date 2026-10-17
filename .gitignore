@@ -9,3 +9,5 @@ mvp1/minagent
 .env.example
 prompts/
 graphify-out/
+mvp3/minagent
+mvp4/minagent

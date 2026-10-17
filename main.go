@@ -13,7 +13,11 @@ import (
 	"github.com/jerryschen31/minimal-agent/config"
 )
 
-const WelcomeMsg = "Thanks for using minimal agent!\nType /clear to clear the conversation.\nType /exit to exit\nType /compact to compact the conversation.\nType /config to see the current agent configuration.\n"
+const LogoLines = `
+  <[o_o]>  minimal-agent v0.1.13
+   /| |\   Ask me anything!
+`
+const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /exit to exit\n     /compact to compact the conversation\n     /config to see the current agent configuration\n"
 
 // Main does a few things:
 // 1. Parses command-line flags and configuration -> Config instance

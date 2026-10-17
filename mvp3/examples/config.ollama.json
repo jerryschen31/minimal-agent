@@ -1,0 +1,16 @@
+{
+  "provider": "openai",
+  "model": "qwen2.5:7b",
+  "baseUrl": "http://127.0.0.1:11434/v1",
+  "apiKeyName": "",
+  "systemPrompt": "You are a careful assistant. Use your tools to do the work; when finished, answer in plain text.",
+  "maxSteps": 20,
+  "builtinTools": ["ReadFile", "WriteFile", "EditFile", "ListDir", "RunCommand"],
+  "director": {
+    "provider": "openai",
+    "model": "qwen2.5:7b",
+    "baseUrl": "http://127.0.0.1:11434/v1",
+    "apiKeyName": "",
+    "maxTurnsPerTask": 3
+  }
+}

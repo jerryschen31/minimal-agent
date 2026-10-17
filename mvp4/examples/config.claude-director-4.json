@@ -1,0 +1,20 @@
+{
+  "provider": "openai",
+  "model": "gpt-5-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a careful software engineer. Use your tools to do the work; when finished, answer in plain text with a short summary of what you did.",
+  "builtinTools": ["ReadFile", "WriteFile", "EditFile", "ListDir", "RunCommand"],
+  "maxSteps": 40,
+  "director": {
+    "provider": "openai",
+    "model": "claude-sonnet-5-5",
+    "baseUrl": "https://api.anthropic.com/v1",
+    "apiKeyName": "ANTHROPIC_API_KEY",
+    "maxIterations": 3,
+    "maxSteps": 40,
+    "maxTasks": 50,
+    "maxTurnsPerTask": 40,
+    "additionalInstructions": "Include the Quality bar section from the objective md file in every worker prompt. Prefer moving on over polishing. Ask the worker to read files back after writing them. Make sure workers do not try and overengineer - simple code is better."
+  }
+}

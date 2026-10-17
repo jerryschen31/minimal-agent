@@ -1,0 +1,34 @@
+{
+  "provider": "openai",
+  "model": "gpt-5-mini",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyName": "OPENAI_API_KEY",
+  "systemPrompt": "You are a careful software engineer. Use your tools to do the work; when finished, answer in plain text with a short summary of what you did.",
+  "builtinTools": ["ReadFile", "WriteFile", "EditFile", "ListDir", "RunCommand"],
+  "maxSteps": 40,
+  "workers": [
+    {
+      "type": "engineer",
+      "count": 4,
+      "config": "worker-engineer.json",
+      "description": "Designs and writes code and its unit tests."
+    },
+    {
+      "type": "tester",
+      "count": 2,
+      "config": "worker-tester.json",
+      "description": "Tests and reviews finished code: runs the build and tests, adds missing tests, and reports bugs with evidence. Does not rewrite the implementation."
+    }
+  ],
+  "director": {
+    "provider": "openai",
+    "model": "claude-sonnet-5-5",
+    "baseUrl": "https://api.anthropic.com/v1",
+    "apiKeyName": "ANTHROPIC_API_KEY",
+    "maxIterations": 3,
+    "maxSteps": 40,
+    "maxTasks": 50,
+    "maxTurnsPerTask": 40,
+    "additionalInstructions": "Include the Quality bar section from the objective md file in every worker prompt. Prefer moving on over polishing. Ask the worker to read files back after writing them. Make sure workers do not try and overengineer - simple code is better. Give implementation tasks to engineer workers. After each group of related implementation tasks, plan a tester task that depends on them; if the tester reports bugs, fix them in a later engineer task."
+  }
+}

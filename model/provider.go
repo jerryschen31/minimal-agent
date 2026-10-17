@@ -15,13 +15,7 @@ import (
 const ResponseTimeout = 5 * time.Minute
 
 type Provider interface {
-	Chat(ctx context.Context, chatHistory []ChatMessage, tools []ToolDef) (ChatMessage, error)
-}
-
-type OpenAICompat struct {
-	BaseURL string
-	Model   string
-	ApiKey  string // empty for Ollama
+	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
 
 // ChatMessage is sent to the provider as-is, so only the fields the chat completions API defines
