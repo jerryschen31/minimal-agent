@@ -1850,6 +1850,40 @@ and mvp4/ as good templates and AI as a pair programmer / thought partner / teac
 - **Where the mvp4 design is still open, decide it during the port, not before:** lazy worker start, retries
   on 429, isolation (a worktree per task), the shared board, reviewer types without write tools.
 
+## Build order: tracing core and approval before the autonomous port (decided 2026-10-18)
+
+Revises the 2026-10-08 plan in `SESSION.md` ("concurrent MCP connection setup → hook interface + tracing hook →
+sandboxed shell → headless mode"). Only the **order** is decided here; the tracing design itself is still a
+draft in `PLAN-tracing.md` and gets its own entries when it is settled.
+
+1. **Tracing core, in chat mode** (`PLAN-tracing.md` §13 slices 1–4): event format + testdata (including one
+   hand-written multi-agent example, to check the format can express director → worker runs before that code
+   exists), recorder + JSONL file, `standard` redaction **before anything reaches a log file**, hash chain.
+   A first digest (`tracecat`) is optional and kept simple: only if reading raw JSONL gets tedious.
+2. **Hook interface with an approval hook.** Called in `runToolCall` after the tool lookup and argument check,
+   before `callToolSafely`; a denial becomes an error observation. Produces the plan's `tool_decided` events.
+3. **`run_command` tool, ported from mvp4** (`mvp4/tools/builtin/runcommand.go`), with the program list made
+   configurable. **Replaces the "sandboxed shell" step**, which Jerry judged too hard for now.
+4. **The autonomous / orchestrator port**, in the order of `§ Porting autonomous / orchestrator mode` above.
+   Trace events for tasks are added as that code is written; multi-agent tracing (per-worker trace files, the
+   director's span ID passed to workers, merging) arrives with orchestrator mode.
+
+- **Why tracing first:** autonomous and orchestrator runs are long, unattended and parallel, and the mvp4 text
+  logs (`mvp4/runs/logs/`) are already hard to follow. With the recorder in place, new code gets its recording
+  calls as it is written instead of being retrofitted. Downside: autonomous mode starts later, and some
+  multi-agent tracing work waits for the orchestrator anyway.
+- **Why approval before the port:** autonomous workers run tools unattended (mvp4 prints a warning saying so);
+  an approval or policy hook is the main control over that until real isolation exists.
+- **Why `run_command` instead of a sandbox:** mvp4's tool already has no shell, an allowlist of programs, a
+  filtered environment, a timeout, an output cap and a process-group kill. **Honest downside, unchanged from
+  the mvp3 entry: it is code execution, not a sandbox** (`go run`/`python3` run model-written code with the
+  user's permissions). The approval hook is what limits it for now. A real sandbox (container/VM runner behind
+  the same tool name) stays deferred.
+- **"Headless mode"** in the 2026-10-08 plan is the old name for autonomous mode (renamed 2026-10-13), so it
+  is step 4, not a separate step.
+- **Unchanged:** concurrent MCP connection setup and the small fixes in `SESSION.md` can go before step 1 or
+  between steps; they don't depend on this order.
+
 ## Deferred / open decisions
 
 - **Resolved 2026-10-07 → see `§ Context window never hands out an orphaned tool result`.**

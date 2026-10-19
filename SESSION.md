@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-16)
+# SESSION.md — mvp2 progress (last updated 2026-10-18)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -111,9 +111,18 @@ several sessions have worked well; keep doing it this way.
 >   DECISIONS.md "Thinking dots"); only in chat mode on a terminal.
 > - **Next small fixes:** auto-compaction prints "complete" after an error (item 2); background output vs.
 >   the editor in raw mode can garble the prompt line (item 8); prompt-reader errors are swallowed (item 11).
-> - **Then, per the 2026-10-08 plan:** concurrent MCP connection setup → hook interface + tracing hook →
->   sandboxed shell (OS sandbox or an srt-wrapped / sandbox-exec-wrapped shell MCP server such as
->   `tumf/mcp-shell-server`) → headless mode. Deferred: dependency hardening (`DECISIONS.md` item 10).
+> - **Build order (decided 2026-10-18; replaces the 2026-10-08 plan; see `DECISIONS.md § Build order: tracing
+>   core and approval before the autonomous port`):**
+>   1. tracing core in chat mode: event format + testdata, recorder + JSONL file, `standard` redaction before
+>      anything hits a file, hash chain; a simple `tracecat` digest only if raw JSONL gets tedious
+>      (`PLAN-tracing.md` §13 slices 1–4; the plan is still a draft, refine before building);
+>   2. hook interface + approval hook (in `runToolCall`, before `callToolSafely`);
+>   3. `run_command` from mvp4, with a configurable program list (replaces the "sandboxed shell" step);
+>   4. autonomous → orchestrator port (`DECISIONS.md § Porting autonomous / orchestrator mode`), adding trace
+>      events as that code is written.
+>
+>   Concurrent MCP connection setup and the small fixes above can slot in anywhere. Deferred: dependency
+>   hardening (`DECISIONS.md` item 10).
 
 > **Active work moved to gen 8 on 2026-09-25:**
 > `mvp2/learn/chat_w_history_context_session_mcp_tools.go` + `..._mcp_tools_test.go` (tool
