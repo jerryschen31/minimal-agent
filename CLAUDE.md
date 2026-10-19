@@ -42,6 +42,9 @@ extensible ReAct agent in Go. Two generations live side by side:
   at the end of a session — same continuous-update discipline as `SESSION.md` already follows.
   A TODO or an open question stays in `SESSION.md` until it resolves into a decision, at which
   point it moves here.
+  **Both files are chronological (oldest first).** Append new dated entries at the **end** of
+  `SESSION.md`'s "Session log" and `DECISIONS.md`'s "Decision log"; never insert in the middle or at
+  the top. Reversed decisions get a new entry at the end plus a `superseded by` note on the old one.
 
 ## Commands for Reference Agent
 
