@@ -2303,3 +2303,58 @@ draft in `PLAN-tracing.md` and gets its own entries when it is settled.
   is step 4, not a separate step.
 - **Unchanged:** concurrent MCP connection setup and the small fixes in `SESSION.md` can go before step 1 or
   between steps; they don't depend on this order.
+
+
+### Tracing: event envelope, state-change capture, redaction shape (decided 2026-10-19)
+
+Settled in discussion with Jerry before slice 2 of `PLAN-tracing.md` §13. The plan stays the long-form
+reference; this entry records what was agreed. Where it differs from the plan, this entry wins.
+
+**Event envelope** (every event; `v` stays 1 while fields are only added):
+
+- `v`, `ts` (RFC 3339 with nanoseconds), `run`, `turn` (chat: turn ID; autonomous: task ID; may be empty for
+  `run_*` and background events such as auto-compaction), `seq`, `kind`, `data`. Slice 3 adds `prev`.
+- **No per-step ID** (too granular). **No `span`/`parent` yet**: adding fields later doesn't bump `v`, and
+  nothing needs them before subagents / mvp4.
+- **No per-event PID.** The PID (plus ppid, hostname, binary version, git commit) goes in `run_start` only. It
+  is constant within a run, and PIDs get reused. Multi-agent linking will use a `parent_run` ID passed to
+  workers at startup, not PIDs.
+- **Event hash = hash chain, not a hash inside the event.** An event can't contain a hash of its own bytes, so
+  the hash of event N is stored in event N+1 as `prev` (slice 3). `seq` is the per-file line counter.
+- `redactions` (detector names applied) on the envelope, so a reader can tell text was altered.
+- **Tool events carry `call_id` and `verified` inside `data`**, not on the envelope. `call_id` pairs
+  `tool_requested` with `tool_finished` (needed once calls run in parallel). `verified:false` means the outcome
+  is only what the tool *claimed* (typical for third-party MCP tools that return just "done").
+- New kind `model_error` for LLM call failures. `model_response` carries `reasoning` from day one (empty
+  until the provider adapters fill it; needs `ChatMessage.Reasoning` and token usage, see the plan §5.4).
+
+**State-change capture (effects)**:
+
+- Remote state changes (case 1): the burden is on the tool's response (success/failure, rows, table); the
+  trace records the response and marks `verified:false` when the tool gives nothing structured.
+- Local state changes (case 2): before/after snapshots behind a small `Snapshotter` interface so specialised
+  versions (a real diff for a coding agent) can be added later. First implementation: SHA-256.
+- Tools that name their files get per-file hashes; **`run_command` and anything unspecific gets a hash of the
+  working directory before and after.** Directory hash: walk, skip hidden config dirs (`.git`, …) and
+  symlinks, hash each file, list `path mode filehash` lines sorted by path, hash the list.
+- Hash before and after **even when the call errors**. Absent file (not yet created / deleted): the literal
+  string `"absent"`, **not** the hash of empty content, which would collide with a real empty file.
+- **Deny-listed files are never hashed** (a hash of a low-entropy secret file can be guessed offline); the
+  directory hash excludes them too, using `read_file`'s deny list. Downside: a change to `.env` goes unseen.
+- Concurrent writes to one path: tool calls currently run sequentially, so no problem today. When they go
+  concurrent, built-in write tools take an in-process per-path mutex around hash → write → hash. OS file
+  locks are advisory only, and don't cover shell commands or other processes.
+- **Snapshots are deferred out of slice 2** (plan slices 8–9). Reviewers rarely read hashes; they matter for
+  claim-vs-evidence checks (L2) and for catching shell side effects, so they wait until a digester exists.
+  Slice 2's `tool_requested` / `tool_finished` already show what each call asked for and returned.
+
+**Redaction shape** (slice 2, `standard` level first):
+
+- A detector is data (`name`, pattern or field-name rule); a level is a named list of detectors; `extraPatterns`
+  and `allow` are list operations. `stringent`/`metadata` are later entries in the same table, no refactor.
+- The redactor walks the event's `data` as generic JSON (decode to `any`, redact every string, re-encode), so a
+  new event kind or field is redacted by default. Honest downside: a decode/encode per event. Bonus: re-encoded
+  maps have sorted keys, which keeps the bytes stable for the hash chain.
+- Fail closed: an unknown level is a config error; a redactor failure drops the payload, never writes it raw.
+- Placeholder `[REDACTED:name#tag]`, tag = HMAC under a random per-run key.
+- The "contents of deny-listed files" detector from the plan is dropped: `read_file` already refuses them.

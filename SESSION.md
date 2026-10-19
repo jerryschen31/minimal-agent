@@ -853,3 +853,10 @@ session by agreeing on step 1, autonomous mode: which mvp3 packages to read firs
 >
 >   Concurrent MCP connection setup and the small fixes in the 2026-10-09 entry can slot in anywhere. Deferred: dependency
 >   hardening (`DECISIONS.md` item 10).
+
+### 2026-10-19 — tracing: design settled, slice 2 started
+
+Event envelope, effects/snapshot approach and redaction shape agreed; see `DECISIONS.md § Tracing: event
+envelope, state-change capture, redaction shape`. Snapshots (hashing) deferred out of slice 2. Slice 2 order:
+`trace/event.go` → `trace/redact.go` → `trace/recorder.go` (+ JSONL subscriber) → config + loop wiring.
+Jerry types each file from a skeleton. Prerequisite for reasoning capture: `ChatMessage.Reasoning` + usage.
