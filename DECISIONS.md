@@ -2307,6 +2307,8 @@ draft in `PLAN-tracing.md` and gets its own entries when it is settled.
 
 ### Tracing: event envelope, state-change capture, redaction shape (decided 2026-10-19)
 
+> Partly superseded 2026-10-19 by "Tracing: version moves to run_start; ts is a time.Time" (end of this log): `v` is no longer on every event.
+
 Settled in discussion with Jerry before slice 2 of `PLAN-tracing.md` §13. The plan stays the long-form
 reference; this entry records what was agreed. Where it differs from the plan, this entry wins.
 
@@ -2358,3 +2360,17 @@ reference; this entry records what was agreed. Where it differs from the plan, t
 - Fail closed: an unknown level is a config error; a redactor failure drops the payload, never writes it raw.
 - Placeholder `[REDACTED:name#tag]`, tag = HMAC under a random per-run key.
 - The "contents of deny-listed files" detector from the plan is dropped: `read_file` already refuses them.
+
+### Tracing: version moves to run_start; ts is a time.Time (decided 2026-10-19)
+
+- **`v` is removed from the event envelope.** The format version is written once, in the `run_start`
+  payload (`trace.Version`). One process writes one file with one version, so a per-line copy is redundant.
+  Honest downside: a single line pasted or grepped out of a file no longer says which format it is; a reader
+  must look at the file's first line. Readers stay tolerant; removing or renaming a field still bumps the version.
+- **`ts` is a `time.Time`**, created with `time.Now().UTC()` at emit time (not in a writer goroutine).
+  `encoding/json` writes it as RFC 3339 with nanoseconds. Downside: `RFC3339Nano` trims trailing zeros, so
+  timestamps don't sort correctly as plain text; order by `seq`.
+- **`Data` is `any`**: the recorder marshals it, so callers pass plain Go values. If marshalling fails (e.g.
+  invalid `json.RawMessage` tool args, NaN), the recorder writes `{"marshal_error": "..."}` instead of the payload.
+  Values handed to the recorder must not be mutated afterwards (a later async writer would see the change).
+- Open: whether `turn` is renamed `task` (and `turn_start/end` to `task_start/end`).
