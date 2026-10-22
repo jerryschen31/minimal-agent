@@ -205,7 +205,7 @@ func describe(name, args, content string, failed bool) string {
 	if failed {
 		line += " (failed: " + oneLine(content, maxArgsChars) + ")"
 	}
-	return line
+	return strings.Join(strings.Fields(line), " ")
 }
 
 // oneLine collapses whitespace (so a multi-line value stays one markdown line) and cuts to max characters.
