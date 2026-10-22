@@ -98,7 +98,7 @@ func (a *ActivityDigest) Add(ev Event) {
 		}
 	case ModelResponse:
 		var d ModelResponseData
-		if json.Unmarshal(ev.EventData, &d) == nil && len(d.Message.ToolCalls) == 0 {
+		if ev.ScopeID != ev.RunID && json.Unmarshal(ev.EventData, &d) == nil && len(d.Message.ToolCalls) == 0 {
 			t := a.task(ev.ScopeID)
 			t.hasReply, t.lastReplyChars = true, len([]rune(d.Message.Content))
 		}
