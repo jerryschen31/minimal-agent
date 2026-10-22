@@ -375,6 +375,14 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
     - A token or cost budget (`MaxTokens` is still unread).
     - *Revisit:* after step 1 works end to end.
 
+13. **Shared helper for creating subscriber files** (`trace/subscriber.go`, `trace/digest.go`; decided 2026-10-22).
+    - *Today:* `NewJSONLSubscriber` and `NewDigestSubscriber` repeat the same run-ID check, `MkdirAll(0700)` and
+      `O_CREATE|O_EXCL` open at `0600`.
+    - *Fix:* one `createTraceFile(dir, runID, suffix)` helper. Deferred by Jerry until a third file-writing subscriber
+      exists, so the shape of the helper is known; two copies of about ten lines is cheaper than a guessed abstraction.
+    - *Revisit:* when a third subscriber that writes a file is added. Until then, a change to the file-creation
+      security rules (mode, `O_EXCL`, ID check) must be made in both places.
+
 
 ---
 
@@ -2686,3 +2694,14 @@ Jerry: an unkeyed per-line hash chain can be rewritten and recomputed in full by
 - signing with a key held by a different process or machine (a key on the agent's machine adds nothing);
 - OS-level separation of the trace file from the agent (other user, sandbox), including closing write paths such as `RunCommand`.
 Currently in place: `0600` file in a `0700` directory, and `.agent-trace` on the `read_file` deny list (the model cannot read its own trace). Neither stops a same-user process from writing the file.
+
+### 2026-10-22 — L1 digest: `Digester` interface, `ActivityDigest`, `digestEnabled`
+
+- **Shape.** `trace.Digester` has `Add(Event)` and `Render(io.Writer)`; it sees only L0 events. `NewDigestSubscriber` is the live adapter (a `Subscriber`: decodes each line, calls `Add`, renders `<run_id>.digest.md` at `Close`, `0600`, create-only). `Replay(r, d)` feeds a finished `.jsonl` file to any `Digester`, so a digest can be rebuilt after a crash or with a newer implementation. `Replay` reads with `bufio.Reader.ReadBytes`, not `Scanner`, because one event can be as large as `traceMaxEventBytes`. Chosen over a model-based or file-only digest: live and offline from one reducer, and nothing ever reads more than the already-redacted events, so a digest cannot leak more than L0.
+- **`ActivityDigest`** (first implementation; purpose: a quick human "what did the agent do and change" review). Per task: the user input as a heading, then one block of tool calls (`N tool calls:` + a line each, in finish order, failures marked `(failed: …)`), or for a text-only turn a one-liner (`answered, no tools (N chars)`). Built from `tool_requested` / `tool_finished` paired by `call_id`, never from model text. Calls requested but never finished are counted and flagged. Footer counts redactions, model errors and compactions. Grouped per task, not per step, because tool events carry no step number.
+- **Describers.** `describe(name, args, content, failed)` is a per-tool switch: `read_file` → `read <path>`; `shell` / `run_command` / `bash` → the command verbatim (whitespace collapsed, cut at 300 chars; L0 keeps the original); everything else → name plus truncated arguments. Downside: a new tool shows the generic line until someone adds a case. `write_file` will need its result text to say `created` / `overwrote`, since the digest cannot infer "new file" from events.
+- **Untrusted text.** User input, arguments and error text are collapsed to one line and cut, so they cannot start a new markdown heading or bullet in the digest.
+- **Text-only turns: no model-written summary.** A `/summarize`-style call per run would cost a model call, make the digest non-deterministic, and put model prose into an audit document. A deterministic one-liner is used instead; an opt-in `LLMDigester` can be a second implementation of the same interface later.
+- **Config.** `digestEnabled` (default `true`; only takes effect when `traceEnabled` is on). If the digest file can't be created, `SetupRecorder` fails (like the trace file) and closes the JSONL file it had already opened.
+- **Known limits.** (1) The digest is written at `Close`; a crash leaves none until `Replay`. Rendering after every `task_end` would fix it at the cost of rewriting the file each time. (2) Once a shell tool exists, files changed through it are invisible to a tool-call digest; a separate workdir-diff `Digester` (e.g. `git status` at task end) would cover that. (3) `/clear` and the skipped "compaction already in progress" are not L0 events yet, so they are not in the digest. (4) The first user-visible gap: no `usage` or `stop_reason` in the footer until `Provider` reports them.
+- Shared file-creation helper for the two subscribers deferred: see Deferred for Later, item 13.

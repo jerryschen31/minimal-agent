@@ -71,7 +71,7 @@
 //	+---------------------------------+
 //	    |
 //	    v
-//	[ Subscribers ]                   default subscriber is a JSON log file; a console print stream or live digest could follow
+//	[ Subscribers ]                   the JSON log file, and the L1 digest (digest.md) when digestEnabled; a console print stream could follow
 //
 // # Redacting Secrets
 //
@@ -113,7 +113,7 @@
 //   - event.go: the trace event envelope, event types and payload structs
 //   - redact.go: secrets detector and redactor
 //   - recorder.go: Recorder, Subscriber, channel queue plus tracewriter goroutine
-//   - digest.go (TBD): L1 digest, essentially a condensed trace summary, built from the redacted trace events; this is meant for quick inspection and analysis of the trace, e.g. within a pull request or a run review
+//   - digest.go, digest_activity.go: L1 digest (Digester interface, live Subscriber adapter, Replay for old .jsonl files; ActivityDigest is the first implementation), a condensed summary built from the redacted trace events; this is meant for quick inspection and analysis of the trace, e.g. within a pull request or a run review
 //   - subscriber.go: defines the Subscriber interface and built-in implementations for handling trace events; first is the JSONL log file subscriber
 //   - scope.go: defines the Scope object that tracks the start time, status, and errors for a scope (run or task), ensuring all events within the scope are correctly associated with the scope ID
 package trace

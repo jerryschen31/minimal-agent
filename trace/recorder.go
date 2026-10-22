@@ -67,7 +67,8 @@ type recorder struct {
 }
 
 // SetupRecorder returns the Recorder for this run: a no-op when tracing is disabled in the config,
-// otherwise a real one that writes <traceDir>/<run_id>.jsonl with the configured redaction level.
+// otherwise a real one that writes <traceDir>/<run_id>.jsonl with the configured redaction level,
+// and, when cfg.DigestEnabled, the L1 digest <traceDir>/<run_id>.digest.md.
 // An unknown redaction level, or a trace file that can't be created, is an error.
 func SetupRecorder(ctx context.Context, cfg config.Config) (Recorder, error) {
 	if !cfg.TraceEnabled {
@@ -89,7 +90,16 @@ func SetupRecorder(ctx context.Context, cfg config.Config) (Recorder, error) {
 	if err != nil {
 		return nil, err // can't create the trace file: fail at startup rather than run without an audit trail
 	}
-	return NewRecorder(runID, redactor, cfg.TraceMaxEventBytes, jsonl), nil
+	subs := []Subscriber{jsonl}
+	if cfg.DigestEnabled {
+		digest, err := NewDigestSubscriber(cfg.TraceDir, runID, NewActivityDigest())
+		if err != nil {
+			jsonl.Close()
+			return nil, err
+		}
+		subs = append(subs, digest)
+	}
+	return NewRecorder(runID, redactor, cfg.TraceMaxEventBytes, subs...), nil
 }
 
 // NewRecorder builds a recorder from explicit pieces (no config) and starts its tracewriter goroutine, which takes

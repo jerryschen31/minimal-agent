@@ -51,6 +51,7 @@ type Config struct {
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
 	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
+	DigestEnabled      bool   `json:"digestEnabled"`      // also write an L1 digest, <run_id>.digest.md, next to the trace; needs traceEnabled
 	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace")
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 
@@ -148,6 +149,7 @@ func GetDefaultConfig() Config {
 		BuiltinTools:   []string{"ReadFile"},
 		MaxSteps:       10,
 		TraceEnabled:   true,
+		DigestEnabled:  true,
 		RedactionLevel: "standard",
 
 		TraceDir:           ".agent-trace",
@@ -249,6 +251,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
 	fmt.Fprintf(w, "  traceEnabled:  %t\n", cfg.TraceEnabled)
+	fmt.Fprintf(w, "  digestEnabled: %t\n", cfg.DigestEnabled)
 	fmt.Fprintf(w, "  redactionLevel: %s\n", cfg.RedactionLevel)
 	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
