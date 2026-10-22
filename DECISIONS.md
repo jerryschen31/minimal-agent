@@ -2528,3 +2528,92 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
 - Not built: task/model/tool/compaction events in the loop, hash chain (`counter` is ready for it), effects and
   snapshots, `ChatMessage.Reasoning` and usage in `model/`, L1 digest, detector registry, client-side limit on
   raw MCP responses (see the size-caps entry).
+
+### Tracing: task IDs, traced slash commands, no span ID yet (decided 2026-10-21)
+
+- **IDs are prefixed timestamps, not counters.** Run IDs are `r20261021T101500Z-9f3a41c7`, task IDs
+  `t20261021T101530Z-5be0d2a1` (one `newID(prefix)` helper in `trace/recorder.go`). The random suffix is kept
+  because parallel autonomous tasks can start in the same second, and it makes an ID greppable across trace
+  files. Honest downside: harder to say aloud than `task-3`, and the ID repeats what `ts` already says. In
+  autonomous mode the objective's own name goes into the `task_start` payload, since the ID no longer carries it.
+  This supersedes the planned `task-N` counter above.
+- **`task_start` / `task_end` are paired by a `defer`** declared right after `task_start`, reading a local
+  status/err variable (`handleUserInput` returns a `bool`, so there is no named return to use).
+- **Which slash commands are traced:** any that makes a model call or changes agent state or what the model sees:
+  `/clear`, `/compact`, `/summary`, `/summarize`. Not traced: info-only commands (`/config`, unknown) and `/quit`
+  (`run_end` covers it). Reason: without `/clear` and `/compact` a later `model_request` with fewer messages is
+  unexplained, and their model calls need something to belong to.
+- **Traced commands are bracketed by `command_start` / `command_end`, not `task_start` / `task_end`** (Jerry's
+  call: they are not tasks), but they get a `t`-prefixed ID in the same `task_id` envelope field, "essentially a
+  chat turn" (Jerry chose this over renaming the field to `scope_id`). Honest downside: the field name says
+  "task" for something that isn't one; accepted. Payloads: `CommandStartData{Name, Args}`; `TaskEndData` is
+  shared by `task_end` and `command_end`. This replaces my earlier proposal of an empty `task_id` for `/compact`.
+- **No span/trace ID for pairing start and end (yet).** Each pair already has a natural key: run -> `run_id`;
+  task and command -> `task_id`; tool -> `call_id`; model request/response/error -> `(task_id, step)` (the
+  response and error payloads will carry `step`). A universal span ID with parent IDs (the OpenTelemetry way)
+  would give explicit nesting at the cost of a field on every event and a bigger `Record` API. Revisit if nested
+  or parallel spans of the same type appear within one task (subagents). Adding fields later is backwards
+  compatible.
+- **Gap found: model calls from `/compact`, `/summarize` and auto-compaction bypass `chatWithProgress`**
+  (`contextwindow/msgcontext.go:222` calls `Provider.Chat` directly), so tracing only in the loop would miss
+  them. Plan: a tracing wrapper around `model.Provider` that records `model_request` / `model_response` /
+  `model_error`, so every caller is covered. Downsides: it sees the full request, so "new messages only" means
+  diffing against message IDs already seen, and it doesn't know the step number. Decide when model events are built.
+- **Still open:** `ForTask(id)` vs the `taskID` argument on `Record` (unanswered).
+
+### Tracing: `trace.Scope` wraps start/end/fail for runs and tasks (decided 2026-10-21)
+
+- **Problem:** `task_start`, the deferred `task_end` and the status bookkeeping were cluttering the agent loop, and
+  one branch had already forgotten to set the status (Ctrl+C recorded `ok`). Also, `defer rec.Record(..., GetTaskEndData("ok", "", 0))`
+  evaluates its arguments at the `defer` line, so the end event would always say `ok` with duration 0; a deferred
+  closure (or a method on an object that holds the state) is required.
+- **Decision:** `trace/scope.go`: `StartRun(rec, cfg)` and `StartTask(rec, input)` record the start event and return a
+  `*Scope`; `defer scope.End()` records the end event; `scope.Fail(err)` sets the outcome (nil: no change;
+  `context.Canceled`: `canceled`; anything else: `error`; the text is kept either way); `scope.Record(type, data)` records
+  an event with the scope's `task_id`. Call sites: `handleUserInput` (`taskTrace`) and `RunAgent` (`runTrace`).
+- **This resolves the `ForTask` question:** a `*Scope` is the task-scoped recorder, so the `Recorder` interface keeps
+  `Record(taskID, ...)` and no tests changed. `reActLoop` and `runToolCall` will take the `*Scope` and call
+  `scope.Record(...)`.
+- **Behaviour change:** `run_end.status` can now be `canceled` (SIGTERM cancels the root context); it was `error`.
+- **Honest downside:** one more type; what `End` writes is in `trace/`, not at the call site. `End` must be called
+  once (nothing guards a second call). Not built yet: `StartCommand` for `/clear`, `/compact`, `/summary` (same type,
+  `command_start`/`command_end`).
+
+### Tracing: a run's scope ID is its run ID (decided 2026-10-21)
+
+- **Decision:** `run_start` and `run_end` carry the run ID in `task_id` (same value as `run_id`), instead of an empty
+  `task_id`. Every event now belongs to a scope; the `r` / `t` prefixes keep the two ID kinds apart. Supersedes
+  "run-level events have an empty `task_id`" and the `RunScope` constant alternative above.
+- **Why:** an empty value is also what a forgotten ID looks like, so "run-level on purpose" and "forgot to set it"
+  were indistinguishable; readers can group by `task_id` without special-casing blanks; every `Scope` has a real ID.
+- **How:** `Recorder` gained `RunID() string` (`Nop` returns ""); `StartRun` uses it as the scope ID. `Record`'s
+  signature is unchanged.
+- **Honest downside:** the value is duplicated on run events (about 30 bytes); `task_id` now holds run and command IDs
+  as well as task IDs, so "task events" is a prefix match on `t`, not `task_id != ""`. Renaming the field to
+  `scope_id` was offered again and is still open (Jerry kept `task_id` for commands).
+
+### Tracing: envelope field renamed `task_id` -> `scope_id` (decided 2026-10-21)
+
+- **Decision:** the envelope field is now `scope_id` (Go: `Event.ScopeID`; `Record(scopeID, eventType, data)`). It holds
+  the ID of the unit of work an event belongs to: the run ID (`r…`) for run events, a task ID (`t…`) for tasks and
+  for traced slash commands. Values are unchanged; only the label is. Supersedes the "keep `task_id`" choice in the
+  entries above (the format was unreleased, so no trace-reader migration).
+- **Why:** the field already held run and command IDs, so `task_id` was misleading; the name now matches `trace.Scope`.
+- **Honest downside:** "task events" are found by the `t` prefix, not by the field name; older notes and the
+  mvp3/mvp4 reference code still say `task_id` for their own, unrelated worker task IDs.
+
+### Tracing: compaction event and the `compactAndTrace` helper (decided 2026-10-21)
+
+- **Decision:** one `compaction` event per compaction, recorded by `compactAndTrace` (`agent/compaction.go`), which both
+  `/compact` and the auto-compaction goroutine call. Payload `CompactionData{Trigger, Status, Error, MessagesBefore,
+  MessagesAfter, SummaryID, DurationMS}`; recorded on failure and cancellation too. The summarize model call is a
+  separate `model_request` / `model_response` pair (provider wrapper, not built yet).
+- **Scope:** manual: the `/compact` command's own task ID (`taskTrace.ID()`); auto: the run ID, because no user task
+  owns a background compaction. This replaces the earlier plan to attribute auto-compaction to the task that
+  triggered it (that scope has already ended when the compaction starts). Honest downside: the field alone doesn't say
+  which turn triggered it; the counter order does (it follows that `task_end`).
+- **Single event, not start/end:** auto-compaction runs in a background goroutine and can overlap the next task, so
+  a pair would interleave with unrelated events. Honest downside: a compaction that hangs leaves no event until it ends.
+- **Also added:** `trace.OutcomeOf(err)` (shared by `Scope.Fail` and the helper) and `Scope.ID()`.
+- **Known imprecision:** `messages_after` for an auto compaction is read when it finishes, so it can include messages
+  a later turn added in the meantime. A skipped request ("compaction already in progress") records nothing.

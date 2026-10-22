@@ -51,10 +51,10 @@
 //
 //	agent loop                       the loop's goroutine
 //	    |
-//	    |  Record(taskID, eventType, data) - a quick event trace recording that takes a snapshot of the event data
+//	    |  Record(scopeID, eventType, data) - a quick event trace recording that takes a snapshot of the event data
 //	    v
 //	+---------------------------------+
-//	| timestamp: time, run ID             |
+//	| timestamp: time, run ID         |
 //	| snapshot: json.Marshal(data)    |  a private copy (i.e., a snapshot), so the loop can reuse its slices and maps
 //	| size cap: too big -> marker     |  we don't want a massive data block to overwhelm the trace (and potentially block execution)
 //	+---------------------------------+
@@ -80,14 +80,32 @@
 // The same secret gets the same tag within a run, so repeated secrets can be matched without revealing the value.
 // The trace file is also created with owner-only permissions (0600) in a owner-only (0700) directory, to protect it from other users tampering with it.
 //
+// # Runs
+//
+// A "run" represents the entire lifecycle of an agent session from start to finish.
+// It begins with a run_start event and ends with a run_end event, encompassing all tasks and events in between.
+// Run IDs look like r20261021T101500Z-9f3a41c7 (prefix "r").
+// For agents running concurrency, each agent instance will have its own run, with separate run_start and run_end events.
+//
 // # Tasks
 //
 // From the perspective of an agent trace, a "task" represents a unit of work or an operation that the agent is performing.
 //
-// Tasks in Chat mode: a task is one user message through to the final answer, with any number of model steps and tool calls in between. If it ends early (Ctrl+C or an error), the task_end event says how it ended, so a cancelled turn still closes. All events inside the turn share one task_id.
-// Tasks in Autonomous mode: one task from objective.md is one task_id, no matter how many steps the agent takes.
-// Run-level events: run_start and run_end have no task, so their task_id is empty.
-// Why have task IDs in recorded event traces? Because this benefits the readers of the trace, such as the L1 digest or when grepping the trace log file.
+// Tasks in Chat mode: a task is one user message through to the final answer, with any number of model steps and tool calls in between.
+//
+//	This includes slash commands that trigger model calls or change agent state (/clear, /compact, /summarize).
+//	If a task ends early (Ctrl+C or an error), the task_end event says how it ended, so a cancelled turn still closes. All events inside the turn share one scope_id (which is the task_id - see # Scope section).
+//
+// Tasks in Autonomous mode: one task from objective.md is one task, no matter how many steps the agent takes.
+// Task IDs look like t20261021T101530Z-5be0d2a1 (prefix "t")
+// Task IDs help readers of the trace, such as the L1 digest or when grepping the trace log file - so that events can be grouped / collected by task.
+// Info-only commands (/config, unknown commands) and /quit are not tasks and are not traced.
+//
+// # Scope
+//
+// A "scope" represents a traced larger unit of agentic work, currently either a run or a task.
+// Within a scope, the Scope object tracks the start time, status, and any errors, and ensures that all events within the scope are associated with the correct task / run ID.
+// Sub-units of work within a scope, such as a model request / response within a task, are mapped to the same scope ID (the task ID for tasks, the run ID for runs).
 //
 // # Files
 //
@@ -96,4 +114,5 @@
 //   - recorder.go: Recorder, Subscriber, channel queue plus tracewriter goroutine
 //   - digest.go (TBD): L1 digest, essentially a condensed trace summary, built from the redacted trace events; this is meant for quick inspection and analysis of the trace, e.g. within a pull request or a run review
 //   - subscriber.go: defines the Subscriber interface and built-in implementations for handling trace events; first is the JSONL log file subscriber
+//   - scope.go: defines the Scope object that tracks the start time, status, and errors for a scope (run or task), ensuring all events within the scope are correctly associated with the scope ID
 package trace

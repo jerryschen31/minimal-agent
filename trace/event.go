@@ -17,6 +17,7 @@ type EventType string
 const (
 	RunStart      EventType = "run_start"
 	TaskStart     EventType = "task_start"
+	CommandStart  EventType = "command_start" // a slash command that calls the model or changes agent state (not /config, /quit)
 	ModelRequest  EventType = "model_request"
 	ModelResponse EventType = "model_response"
 	ModelError    EventType = "model_error"
@@ -24,6 +25,7 @@ const (
 	ToolFinished  EventType = "tool_finished"
 	Compaction    EventType = "compaction"
 	TaskEnd       EventType = "task_end"
+	CommandEnd    EventType = "command_end"
 	RunEnd        EventType = "run_end"
 	// TODO: add more event types as needed
 )
@@ -32,7 +34,7 @@ const (
 type Event struct {
 	TimeStamp  time.Time       `json:"ts"`
 	RunID      string          `json:"run_id"`
-	TaskID     string          `json:"task_id,omitempty"`
+	ScopeID    string          `json:"scope_id,omitempty"`
 	Counter    uint64          `json:"counter"`
 	EventType  EventType       `json:"event_type"`
 	EventData  json.RawMessage `json:"event_data"` // the payload as JSON bytes: a snapshot taken in Record, then redacted
@@ -111,7 +113,7 @@ func GetRunStartData(cfg config.Config) RunStartData {
 
 // RunEndData is the EventData for a RunEnd event.
 type RunEndData struct {
-	Status     string `json:"status"`          // "ok" | "error"
+	Status     string `json:"status"`          // "ok" | "canceled" | "error"
 	Error      string `json:"error,omitempty"` // the error text when Status is "error"
 	DurationMS int64  `json:"duration_ms"`     // wall-clock time from run_start to run_end
 }
@@ -122,6 +124,56 @@ func GetRunEndData(status, err string, durationMS int64) RunEndData {
 		Error:      err,
 		DurationMS: durationMS,
 	}
+}
+
+// TaskStartData is the EventData for a TaskStart event: one chat message (or one autonomous objective task).
+type TaskStartData struct {
+	Input string `json:"input"` // the user's message; goes through redaction like any other string
+}
+
+func GetTaskStartData(input string) TaskStartData {
+	return TaskStartData{
+		Input: input,
+	}
+}
+
+// TaskEndData is the EventData for a TaskEnd or CommandEnd event.
+type TaskEndData struct {
+	Status     string `json:"status"`          // "ok" | "canceled" | "error"
+	Error      string `json:"error,omitempty"` // the error text when Status is "error"
+	DurationMS int64  `json:"duration_ms"`
+}
+
+func GetTaskEndData(status, err string, durationMS int64) TaskEndData {
+	return TaskEndData{
+		Status:     status,
+		Error:      err,
+		DurationMS: durationMS,
+	}
+}
+
+// CommandStartData is the EventData for a CommandStart event. The command shares the scope_id of the events inside it.
+type CommandStartData struct {
+	Name string `json:"name"`           // e.g. "/compact"
+	Args string `json:"args,omitempty"` // text after the command; goes through redaction
+}
+
+type CommandEndData struct {
+	Status     string `json:"status"`          // "ok" | "canceled" | "error"
+	Error      string `json:"error,omitempty"` // the error text when Status is "error"
+	DurationMS int64  `json:"duration_ms"`
+}
+
+// CompactionData is the EventData for a Compaction event: the context was summarized and old messages were replaced by one summary.
+// The model call it makes is a separate model_request / model_response pair.
+type CompactionData struct {
+	Trigger        string `json:"trigger"` // "manual" (/compact) | "auto" (context reached the threshold)
+	Status         string `json:"status"`  // "ok" | "canceled" | "error"
+	Error          string `json:"error,omitempty"`
+	MessagesBefore int    `json:"messages_before"`
+	MessagesAfter  int    `json:"messages_after"`       // for an auto compaction this can include messages a later turn added meanwhile
+	SummaryID      string `json:"summary_id,omitempty"` // the ID of the summary message that replaced the old messages; empty on failure
+	DurationMS     int64  `json:"duration_ms"`
 }
 
 // MessageRecord is one message as it was sent to the model.

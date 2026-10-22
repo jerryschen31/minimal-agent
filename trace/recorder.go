@@ -17,7 +17,9 @@ import (
 type Recorder interface {
 	// Record queues one event. It returns no error: tracing must never fail a run.
 	// data is a typed payload (RunStartData, ModelResponseData, ...) and must not be changed after the call.
-	Record(taskID string, eventType EventType, data any)
+	Record(scopeID string, eventType EventType, data any)
+	// RunID is the ID stamped on every event of this run; a run's Scope uses it as its own scope ID. Empty when tracing is off.
+	RunID() string
 	// Close stops accepting events, writes everything already queued, and closes the subscribers.
 	// It returns the first error any subscriber hit.
 	Close() error
@@ -38,6 +40,7 @@ func Nop() Recorder { return nopRecorder{} }
 type nopRecorder struct{}
 
 func (nopRecorder) Record(string, EventType, any) {}
+func (nopRecorder) RunID() string                 { return "" }
 func (nopRecorder) Close() error                  { return nil }
 
 // queueSize is how many events can wait for the tracewriter goroutine before Record blocks (backpressure).
@@ -105,13 +108,15 @@ func NewRecorder(runID string, redactor *Redactor, maxEventBytes int, subs ...Su
 	return rec
 }
 
+func (r *recorder) RunID() string { return r.runID }
+
 // Record is how the agent loop records (snapshots) an event. The event is queued into a channel for the tracewriter goroutine to process asynchronously.
 // The tracewriter goroutine does the heavy lifting of processing the trace events
-func (r *recorder) Record(taskID string, eventType EventType, data any) {
+func (r *recorder) Record(scopeID string, eventType EventType, data any) {
 	ev := Event{
 		TimeStamp: time.Now().UTC(), // timestamp records when this agent event actually happened; tracewriter will log it separately in its own goroutine
 		RunID:     r.runID,
-		TaskID:    taskID,
+		ScopeID:   scopeID,
 		EventType: eventType,
 	}
 
@@ -220,11 +225,17 @@ func (r *recorder) Close() error {
 	return r.err
 }
 
-// NewRunID returns a unique, time-sortable run ID, e.g. "20261020T101500Z-9f3a41c7".
-// The time prefix makes trace files sort by start time; the random suffix keeps two runs started in the
-// same second apart.
-func NewRunID() string {
+// NewRunID returns a unique, time-sortable run ID, e.g. "r20261020T101500Z-9f3a41c7".
+func NewRunID() string { return newID("r") }
+
+// NewTaskID returns a unique, time-sortable task ID, e.g. "t20261020T101530Z-5be0d2a1".
+// A chat message and a traced slash command each get one; every event inside shares it.
+func NewTaskID() string { return newID("t") }
+
+// newID is the prefix plus a UTC timestamp plus a random suffix. The time part makes IDs (and trace file names)
+// sort by start time; the random suffix keeps two IDs created in the same second apart (parallel tasks).
+func newID(prefix string) string {
 	b := make([]byte, 4)
 	rand.Read(b) // crypto/rand; never returns an error since Go 1.24
-	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b)
+	return prefix + time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(b)
 }

@@ -100,33 +100,22 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 
 // need to update this function to handle headless and oneshot modes, not just chat mode
 // `intsigChRecv` of type `<-chan os.Signal` only receives OS interrupt signals (e.g., Ctrl+C)
-func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) (err error) {
+func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	// record the start of the agent run
-	traceRec := agent.session.Recorder
-	runStart := time.Now().UTC()
-	traceRec.Record("", trace.RunStart, trace.GetRunStartData(agent.session.Config)) // first arg "" = a run-level event, no task
-	// at the end of the agent run, record run-end event
-	defer func() {
-		var runStatus, runError string
-		if err != nil {
-			runStatus = "error"
-			runError = err.Error()
-		} else {
-			runStatus = "ok"
-			runError = ""
-		}
-		end := trace.GetRunEndData(runStatus, runError, time.Since(runStart).Milliseconds())
-		traceRec.Record("", trace.RunEnd, end)
-	}()
+	// trace the run: run_start now, run_end (with status and duration) when this function returns
+	runTrace := trace.StartRun(agent.session.Recorder, agent.session.Config)
+	defer runTrace.End()
 	// select agent mode
+	var err error
 	if agent.agentMode == "chat" {
-		err := runChatLoop(ctx, intsigChRecv, agent.session)
-		return err
+		err = runChatLoop(ctx, intsigChRecv, agent.session)
+	} else {
+		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
-	return fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
+	runTrace.Fail(err)
+	return err
 }
 
 // gracefully shuts down the agent, ensuring any in-flight agent processes are completed and MCP servers are closed

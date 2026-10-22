@@ -127,8 +127,8 @@ func Test_Recorder_WritesEventsInOrder(t *testing.T) {
 			t.Errorf("event %d: ts = %v, want a UTC time at or after %v", i, ev.TimeStamp, before)
 		}
 	}
-	if evs[0].TaskID != "" || evs[1].TaskID != "task-1" {
-		t.Errorf("task ids = %q, %q", evs[0].TaskID, evs[1].TaskID)
+	if evs[0].ScopeID != "" || evs[1].ScopeID != "task-1" {
+		t.Errorf("scope ids = %q, %q", evs[0].ScopeID, evs[1].ScopeID)
 	}
 	if !strings.Contains(string(evs[0].EventData), `"agent_name":"minagent"`) {
 		t.Errorf("payload = %s", evs[0].EventData)
@@ -320,8 +320,14 @@ func Test_NewRunID(t *testing.T) {
 		t.Error("two run IDs are equal")
 	}
 	if !regexpRunID.MatchString(a) {
-		t.Errorf("run ID %q does not look like 20261020T101500Z-9f3a41c7", a)
+		t.Errorf("run ID %q does not look like r20261020T101500Z-9f3a41c7", a)
+	}
+	if id := NewTaskID(); !regexpTaskID.MatchString(id) {
+		t.Errorf("task ID %q does not look like t20261020T101530Z-5be0d2a1", id)
 	}
 }
 
-var regexpRunID = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{8}$`)
+var (
+	regexpRunID  = regexp.MustCompile(`^r\d{8}T\d{6}Z-[0-9a-f]{8}$`)
+	regexpTaskID = regexp.MustCompile(`^t\d{8}T\d{6}Z-[0-9a-f]{8}$`)
+)
