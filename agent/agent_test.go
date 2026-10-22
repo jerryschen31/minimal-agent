@@ -74,7 +74,7 @@ func Test_ReActLoop_MaxStepsFromConfig_StopsAtLimit(t *testing.T) {
 		modeltest.AssistantToolCall("c3", "no_such_tool", "{}"),
 	}
 
-	_, err := reActLoop(context.Background(), fx.Session, nil, modeltest.Msg("user", "u1", "hi"))
+	_, err := reActLoop(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "hi"), nil, modeltest.Msg("user", "u1", "hi"))
 
 	if !errors.Is(err, ErrMaxSteps) {
 		t.Fatalf("expected ErrMaxSteps, got %v", err)
@@ -93,7 +93,7 @@ func Test_ReActLoop_MaxStepsFromConfig_FinishesWithinLimit(t *testing.T) {
 		modeltest.AssistantText("done"),
 	}
 
-	turn, err := reActLoop(context.Background(), fx.Session, nil, modeltest.Msg("user", "u1", "hi"))
+	turn, err := reActLoop(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "hi"), nil, modeltest.Msg("user", "u1", "hi"))
 
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

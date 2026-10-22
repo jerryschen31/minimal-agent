@@ -2640,3 +2640,10 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
   `abcd1234efgh`, repeated-character keys). The two PEM fixtures were changed from real PKCS#8 header bytes to base64 of
   "fake-key-body". gitleaks still flags 6 test lines (generic key patterns, a PEM header); they are the redactor's inputs
   and have to look like credentials. `mvp1/.env` holds real-format keys but is gitignored and was never committed.
+
+### 2026-10-22 — Model calls are traced by a Provider wrapper (`trace.TracedProvider`)
+
+- `trace.WrapProvider(p, rec, scopeID, cfg)` returns a `model.Provider` that records `model_request` before and `model_response` / `model_error` after each `Chat`, under one scope ID. `ChatSession.tracedProvider(scopeID)` is the one place the agent builds it. Three call sites use it: `reActLoop` (task scope, sets `Step` = 1-based step before each call), `/summary` (command's task scope), `compactAndTrace` (the command's scope for `/compact`, the run ID for auto-compaction). `chatWithProgress` and `reActLoop` take the provider / `*trace.Scope` as parameters.
+- Payload builders `GetModelRequestData`, `GetModelResponseData`, `GetModelErrorData` live in `trace/event.go`, like the run and task ones.
+- **`model_request` records the full message list**, not a diff. Self-contained events; downside: a K-step turn repeats the context K times (bounded by `traceMaxEventBytes`, which swaps an oversize payload for a marker). A diff against already-seen message IDs is possible later.
+- **Not available yet:** `usage`, `stop_reason`, reasoning, and `http_status` (the `Provider` interface returns only a `ChatMessage` / plain error). The response message has no ID at record time (the loop assigns it afterwards), so a response is matched to its later appearance in a request by content and order.

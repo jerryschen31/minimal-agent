@@ -48,6 +48,11 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 	}, nil
 }
 
+// tracedProvider returns the session's provider wrapped so its model calls are recorded under scopeID.
+func (cs *ChatSession) tracedProvider(scopeID string) *trace.TracedProvider {
+	return trace.WrapProvider(cs.Provider, cs.Recorder, scopeID, cs.Config)
+}
+
 // creates a new chat session instance
 func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error) {
 	cs, err := NewChatSession(provider, chatHistory, chatContext, tools, recorder, cfg)

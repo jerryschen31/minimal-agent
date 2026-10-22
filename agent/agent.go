@@ -203,9 +203,10 @@ func runToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) mode
 }
 
 // reActLoop loops up to MaxSteps. At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise it calls tool functions as needed.
-func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
+func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
 	requestMsgs := []model.ChatMessage{initialMsg}
 	toolDefs := cs.Tools.GetToolDefs()
+	provider := cs.tracedProvider(taskTrace.ID()) // records model_request / model_response / model_error for each step
 	for stepNum := 0; stepNum < cs.Config.MaxSteps; stepNum++ {
 		// if user cancels the operation (maybe the ReAct loop is taking too long), exit the loop immediately
 		if err := ctx.Err(); err != nil {
@@ -215,7 +216,8 @@ func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessa
 		request2send := model.PrepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
 
 		// send the chat request to the LLM provider
-		response, err := chatWithProgress(ctx, cs, request2send, toolDefs) // prints thinking dots in chat mode
+		provider.Step = stepNum + 1
+		response, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // prints thinking dots in chat mode
 		if err != nil {
 			if !errors.Is(err, context.Canceled) { // [agent] a Ctrl+C cancel is reported once, as [interrupted], by the caller
 				fmt.Fprintln(cs.OutBuffer, "error:", err)

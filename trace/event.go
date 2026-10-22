@@ -1,12 +1,15 @@
 package trace
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"runtime/debug"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/model"
 )
 
 // Version is the event format version written into an event's EventData field.
@@ -187,13 +190,40 @@ type MessageRecord struct {
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
-// ModelRequestData records new messages in a model request and the tools available at this step.
+// ModelRequestData is the EventData for a ModelRequest event: everything sent to the model in one call.
+// Messages is the full list (system prompt, context, this turn's messages), so the event stands on its own,
+// at the price of repeating earlier messages in every step of a turn.
 type ModelRequestData struct {
 	Provider  string          `json:"provider"`
 	Model     string          `json:"model"`
-	Step      int             `json:"step,omitempty"`
+	Step      int             `json:"step,omitempty"` // 1-based ReAct step; 0 (omitted) for calls outside the loop (/summary, compaction)
 	Messages  []MessageRecord `json:"messages"`
 	ToolNames []string        `json:"tool_names,omitempty"`
+}
+
+// GetModelRequestData builds the model_request payload from what is about to be sent.
+func GetModelRequestData(cfg config.Config, step int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
+	d := ModelRequestData{
+		Provider: cfg.Provider,
+		Model:    cfg.Model,
+		Step:     step,
+		Messages: make([]MessageRecord, len(msgs)),
+	}
+	for i, m := range msgs {
+		d.Messages[i] = messageRecord(m)
+	}
+	for _, t := range toolDefs {
+		d.ToolNames = append(d.ToolNames, t.Function.Name)
+	}
+	return d
+}
+
+func messageRecord(m model.ChatMessage) MessageRecord {
+	r := MessageRecord{ID: m.ID, Role: m.Role, Type: m.Type, Content: m.Content, ToolCallID: m.ToolCallID}
+	for _, tc := range m.ToolCalls {
+		r.ToolCalls = append(r.ToolCalls, ToolCallRecord{CallID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+	}
+	return r
 }
 
 // ToolCallRecord is one tool call the model asked for, as it appears in a ModelResponseData.
@@ -219,10 +249,24 @@ type ModelResponseData struct {
 	DurationMS int64         `json:"duration_ms"`
 }
 
+// GetModelResponseData builds the model_response payload. StopReason and Usage stay empty until model.Provider reports them.
+func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData {
+	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
+}
+
 // ModelErrorData is the EventData for a ModelError event: a model call that produced no response.
 type ModelErrorData struct {
 	Error      string `json:"error"`                 // the error text; passes through redaction (URLs can carry keys)
 	HTTPStatus int    `json:"http_status,omitempty"` // 0 when there was no HTTP response (network failure, timeout)
 	Canceled   bool   `json:"canceled,omitempty"`    // the context was cancelled (Ctrl+C), not a provider failure
 	DurationMS int64  `json:"duration_ms"`           // time spent before the call failed
+}
+
+// GetModelErrorData builds the model_error payload. HTTPStatus stays 0 until model.Provider returns a typed error that carries it.
+func GetModelErrorData(err error, elapsed time.Duration) ModelErrorData {
+	return ModelErrorData{
+		Error:      err.Error(),
+		Canceled:   errors.Is(err, context.Canceled),
+		DurationMS: elapsed.Milliseconds(),
+	}
 }
