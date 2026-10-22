@@ -11,3 +11,4 @@ prompts/
 graphify-out/
 mvp3/minagent
 mvp4/minagent
+.agent-trace/

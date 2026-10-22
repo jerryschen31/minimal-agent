@@ -14,6 +14,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after cfg.MaxSteps steps.
@@ -53,7 +54,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	}
 
 	// 4. setup built-in tools -> builtinTools satisfies Tool interface
-	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir)
+	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
 	if err != nil {
 		return err
 	}
@@ -67,7 +68,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	agent.mcpConns = mcpConns
 
 	// 6. setup MCP tools (if applicable) - mcpTools satisfies Tool interface
-	mcpTools, err := mcpconnect.SetupMCPTools(ctx, mcpConns)
+	mcpTools, err := mcpconnect.SetupMCPTools(ctx, mcpConns, cfg.MCPResultMaxBytes)
 	if err != nil {
 		// print errors on MCP tools setup fails - but don't exit
 		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %v\n", err)
@@ -80,8 +81,14 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	// 8. setup this chat session
-	chatSession, err := setupChatSession(provider, chatHistory, chatContext, tools, cfg)
+	// 8. setup trace recorder
+	recorder, err := trace.SetupRecorder(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	// 9. setup this chat session
+	chatSession, err := setupChatSession(provider, chatHistory, chatContext, tools, recorder, cfg)
 	if err != nil {
 		return err
 	}
@@ -93,13 +100,31 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 
 // need to update this function to handle headless and oneshot modes, not just chat mode
 // `intsigChRecv` of type `<-chan os.Signal` only receives OS interrupt signals (e.g., Ctrl+C)
-func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
-	if err := ctx.Err(); err != nil {
-		return err
+func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) (err error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
+	// record the start of the agent run
+	traceRec := agent.session.Recorder
+	runStart := time.Now().UTC()
+	traceRec.Record("", trace.RunStart, trace.GetRunStartData(agent.session.Config)) // first arg "" = a run-level event, no task
+	// at the end of the agent run, record run-end event
+	defer func() {
+		var runStatus, runError string
+		if err != nil {
+			runStatus = "error"
+			runError = err.Error()
+		} else {
+			runStatus = "ok"
+			runError = ""
+		}
+		end := trace.GetRunEndData(runStatus, runError, time.Since(runStart).Milliseconds())
+		traceRec.Record("", trace.RunEnd, end)
+	}()
+	// select agent mode
 	if agent.agentMode == "chat" {
-		runChatLoop(ctx, intsigChRecv, agent.session)
-		return nil
+		err := runChatLoop(ctx, intsigChRecv, agent.session)
+		return err
 	}
 	return fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 }
@@ -113,7 +138,15 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 	if len(agent.mcpConns) > 0 {
 		// close MCP servers
 		for _, m := range agent.mcpConns {
-			m.Close()
+			if err := m.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "error closing MCP server: %v\n", err)
+			}
+		}
+	}
+	// close (flush) the event trace recorder
+	if agent.session != nil {
+		if err := agent.session.Recorder.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "trace: %v\n", err)
 		}
 	}
 }
@@ -170,16 +203,8 @@ func runToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) mode
 	return model.CreateChatMessage("tool", "tool", result, call.ID, nil)
 }
 
+// reActLoop loops up to MaxSteps. At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise it calls tool functions as needed.
 func reActLoop(ctx context.Context, cs *ChatSession, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
-	// implementation of the ReAct loop goes here
-	// // [PLAN] ReAct Loop
-	// loop up to MaxSteps:
-	// reply := Chat(msgs, cs.Tools.GetToolDefs())
-	// append reply to the turn's messages
-	// if len(reply.ToolCalls) == 0 → done
-	// for each call in reply.ToolCalls:
-	//     append runToolCall(ctx, cs, call)
-
 	requestMsgs := []model.ChatMessage{initialMsg}
 	toolDefs := cs.Tools.GetToolDefs()
 	for stepNum := 0; stepNum < cs.Config.MaxSteps; stepNum++ {

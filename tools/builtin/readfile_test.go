@@ -4,16 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// testMaxBytes is the per-call cap the tests use; it is small so the tests do not need megabyte files.
+const testMaxBytes = 4096
+
 // newTool creates a read_file tool confined to dir, failing the test on error.
 func newTool(t *testing.T, dir string) *ReadFileTool {
 	t.Helper()
-	tool, err := NewReadFileTool(dir)
+	tool, err := NewReadFileTool(dir, testMaxBytes)
 	if err != nil {
 		t.Fatalf("NewReadFileTool(%q): %v", dir, err)
 	}
@@ -69,30 +73,31 @@ func Test_ReadFile_SmallFile_ReturnsContents(t *testing.T) {
 	}
 }
 
-// - Verify that a file of exactly ReadFileMaxBytes is returned in full with no truncation note
+// - Verify that a file of exactly testMaxBytes is returned in full with no truncation note
 // (the +1 byte read is what tells "exactly at the cap" apart from "over the cap")
 func Test_ReadFile_ExactlyMaxBytes_NotTruncated(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFile(t, dir, "minagent-read-file-test-exact.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes))
+	path := writeFile(t, dir, "minagent-read-file-test-exact.txt", bytes.Repeat([]byte("a"), testMaxBytes))
 
 	got, err := readPath(newTool(t, dir), path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != ReadFileMaxBytes {
-		t.Errorf("expected %d bytes, got %d", ReadFileMaxBytes, len(got))
+	if len(got) != testMaxBytes {
+		t.Errorf("expected %d bytes, got %d", testMaxBytes, len(got))
 	}
 	if strings.Contains(got, "[truncated") {
 		t.Errorf("expected no truncation note for a file exactly at the cap")
 	}
 }
 
-// - Verify that a file over ReadFileMaxBytes returns the first ReadFileMaxBytes plus a truncation
+// - Verify that a file over testMaxBytes returns the first testMaxBytes plus a truncation
 // note, so the model knows the file doesn't really end there
 func Test_ReadFile_OverMaxBytes_TruncatedWithNote(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFile(t, dir, "minagent-read-file-test-big.txt", bytes.Repeat([]byte("a"), ReadFileMaxBytes+10))
-	const note = "\n[truncated: file is larger than 64 KB]"
+	path := writeFile(t, dir, "minagent-read-file-test-big.txt", bytes.Repeat([]byte("a"), testMaxBytes+10))
+	size := testMaxBytes + 10
+	note := fmt.Sprintf("\n[truncated: showed bytes 0-%d of %d; call read_file again with offset=%d to continue]", testMaxBytes, size, testMaxBytes)
 
 	got, err := readPath(newTool(t, dir), path)
 	if err != nil {
@@ -101,8 +106,110 @@ func Test_ReadFile_OverMaxBytes_TruncatedWithNote(t *testing.T) {
 	if !strings.HasSuffix(got, note) {
 		t.Fatalf("expected output to end with the truncation note, got tail %q", got[len(got)-50:])
 	}
-	if len(got) != ReadFileMaxBytes+len(note) {
-		t.Errorf("expected %d content bytes before the note, got %d", ReadFileMaxBytes, len(got)-len(note))
+	if len(got) != testMaxBytes+len(note) {
+		t.Errorf("expected %d content bytes before the note, got %d", testMaxBytes, len(got)-len(note))
+	}
+}
+
+// readPiece calls read_file with offset and limit the way the model would.
+func readPiece(tool *ReadFileTool, path string, offset, limit int) (string, error) {
+	args, _ := json.Marshal(map[string]any{"path": path, "offset": offset, "limit": limit})
+	return tool.CallTool(context.Background(), args)
+}
+
+// - Verify that a file bigger than the cap can be read to the end by following the offsets in the truncation notes,
+// and that the pieces joined together are the original file (nothing repeated, nothing lost)
+func Test_ReadFile_Paging_ReassemblesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	var want strings.Builder
+	for i := 0; want.Len() < testMaxBytes*2+500; i++ {
+		fmt.Fprintf(&want, "line %d héllo wörld\n", i) // multi-byte characters, so some cuts land inside one
+	}
+	path := writeFile(t, dir, "minagent-read-file-test-paged.txt", []byte(want.String()))
+	tool := newTool(t, dir)
+
+	var got strings.Builder
+	offset, pieces := 0, 0
+	for {
+		piece, err := readPiece(tool, path, offset, 0)
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		pieces++
+		i := strings.LastIndex(piece, "\n[truncated:")
+		if i == -1 {
+			got.WriteString(piece)
+			break
+		}
+		got.WriteString(piece[:i])
+		if _, err := fmt.Sscanf(piece[strings.LastIndex(piece, "offset=")+len("offset="):], "%d", &offset); err != nil {
+			t.Fatalf("no offset in note %q", piece[i:])
+		}
+		if pieces > 10 {
+			t.Fatal("paging does not terminate")
+		}
+	}
+	if got.String() != want.String() {
+		t.Errorf("reassembled file differs: got %d bytes, want %d", got.Len(), want.Len())
+	}
+	if pieces != 3 {
+		t.Errorf("expected 3 pieces, got %d", pieces)
+	}
+}
+
+// - Verify an explicit offset and limit return exactly that slice, a limit above the cap is clamped to the cap,
+// and a read that ends exactly at the end of the file has no truncation note
+func Test_ReadFile_OffsetAndLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "minagent-read-file-test-slice.txt", []byte("0123456789"))
+	tool := newTool(t, dir)
+
+	got, err := readPiece(tool, path, 2, 3)
+	if err != nil || !strings.HasPrefix(got, "234\n[truncated: showed bytes 2-5 of 10;") || !strings.HasSuffix(got, "offset=5 to continue]") {
+		t.Errorf("got %q, %v", got, err)
+	}
+	got, err = readPiece(tool, path, 7, 3)
+	if err != nil || got != "789" {
+		t.Errorf("read up to the end: got %q, %v", got, err)
+	}
+	got, err = readPiece(tool, path, 0, testMaxBytes*10)
+	if err != nil || got != "0123456789" {
+		t.Errorf("limit above the cap: got %q, %v", got, err)
+	}
+}
+
+// - Verify an offset in the middle of a multi-byte character starts at the next whole character
+func Test_ReadFile_OffsetInsideCharacter(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "minagent-read-file-test-utf8.txt", []byte("aébc")) // é is 2 bytes: 1-2
+	got, err := readPiece(newTool(t, dir), path, 2, 0)
+	if err != nil || got != "bc" {
+		t.Errorf("got %q, %v", got, err)
+	}
+}
+
+// - Verify bad offsets and limits are errors for the model to read
+func Test_ReadFile_BadOffsetOrLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "minagent-read-file-test-offsets.txt", []byte("hello"))
+	tool := newTool(t, dir)
+	for name, tc := range map[string]struct {
+		offset, limit int
+		wantErr       string
+	}{
+		"negative offset": {-1, 0, "offset must not be negative"},
+		"negative limit":  {0, -5, "limit must not be negative"},
+		"past the end":    {6, 0, "past the end"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := readPiece(tool, path, tc.offset, tc.limit)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) || got != "" {
+				t.Errorf("got %q, %v; want error containing %q", got, err, tc.wantErr)
+			}
+		})
+	}
+	if got, err := readPiece(tool, path, 5, 0); err != nil || got != "" { // exactly at the end is an empty read, not an error
+		t.Errorf("offset == size: got %q, %v", got, err)
 	}
 }
 
@@ -340,10 +447,10 @@ func Test_ReadFile_NewReadFileTool_InvalidWorkDir_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	file := writeFile(t, dir, "plain.txt", []byte("x"))
 
-	if _, err := NewReadFileTool(filepath.Join(dir, "missing")); err == nil {
+	if _, err := NewReadFileTool(filepath.Join(dir, "missing"), testMaxBytes); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := NewReadFileTool(file); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := NewReadFileTool(file, testMaxBytes); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("expected a 'not a directory' error for a file, got %v", err)
 	}
 }
@@ -356,6 +463,7 @@ func Test_Unit_IsDenied(t *testing.T) {
 		"key.pem": true, "MyKey.PEM": true, "server.key": true,
 		"id_rsa": true, "id_rsa.pub": true, "sub/id_rsa_old": true,
 		".ssh": true, ".ssh/config": true, "a/.ssh/b/c": true, ".SSH/config": true,
+		".agent-trace": true, ".agent-trace/20261021T101500Z-9f3a41c7.jsonl": true, "sub/.AGENT-TRACE/x.jsonl": true, "agent-trace.txt": false,
 		".env.example": false, ".envrc": false, "environment.txt": false,
 		"monkey.txt": false, "keyboard.txt": false, "pem.txt": false,
 		"a.txt": false, "sub/b.txt": false, "ssh/config": false, "src/id_ed25519_notes.txt": false,
@@ -364,5 +472,28 @@ func Test_Unit_IsDenied(t *testing.T) {
 		if got := isDenied(rel); got != want {
 			t.Errorf("isDenied(%q) = %v, want %v", rel, got, want)
 		}
+	}
+}
+
+// - Verify NewReadFileTool rejects a cap that is zero or negative (a negative cap would panic when slicing)
+func Test_ReadFile_NewReadFileTool_NonPositiveCap_ReturnsError(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		if _, err := NewReadFileTool(t.TempDir(), n); err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Errorf("cap %d: expected a must-be-positive error, got %v", n, err)
+		}
+	}
+}
+
+// - Verify the cap is the one the tool was built with, not a package constant
+func Test_ReadFile_UsesConfiguredCap(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "minagent-read-file-test-cap.txt", bytes.Repeat([]byte("a"), 100))
+	tool, err := NewReadFileTool(dir, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := readPath(tool, path)
+	if err != nil || !strings.HasPrefix(got, "aaaaaaaaaa\n[truncated: showed bytes 0-10 of 100;") {
+		t.Errorf("got %q, %v", got, err)
 	}
 }

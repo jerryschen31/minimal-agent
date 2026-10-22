@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -117,13 +118,16 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 // Run loop for handling chat session
 // ***********************************************************//
 
-func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) {
+func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error {
 	reader := newPromptReader(ctx, cs.InBuffer, cs.OutBuffer)
 
 	for {
 		line, err := reader.ReadPrompt(ctx)
 		if err != nil {
-			return
+			if errors.Is(err, io.EOF) { // Ctrl+D or end of piped input is a normal quit, not a failure
+				return nil
+			}
+			return err
 		}
 
 		// this is here to drain any stray Ctrl+C presses from the previous turn (e.g., the user gets impatient when canceling a turn and presses Ctrl+C a bunch of times; the 1-buffer channel absorbs that second press and ignores the rest)
@@ -134,8 +138,11 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 		quit := handleUserInput(turnCtx, cs, line)
 		// stop is called when a turn is done; it releases the watcher so it can't take a later interrupt.
 		stop()
-		if quit || ctx.Err() != nil {
-			return
+		if quit {
+			return nil
+		}
+		if err := ctx.Err(); err != nil { // the root context was cancelled (SIGTERM)
+			return err
 		}
 
 		// use non-interruptible root context; this way, interrupting a turn with Ctrl+C doesn't affect background compaction

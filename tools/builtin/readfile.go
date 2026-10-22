@@ -11,27 +11,32 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// In the agent kernel, we define a built-in tool that can read contents of text files, capped at ReadFileMaxBytes.
-const ReadFileMaxBytes = 64 * 1024
-
 // deniedNames are file or directory names (matched case-insensitively against every path component)
 // that read_file refuses even inside the allowed directory, because they usually hold credentials.
+// ".agent-trace" is the default trace directory: the agent must not be able to read its own audit log.
+// Only that default name is listed, so a traceDir set to another name inside workDir is not protected.
 // ".env.example" is the one exception to the ".env.*" pattern.
-var deniedNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh"}
+var deniedNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh", ".agent-trace"}
 
 // ReadFileTool reads text files, but only inside root (the configured workDir and its subdirectories)
 // and never a file on the deny list. Absolute paths, "..", and symlinks are all resolved first, so none of
 // them can reach outside root.
 type ReadFileTool struct {
-	root string // absolute path of the allowed directory, with symlinks resolved
+	root     string // absolute path of the allowed directory, with symlinks resolved
+	maxBytes int    // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
 // NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
-func NewReadFileTool(workDir string) (*ReadFileTool, error) {
+// maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
+func NewReadFileTool(workDir string, maxBytes int) (*ReadFileTool, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
+	}
 	abs, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
@@ -47,7 +52,7 @@ func NewReadFileTool(workDir string) (*ReadFileTool, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	return &ReadFileTool{root: root}, nil
+	return &ReadFileTool{root: root, maxBytes: maxBytes}, nil
 }
 
 // isDenied reports whether any component of rel (a slash- or OS-separated relative path) is on the deny list.
@@ -104,16 +109,27 @@ func (t *ReadFileTool) resolve(requested string) (string, error) {
 	return rel, nil
 }
 
-func (*ReadFileTool) GetToolDefinition() model.ToolDef {
+func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"read_file",
-		"Reads the contents of a UTF-8 text file inside the working directory or its subdirectories. Files larger than 64 KB are truncated, with a note at the end.",
+		fmt.Sprintf("Reads the contents of a UTF-8 text file inside the working directory or its subdirectories. Returns at most %d KB per call. "+
+			"If the file is longer, the output ends with a note giving the offset to pass to the next call, so a large file can be read in pieces.", t.maxBytes/1024),
 		json.RawMessage(`{
 			"type": "object",
 			"properties": {
 				"path": {
 					"type": "string",
 					"description": "The path to the file to read"
+				},
+				"offset": {
+					"type": "integer",
+					"minimum": 0,
+					"description": "Byte position to start reading from (default 0). Use the offset given in a previous truncation note to continue."
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"description": "Maximum number of bytes to return (default and maximum are the per-call cap)"
 				}
 			},
 			"required": ["path"]
@@ -124,7 +140,9 @@ func (*ReadFileTool) GetToolDefinition() model.ToolDef {
 func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
 	var params struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset int64  `json:"offset"`
+		Limit  int64  `json:"limit"`
 	}
 	// json.Marshal = json.dumps() in Python => dumps JSON var into byte string; json.Unmarshal = json.loads() in Python => loads JSON byte string into JSON var
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -132,6 +150,16 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	if params.Path == "" {
 		return "", fmt.Errorf("missing required argument: path")
+	}
+	if params.Offset < 0 {
+		return "", fmt.Errorf("offset must not be negative, got %d", params.Offset)
+	}
+	if params.Limit < 0 {
+		return "", fmt.Errorf("limit must not be negative, got %d", params.Limit)
+	}
+	limit := params.Limit
+	if limit == 0 || limit > int64(t.maxBytes) { // 0 = not given
+		limit = int64(t.maxBytes)
 	}
 
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
@@ -169,10 +197,16 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("%s is not a regular file (it is a %s)", params.Path, fileKind(info.Mode()))
 	}
 
+	if params.Offset > info.Size() {
+		return "", fmt.Errorf("offset %d is past the end of the file (%d bytes)", params.Offset, info.Size())
+	}
+	if _, err := f.Seek(params.Offset, io.SeekStart); err != nil {
+		return "", err
+	}
+
 	// LimitReader is used to cap how much of the file is read into memory, preventing huge files from being fully loaded.
-	// Reading one byte past the cap is how we can tell that the file was cut off with the comparison below.
-	// A directory opens fine but fails here with "is a directory".
-	data, err := io.ReadAll(io.LimitReader(f, ReadFileMaxBytes+1))
+	// Reading one byte past the limit is how we can tell that there is more file after this piece.
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return "", err
 	}
@@ -180,9 +214,38 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if bytes.IndexByte(data, 0) != -1 {
 		return "", fmt.Errorf("%s looks like a binary file, not text", params.Path)
 	}
-	if len(data) > ReadFileMaxBytes {
-		// add a note clearly indicating the file output was truncated since the file exceeded the maximum allowed size
-		return string(bytes.ToValidUTF8(data[:ReadFileMaxBytes], nil)) + "\n[truncated: file is larger than 64 KB]", nil
+
+	start := params.Offset
+	more := int64(len(data)) > limit
+	if more {
+		data = data[:limit]
 	}
-	return string(data), nil
+	// A piece is cut at a byte position, which can fall in the middle of a multi-byte character. Move the start
+	// forward past a half character and the end back before one, so the next piece (which begins at the end offset
+	// reported in the note) neither repeats nor loses bytes.
+	for len(data) > 0 && !utf8.RuneStart(data[0]) {
+		data, start = data[1:], start+1
+	}
+	if more {
+		data = trimPartialRune(data)
+	}
+	end := start + int64(len(data))
+	if !more {
+		return string(bytes.ToValidUTF8(data, nil)), nil
+	}
+	return string(bytes.ToValidUTF8(data, nil)) +
+		fmt.Sprintf("\n[truncated: showed bytes %d-%d of %d; call read_file again with offset=%d to continue]", start, end, info.Size(), end), nil
+}
+
+// trimPartialRune drops an incomplete multi-byte character from the end of b.
+func trimPartialRune(b []byte) []byte {
+	for i := 1; i <= utf8.UTFMax && i <= len(b); i++ {
+		if utf8.RuneStart(b[len(b)-i]) {
+			if !utf8.FullRune(b[len(b)-i:]) {
+				return b[:len(b)-i]
+			}
+			return b
+		}
+	}
+	return b
 }

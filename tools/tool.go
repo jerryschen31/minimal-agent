@@ -19,13 +19,13 @@ type Tool interface {
 }
 
 // setup built-in tools
-func SetupBuiltinTools(toolList []string, workDir string) ([]Tool, error) {
+func SetupBuiltinTools(toolList []string, workDir string, readFileMaxBytes int) ([]Tool, error) {
 	tools := []Tool{}
 	// add the built-in tools specified in the config
 	for _, t := range toolList {
 		switch t {
 		case "ReadFile":
-			readFile, err := builtin.NewReadFileTool(workDir)
+			readFile, err := builtin.NewReadFileTool(workDir, readFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}

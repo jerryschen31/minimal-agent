@@ -251,7 +251,7 @@ func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
 // - Verify SetupBuiltinTools builds the read_file tool for an existing workDir, and fails for a bad workDir
 // or an unknown tool name, so a misconfigured agent stops at startup instead of at the first file read
 func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir())
+	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), 4096)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,10 +259,10 @@ func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
 		t.Errorf("expected one read_file tool, got %v", defNames([]model.ToolDef{built[0].GetToolDefinition()}))
 	}
 
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing")); err == nil {
+	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), 4096); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir()); err == nil {
+	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), 4096); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool")
 	}
 }

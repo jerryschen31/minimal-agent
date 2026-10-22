@@ -1,6 +1,13 @@
 package trace
 
-import "time"
+import (
+	"encoding/json"
+	"os"
+	"runtime/debug"
+	"time"
+
+	"github.com/jerryschen31/minimal-agent/config"
+)
 
 // Version is the event format version written into an event's EventData field.
 const Version = 1
@@ -23,13 +30,13 @@ const (
 
 // Event represents a single event in the agent trace. Every agent event is recorded using this structure.
 type Event struct {
-	TimeStamp  time.Time `json:"ts"`
-	RunID      string    `json:"run_id"`
-	TaskID     string    `json:"task_id,omitempty"`
-	Counter    uint64    `json:"counter"`
-	EventType  EventType `json:"event_type"`
-	EventData  any       `json:"event_data"`
-	Redactions []string  `json:"redactions,omitempty"`
+	TimeStamp  time.Time       `json:"ts"`
+	RunID      string          `json:"run_id"`
+	TaskID     string          `json:"task_id,omitempty"`
+	Counter    uint64          `json:"counter"`
+	EventType  EventType       `json:"event_type"`
+	EventData  json.RawMessage `json:"event_data"` // the payload as JSON bytes: a snapshot taken in Record, then redacted
+	Redactions []string        `json:"redactions,omitempty"`
 }
 
 // RunStartData is the EventData for a RunStart event.
@@ -50,6 +57,71 @@ type RunStartData struct {
 	MaxTokens    int               `json:"max_tokens"`              // 0 = unspecified
 	SystemPrompt string            `json:"system_prompt,omitempty"` // full text; goes through redaction like any other string
 	McpServers   map[string]string `json:"mcp_servers,omitempty"`   // server name -> type only; never command, args, env or headers (tokens)
+}
+
+// GetRunStartData is a helper function that builds the run_start payload from the config and the running process.
+func GetRunStartData(cfg config.Config) RunStartData {
+	d := RunStartData{
+		TraceVersion: Version,
+		AgentName:    cfg.AgentName,
+		AgentVersion: cfg.AgentVersion,
+		PID:          os.Getpid(),
+		ParentPID:    os.Getppid(),
+		Mode:         cfg.AgentMode,
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		WorkDir:      cfg.WorkDir,
+		MaxSteps:     cfg.MaxSteps,
+		MaxTokens:    cfg.MaxTokens,
+		SystemPrompt: cfg.SystemPrompt,
+	}
+
+	// tracing must not fail a run, so a hostname error just leaves the field empty
+	if host, err := os.Hostname(); err == nil {
+		d.Hostname = host
+	}
+
+	// the commit this agent binary was built from; the Go toolchain records it for `go build` but not for `go run` dev testing
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				d.GitCommit = setting.Value
+			case "vcs.modified":
+				if setting.Value == "true" {
+					d.GitCommit += "+dirty" // built with uncommitted changes
+				}
+			}
+		}
+	}
+
+	// name and transport type only: a server's command, args, env, url and headers commonly hold tokens
+	if len(cfg.McpServers) > 0 {
+		d.McpServers = make(map[string]string, len(cfg.McpServers))
+		for name, server := range cfg.McpServers {
+			kind, err := server.TransportType()
+			if err != nil {
+				kind = "invalid"
+			}
+			d.McpServers[name] = kind
+		}
+	}
+	return d
+}
+
+// RunEndData is the EventData for a RunEnd event.
+type RunEndData struct {
+	Status     string `json:"status"`          // "ok" | "error"
+	Error      string `json:"error,omitempty"` // the error text when Status is "error"
+	DurationMS int64  `json:"duration_ms"`     // wall-clock time from run_start to run_end
+}
+
+func GetRunEndData(status, err string, durationMS int64) RunEndData {
+	return RunEndData{
+		Status:     status,
+		Error:      err,
+		DurationMS: durationMS,
+	}
 }
 
 // MessageRecord is one message as it was sent to the model.
