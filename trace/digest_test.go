@@ -201,3 +201,49 @@ func Test_Digest_SlashCommandsShowTheirEffect(t *testing.T) {
 		t.Errorf("the auto compaction must not appear as a task:\n%s", digest)
 	}
 }
+
+// - Verify a truncated or dropped payload is reported as incomplete data, not read as a nameless finished call
+// while the real request is reported as never finished
+func Test_Digest_MissingPayloadMarkers_AreReportedAsIncomplete(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.TraceMaxEventBytes = 200 // small, so the big tool result below is over the cap
+	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
+	rec, err := SetupRecorder(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := StartRun(rec, config.GetDefaultConfig())
+	task := StartTask(rec, "read big file")
+	task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "read_file", Arguments: `{"path":"big.txt"}`})
+	task.Record(ToolFinished, ToolFinishedData{CallID: "c1", Name: "read_file", Content: strings.Repeat("x", 1000)}) // truncated by the recorder
+	task.End()
+	run.End()
+	rec.Close()
+	files, _ := filepath.Glob(filepath.Join(cfg.TraceDir, "*.digest.md"))
+	b, _ := os.ReadFile(files[0])
+	digest := string(b)
+
+	for _, want := range []string{"1 tool call:", "1 requested, result missing (trace incomplete)", "1 event had incomplete data"} {
+		if !strings.Contains(digest, want) {
+			t.Errorf("digest is missing %q:\n%s", want, digest)
+		}
+	}
+	if strings.Contains(digest, "never finished") || strings.Contains(digest, "- :") || strings.Contains(digest, "2 tool") {
+		t.Errorf("the truncated completion was read as activity:\n%s", digest)
+	}
+}
+
+func Test_Digest_DroppedAndRunLevelMarkers(t *testing.T) {
+	d := NewActivityDigest()
+	d.Add(Event{RunID: "r", ScopeID: "r", EventType: RunStart, EventData: []byte(`{"dropped":"redaction failed"}`)})
+	d.Add(Event{RunID: "r", ScopeID: "t1", EventType: ModelResponse, EventData: []byte(`{"dropped":"redaction failed"}`)})
+	var out bytes.Buffer
+	d.Render(&out)
+	s := out.String()
+	if !strings.Contains(s, "1 run-level event had incomplete data") || !strings.Contains(s, "1 event had incomplete data") {
+		t.Errorf("digest = %s", s)
+	}
+	if strings.Contains(s, "answered, no tools") { // a dropped model_response is not a text-only reply
+		t.Errorf("a dropped model_response was read as an empty reply:\n%s", s)
+	}
+}

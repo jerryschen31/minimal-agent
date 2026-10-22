@@ -11,13 +11,14 @@ import (
 // Per task it lists the user input, then either the tool calls grouped into one block, or, for a text-only turn, a one-liner.
 // It is built from tool_requested / tool_finished, never from model text, so it shows what the agent did, not what it claimed.
 type ActivityDigest struct {
-	run       runSummary
-	tasks     []*taskSummary          // in order of first appearance
-	byScope   map[string]*taskSummary // scope ID -> task
-	calls     map[string]*pendingCall // tool_requested seen, waiting for its tool_finished; key = call_id
-	redacted  int                     // total redaction rule hits in the whole trace
-	modelErrs int
-	compacts  int
+	run           runSummary
+	tasks         []*taskSummary          // in order of first appearance
+	byScope       map[string]*taskSummary // scope ID -> task
+	calls         map[string]*pendingCall // tool_requested seen, waiting for its tool_finished; key = call_id
+	redacted      int                     // total redaction rule hits in the whole trace
+	modelErrs     int
+	runIncomplete int // same, for run-level events (their scope is the run ID, which is not a task)
+	compacts      int
 }
 
 type runSummary struct {
@@ -31,6 +32,7 @@ type taskSummary struct {
 	status, errText string   // empty status = no task_end seen
 	calls           []string // one described line per finished tool call, in finish order
 	pending         int      // tool calls requested but never finished
+	incomplete      int      // events of this task whose payload was replaced by a truncated / dropped marker
 	lastReplyChars  int      // length of the model's last text reply in this task
 	hasReply        bool
 	effect          string // what a slash command did to the context, e.g. "context cleared (4 messages)"; empty for chat turns
@@ -66,6 +68,16 @@ func (a *ActivityDigest) task(scope string) *taskSummary {
 // Add folds one event into the digest. A payload that does not decode is skipped: the digest is a summary, L0 has the truth.
 func (a *ActivityDigest) Add(ev Event) {
 	a.redacted += len(ev.Redactions)
+	if isMissingPayload(ev.EventData) {
+		// The recorder swapped the payload for a marker. It would decode into any typed payload as all zero values
+		// (a nameless tool_finished that matches nothing), so count the gap and do not read the event.
+		if ev.ScopeID == ev.RunID {
+			a.runIncomplete++
+		} else {
+			a.task(ev.ScopeID).incomplete++
+		}
+		return
+	}
 	switch ev.EventType {
 	case RunStart:
 		var d RunStartData
@@ -130,6 +142,17 @@ func (a *ActivityDigest) Add(ev Event) {
 	}
 }
 
+// isMissingPayload reports whether data is one of the recorder's markers for a payload that could not be recorded:
+// {"truncated":true,"original_bytes":N} (over traceMaxEventBytes) or {"dropped":"..."} (redaction failed).
+// No real payload has either key.
+func isMissingPayload(data json.RawMessage) bool {
+	var m struct {
+		Truncated bool   `json:"truncated"`
+		Dropped   string `json:"dropped"`
+	}
+	return json.Unmarshal(data, &m) == nil && (m.Truncated || m.Dropped != "")
+}
+
 // Render writes the digest as markdown.
 func (a *ActivityDigest) Render(w io.Writer) error {
 	var b strings.Builder
@@ -143,6 +166,9 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 		fmt.Fprintf(&b, " (%s)", oneLine(a.run.errText, maxInputChars))
 	}
 	b.WriteString("\n")
+	if a.runIncomplete > 0 {
+		fmt.Fprintf(&b, "\n%d run-level %s had incomplete data (payload truncated or dropped); see the trace\n", a.runIncomplete, plural(a.runIncomplete, "event", "events"))
+	}
 
 	for _, t := range a.tasks {
 		fmt.Fprintf(&b, "\n## %s\n\n", oneLine(t.input, maxInputChars))
@@ -156,7 +182,11 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 				fmt.Fprintf(&b, "- %s\n", c)
 			}
 			if t.pending > 0 {
-				fmt.Fprintf(&b, "- %d requested but never finished\n", t.pending)
+				if t.incomplete > 0 { // the finish event may be one of the missing ones
+					fmt.Fprintf(&b, "- %d requested, result missing (trace incomplete)\n", t.pending)
+				} else {
+					fmt.Fprintf(&b, "- %d requested but never finished\n", t.pending)
+				}
 			}
 		case t.effect != "":
 			// the command's effect line above is the whole story
@@ -164,6 +194,9 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 			fmt.Fprintf(&b, "answered, no tools (%d chars)\n", t.lastReplyChars)
 		default:
 			b.WriteString("no tools, no reply\n")
+		}
+		if t.incomplete > 0 {
+			fmt.Fprintf(&b, "%d %s had incomplete data (payload truncated or dropped): the list above may be missing activity; see the trace\n", t.incomplete, plural(t.incomplete, "event", "events"))
 		}
 		if t.status != "" && t.status != "ok" {
 			fmt.Fprintf(&b, "task %s", t.status)
