@@ -14,3 +14,5 @@ mvp3/runs
 mvp4/minagent
 mvp4/runs
 .agent-trace/
+minagent
+*tmp
