@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -400,4 +401,10 @@ func Test_Compaction_RecordsAnEvent(t *testing.T) {
 	if spy.types[last] != trace.Compaction || spy.scopes[last] != "r-test" || spy.data[last].(trace.CompactionData).Trigger != "auto" {
 		t.Errorf("auto compaction event = %v %q %+v", spy.types[last], spy.scopes[last], spy.data[last])
 	}
+}
+
+func (s *recorderSpy) eventTypes() []trace.EventType {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.types)
 }

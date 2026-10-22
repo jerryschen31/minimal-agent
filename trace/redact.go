@@ -42,15 +42,20 @@ const (
 	// TODO later: LevelStringent, LevelMetadata
 )
 
-// placeholderPrefix starts every placeholder. Findings that begin with it are already redacted and are skipped,
-// so redacting twice (L0, then the digest pass) never nests placeholders.
+// placeholderPrefix starts every placeholder.
 const placeholderPrefix = "[REDACTED:"
+
+// exactPlaceholderRe matches one complete placeholder and nothing else. A finding that is exactly a placeholder is
+// already redacted and is skipped, so redacting twice (L0, then the digest pass) never nests placeholders.
+// A finding that merely starts with the prefix ("[REDACTED:x#12345678]hunter2xyz") still carries credential text and is masked.
+var exactPlaceholderRe = regexp.MustCompile(`^\[REDACTED:[a-z0-9_]+#[0-9a-f]{8}\]$`)
 
 // rule is one thing the built-in detector looks for. Set one of the two patterns.
 type rule struct {
 	name string
 	// valueRe finds a secret by its SHAPE, anywhere inside a string (e.g. an API key format).
-	// If the pattern has a capture group, group 1 is the secret and the rest is context (e.g. "Bearer ").
+	// If the pattern has capture groups, the one that matched is the secret and the rest is context (e.g. "Bearer ").
+	// Several groups mean alternatives (a double-quoted, single-quoted or bare value): only one of them matches.
 	valueRe *regexp.Regexp
 	// keyRe finds a secret by the NAME of the field it sits under (e.g. "db_password": "hunter2");
 	// the whole string value is the secret.
@@ -71,7 +76,10 @@ func (d builtinDetector) Find(key, s string) []Finding {
 			for _, m := range r.valueRe.FindAllStringSubmatch(s, -1) {
 				secret := m[0]
 				if len(m) > 1 {
-					secret = m[1]
+					secret = firstNonEmpty(m[1:])
+					if secret == "" {
+						continue // nothing to mask
+					}
 				}
 				found = append(found, Finding{Rule: r.name, Secret: secret})
 			}
@@ -82,6 +90,21 @@ func (d builtinDetector) Find(key, s string) []Finding {
 	}
 	return found
 }
+
+func firstNonEmpty(groups []string) string {
+	for _, g := range groups {
+		if g != "" {
+			return g
+		}
+	}
+	return ""
+}
+
+// assignedValue is the value after "name=" or "name:", for the assignment rules below. In order of preference:
+// a complete double-quoted value, a complete single-quoted value (both may contain spaces and backslash-escaped characters,
+// and run to the end of the text if the closing quote is missing, so a cut-off value is still masked), then a bare token.
+// Each alternative is its own capture group, and the one that matched is the secret.
+const assignedValue = `\s*(?:"((?:[^"\\]|\\(?s:.)){4,})(?:"|$)|'((?:[^'\\]|\\(?s:.)){4,})(?:'|$)|["']?([^\s"',;&}]{4,}))`
 
 // secretFieldPattern: (?i) part = separator style, (?-i:...) part = camelCase (a lower-case letter, then a capitalised word).
 const secretFieldPattern = `(?i)(?:^|[_.\-])(?:pass(?:word|wd|phrase)?|pwd|pw|secret|token|key|credentials?|auth|authorization|cookie)$` +
@@ -107,9 +130,9 @@ var builtinRules = []rule{
 	{name: "url_credentials", valueRe: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://([^\s/:@]+:[^\s/@]+)@`)},
 	// key=value or "key":"value" where the key name ends with a secret word.
 	// Ending matters: max_tokens=1024 must survive, access_token=abc123 must not. Also catches secrets inside a tool call's JSON-string arguments.
-	{name: "key_value", valueRe: regexp.MustCompile(`(?i)(?:^|[^a-z])(?:pass(?:word|wd|phrase)?|pwd|pw|secret|token|api[_-]?key|private[_-]?key)"?\s*[:=]\s*"?([^\s"',;&}]{4,})`)},
+	{name: "key_value", valueRe: regexp.MustCompile(`(?i)(?:^|[^a-z])(?:pass(?:word|wd|phrase)?|pwd|pw|secret|token|api[_-]?key|private[_-]?key)["']?\s*[:=]` + assignedValue)},
 	// bare "key" is common in prose ("key: the main idea"), so it only counts with "=" or a quoted "key" -> api_key=..., --key=..., {"key": "..."} etc.
-	{name: "key_assignment", valueRe: regexp.MustCompile(`(?i)(?:^|[^a-z])(?:[a-z0-9]+[_-])?key(?:"\s*:|\s*=)\s*"?([^\s"',;&}]{4,})`)},
+	{name: "key_assignment", valueRe: regexp.MustCompile(`(?i)(?:^|[^a-z])(?:[a-z0-9]+[_-])?key(?:["']\s*:|\s*=)` + assignedValue)},
 	// a value under a JSON field whose name is, or ends with, a secret word is secret, whatever it looks like.
 	// The word must be the whole name, follow a separator (db_password, x-api-key) or follow a camelCase boundary (apiKey, dbPassword),
 	// so words like compass, monkey, max_tokens and input_tokens do not match.
@@ -208,7 +231,7 @@ func (r *Redactor) redactString(s, key string, fired map[string]bool) string {
 	}
 	slices.SortStableFunc(found, func(a, b Finding) int { return len(b.Secret) - len(a.Secret) })
 	for _, f := range found {
-		if f.Secret == "" || strings.HasPrefix(f.Secret, placeholderPrefix) || !strings.Contains(s, f.Secret) {
+		if f.Secret == "" || exactPlaceholderRe.MatchString(f.Secret) || !strings.Contains(s, f.Secret) {
 			continue
 		}
 		s = strings.ReplaceAll(s, f.Secret, r.placeholder(f.Rule, f.Secret))

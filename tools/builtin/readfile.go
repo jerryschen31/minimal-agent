@@ -229,6 +229,11 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if more {
 		data = trimPartialRune(data)
 	}
+	// Nothing left after trimming means the limit is smaller than one character. Saying "continue at offset=N" would hand
+	// back the same offset forever (and burn the ReAct step budget), so fail with something the model can act on.
+	if more && len(data) == 0 {
+		return "", fmt.Errorf("limit %d bytes is smaller than the character at offset %d; call read_file again with a larger limit (at least %d)", limit, params.Offset, utf8.UTFMax)
+	}
 	end := start + int64(len(data))
 	if !more {
 		return string(bytes.ToValidUTF8(data, nil)), nil

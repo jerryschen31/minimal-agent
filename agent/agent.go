@@ -26,11 +26,16 @@ type Agent struct {
 	toolRegistry *tools.ToolRegistry
 	mcpConns     []*mcpconnect.McpConnection
 	agentMode    string
+	runTrace     *trace.Scope // the run's trace scope: started by RunAgent, ended by ShutdownAgent
 }
 
 func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
+	}
+	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
+	if cfg.MCPResultMaxBytes <= 0 {
+		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
 	}
 	// agent mode
 	agent.agentMode = cfg.AgentMode
@@ -104,9 +109,9 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
-	// trace the run: run_start now, run_end (with status and duration) when this function returns
-	runTrace := trace.StartRun(agent.session.Recorder, agent.session.Config)
-	defer runTrace.End()
+	// trace the run: run_start now. run_end is recorded by ShutdownAgent, not here: background work such as
+	// auto-compaction can still be running when this function returns, and its events must land before run_end.
+	agent.runTrace = trace.StartRun(agent.session.Recorder, agent.session.Config)
 	// select agent mode
 	var err error
 	if agent.agentMode == "chat" {
@@ -114,7 +119,7 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 	} else {
 		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
-	runTrace.Fail(err)
+	agent.runTrace.Fail(err)
 	return err
 }
 
@@ -131,6 +136,11 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 				fmt.Fprintf(os.Stderr, "error closing MCP server: %v\n", err)
 			}
 		}
+	}
+	// end the run now that background work is cancelled and drained, and before the recorder stops accepting events
+	if agent.runTrace != nil {
+		agent.runTrace.End()
+		agent.runTrace = nil // a second ShutdownAgent must not write a second run_end
 	}
 	// close (flush) the event trace recorder
 	if agent.session != nil {

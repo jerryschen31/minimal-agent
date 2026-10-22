@@ -20,7 +20,7 @@ var (
 	fakeGoogle    = "AIza" + strings.Repeat("kL4", 12)[:35]
 	fakeStripe    = "sk_live_" + strings.Repeat("Ab1", 8)
 	fakeJWT       = "eyJ" + strings.Repeat("a", 12) + ".eyJ" + strings.Repeat("b", 12) + "." + strings.Repeat("c", 12)
-	fakePEM       = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----"
+	fakePEM       = "-----BEGIN RSA PRIVATE KEY-----\nZmFrZS1rZXktYm9keQ==\nZmFrZS1rZXktYm9keQ==\n-----END RSA PRIVATE KEY-----" // the body is base64 of "fake-key-body"
 )
 
 var placeholderRe = regexp.MustCompile(`\[REDACTED:[a-z_]+#[0-9a-f]{8}\]`)
@@ -62,7 +62,7 @@ func Test_Redact_ValueRules(t *testing.T) {
 		{"jwt", "session " + fakeJWT, fakeJWT, "jwt"},
 		{"bearer", `curl -H "Authorization: Bearer abcDEF0123456789xyz"`, "abcDEF0123456789xyz", "bearer_token"},
 		{"pem", "key:\n" + fakePEM + "\ndone", fakePEM, "pem_private_key"},
-		{"pem truncated", "key:\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg", "MIIEvQIBADANBg", "pem_private_key"},
+		{"pem truncated", "key:\n-----BEGIN PRIVATE KEY-----\nZmFrZS1rZXktYm9keQ", "ZmFrZS1rZXktYm9keQ", "pem_private_key"},
 		{"url credentials", "postgres://admin:s3cretpw@db.internal/app", "admin:s3cretpw", "url_credentials"},
 		{"key=value", "export DB_PASSWORD=hunter2xyz", "hunter2xyz", "key_value"},
 		{"yaml", "api_key: abcd1234efgh", "abcd1234efgh", "key_value"},
@@ -275,6 +275,36 @@ func Test_Finding_StringHidesSecret(t *testing.T) {
 	for _, s := range []string{fmt.Sprint(f), fmt.Sprintf("%v", f), fmt.Sprintf("%+v", f)} {
 		if strings.Contains(s, fakeGitHub) {
 			t.Errorf("secret leaked in %q", s)
+		}
+	}
+}
+
+// - Verify only a complete placeholder is skipped: a value that is exactly a placeholder is left alone (so a second
+// pass changes nothing), while text after or around a placeholder-looking prefix is still masked
+func Test_Redact_OnlyACompletePlaceholderIsExempt(t *testing.T) {
+	r := newTestRedactor(t)
+
+	for _, in := range []string{
+		"password=[REDACTED:key_value#12345678]",
+		"password='[REDACTED:key_value#12345678]'",
+	} {
+		out, fired := redactToString(t, r, in)
+		if !strings.Contains(out, in) || len(fired) != 0 { // out is the JSON encoding of in
+			t.Errorf("complete placeholder changed: %q -> %q (fired %v)", in, out, fired)
+		}
+	}
+	if out, _ := redactToString(t, r, map[string]string{"password": "[REDACTED:secret_field#12345678]"}); !strings.Contains(out, "[REDACTED:secret_field#12345678]") {
+		t.Errorf("a field that is exactly a placeholder was re-masked: %s", out)
+	}
+
+	for _, in := range []string{
+		"password=[REDACTED:key_value#12345678]hunter2xyz",
+		"password=[REDACTED:not-a-placeholder]hunter2xyz",
+		"password=[REDACTED:key_value#1234]hunter2xyz",
+	} {
+		out, _ := redactToString(t, r, in)
+		if strings.Contains(out, "hunter2xyz") {
+			t.Errorf("credential after a placeholder-looking prefix survived: %q -> %q", in, out)
 		}
 	}
 }

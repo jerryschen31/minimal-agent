@@ -331,3 +331,46 @@ var (
 	regexpRunID  = regexp.MustCompile(`^r\d{8}T\d{6}Z-[0-9a-f]{8}$`)
 	regexpTaskID = regexp.MustCompile(`^t\d{8}T\d{6}Z-[0-9a-f]{8}$`)
 )
+
+// - Verify that credentials written in quoted form, or next to a fake placeholder, never reach a subscriber, in whole or in part.
+// The values are made-up words, not real credentials.
+func Test_Recorder_QuotedAndPlaceholderLookalikeCredentialsNeverReachASubscriber(t *testing.T) {
+	cases := []struct {
+		name  string
+		data  any
+		parts []string // no part of the credential may appear in the written line
+	}{
+		{"single-quoted env assignment", TaskStartData{Input: "DB_PASSWORD='hunter2xyz'"}, []string{"hunter2xyz"}},
+		{"single-quoted flag", TaskStartData{Input: "run --key='opaque123456'"}, []string{"opaque123456"}},
+		{"double-quoted value with spaces", TaskStartData{Input: `{"password":"correct horse battery staple"}`}, []string{"correct", "horse", "battery", "staple"}},
+		{"double-quoted shell assignment", TaskStartData{Input: `export TOKEN="zebra quartz mango"`}, []string{"zebra", "quartz", "mango"}},
+		{"escaped quote inside the value", TaskStartData{Input: `password="pa\"ss zebra word"`}, []string{"zebra", "ss zebra"}},
+		{"single-quoted value with spaces", TaskStartData{Input: "secret: 'alpha bravo charlie'"}, []string{"alpha", "bravo", "charlie"}},
+		{"quoted key assignment with spaces", TaskStartData{Input: `config {"api_key": "falcon harbor lantern"}`}, []string{"falcon", "harbor", "lantern"}},
+		{"closing quote missing", TaskStartData{Input: `password="never closed ending`}, []string{"never", "closed", "ending"}},
+		{"secret field after a fake placeholder", map[string]string{"password": "[REDACTED:secret_field#12345678]hunter2xyz"}, []string{"hunter2xyz"}},
+		{"assignment after a fake placeholder", TaskStartData{Input: "password=[REDACTED:not-a-placeholder]hunter2xyz"}, []string{"hunter2xyz"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sub := &fakeSub{}
+			rec := newTestRecorder(t, sub)
+			rec.Record("t", TaskStart, c.data)
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if len(sub.lines) != 1 {
+				t.Fatalf("got %d lines", len(sub.lines))
+			}
+			line := sub.lines[0]
+			for _, part := range c.parts {
+				if strings.Contains(line, part) {
+					t.Errorf("part %q of the credential reached the subscriber: %s", part, line)
+				}
+			}
+			if !strings.Contains(line, placeholderPrefix) {
+				t.Errorf("nothing was redacted: %s", line)
+			}
+		})
+	}
+}

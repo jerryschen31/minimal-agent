@@ -188,6 +188,39 @@ func Test_ReadFile_OffsetInsideCharacter(t *testing.T) {
 	}
 }
 
+// - Verify a limit (or a configured cap) smaller than the next character is an actionable error, never a note that
+// says "continue at the offset you are already at", and that a limit big enough for the character makes progress
+func Test_ReadFile_LimitSmallerThanACharacter_IsAnError(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "minagent-read-file-test-wide.txt", []byte("éx")) // é is 2 bytes
+	tool := newTool(t, dir)
+
+	for name, tc := range map[string]struct{ offset, limit int }{
+		"limit 1 at the start":       {0, 1},
+		"limit 1 inside a character": {1, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := readPiece(tool, path, tc.offset, tc.limit)
+			if err == nil || !strings.Contains(err.Error(), "smaller than the character") || got != "" {
+				t.Errorf("got %q, %v; want an error saying the limit is smaller than the character", got, err)
+			}
+		})
+	}
+
+	got, err := readPiece(tool, path, 0, 2)
+	if err != nil || !strings.HasPrefix(got, "é\n[truncated: showed bytes 0-2 of 3;") || !strings.HasSuffix(got, "offset=2 to continue]") {
+		t.Errorf("limit 2: got %q, %v", got, err)
+	}
+
+	tiny, err := NewReadFileTool(dir, 1) // the configured cap is the limit when none is given
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readPiece(tiny, path, 0, 0); err == nil || got != "" {
+		t.Errorf("cap 1: got %q, %v; want an error", got, err)
+	}
+}
+
 // - Verify bad offsets and limits are errors for the model to read
 func Test_ReadFile_BadOffsetOrLimit(t *testing.T) {
 	dir := t.TempDir()

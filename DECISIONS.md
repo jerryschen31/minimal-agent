@@ -2617,3 +2617,26 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
 - **Also added:** `trace.OutcomeOf(err)` (shared by `Scope.Fail` and the helper) and `Scope.ID()`.
 - **Known imprecision:** `messages_after` for an auto compaction is read when it finishes, so it can include messages
   a later turn added in the meantime. A skipped request ("compaction already in progress") records nothing.
+
+### PR #19 review fixes: quoted credentials, placeholder lookalikes, MCP cap, run_end timing, read_file paging (decided 2026-10-22)
+
+- **Quoted credentials (`key_value`, `key_assignment`):** the value is now matched as a complete double-quoted value, a
+  complete single-quoted value (spaces and backslash-escaped characters allowed; runs to the end of the text if the closing
+  quote is missing, so a cut-off value is still masked), then a bare token. Each alternative is its own capture group and
+  `Find` takes the one that matched. Quoted values must be 4+ characters, like bare ones. Honest downside: a
+  quoted value longer than 3 characters is masked everywhere it occurs in the same string (`ReplaceAll`), and a short
+  quoted value (1-3 characters) is still not masked.
+- **Placeholder exemption:** only a finding that is exactly one placeholder (`^\[REDACTED:[a-z0-9_]+#[0-9a-f]{8}\]$`) is
+  skipped; a value that merely starts with `[REDACTED:` is masked in full. Idempotence still holds.
+- **`mcpResultMaxBytes`:** a non-positive value is a fatal `SetupAgent` error. MCP tool setup only warns and skips a tool
+  that fails to build, so a bad cap used to silently drop every MCP tool.
+- **`run_end` timing:** `RunAgent` starts the run scope; `ShutdownAgent` ends it, after background auto-compaction has been
+  cancelled (by `main`) and drained, and before the recorder is closed. Honest downside: a run's duration now includes
+  shutdown, and `run_end` is only written if `ShutdownAgent` runs (a hard crash leaves none, as before).
+- **`read_file` paging:** when a limit (or the configured cap) is smaller than the next character, trimming leaves nothing
+  and the old note said "continue at offset=N" with N unchanged, forever. It is now an error naming the problem and telling
+  the model to use a larger limit.
+- **Credentials in tests:** gitleaks over the PR commits and the tree found only synthetic values (`hunter2xyz`,
+  `abcd1234efgh`, repeated-character keys). The two PEM fixtures were changed from real PKCS#8 header bytes to base64 of
+  "fake-key-body". gitleaks still flags 6 test lines (generic key patterns, a PEM header); they are the redactor's inputs
+  and have to look like credentials. `mvp1/.env` holds real-format keys but is gitignored and was never committed.
