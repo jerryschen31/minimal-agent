@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-19)
+# SESSION.md — mvp2 progress (last updated 2026-10-21)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -22,6 +22,9 @@ several sessions have worked well; keep doing it this way.
   implementations: that was tried the same day and he rejected it as "huge chunks". Pure
   figure-it-out exercises were too slow. The rest of this bullet is the older style, kept for
   context.
+- **Refinement (2026-10-20): build top-down.** Start each slice at the call site in the loop with the lower layers
+  as stubs, and open each slice with a short diagram of where it sits in the whole flow. A tree that doesn't
+  compile for a while is fine. Jerry has also been saying "write X for me" more often; when he does, write it.
 - **(Previous) Teach-then-let-him-type was the default.** Explain the concept, give the smallest next
   slice (a struct shape, a method signature, an old→new translation table), then stop and
   wait for Jerry to write it and share it back for review. Don't write whole functions/files
@@ -860,3 +863,33 @@ Event envelope, effects/snapshot approach and redaction shape agreed; see `DECIS
 envelope, state-change capture, redaction shape`. Snapshots (hashing) deferred out of slice 2. Slice 2 order:
 `trace/event.go` → `trace/redact.go` → `trace/recorder.go` (+ JSONL subscriber) → config + loop wiring.
 Jerry types each file from a skeleton. Prerequisite for reasoning capture: `ChatMessage.Reasoning` + usage.
+
+### 2026-10-21 — tracing: milestone 1 works (run_start / run_end to a JSONL file)
+
+> **Next steps as of 2026-10-21** (continues the 2026-10-19 slice 2 entry).
+>
+> **State:** `go run .` then `/quit` writes `.agent-trace/<run_id>.jsonl` with `run_start` and `run_end`
+> (checked end to end with a built binary; directory `0700`, file `0600`). `go vet ./...` and
+> `go test -race ./...` pass. Design details are in `DECISIONS.md § Tracing: recorder pipeline, redaction
+> interface, JSONL file, task scope` and `§ Size caps: trace events, read_file, MCP results`.
+>
+> **Built this stretch:** `trace/` (`event.go`, `redact.go`, `recorder.go`, `subscriber.go` = the JSONL file
+> subscriber, `doc.go` = package overview with the flow diagram, and tests); config fields `traceEnabled`,
+> `redactionLevel`, `traceDir`, `traceMaxEventBytes`, `readFileMaxBytes`, `mcpResultMaxBytes`; `read_file` now
+> pages with `offset` and `limit` (cap 1 MB); `.agent-trace` is in `.gitignore` and `read_file`'s deny list;
+> `SetupAgent`, `RunAgent` and `ShutdownAgent` are wired to the recorder.
+>
+> **Milestone 2 (next), top-down from the loop:**
+> 1. Decide how `Record` learns the task: keep the `taskID` argument or add `Recorder.ForTask(id)`.
+> 2. Task counter on `ChatSession`; `task_start` / `task_end` around `reActLoop` in `handleUserInput`.
+> 3. `model_request`, `model_response`, `model_error` around `chatWithProgress` (with `Canceled` for Ctrl+C).
+> 4. `tool_requested` first in `runToolCall`, `tool_finished` on every exit path (single-exit refactor).
+> 5. Payload structs for tool, task and compaction events; the `compaction` event for `/compact` and auto.
+> 6. Then slice 3 (hash chain); `ChatMessage.Reasoning` and usage in `model/`.
+>
+> **Small open items:** make `AgentVersion` a constant instead of a config field; optionally a test that no MCP
+> `env`/`headers` value can reach `run_start`; `PrintConfig` label alignment; `model/anthropic.tmp` is an untracked
+> stray file.
+>
+> **Deferred, tracked in `DECISIONS.md`:** client-side limit on raw MCP responses (HTTP wrapper and stdio
+> wrapper), detector registry / `plugins.go` and the gitleaks detector, effects and snapshots, the L1 digest.

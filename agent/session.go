@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -8,6 +9,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // chatSession holds the state and configuration for an ongoing chat session
@@ -21,13 +23,17 @@ type ChatSession struct {
 	UserID     string
 	InBuffer   io.Reader
 	OutBuffer  io.Writer
+	Recorder   trace.Recorder
 
 	// ShowProgress prints "thinking" dots while waiting for the model (see chatWithProgress).
 	// Set by SetupAgent only for chat mode on a terminal; tests leave it off.
 	ShowProgress bool
 }
 
-func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, cfg config.Config) (*ChatSession, error) {
+func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error) {
+	if recorder == nil {
+		return nil, fmt.Errorf("no recorder provided")
+	}
 	return &ChatSession{
 		Config:     cfg,
 		Provider:   provider,
@@ -38,12 +44,18 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 		UserID:     cfg.UserID,
 		InBuffer:   cfg.InBuffer,
 		OutBuffer:  cfg.OutBuffer,
+		Recorder:   recorder,
 	}, nil
 }
 
+// getSessionProvider returns the provider to use for model calls made under scopeID: the session's provider, traced.
+func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider {
+	return trace.GetTracedProvider(cs.Provider, cs.Recorder, scopeID, cs.Config)
+}
+
 // creates a new chat session instance
-func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, cfg config.Config) (*ChatSession, error) {
-	cs, err := NewChatSession(provider, chatHistory, chatContext, tools, cfg)
+func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error) {
+	cs, err := NewChatSession(provider, chatHistory, chatContext, tools, recorder, cfg)
 	if err != nil {
 		return nil, err
 	}

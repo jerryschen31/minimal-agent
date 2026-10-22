@@ -13,9 +13,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// MCPResultMaxBytes caps how much of an MCP tool result is returned to the model (same idea as ReadFileMaxBytes).
-const MCPResultMaxBytes = 64 * 1024
-
 // *******************************************
 // MCP tool registering
 // *******************************************
@@ -27,6 +24,7 @@ type mcpTool struct {
 	toolName    string         // the tool's name on the server (what tools/call needs); toolDef holds the prefixed name the model sees
 	toolDef     model.ToolDef  // tool definition
 	safeToRetry bool           // are retries okay on this tool call (i.e., idempotent?)
+	maxBytes    int            // most of a result that is passed to the model (config mcpResultMaxBytes)
 }
 
 func (t *mcpTool) GetToolDefinition() model.ToolDef {
@@ -40,11 +38,12 @@ func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("CallTool error: %w", err)
 	}
 	// flatten the MCP tool result response struct into plain text for the model
-	return flattenMCPResult(res)
+	return flattenMCPResult(res, t.maxBytes)
 }
 
 // flattenMCPResult turns an MCP tool result into plain text for the model, or an error if the tool reported failure.
-func flattenMCPResult(res *mcp.CallToolResult) (string, error) {
+// The text is cut to maxBytes (which must be positive) with a truncation note.
+func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error) {
 	if res == nil {
 		return "", fmt.Errorf("mcp server returned no result")
 	}
@@ -72,9 +71,9 @@ func flattenMCPResult(res *mcp.CallToolResult) (string, error) {
 	}
 
 	// cap the size, then drop any multi-byte character that the byte cut split in half
-	if len(text) > MCPResultMaxBytes {
-		text = strings.ToValidUTF8(text[:MCPResultMaxBytes], "") +
-			fmt.Sprintf("\n[truncated: result is larger than %d KB]", MCPResultMaxBytes/1024)
+	if len(text) > maxBytes {
+		text = strings.ToValidUTF8(text[:maxBytes], "") +
+			fmt.Sprintf("\n[truncated: result is larger than %d KB]", maxBytes/1024)
 	}
 
 	// the tool ran but reported failure: the text is the error message (runToolCall prefixes "error: ")
@@ -88,7 +87,11 @@ func flattenMCPResult(res *mcp.CallToolResult) (string, error) {
 }
 
 // newMCPTool wraps one tool listed by an MCP server as a Tool the agent can register and call.
-func newMCPTool(mcpConn *McpConnection, t *mcp.Tool) (*mcpTool, error) {
+// maxBytes is the most of a result that is passed to the model; it must be positive.
+func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("mcp result max bytes must be positive, got %d", maxBytes)
+	}
 	// get tool parameters as raw JSON from the mcp.Tool input schema
 	// InputSchema is an `any` (a map[string]any when it comes from a server), but ToolDef wants raw JSON.
 	// A nil schema is left empty so NewToolDef fills in its "no parameters" default; marshalling nil would send "null".
@@ -112,10 +115,11 @@ func newMCPTool(mcpConn *McpConnection, t *mcp.Tool) (*mcpTool, error) {
 		toolName:    t.Name,
 		toolDef:     model.NewToolDef(modelName, t.Description, params),
 		safeToRetry: safeToRetry,
+		maxBytes:    maxBytes,
 	}, nil
 }
 
-func GetMCPTools(ctx context.Context, mcpConn *McpConnection) ([]tools.Tool, error) {
+func GetMCPTools(ctx context.Context, mcpConn *McpConnection, maxResultBytes int) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
 	// query the server for available tools - t is of type *mcp.Tool (from the MCP official Go SDK)
 	for t, err := range mcpConn.Session.Tools(ctx, nil) {
@@ -125,7 +129,7 @@ func GetMCPTools(ctx context.Context, mcpConn *McpConnection) ([]tools.Tool, err
 			continue
 		}
 		// otherwise from t of type *mcp.Tool, create a variable that satifies the Tool interface (type mcpTool)
-		mt, err := newMCPTool(mcpConn, t) // t is *mcp.Tool, mt is *mcpTool
+		mt, err := newMCPTool(mcpConn, t, maxResultBytes) // t is *mcp.Tool, mt is *mcpTool
 		if err != nil {
 			// warn and skip this one tool
 			fmt.Fprintf(os.Stderr, "warning: failed to create MCP tool from server %s: %v\n", mcpConn.Name, err)
@@ -136,7 +140,7 @@ func GetMCPTools(ctx context.Context, mcpConn *McpConnection) ([]tools.Tool, err
 	return mcpTools, nil
 }
 
-func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection) ([]tools.Tool, error) {
+func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
 	if len(mcpConns) == 0 {
 		return nil, nil
@@ -144,7 +148,7 @@ func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection) ([]tools.Tool
 
 	// for each server, we get the list of tools and then append to our tools object
 	for _, s := range mcpConns {
-		sTools, err := GetMCPTools(ctx, s)
+		sTools, err := GetMCPTools(ctx, s, maxResultBytes)
 		if err != nil {
 			return nil, err
 		}

@@ -375,6 +375,14 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
     - A token or cost budget (`MaxTokens` is still unread).
     - *Revisit:* after step 1 works end to end.
 
+13. **Shared helper for creating subscriber files** (`trace/subscriber.go`, `trace/digest.go`; decided 2026-10-22).
+    - *Today:* `NewJSONLSubscriber` and `NewDigestSubscriber` repeat the same run-ID check, `MkdirAll(0700)` and
+      `O_CREATE|O_EXCL` open at `0600`.
+    - *Fix:* one `createTraceFile(dir, runID, suffix)` helper. Deferred by Jerry until a third file-writing subscriber
+      exists, so the shape of the helper is known; two copies of about ten lines is cheaper than a guessed abstraction.
+    - *Revisit:* when a third subscriber that writes a file is added. Until then, a change to the file-creation
+      security rules (mode, `O_EXCL`, ID check) must be made in both places.
+
 
 ---
 
@@ -2307,6 +2315,9 @@ draft in `PLAN-tracing.md` and gets its own entries when it is settled.
 
 ### Tracing: event envelope, state-change capture, redaction shape (decided 2026-10-19)
 
+> Partly superseded 2026-10-19 by "Tracing: version moves to run_start; ts is a time.Time" (end of this log): `v` is no longer on every event.
+> Also partly superseded 2026-10-21 by "Tracing: recorder pipeline, redaction interface, JSONL file, task scope" (end of this log): the envelope field names changed (`run`/`turn`/`seq`/`kind`/`data` became `run_id`/`task_id`/`counter`/`event_type`/`event_data`), and a detector is now an interface, not just data.
+
 Settled in discussion with Jerry before slice 2 of `PLAN-tracing.md` §13. The plan stays the long-form
 reference; this entry records what was agreed. Where it differs from the plan, this entry wins.
 
@@ -2358,3 +2369,350 @@ reference; this entry records what was agreed. Where it differs from the plan, t
 - Fail closed: an unknown level is a config error; a redactor failure drops the payload, never writes it raw.
 - Placeholder `[REDACTED:name#tag]`, tag = HMAC under a random per-run key.
 - The "contents of deny-listed files" detector from the plan is dropped: `read_file` already refuses them.
+
+### Tracing: version moves to run_start; ts is a time.Time (decided 2026-10-19)
+
+> Partly superseded 2026-10-21: `Data` is now `EventData json.RawMessage` (the recorder snapshots the payload in `Record`, so the "must not be mutated afterwards" rule is enforced, not hoped for), and the open `turn` -> `task` question is settled: `task`. See "Tracing: recorder pipeline, redaction interface, JSONL file, task scope" at the end of this log.
+
+- **`v` is removed from the event envelope.** The format version is written once, in the `run_start`
+  payload (`trace.Version`). One process writes one file with one version, so a per-line copy is redundant.
+  Honest downside: a single line pasted or grepped out of a file no longer says which format it is; a reader
+  must look at the file's first line. Readers stay tolerant; removing or renaming a field still bumps the version.
+- **`ts` is a `time.Time`**, created with `time.Now().UTC()` at emit time (not in a writer goroutine).
+  `encoding/json` writes it as RFC 3339 with nanoseconds. Downside: `RFC3339Nano` trims trailing zeros, so
+  timestamps don't sort correctly as plain text; order by `seq`.
+- **`Data` is `any`**: the recorder marshals it, so callers pass plain Go values. If marshalling fails (e.g.
+  invalid `json.RawMessage` tool args, NaN), the recorder writes `{"marshal_error": "..."}` instead of the payload.
+  Values handed to the recorder must not be mutated afterwards (a later async writer would see the change).
+- Open: whether `turn` is renamed `task` (and `turn_start/end` to `task_start/end`).
+
+### Size caps: trace events, read_file, MCP results (decided 2026-10-21)
+
+Prompted by "what if a malicious tool returns 10 TB?". Three caps now exist, all config fields with defaults in
+`GetDefaultConfig`, all required to be positive (a negative cap would panic when slicing):
+
+| Config field | Default | What it bounds |
+|---|---|---|
+| `traceMaxEventBytes` | 100 MB | JSON size of one trace event payload. Over the cap, the whole payload is replaced by `{"truncated": true, "original_bytes": N}`. Never cut: a cut can split a secret in half (the redactor stops matching it and the rest is written raw) and leaves invalid JSON. |
+| `readFileMaxBytes` | 1 MB (~250k tokens) | Most one `read_file` call returns. A bigger file is read in pieces: `read_file` takes `offset` and `limit` (bytes), and the truncation note says `call read_file again with offset=N to continue`. Pieces are cut on character boundaries. |
+| `mcpResultMaxBytes` | 256 KB | Most of an MCP tool result passed to the model; the rest is cut with a note. |
+
+- **The tool caps protect the context window, not only memory.** A tool result goes into chat history and is sent
+  to the model on the next request. 50 MB is ~12M tokens, more than any context window. Context windows trim by
+  message count, not tokens, so one oversized result would stay in history and fail every later request (the
+  "same bad context is re-sent forever" failure). That is why the caps were *not* raised to 50 MB / 10 MB, and why
+  big files are paged instead.
+- **The trace cap is a last resort.** `json.Marshal` cannot stop early, so by the time `Record` can measure a
+  payload it is already in memory. The cap bounds the later copies (the redaction tree can be 10-20x the JSON size,
+  the 256-event queue, the disk). Worst case is 256 x 100 MB if nothing upstream caps; the tool caps are what keep
+  real payloads far below that. 100 MB was chosen by Jerry over my suggested 1-4 MiB; lowering it is a config edit.
+- Honest downsides: a legitimately huge payload loses its content in the trace (the event and its size remain);
+  1 MB per `read_file` call can fill the window of a small-context model, so lower `readFileMaxBytes` for those.
+
+**Deferred: client-side limit on raw server responses** (added to the "Deferred for Later" list, 2026-10-21).
+`mcpResultMaxBytes` is applied *after* the whole response is in memory, so it does not protect memory:
+
+```
+server -> [transport read] -> SDK decodes JSON -> CallToolResult -> flattenMCPResult -> [mcpResultMaxBytes] -> model
+          ^ deferred hard limit                  (all in memory)                          ^ exists today (256 KB)
+```
+
+- Two different jobs. The transport limit is generous (order of 10 MB) and exists for protection: it stops reading
+  the bytes once the threshold is crossed and the call fails with an error that the loop turns into an ordinary
+  tool-error observation. `mcpResultMaxBytes` is small and exists to protect the context window. A legitimate 3 MB
+  response passes the transport limit and is then trimmed to 256 KB; a hostile endless stream is cut at 10 MB.
+- Checked 2026-10-21: go-sdk v1.8.0 has response-size limits only on its *server* side (`MaxRequestBodyBytes`),
+  none on the client. We would add our own, once per transport:
+  1. **HTTP:** one more `RoundTripper` layer next to `newRemoteHTTPClient` / `headerTransport`, wrapping `resp.Body`
+     in a reader that returns an error after N bytes (about 15 lines).
+  2. **stdio:** wrap the child process's stdout pipe in the same limited reader where `conn.go` creates the
+     connection. Not yet looked at how that code is shaped.
+- Honest downside: when the limit is hit mid-message the protocol framing is broken, so the clean handling is to
+  treat the session as dead and reconnect. That is a bigger change than the cap itself and needs a decision on
+  reconnect behavior, which is why both are deferred. Only a hostile or buggy server can trigger it.
+- Also unchecked: whether the model provider's HTTP response body (`model/`) has a size cap.
+
+### Tracing: recorder pipeline, redaction interface, JSONL file, task scope (decided 2026-10-20 to 2026-10-21)
+
+Built and tested (milestone 1: `go run .` then `/quit` writes `.agent-trace/<run_id>.jsonl` with `run_start`
+and `run_end`). Recorded here because several choices changed or were made after the earlier tracing entries.
+
+**Workflow: build top-down.** Jerry's request (2026-10-20): start each slice at the call site in the loop, with the
+lower layers as stubs, and open each slice with a short diagram of where it sits in the whole flow. A tree that
+doesn't compile for a while is acceptable. Reason: he learns the code by seeing how each struct and function ties
+into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
+
+**Envelope and payloads as built** (`trace/event.go`).
+- Envelope: `ts` (UTC `time.Time`), `run_id`, `task_id` (omitted when empty), `counter`, `event_type`,
+  `event_data`, `redactions`. The `turn` question is settled: it is `task`. Chat: one user message through the
+  final answer is one task. Autonomous: one `objective.md` task is one task.
+- `EventData` is a `json.RawMessage`, and `Record` takes the payload as `any` (typed payload structs). Reason: the
+  redactor has to marshal the payload to search it anyway, so the event holds bytes from the start.
+- Built payloads: `RunStartData`, `RunEndData`, `MessageRecord`, `ModelRequestData`, `ModelResponseData`,
+  `ModelErrorData`. Not yet defined: tool, task and compaction payloads.
+- **`ModelRequestData` holds only the messages added since the previous request** (plus `ContextMessages`, the
+  count sent). Chosen by Jerry for audit usefulness without re-logging the whole context every step. Honest
+  downside: to see the exact context of one request, a reader replays the earlier requests (and compaction events).
+- **`run_start` contents:** full `SystemPrompt` (it goes through redaction like any string), `McpServers` as
+  name -> transport type only (a server's command, args, env, url and headers hold tokens), `GitCommit` from
+  `debug.ReadBuildInfo` (hash, with `+dirty` if the tree had uncommitted changes; empty under `go run`),
+  `ParentPID` is only the launching process. Built by `trace.GetRunStartData(cfg)`; `trace.GetRunEndData` builds
+  `run_end` (`status` "ok"/"error", `error`, `duration_ms`).
+
+**Recorder pipeline** (`trace/recorder.go`).
+- `Record` runs on the loop's goroutine and does only the cheap work: stamp, snapshot, size cap, queue. Then one
+  **tracewriter goroutine** takes events off a queue of 256 and does redact -> number -> marshal -> subscribers.
+- **Snapshot:** `Record` calls `json.Marshal` on the payload, so the queued event owns its bytes. Without it, a
+  slice or map that the loop changes after `Record` would be read changed by the tracewriter (wrong audit data),
+  and a map read during a write is a fatal, unrecoverable Go error. Cost: one extra marshal and copy per event.
+  A payload that can't be marshalled becomes `{"marshal_error": "..."}`; the event is kept.
+- **Backpressure, not dropping:** when the queue is full, `Record` blocks. Honest downside: a slow disk can stall
+  the agent. Chosen because a dropped event is a hole in an audit log.
+- **Close:** the closed flag and the channel send share one mutex, because sending on a closed channel panics.
+  `Close` closes the channel, waits for the tracewriter to drain it (`<-done`), closes the subscribers once
+  (`sync.Once`), and returns the first error. It is safe to call twice; a `Record` after `Close` is dropped.
+- **Counter** is assigned by the tracewriter, and only after the line is built, so the file never has a gap (the
+  hash chain in slice 3 needs that). Order in the file is queue order.
+- **Fail closed:** if redaction fails, the payload is replaced by `{"dropped":"redaction failed"}` and the error
+  is kept for `Close`. A panic anywhere under the tracewriter (including a subscriber) is recovered, reported with
+  its stack trace, and does not crash the agent. Accepted weakness: a subscriber that panics skips the later
+  subscribers for that event.
+- **Disabling and setup:** `traceEnabled: false` gives the loop `trace.Nop()`, so the loop has no nil checks.
+  `SetupRecorder(ctx, cfg)` turns config into pieces and `NewRecorder(runID, redactor, maxEventBytes, subs...)`
+  takes the pieces. Config errors are fatal at startup: unknown `redactionLevel`, non-positive
+  `traceMaxEventBytes`, empty or uncreatable `traceDir`. Reason: silently running without an audit trail is worse
+  than failing to start.
+- Size caps are in "Size caps: trace events, read_file, MCP results" (above).
+
+**JSONL file subscriber** (`trace/subscriber.go`).
+- Path `<traceDir>/<run_id>.jsonl`; directory `0700`, file `0600`. The file is opened with `O_EXCL`, so a run
+  never reuses another run's file and never follows a planted symlink; the run ID must not contain a path.
+- One unbuffered `Write` per line (line plus `\n`), so a crash loses at most the event being written. `Sync` runs
+  at `Close`, not per event. Honest downside: a power cut can lose the last few events.
+- The run ID is made once in `SetupRecorder` (`20261021T101500Z-9f3a41c7`) and used for both the file name and
+  every event's `run_id`.
+- Default `traceDir` is `.agent-trace`; it is in `.gitignore` and in `read_file`'s deny list, so the model can't
+  read its own audit log. Honest gap: the deny list holds only that default name, so a different `traceDir` inside
+  `workDir` is not protected. An existing directory keeps its permissions (`MkdirAll` doesn't change them); the
+  file itself is still `0600`.
+
+**Redaction as built** (supersedes "a detector is data").
+- `Detector` is an interface (`Name()` for the engine, `Find(key, s) []Finding`); `Finding{Rule, Secret}` prints
+  without the secret. The built-in detector applies 14 rules: value-shape patterns (provider keys, AWS, GitHub,
+  JWT, Bearer, PEM, URL credentials, `key=value`) and one field-name rule. `Redactor` holds a slice of detectors so
+  another engine can run alongside. The two tiers (standard at L0, stringent in the digest later) are two
+  `Redactor` instances; the second skips text that already starts with `[REDACTED:`.
+- Placeholder `[REDACTED:rule#8hex]`; the tag is an HMAC of the secret under a random per-run key, so the same
+  secret has the same tag within a run.
+- **Field-name rule:** the secret word (`pass`, `password`, `pw`, `secret`, `token`, `key`, `credential(s)`,
+  `auth`, `cookie`, plus `api_key`/`api_token`/`private_key`) must be the whole name, or follow `_ . -` or a
+  camelCase boundary. So `max_tokens`, `input_tokens`, `compass` and `monkey` are not masked. A bare `key` in
+  prose counts only with `=` or a quoted `"key":`. Honest downside: rules are regex heuristics, with false
+  positives and misses; the list needs upkeep.
+- **Gitleaks (checked in a scratch module):** usable as a library, but the import path is
+  `github.com/zricethezav/gitleaks/v8` (v8.30.1); a test binary was 12 MB with 204 modules; tuned for scanners
+  (entropy, stopwords), so low-entropy passwords slip through; goroutine-safety not verified. **TruffleHog**
+  rejected (believed AGPL; verifies secrets live). Gitleaks stays an optional future detector in its own module.
+- **Swappable detectors are deferred:** Go imports are compile-time. The plan is a registry plus a blank-import
+  manifest (`plugins.go` in `main`, like `database/sql` drivers), built when the second engine arrives.
+
+**Run, task and task ID.**
+- A run is one process lifetime: `run_start` .. `run_end`. A crash leaves no `run_end`, so a reader treats the end
+  of the file as an unclean stop.
+- **`task_id` stays on the envelope** (not inside payloads): one field for every event, so a new payload type
+  can't forget it and a reader can filter without knowing payload shapes; background auto-compaction can finish
+  during a later task and is still attributed to the task that triggered it; parallel tasks interleave in the
+  file. Jerry's challenge was that sequence plus payload IDs could do it; that works for serial work only.
+- Planned: the chat session keeps a counter (`task-1`, `task-2`, ...); autonomous mode uses the objective's own
+  task identity. Run-level events have an empty `task_id` (a `RunScope` constant was the alternative).
+- **`run_end` status:** `runChatLoop` returns an error; `io.EOF` (Ctrl+D, end of piped input) and `/quit` are a
+  normal quit (`ok`); a cancelled root context returns `ctx.Err()` (`error`). A context cancelled before
+  `RunAgent` starts records neither event.
+
+**Still open.**
+- How `Record` learns the task: keep the `taskID` argument, or `Recorder.ForTask(id)` returning a task-scoped
+  recorder so the call is `Record(eventType, data)` (my recommendation; not yet decided).
+- `AgentVersion` comes from the config file, so a file can claim any version; make it a constant in code.
+- Not built: task/model/tool/compaction events in the loop, hash chain (`counter` is ready for it), effects and
+  snapshots, `ChatMessage.Reasoning` and usage in `model/`, L1 digest, detector registry, client-side limit on
+  raw MCP responses (see the size-caps entry).
+
+### Tracing: task IDs, traced slash commands, no span ID yet (decided 2026-10-21)
+
+- **IDs are prefixed timestamps, not counters.** Run IDs are `r20261021T101500Z-9f3a41c7`, task IDs
+  `t20261021T101530Z-5be0d2a1` (one `newID(prefix)` helper in `trace/recorder.go`). The random suffix is kept
+  because parallel autonomous tasks can start in the same second, and it makes an ID greppable across trace
+  files. Honest downside: harder to say aloud than `task-3`, and the ID repeats what `ts` already says. In
+  autonomous mode the objective's own name goes into the `task_start` payload, since the ID no longer carries it.
+  This supersedes the planned `task-N` counter above.
+- **`task_start` / `task_end` are paired by a `defer`** declared right after `task_start`, reading a local
+  status/err variable (`handleUserInput` returns a `bool`, so there is no named return to use).
+- **Which slash commands are traced:** any that makes a model call or changes agent state or what the model sees:
+  `/clear`, `/compact`, `/summary`, `/summarize`. Not traced: info-only commands (`/config`, unknown) and `/quit`
+  (`run_end` covers it). Reason: without `/clear` and `/compact` a later `model_request` with fewer messages is
+  unexplained, and their model calls need something to belong to.
+- **Traced commands are bracketed by `command_start` / `command_end`, not `task_start` / `task_end`** (Jerry's
+  call: they are not tasks), but they get a `t`-prefixed ID in the same `task_id` envelope field, "essentially a
+  chat turn" (Jerry chose this over renaming the field to `scope_id`). Honest downside: the field name says
+  "task" for something that isn't one; accepted. Payloads: `CommandStartData{Name, Args}`; `TaskEndData` is
+  shared by `task_end` and `command_end`. This replaces my earlier proposal of an empty `task_id` for `/compact`.
+- **No span/trace ID for pairing start and end (yet).** Each pair already has a natural key: run -> `run_id`;
+  task and command -> `task_id`; tool -> `call_id`; model request/response/error -> `(task_id, step)` (the
+  response and error payloads will carry `step`). A universal span ID with parent IDs (the OpenTelemetry way)
+  would give explicit nesting at the cost of a field on every event and a bigger `Record` API. Revisit if nested
+  or parallel spans of the same type appear within one task (subagents). Adding fields later is backwards
+  compatible.
+- **Gap found: model calls from `/compact`, `/summarize` and auto-compaction bypass `chatWithProgress`**
+  (`contextwindow/msgcontext.go:222` calls `Provider.Chat` directly), so tracing only in the loop would miss
+  them. Plan: a tracing wrapper around `model.Provider` that records `model_request` / `model_response` /
+  `model_error`, so every caller is covered. Downsides: it sees the full request, so "new messages only" means
+  diffing against message IDs already seen, and it doesn't know the step number. Decide when model events are built.
+- **Still open:** `ForTask(id)` vs the `taskID` argument on `Record` (unanswered).
+
+### Tracing: `trace.Scope` wraps start/end/fail for runs and tasks (decided 2026-10-21)
+
+- **Problem:** `task_start`, the deferred `task_end` and the status bookkeeping were cluttering the agent loop, and
+  one branch had already forgotten to set the status (Ctrl+C recorded `ok`). Also, `defer rec.Record(..., GetTaskEndData("ok", "", 0))`
+  evaluates its arguments at the `defer` line, so the end event would always say `ok` with duration 0; a deferred
+  closure (or a method on an object that holds the state) is required.
+- **Decision:** `trace/scope.go`: `StartRun(rec, cfg)` and `StartTask(rec, input)` record the start event and return a
+  `*Scope`; `defer scope.End()` records the end event; `scope.Fail(err)` sets the outcome (nil: no change;
+  `context.Canceled`: `canceled`; anything else: `error`; the text is kept either way); `scope.Record(type, data)` records
+  an event with the scope's `task_id`. Call sites: `handleUserInput` (`taskTrace`) and `RunAgent` (`runTrace`).
+- **This resolves the `ForTask` question:** a `*Scope` is the task-scoped recorder, so the `Recorder` interface keeps
+  `Record(taskID, ...)` and no tests changed. `reActLoop` and `runToolCall` will take the `*Scope` and call
+  `scope.Record(...)`.
+- **Behaviour change:** `run_end.status` can now be `canceled` (SIGTERM cancels the root context); it was `error`.
+- **Honest downside:** one more type; what `End` writes is in `trace/`, not at the call site. `End` must be called
+  once (nothing guards a second call). Not built yet: `StartCommand` for `/clear`, `/compact`, `/summary` (same type,
+  `command_start`/`command_end`).
+
+### Tracing: a run's scope ID is its run ID (decided 2026-10-21)
+
+- **Decision:** `run_start` and `run_end` carry the run ID in `task_id` (same value as `run_id`), instead of an empty
+  `task_id`. Every event now belongs to a scope; the `r` / `t` prefixes keep the two ID kinds apart. Supersedes
+  "run-level events have an empty `task_id`" and the `RunScope` constant alternative above.
+- **Why:** an empty value is also what a forgotten ID looks like, so "run-level on purpose" and "forgot to set it"
+  were indistinguishable; readers can group by `task_id` without special-casing blanks; every `Scope` has a real ID.
+- **How:** `Recorder` gained `RunID() string` (`Nop` returns ""); `StartRun` uses it as the scope ID. `Record`'s
+  signature is unchanged.
+- **Honest downside:** the value is duplicated on run events (about 30 bytes); `task_id` now holds run and command IDs
+  as well as task IDs, so "task events" is a prefix match on `t`, not `task_id != ""`. Renaming the field to
+  `scope_id` was offered again and is still open (Jerry kept `task_id` for commands).
+
+### Tracing: envelope field renamed `task_id` -> `scope_id` (decided 2026-10-21)
+
+- **Decision:** the envelope field is now `scope_id` (Go: `Event.ScopeID`; `Record(scopeID, eventType, data)`). It holds
+  the ID of the unit of work an event belongs to: the run ID (`r…`) for run events, a task ID (`t…`) for tasks and
+  for traced slash commands. Values are unchanged; only the label is. Supersedes the "keep `task_id`" choice in the
+  entries above (the format was unreleased, so no trace-reader migration).
+- **Why:** the field already held run and command IDs, so `task_id` was misleading; the name now matches `trace.Scope`.
+- **Honest downside:** "task events" are found by the `t` prefix, not by the field name; older notes and the
+  mvp3/mvp4 reference code still say `task_id` for their own, unrelated worker task IDs.
+
+### Tracing: compaction event and the `compactAndTrace` helper (decided 2026-10-21)
+
+- **Decision:** one `compaction` event per compaction, recorded by `compactAndTrace` (`agent/compaction.go`), which both
+  `/compact` and the auto-compaction goroutine call. Payload `CompactionData{Trigger, Status, Error, MessagesBefore,
+  MessagesAfter, SummaryID, DurationMS}`; recorded on failure and cancellation too. The summarize model call is a
+  separate `model_request` / `model_response` pair (provider wrapper, not built yet).
+- **Scope:** manual: the `/compact` command's own task ID (`taskTrace.ID()`); auto: the run ID, because no user task
+  owns a background compaction. This replaces the earlier plan to attribute auto-compaction to the task that
+  triggered it (that scope has already ended when the compaction starts). Honest downside: the field alone doesn't say
+  which turn triggered it; the counter order does (it follows that `task_end`).
+- **Single event, not start/end:** auto-compaction runs in a background goroutine and can overlap the next task, so
+  a pair would interleave with unrelated events. Honest downside: a compaction that hangs leaves no event until it ends.
+- **Also added:** `trace.OutcomeOf(err)` (shared by `Scope.Fail` and the helper) and `Scope.ID()`.
+- **Known imprecision:** `messages_after` for an auto compaction is read when it finishes, so it can include messages
+  a later turn added in the meantime. A skipped request ("compaction already in progress") records nothing.
+
+### PR #19 review fixes: quoted credentials, placeholder lookalikes, MCP cap, run_end timing, read_file paging (decided 2026-10-22)
+
+- **Quoted credentials (`key_value`, `key_assignment`):** the value is now matched as a complete double-quoted value, a
+  complete single-quoted value (spaces and backslash-escaped characters allowed; runs to the end of the text if the closing
+  quote is missing, so a cut-off value is still masked), then a bare token. Each alternative is its own capture group and
+  `Find` takes the one that matched. Quoted values must be 4+ characters, like bare ones. Honest downside: a
+  quoted value longer than 3 characters is masked everywhere it occurs in the same string (`ReplaceAll`), and a short
+  quoted value (1-3 characters) is still not masked.
+- **Placeholder exemption:** only a finding that is exactly one placeholder (`^\[REDACTED:[a-z0-9_]+#[0-9a-f]{8}\]$`) is
+  skipped; a value that merely starts with `[REDACTED:` is masked in full. Idempotence still holds.
+- **`mcpResultMaxBytes`:** a non-positive value is a fatal `SetupAgent` error. MCP tool setup only warns and skips a tool
+  that fails to build, so a bad cap used to silently drop every MCP tool.
+- **`run_end` timing:** `RunAgent` starts the run scope; `ShutdownAgent` ends it, after background auto-compaction has been
+  cancelled (by `main`) and drained, and before the recorder is closed. Honest downside: a run's duration now includes
+  shutdown, and `run_end` is only written if `ShutdownAgent` runs (a hard crash leaves none, as before).
+- **`read_file` paging:** when a limit (or the configured cap) is smaller than the next character, trimming leaves nothing
+  and the old note said "continue at offset=N" with N unchanged, forever. It is now an error naming the problem and telling
+  the model to use a larger limit.
+- **Credentials in tests:** gitleaks over the PR commits and the tree found only synthetic values (`hunter2xyz`,
+  `abcd1234efgh`, repeated-character keys). The two PEM fixtures were changed from real PKCS#8 header bytes to base64 of
+  "fake-key-body". gitleaks still flags 6 test lines (generic key patterns, a PEM header); they are the redactor's inputs
+  and have to look like credentials. `mvp1/.env` holds real-format keys but is gitignored and was never committed.
+
+### 2026-10-22 — Model calls are traced by a Provider wrapper (`trace.TracedProvider`)
+
+- `trace.WrapProvider(p, rec, scopeID, cfg)` returns a `model.Provider` that records `model_request` before and `model_response` / `model_error` after each `Chat`, under one scope ID. `ChatSession.tracedProvider(scopeID)` is the one place the agent builds it. Three call sites use it: `reActLoop` (task scope, sets `Step` = 1-based step before each call), `/summary` (command's task scope), `compactAndTrace` (the command's scope for `/compact`, the run ID for auto-compaction). `chatWithProgress` and `reActLoop` take the provider / `*trace.Scope` as parameters.
+- Payload builders `GetModelRequestData`, `GetModelResponseData`, `GetModelErrorData` live in `trace/event.go`, like the run and task ones.
+- **`model_request` records the full message list**, not a diff. Self-contained events; downside: a K-step turn repeats the context K times (bounded by `traceMaxEventBytes`, which swaps an oversize payload for a marker). A diff against already-seen message IDs is possible later.
+- **Not available yet:** `usage`, `stop_reason`, reasoning, and `http_status` (the `Provider` interface returns only a `ChatMessage` / plain error). The response message has no ID at record time (the loop assigns it afterwards), so a response is matched to its later appearance in a request by content and order.
+
+### 2026-10-22 — Renames: `GetTracedProvider` and `getSessionProvider`
+
+`trace.WrapProvider` is now `trace.GetTracedProvider` (matches the `Get…Data` builders) and `ChatSession.tracedProvider` is now `ChatSession.getSessionProvider`. Flow: a call site asks `cs.getSessionProvider(scopeID)` for the provider to use, which calls `trace.GetTracedProvider(...)` and returns a `*trace.TracedProvider`. Behaviour is unchanged; the entry above still uses the old names.
+
+### 2026-10-22 — `model_request` records only what the turn added (supersedes "full message list" above)
+
+The earlier entry recorded the full request with every call. Jerry: that would overwhelm the trace, so record only the newest messages of the turn.
+
+- `ModelRequestData.Messages` holds the messages added since the previous request of the same turn: the user's message at step 1; the assistant reply and tool results at later steps. `ContextMessages` counts the leading messages that were sent but are not repeated (system prompt + prior context at step 1, everything earlier in the turn afterwards).
+- Mechanism: `TracedProvider.Baseline` (set by `reActLoop` to `1 + len(priorMsgs)`) and an internal `prevLen`; the skip count for a call is `max(Baseline, prevLen)`. Calls outside the loop (`/summary`, compaction) leave `Baseline` 0 and record their whole request.
+- **Downside:** the trace no longer holds the exact context the model saw. It must be rebuilt from earlier events (the system prompt from `run_start`, prior turns from their own events), and a compaction in between changes what "prior context" means. It relies on the loop only appending within a turn; a step that rewrote earlier messages would not show. `/summary` and compaction still record their whole transcript, which restates earlier messages; it is the one remaining big payload.
+
+### 2026-10-22 — `model_request` bookkeeping simplified: the loop passes its turn messages (supersedes `Baseline` / `prevLen`)
+
+Jerry: the `Baseline` + `prevLen` arithmetic was too much bookkeeping, since `reActLoop` already holds the turn's messages as `requestMsgs`. `TracedProvider` now has `TurnMsgs`, which the loop sets next to `Step` each step: `provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs`. When set, `Chat` records `TurnMsgs` and counts the rest of the request as `ContextMessages`; when nil (`/summary`, compaction) it records the whole request. `GetModelRequestData(cfg, step, contextMessages, msgs, toolDefs)` records exactly the `msgs` it is given.
+
+**Trade-off accepted:** `requestMsgs` is the whole turn so far, so step 2 repeats step 1's user message and step 3 repeats steps 1-2. The repetition is bounded by one turn. Everything else from the previous entry still holds (no exact context in the trace; `/summary` and compaction still record their whole transcript).
+
+### 2026-10-22 — Tool calls are traced: `tool_requested` / `tool_finished`
+
+- `runToolCall(ctx, cs, taskTrace, call)` is now the only place a tool call is recorded: `tool_requested` (call ID, name, arguments) before, `tool_finished` (call ID, name, content, failed, duration) after. The old body moved to `executeToolCall`, which returns `(string, error)`; `runToolCall` turns an error into the same `"error: …"` text as before, so what the model sees is unchanged. All outcomes (unknown tool, invalid JSON, non-object arguments, tool error, tool panic, success) go through the same two `Record` calls.
+- `tool_requested` is recorded for **every** call the model makes, including ones that then fail validation.
+- **`tool_finished.content` is what the agent sees**, not what the tool could have returned. `read_file` (1 MB) and MCP results (256 KB) are capped by the tools themselves and carry their own truncation note, so there is no separate `truncated` flag. Downside: if a cap is set too low, the trace cannot show what was cut. `traceMaxEventBytes` stays a backstop for tools with no cap of their own.
+- `tool_requested` repeats the arguments already in `model_response`'s tool calls. Kept so the event stands alone and marks when execution started.
+- **Parallel tools later:** `Scope.Record`/`ID` only read fields set at creation and the recorder has its own lock, so they are safe from several goroutines; `Fail`/`End` stay with the goroutine that owns the scope (tool goroutines must return their errors, not call `Fail`). Events of different calls will interleave; `call_id` pairs them. Results must still be appended in the model's order.
+
+### 2026-10-22 — `command_start` / `command_end` dropped; slash commands stay tasks
+
+Slash commands that call the model or change agent state (`/clear`, `/compact`, `/summary`, `/summarize`) are traced as tasks (`task_start` / `task_end`, command text as the input), as already decided. The unused `CommandStart` / `CommandEnd` event types and `CommandStartData` / `CommandEndData` were deleted, and `doc.go` now says so. Supersedes the "intended event types for commands" in the task-ID entry above. **Trade-off:** a reader tells a command from a chat turn by its input starting with `/`, not by event type; a `StartCommand` can be added later without touching the rest.
+
+### 2026-10-22 — Hash chain (slice 3) deferred; threat model first
+
+Jerry: an unkeyed per-line hash chain can be rewritten and recomputed in full by anyone who can write the file, including a malicious agent, so it adds little on its own. Nothing was implemented. The `prev_hash` / `Verify` design sketched in the session (hash of each raw line, first `prev` = sha256(run ID), verify walks the raw bytes) is still valid, but only worth building once there is something the agent cannot rewrite:
+- an external `Subscriber` sending events or hashes to a sink the agent cannot write to;
+- periodic (not only `run_end`) anchoring of the chain head outside the agent, e.g. the PR comment or a remote service;
+- signing with a key held by a different process or machine (a key on the agent's machine adds nothing);
+- OS-level separation of the trace file from the agent (other user, sandbox), including closing write paths such as `RunCommand`.
+Currently in place: `0600` file in a `0700` directory, and `.agent-trace` on the `read_file` deny list (the model cannot read its own trace). Neither stops a same-user process from writing the file.
+
+### 2026-10-22 — L1 digest: `Digester` interface, `ActivityDigest`, `digestEnabled`
+
+- **Shape.** `trace.Digester` has `Add(Event)` and `Render(io.Writer)`; it sees only L0 events. `NewDigestSubscriber` is the live adapter (a `Subscriber`: decodes each line, calls `Add`, renders `<run_id>.digest.md` at `Close`, `0600`, create-only). `Replay(r, d)` feeds a finished `.jsonl` file to any `Digester`, so a digest can be rebuilt after a crash or with a newer implementation. `Replay` reads with `bufio.Reader.ReadBytes`, not `Scanner`, because one event can be as large as `traceMaxEventBytes`. Chosen over a model-based or file-only digest: live and offline from one reducer, and nothing ever reads more than the already-redacted events, so a digest cannot leak more than L0.
+- **`ActivityDigest`** (first implementation; purpose: a quick human "what did the agent do and change" review). Per task: the user input as a heading, then one block of tool calls (`N tool calls:` + a line each, in finish order, failures marked `(failed: …)`), or for a text-only turn a one-liner (`answered, no tools (N chars)`). Built from `tool_requested` / `tool_finished` paired by `call_id`, never from model text. Calls requested but never finished are counted and flagged. Footer counts redactions, model errors and compactions. Grouped per task, not per step, because tool events carry no step number.
+- **Describers.** `describe(name, args, content, failed)` is a per-tool switch: `read_file` → `read <path>`; `shell` / `run_command` / `bash` → the command verbatim (whitespace collapsed, cut at 300 chars; L0 keeps the original); everything else → name plus truncated arguments. Downside: a new tool shows the generic line until someone adds a case. `write_file` will need its result text to say `created` / `overwrote`, since the digest cannot infer "new file" from events.
+- **Untrusted text.** User input, arguments and error text are collapsed to one line and cut, so they cannot start a new markdown heading or bullet in the digest.
+- **Text-only turns: no model-written summary.** A `/summarize`-style call per run would cost a model call, make the digest non-deterministic, and put model prose into an audit document. A deterministic one-liner is used instead; an opt-in `LLMDigester` can be a second implementation of the same interface later.
+- **Config.** `digestEnabled` (default `true`; only takes effect when `traceEnabled` is on). If the digest file can't be created, `SetupRecorder` fails (like the trace file) and closes the JSONL file it had already opened.
+- **Known limits.** (1) The digest is written at `Close`; a crash leaves none until `Replay`. Rendering after every `task_end` would fix it at the cost of rewriting the file each time. (2) Once a shell tool exists, files changed through it are invisible to a tool-call digest; a separate workdir-diff `Digester` (e.g. `git status` at task end) would cover that. (3) `/clear` and the skipped "compaction already in progress" are not L0 events yet, so they are not in the digest. (4) The first user-visible gap: no `usage` or `stop_reason` in the footer until `Provider` reports them.
+- Shared file-creation helper for the two subscribers deferred: see Deferred for Later, item 13.
+
+### 2026-10-22 — `context_cleared` event; digest shows what slash commands did (corrects the digest entry above)
+
+- **Correction:** the digest entry above said `/clear` was "not an L0 event". That was wrong: `/clear` was already traced as a task (`task_start` / `task_end`, input `/clear`). What was missing was its *effect*, so the digest showed "no tools, no reply" under it.
+- **New event `context_cleared`** (`ContextClearedData{messages_dropped}`), recorded by `/clear` inside its own task, before `Clear()`, from the message list `handleUserInput` already read at its top. Chat history (the durable record) is not touched, and the event says nothing about it.
+- **Digest rendering.** `ActivityDigest` prints a command task's effect under its heading: `context cleared (N messages)`, or for `/compact` `compaction ok: B -> A messages` (a `compaction` event whose scope is a known task). An auto compaction is recorded under the run ID, which is not a task, so it is only counted in the footer. Otherwise the digest would show a bogus task.
+- **Not done (Jerry: ignore):** the skipped "compaction already in progress" is still unrecorded. The "Known limits" bullet (3) in the digest entry is therefore replaced by this one.
+
+### 2026-10-22 — Digest: missing-payload markers are reported, not decoded (Copilot, PR #20)
+
+When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":true,"original_bytes":N}`, and a redaction failure writes `{"dropped":"…"}`. Both decode without error into any typed payload (all zero values), so a truncated `tool_finished` became a nameless "finished" call and left the real request "never finished". `ActivityDigest.Add` now checks for the two markers first (`isMissingPayload`; no real payload has either key), counts the event as incomplete (per task, or per run when its scope is the run ID) and does not read it. The digest says `N events had incomplete data (payload truncated or dropped)`, and an unmatched request in such a task reads `result missing (trace incomplete)` instead of "never finished", since the finish event may be one of the missing ones. **Downside:** with several calls in one task and one lost completion, the digest cannot say which call it was; L0 holds the `call_id`s and `original_bytes`.

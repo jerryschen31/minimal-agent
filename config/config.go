@@ -48,6 +48,17 @@ type Config struct {
 	// memory configuration
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
+	// tracing configuration
+	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
+	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
+	DigestEnabled      bool   `json:"digestEnabled"`      // also write an L1 digest, <run_id>.digest.md, next to the trace; needs traceEnabled
+	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace")
+	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
+
+	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
+	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
+	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
+
 	// tools and MCP servers configuration
 	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
 	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
@@ -122,21 +133,29 @@ func (m McpServerConfig) TransportType() (string, error) {
 
 func GetDefaultConfig() Config {
 	return Config{
-		UserID:        "default_user",
-		Provider:      "openai",
-		Model:         "gpt-4o-mini",
-		BaseURL:       "https://api.openai.com/v1",
-		ApiKeyName:    "OPENAI_API_KEY",
-		AgentName:     "minagent",
-		AgentVersion:  "0.1.0",
-		AgentMode:     ModeChat,
-		WorkDir:       ".",
-		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
-		ChatStoreType: "in-memory",
-		InBuffer:      os.Stdin,
-		OutBuffer:     os.Stdout,
-		BuiltinTools:  []string{"ReadFile"},
-		MaxSteps:      10,
+		UserID:         "default_user",
+		Provider:       "openai",
+		Model:          "gpt-4o-mini",
+		BaseURL:        "https://api.openai.com/v1",
+		ApiKeyName:     "OPENAI_API_KEY",
+		AgentName:      "minagent",
+		AgentVersion:   "0.1.0",
+		AgentMode:      ModeChat,
+		WorkDir:        ".",
+		SystemPrompt:   "You are a helpful assistant. Keep your responses concise and relevant.",
+		ChatStoreType:  "in-memory",
+		InBuffer:       os.Stdin,
+		OutBuffer:      os.Stdout,
+		BuiltinTools:   []string{"ReadFile"},
+		MaxSteps:       10,
+		TraceEnabled:   true,
+		DigestEnabled:  true,
+		RedactionLevel: "standard",
+
+		TraceDir:           ".agent-trace",
+		TraceMaxEventBytes: 100 << 20, // 100 MB
+		ReadFileMaxBytes:   1 << 20,   // 1 MB
+		MCPResultMaxBytes:  256 << 10, // 256 KB
 	}
 }
 
@@ -231,6 +250,13 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
+	fmt.Fprintf(w, "  traceEnabled:  %t\n", cfg.TraceEnabled)
+	fmt.Fprintf(w, "  digestEnabled: %t\n", cfg.DigestEnabled)
+	fmt.Fprintf(w, "  redactionLevel: %s\n", cfg.RedactionLevel)
+	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
+	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
+	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
+	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")

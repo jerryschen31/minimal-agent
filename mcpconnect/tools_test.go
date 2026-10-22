@@ -9,6 +9,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// testMaxBytes is the result cap the tests use; it is small so the tests stay fast.
+const testMaxBytes = 4096
+
 // - Verify newMCPTool gives the model a "<server label>_<tool name>" name, keeps the server-side
 // name for the call, carries the description and schema into the ToolDef, and shares the server pointer
 func Test_Unit_NewMCPTool_BuildsToolDefAndKeepsServerSideName(t *testing.T) {
@@ -19,7 +22,7 @@ func Test_Unit_NewMCPTool_BuildsToolDefAndKeepsServerSideName(t *testing.T) {
 		"required":   []any{"path"},
 	}
 
-	tool, err := newMCPTool(server, &mcp.Tool{Name: "read_text_file", Description: "Reads a file", InputSchema: schema})
+	tool, err := newMCPTool(server, &mcp.Tool{Name: "read_text_file", Description: "Reads a file", InputSchema: schema}, testMaxBytes)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -45,7 +48,7 @@ func Test_Unit_NewMCPTool_BuildsToolDefAndKeepsServerSideName(t *testing.T) {
 
 // - Verify a tool with no input schema gets the default "no parameters" schema, not the JSON text "null"
 func Test_Unit_NewMCPTool_NilSchema_UsesDefaultParams(t *testing.T) {
-	tool, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "ping"})
+	tool, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "ping"}, testMaxBytes)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -57,7 +60,7 @@ func Test_Unit_NewMCPTool_NilSchema_UsesDefaultParams(t *testing.T) {
 
 // - Verify a schema that can't be marshalled to JSON is an error naming the tool
 func Test_Unit_NewMCPTool_UnmarshalableSchema_ReturnsError(t *testing.T) {
-	_, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "bad", InputSchema: make(chan int)})
+	_, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "bad", InputSchema: make(chan int)}, testMaxBytes)
 
 	if err == nil || !strings.Contains(err.Error(), `"bad"`) {
 		t.Errorf("expected an error naming the tool, got %v", err)
@@ -80,7 +83,7 @@ func Test_Unit_NewMCPTool_SafeToRetry_FromAnnotations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tool, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "x", Annotations: tt.ann})
+			tool, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "x", Annotations: tt.ann}, testMaxBytes)
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -117,7 +120,7 @@ func Test_Unit_FlattenMCPResult(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := flattenMCPResult(tt.res)
+			got, err := flattenMCPResult(tt.res, testMaxBytes)
 
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
@@ -138,32 +141,32 @@ func Test_Unit_FlattenMCPResult(t *testing.T) {
 	}
 }
 
-// - Verify a result over MCPResultMaxBytes is cut at the cap with a truncation note, and a result exactly at the cap is left alone
+// - Verify a result over testMaxBytes is cut at the cap with a truncation note, and a result exactly at the cap is left alone
 func Test_Unit_FlattenMCPResult_Truncation(t *testing.T) {
 	big := func(s string) *mcp.CallToolResult {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}
 	}
 
-	exact, err := flattenMCPResult(big(strings.Repeat("a", MCPResultMaxBytes)))
-	if err != nil || len(exact) != MCPResultMaxBytes || strings.Contains(exact, "truncated") {
+	exact, err := flattenMCPResult(big(strings.Repeat("a", testMaxBytes)), testMaxBytes)
+	if err != nil || len(exact) != testMaxBytes || strings.Contains(exact, "truncated") {
 		t.Errorf("expected a result exactly at the cap to be untouched, got len=%d err=%v", len(exact), err)
 	}
 
-	over, err := flattenMCPResult(big(strings.Repeat("a", MCPResultMaxBytes+10)))
+	over, err := flattenMCPResult(big(strings.Repeat("a", testMaxBytes+10)), testMaxBytes)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.HasPrefix(over, strings.Repeat("a", MCPResultMaxBytes)) || !strings.HasSuffix(over, "KB]") || !strings.Contains(over, "[truncated:") {
+	if !strings.HasPrefix(over, strings.Repeat("a", testMaxBytes)) || !strings.HasSuffix(over, "KB]") || !strings.Contains(over, "[truncated:") {
 		t.Errorf("expected the cap's worth of text plus a truncation note, got len=%d tail=%q", len(over), over[len(over)-45:])
 	}
 }
 
 // - Verify truncation never leaves half of a multi-byte character (invalid UTF-8) in the result
 func Test_Unit_FlattenMCPResult_Truncation_DoesNotSplitMultiByteCharacter(t *testing.T) {
-	// "a" then 2-byte "é" repeated: byte MCPResultMaxBytes-1 is the first half of an "é", so a raw byte cut would split it
-	s := "a" + strings.Repeat("é", MCPResultMaxBytes)
+	// "a" then 2-byte "é" repeated: byte testMaxBytes-1 is the first half of an "é", so a raw byte cut would split it
+	s := "a" + strings.Repeat("é", testMaxBytes)
 
-	got, err := flattenMCPResult(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}})
+	got, err := flattenMCPResult(&mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: s}}}, testMaxBytes)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -173,5 +176,14 @@ func Test_Unit_FlattenMCPResult_Truncation_DoesNotSplitMultiByteCharacter(t *tes
 	}
 	if !strings.Contains(got, "[truncated:") {
 		t.Errorf("expected a truncation note, got tail %q", got[len(got)-45:])
+	}
+}
+
+// - Verify a non-positive cap is rejected when the tool is built (a negative cap would panic when slicing the text)
+func Test_Unit_NewMCPTool_NonPositiveCap_ReturnsError(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		if _, err := newMCPTool(&McpConnection{Name: "s"}, &mcp.Tool{Name: "x"}, n); err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Errorf("cap %d: expected a must-be-positive error, got %v", n, err)
+		}
 	}
 }

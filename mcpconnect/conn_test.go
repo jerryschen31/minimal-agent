@@ -77,7 +77,7 @@ func startFakeRemoteMCP(t *testing.T) (string, func() []recordedRequest) {
 // checkEchoRoundTrip lists the fake server's tools and calls echo, proving the connection really works.
 func checkEchoRoundTrip(ctx context.Context, t *testing.T, s *McpConnection) {
 	t.Helper()
-	tools, err := GetMCPTools(ctx, s)
+	tools, err := GetMCPTools(ctx, s, 4096)
 	if err != nil {
 		t.Fatalf("GetMCPTools: %v", err)
 	}
