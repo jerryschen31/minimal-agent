@@ -33,6 +33,7 @@ type taskSummary struct {
 	pending         int      // tool calls requested but never finished
 	lastReplyChars  int      // length of the model's last text reply in this task
 	hasReply        bool
+	effect          string // what a slash command did to the context, e.g. "context cleared (4 messages)"; empty for chat turns
 }
 
 // pendingCall is a tool call between tool_requested and tool_finished.
@@ -103,8 +104,18 @@ func (a *ActivityDigest) Add(ev Event) {
 		}
 	case ModelError:
 		a.modelErrs++
+	case ContextCleared:
+		var d ContextClearedData
+		if json.Unmarshal(ev.EventData, &d) == nil {
+			a.task(ev.ScopeID).effect = fmt.Sprintf("context cleared (%d %s)", d.MessagesDropped, plural(d.MessagesDropped, "message", "messages"))
+		}
 	case Compaction:
 		a.compacts++
+		var d CompactionData
+		// a /compact is a task of its own; an auto compaction is recorded under the run ID, which is not a task, so it only counts
+		if t, ok := a.byScope[ev.ScopeID]; ok && json.Unmarshal(ev.EventData, &d) == nil {
+			t.effect = fmt.Sprintf("compaction %s: %d -> %d messages", d.Status, d.MessagesBefore, d.MessagesAfter)
+		}
 	case TaskEnd:
 		var d TaskEndData
 		if json.Unmarshal(ev.EventData, &d) == nil {
@@ -135,6 +146,9 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 
 	for _, t := range a.tasks {
 		fmt.Fprintf(&b, "\n## %s\n\n", oneLine(t.input, maxInputChars))
+		if t.effect != "" {
+			fmt.Fprintf(&b, "%s\n", t.effect)
+		}
 		switch {
 		case len(t.calls) > 0 || t.pending > 0:
 			fmt.Fprintf(&b, "%d tool %s:\n", len(t.calls)+t.pending, plural(len(t.calls)+t.pending, "call", "calls"))
@@ -144,6 +158,8 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 			if t.pending > 0 {
 				fmt.Fprintf(&b, "- %d requested but never finished\n", t.pending)
 			}
+		case t.effect != "":
+			// the command's effect line above is the whole story
 		case t.hasReply:
 			fmt.Fprintf(&b, "answered, no tools (%d chars)\n", t.lastReplyChars)
 		default:

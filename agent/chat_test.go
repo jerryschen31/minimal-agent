@@ -15,6 +15,7 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // - Verify that a user request receives a valid response
@@ -620,5 +621,35 @@ func Test_ShouldShowProgress(t *testing.T) {
 				t.Errorf("expected no progress dots for %s", tc.name)
 			}
 		})
+	}
+}
+
+// - Verify /clear records context_cleared inside its own task, with the number of messages the context held
+func Test_ClearCommand_RecordsHowManyMessagesWereDropped(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Provider.Reply = "ok"
+	handleUserInput(context.Background(), fx.Session, "hello") // the context now holds the user and assistant messages
+	want := len(fx.Context.GetMessages())
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+
+	handleUserInput(context.Background(), fx.Session, "/clear")
+
+	var taskScope string
+	var got *trace.ContextClearedData
+	for _, e := range spy.events() {
+		switch e.typ {
+		case trace.TaskStart:
+			taskScope = e.scope
+		case trace.ContextCleared:
+			d := e.data.(trace.ContextClearedData)
+			got = &d
+			if e.scope != taskScope {
+				t.Errorf("context_cleared scope = %q, want the /clear task %q", e.scope, taskScope)
+			}
+		}
+	}
+	if got == nil || got.MessagesDropped != want || want == 0 {
+		t.Fatalf("context_cleared = %+v, want %d dropped; events %v", got, want, spy.eventTypes())
 	}
 }

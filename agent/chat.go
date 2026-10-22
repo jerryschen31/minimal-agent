@@ -37,6 +37,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/clear":
 			taskTrace := trace.StartTask(cs.Recorder, "/clear")
 			defer taskTrace.End()
+			taskTrace.Record(trace.ContextCleared, trace.GetContextClearedData(len(msgContext))) // msgContext was read at the top of this function, before Clear
 			cs.MsgContext.Clear()
 			fmt.Fprintln(cs.OutBuffer, "[system] Chat context cleared")
 		case "/summary", "/summarize":

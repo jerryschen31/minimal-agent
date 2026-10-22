@@ -18,16 +18,17 @@ const Version = 1
 type EventType string
 
 const (
-	RunStart      EventType = "run_start"
-	TaskStart     EventType = "task_start"
-	ModelRequest  EventType = "model_request"
-	ModelResponse EventType = "model_response"
-	ModelError    EventType = "model_error"
-	ToolRequested EventType = "tool_requested"
-	ToolFinished  EventType = "tool_finished"
-	Compaction    EventType = "compaction"
-	TaskEnd       EventType = "task_end"
-	RunEnd        EventType = "run_end"
+	RunStart       EventType = "run_start"
+	TaskStart      EventType = "task_start"
+	ModelRequest   EventType = "model_request"
+	ModelResponse  EventType = "model_response"
+	ModelError     EventType = "model_error"
+	ToolRequested  EventType = "tool_requested"
+	ToolFinished   EventType = "tool_finished"
+	Compaction     EventType = "compaction"
+	ContextCleared EventType = "context_cleared"
+	TaskEnd        EventType = "task_end"
+	RunEnd         EventType = "run_end"
 	// TODO: add more event types as needed
 )
 
@@ -163,6 +164,16 @@ type CompactionData struct {
 	MessagesAfter  int    `json:"messages_after"`       // for an auto compaction this can include messages a later turn added meanwhile
 	SummaryID      string `json:"summary_id,omitempty"` // the ID of the summary message that replaced the old messages; empty on failure
 	DurationMS     int64  `json:"duration_ms"`
+}
+
+// ContextClearedData is the EventData for a ContextCleared event: /clear emptied the model's context.
+// Chat history, the durable record, is not touched.
+type ContextClearedData struct {
+	MessagesDropped int `json:"messages_dropped"` // how many messages the context held before it was cleared
+}
+
+func GetContextClearedData(dropped int) ContextClearedData {
+	return ContextClearedData{MessagesDropped: dropped}
 }
 
 // MessageRecord is one message as it was sent to the model.

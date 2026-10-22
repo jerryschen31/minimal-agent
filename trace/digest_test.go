@@ -179,3 +179,25 @@ func Test_SetupRecorder_DigestDisabled_WritesNoDigest(t *testing.T) {
 		t.Errorf("the L0 trace must still be written, got %v", files)
 	}
 }
+
+func Test_Digest_SlashCommandsShowTheirEffect(t *testing.T) {
+	digest, _, _ := renderDigest(t, func(rec Recorder) {
+		run := StartRun(rec, config.GetDefaultConfig())
+		clear := StartTask(rec, "/clear")
+		clear.Record(ContextCleared, GetContextClearedData(4))
+		clear.End()
+		compact := StartTask(rec, "/compact")
+		compact.Record(Compaction, CompactionData{Trigger: "manual", Status: "ok", MessagesBefore: 12, MessagesAfter: 3})
+		compact.End()
+		run.Record(Compaction, CompactionData{Trigger: "auto", Status: "ok", MessagesBefore: 30, MessagesAfter: 5}) // under the run ID: counted, not a task
+		run.End()
+	})
+	for _, want := range []string{"## /clear\n\ncontext cleared (4 messages)", "## /compact\n\ncompaction ok: 12 -> 3 messages", "compactions: 2"} {
+		if !strings.Contains(digest, want) {
+			t.Errorf("digest is missing %q:\n%s", want, digest)
+		}
+	}
+	if strings.Count(digest, "\n## ") != 2 {
+		t.Errorf("the auto compaction must not appear as a task:\n%s", digest)
+	}
+}
