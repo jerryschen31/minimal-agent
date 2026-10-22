@@ -190,24 +190,29 @@ type MessageRecord struct {
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
-// ModelRequestData is the EventData for a ModelRequest event: everything sent to the model in one call.
-// Messages is the full list (system prompt, context, this turn's messages), so the event stands on its own,
-// at the price of repeating earlier messages in every step of a turn.
+// ModelRequestData is the EventData for a ModelRequest event: what is new in one call to the model.
+// Messages holds only the messages this turn has added so far (the user's message, then each assistant reply and
+// tool result), so a later step repeats the earlier ones of the same turn. The system prompt and earlier turns were
+// sent too but are not repeated here: ContextMessages counts them, and they are recorded by run_start and the
+// earlier events of the trace.
 type ModelRequestData struct {
-	Provider  string          `json:"provider"`
-	Model     string          `json:"model"`
-	Step      int             `json:"step,omitempty"` // 1-based ReAct step; 0 (omitted) for calls outside the loop (/summary, compaction)
-	Messages  []MessageRecord `json:"messages"`
-	ToolNames []string        `json:"tool_names,omitempty"`
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	Step            int             `json:"step,omitempty"`   // 1-based ReAct step; 0 (omitted) for calls outside the loop (/summary, compaction)
+	ContextMessages int             `json:"context_messages"` // how many messages at the front of the request are not repeated in Messages
+	Messages        []MessageRecord `json:"messages"`
+	ToolNames       []string        `json:"tool_names,omitempty"`
 }
 
-// GetModelRequestData builds the model_request payload from what is about to be sent.
-func GetModelRequestData(cfg config.Config, step int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
+// GetModelRequestData builds the model_request payload. msgs are the messages to record; contextMessages is how many
+// more were sent in front of them and are only counted.
+func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
 	d := ModelRequestData{
-		Provider: cfg.Provider,
-		Model:    cfg.Model,
-		Step:     step,
-		Messages: make([]MessageRecord, len(msgs)),
+		Provider:        cfg.Provider,
+		Model:           cfg.Model,
+		Step:            step,
+		ContextMessages: contextMessages,
+		Messages:        make([]MessageRecord, len(msgs)),
 	}
 	for i, m := range msgs {
 		d.Messages[i] = messageRecord(m)

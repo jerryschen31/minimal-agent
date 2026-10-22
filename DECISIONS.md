@@ -2647,3 +2647,21 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
 - Payload builders `GetModelRequestData`, `GetModelResponseData`, `GetModelErrorData` live in `trace/event.go`, like the run and task ones.
 - **`model_request` records the full message list**, not a diff. Self-contained events; downside: a K-step turn repeats the context K times (bounded by `traceMaxEventBytes`, which swaps an oversize payload for a marker). A diff against already-seen message IDs is possible later.
 - **Not available yet:** `usage`, `stop_reason`, reasoning, and `http_status` (the `Provider` interface returns only a `ChatMessage` / plain error). The response message has no ID at record time (the loop assigns it afterwards), so a response is matched to its later appearance in a request by content and order.
+
+### 2026-10-22 — Renames: `GetTracedProvider` and `getSessionProvider`
+
+`trace.WrapProvider` is now `trace.GetTracedProvider` (matches the `Get…Data` builders) and `ChatSession.tracedProvider` is now `ChatSession.getSessionProvider`. Flow: a call site asks `cs.getSessionProvider(scopeID)` for the provider to use, which calls `trace.GetTracedProvider(...)` and returns a `*trace.TracedProvider`. Behaviour is unchanged; the entry above still uses the old names.
+
+### 2026-10-22 — `model_request` records only what the turn added (supersedes "full message list" above)
+
+The earlier entry recorded the full request with every call. Jerry: that would overwhelm the trace, so record only the newest messages of the turn.
+
+- `ModelRequestData.Messages` holds the messages added since the previous request of the same turn: the user's message at step 1; the assistant reply and tool results at later steps. `ContextMessages` counts the leading messages that were sent but are not repeated (system prompt + prior context at step 1, everything earlier in the turn afterwards).
+- Mechanism: `TracedProvider.Baseline` (set by `reActLoop` to `1 + len(priorMsgs)`) and an internal `prevLen`; the skip count for a call is `max(Baseline, prevLen)`. Calls outside the loop (`/summary`, compaction) leave `Baseline` 0 and record their whole request.
+- **Downside:** the trace no longer holds the exact context the model saw. It must be rebuilt from earlier events (the system prompt from `run_start`, prior turns from their own events), and a compaction in between changes what "prior context" means. It relies on the loop only appending within a turn; a step that rewrote earlier messages would not show. `/summary` and compaction still record their whole transcript, which restates earlier messages; it is the one remaining big payload.
+
+### 2026-10-22 — `model_request` bookkeeping simplified: the loop passes its turn messages (supersedes `Baseline` / `prevLen`)
+
+Jerry: the `Baseline` + `prevLen` arithmetic was too much bookkeeping, since `reActLoop` already holds the turn's messages as `requestMsgs`. `TracedProvider` now has `TurnMsgs`, which the loop sets next to `Step` each step: `provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs`. When set, `Chat` records `TurnMsgs` and counts the rest of the request as `ContextMessages`; when nil (`/summary`, compaction) it records the whole request. `GetModelRequestData(cfg, step, contextMessages, msgs, toolDefs)` records exactly the `msgs` it is given.
+
+**Trade-off accepted:** `requestMsgs` is the whole turn so far, so step 2 repeats step 1's user message and step 3 repeats steps 1-2. The repetition is bounded by one turn. Everything else from the previous entry still holds (no exact context in the trace; `/summary` and compaction still record their whole transcript).

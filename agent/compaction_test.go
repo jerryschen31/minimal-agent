@@ -473,6 +473,13 @@ func Test_ModelCalls_AreRecordedInTheirScope(t *testing.T) {
 	if got := turn[2].data.(trace.ModelRequestData).Step; got != 2 {
 		t.Errorf("second request step = %d, want 2", got)
 	}
+	// only the turn's own messages are recorded, so step 2 repeats step 1's user message before the reply and the tool result
+	if r := turn[0].data.(trace.ModelRequestData); r.ContextMessages != 1 || len(r.Messages) != 1 || r.Messages[0].Role != "user" {
+		t.Errorf("step 1 request = %+v, want 1 context message (system) and the user message", r)
+	}
+	if r := turn[2].data.(trace.ModelRequestData); r.ContextMessages != 1 || len(r.Messages) != 3 || r.Messages[1].Role != "assistant" || r.Messages[2].Role != "tool" {
+		t.Errorf("step 2 request = %+v, want 1 context message (system) and the user message, assistant reply, tool result", r)
+	}
 	first := turn[1].data.(trace.ModelResponseData).Message
 	if len(first.ToolCalls) != 1 || first.ToolCalls[0].CallID != "c1" {
 		t.Errorf("first response should carry the tool call: %+v", first)
@@ -510,5 +517,30 @@ func Test_ModelCalls_ErrorIsRecorded(t *testing.T) {
 	}
 	if got == nil || !got.Canceled || got.Error == "" {
 		t.Fatalf("model_error = %+v, events %v", got, spy.eventTypes())
+	}
+}
+
+// - Verify a later turn does not repeat earlier turns: the system prompt and the prior context are only counted.
+func Test_ModelRequest_SecondTurnRecordsOnlyItsOwnMessages(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+	fx.Provider.Reply = "ok"
+	ctx := context.Background()
+
+	handleUserInput(ctx, fx.Session, "first") // adds user + assistant to the context
+	handleUserInput(ctx, fx.Session, "second")
+
+	var reqs []trace.ModelRequestData
+	for _, e := range spy.events() {
+		if e.typ == trace.ModelRequest {
+			reqs = append(reqs, e.data.(trace.ModelRequestData))
+		}
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 model requests, got %d", len(reqs))
+	}
+	if r := reqs[1]; r.ContextMessages != 3 || len(r.Messages) != 1 || r.Messages[0].Content != "second" {
+		t.Errorf("second turn request = %+v, want 3 context messages (system, first, ok) and only %q", r, "second")
 	}
 }

@@ -62,7 +62,7 @@ func runToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) mode
 func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
 	requestMsgs := []model.ChatMessage{initialMsg}
 	toolDefs := cs.Tools.GetToolDefs()
-	provider := cs.tracedProvider(taskTrace.ID()) // records model_request / model_response / model_error for each step
+	provider := cs.getSessionProvider(taskTrace.ID()) // session provider wraps the underlying model.Provider and records requests and responses under the given scope ID
 	for stepNum := 0; stepNum < cs.Config.MaxSteps; stepNum++ {
 		// if user cancels the operation (maybe the ReAct loop is taking too long), exit the loop immediately
 		if err := ctx.Err(); err != nil {
@@ -72,7 +72,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		request2send := model.PrepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
 
 		// send the chat request to the LLM provider
-		provider.Step = stepNum + 1
+		provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs                    // the trace records the turn's messages; the system prompt and prior context are only counted
 		response, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // prints thinking dots in chat mode
 		if err != nil {
 			if !errors.Is(err, context.Canceled) { // [agent] a Ctrl+C cancel is reported once, as [interrupted], by the caller

@@ -42,7 +42,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/summary", "/summarize":
 			taskTrace := trace.StartTask(cs.Recorder, line)
 			defer taskTrace.End()
-			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.tracedProvider(taskTrace.ID()), msgContext, strings.TrimSpace(lineRest))
+			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.getSessionProvider(taskTrace.ID()), msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
 				taskTrace.Fail(err)
 				if errors.Is(err, context.Canceled) {
@@ -199,9 +199,9 @@ func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (contex
 	return ctx, stop
 }
 
-// ***********************************************************//
-// Show progress dots when the model is thinking
-// ***********************************************************//
+// *******************************************************************//
+// Chat that includes showing progress dots when the model is thinking
+// *******************************************************************//
 
 // progressDotInterval is how often a "thinking" dot is printed while waiting for the model. A variable rather than a constant so tests can shorten it.
 var progressDotInterval = 2 * time.Second
