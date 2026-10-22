@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
@@ -26,36 +27,46 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 	return tool.CallTool(ctx, args)
 }
 
-// executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model
-func runToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) model.ChatMessage {
-	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, the result is an error message.
+// runToolCall executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model.
+// It is the one place that records the call: tool_requested before it runs, tool_finished with what the model will see after.
+func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage {
+	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
+	start := time.Now()
+
+	content, err := executeToolCall(ctx, cs, call)
+	if err != nil {
+		content = fmt.Sprintf("error: %v", err) // every failure becomes an observation the model can recover from
+	}
+
+	taskTrace.Record(trace.ToolFinished, trace.GetToolFinishedData(call, content, err != nil, time.Since(start)))
+	return model.CreateChatMessage("tool", "tool", content, call.ID, nil)
+}
+
+// executeToolCall validates and runs a single tool call. It returns the tool's result, or an error for an unknown tool, bad arguments, a tool error or a tool panic.
+func executeToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) (string, error) {
+	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, that is an error.
 	tool, ok := cs.Tools.Lookup(call.Function.Name)
 	if !ok {
-		return model.CreateChatMessage("tool", "tool", fmt.Sprintf("error: unknown tool %q", call.Function.Name), call.ID, nil)
+		return "", fmt.Errorf("unknown tool %q", call.Function.Name)
 	}
-	// 2. Check that call.Function.Arguments is a JSON object. Arguments is a string holding JSON. If it isn't an object, the result is an error message. Empty "" for no-arg tools.
+	// 2. Check that call.Function.Arguments is a JSON object. Arguments is a string holding JSON. Empty "" for no-arg tools.
 	if call.Function.Arguments != "" {
 		var argsMap map[string]interface{}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &argsMap); err != nil {
-			return model.CreateChatMessage("tool", "tool", fmt.Sprintf("error: invalid JSON arguments: %v", err), call.ID, nil)
+			return "", fmt.Errorf("invalid JSON arguments: %v", err)
 		}
 		if argsMap == nil {
-			return model.CreateChatMessage("tool", "tool", "error: arguments must be a JSON object", call.ID, nil)
+			return "", errors.New("arguments must be a JSON object")
 		}
 	}
 
-	// 3. Run tool.CallTool(ctx, json.RawMessage(args)). If it returns an error, put "error: ..." in Content.
+	// 3. Run tool.CallTool(ctx, json.RawMessage(args)).
 	args := json.RawMessage(call.Function.Arguments)
 	// if call.Function.Arguments is empty, json.RawMessage returns an empty byte slice - create a proper empty JSON string in this case.
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
-	result, err := callToolSafely(ctx, tool, args)
-	if err != nil {
-		return model.CreateChatMessage("tool", "tool", fmt.Sprintf("error: %v", err), call.ID, nil)
-	}
-
-	return model.CreateChatMessage("tool", "tool", result, call.ID, nil)
+	return callToolSafely(ctx, tool, args)
 }
 
 // reActLoop loops up to MaxSteps. At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise it calls tool functions as needed.
@@ -93,7 +104,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		// otherwise there are tool calls to be made
 		for _, tc := range response.ToolCalls {
 			fmt.Fprintln(cs.OutBuffer, "[tool] Tool called:", tc.Function.Name)
-			toolResultMsg := runToolCall(ctx, cs, tc)
+			toolResultMsg := runToolCall(ctx, cs, taskTrace, tc)
 			requestMsgs = append(requestMsgs, toolResultMsg)
 		}
 	}

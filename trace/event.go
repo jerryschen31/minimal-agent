@@ -259,6 +259,31 @@ func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelRes
 	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
 }
 
+// ToolRequestedData is the EventData for a ToolRequested event: the model asked for this tool call. It is recorded for
+// every call the model makes, including ones that then fail validation (unknown tool, bad arguments).
+type ToolRequestedData struct {
+	CallID    string `json:"call_id"` // the same ID as in the model_response tool_calls and the matching tool_finished
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // a string, not json.RawMessage: models sometimes emit invalid JSON
+}
+
+func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
+	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}
+}
+
+// ToolFinishedData is the EventData for a ToolFinished event: what the agent got back from one tool call.
+type ToolFinishedData struct {
+	CallID     string `json:"call_id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"` // exactly what the model is sent back, including "error: ..." text and any truncation note the tool added
+	Failed     bool   `json:"failed"`  // unknown tool, bad arguments, a tool error or a tool panic
+	DurationMS int64  `json:"duration_ms"`
+}
+
+func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData {
+	return ToolFinishedData{CallID: call.ID, Name: call.Function.Name, Content: content, Failed: failed, DurationMS: elapsed.Milliseconds()}
+}
+
 // ModelErrorData is the EventData for a ModelError event: a model call that produced no response.
 type ModelErrorData struct {
 	Error      string `json:"error"`                 // the error text; passes through redaction (URLs can carry keys)

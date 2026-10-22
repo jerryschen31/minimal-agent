@@ -11,7 +11,8 @@ import (
 // Scope is one traced unit of agentic work: a run or a task. Perhaps there's other units of agentic work in the future.
 // For now, StartRun / StartTask record a start event, End records the matching end event.
 // Record stamps every event in between with the scope's ID, in the scope_id field: the run ID for a run, the task ID for a task.
-// A Scope is used by the agent loop goroutine, so it needs no locking (no concurrent access from other goroutines)
+// Record and ID are safe to call from several goroutines at once (they only read fields set at creation, and the recorder
+// has its own lock), e.g. parallel tool calls. Fail and End belong to the goroutine that owns the scope.
 type Scope struct {
 	rec     Recorder
 	id      string    // the scope_id on every event of this scope: the run ID for a run, a task ID for a task

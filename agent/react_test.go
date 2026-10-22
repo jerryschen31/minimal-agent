@@ -9,6 +9,7 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
+	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
@@ -45,7 +46,7 @@ func Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage(t *testing.T) {
 			}
 			call := model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: "boom", Arguments: "{}"}}
 
-			got := runToolCall(context.Background(), fx.Session, call)
+			got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call)
 
 			if got.Role != "tool" {
 				t.Errorf("expected role %q, got %q", "tool", got.Role)
@@ -98,5 +99,73 @@ func Test_ReActLoop_MaxStepsFromConfig_FinishesWithinLimit(t *testing.T) {
 	}
 	if last := turn[len(turn)-1]; last.Content != "done" {
 		t.Errorf("expected the final message to be %q, got %+v", "done", last)
+	}
+}
+
+// stubTool is a Tool that returns a fixed result or error.
+type stubTool struct {
+	result string
+	err    error
+}
+
+func (stubTool) GetToolDefinition() model.ToolDef {
+	return model.NewToolDef("stub", "returns a fixed result", nil)
+}
+func (s stubTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
+	return s.result, s.err
+}
+
+// - Verify every tool call, however it ends, records tool_requested then tool_finished under the task's scope, with the same
+// call_id, and that tool_finished holds exactly the content the model is sent back.
+func Test_RunToolCall_RecordsRequestedAndFinished(t *testing.T) {
+	cases := []struct {
+		name       string
+		tool       tools.Tool
+		toolName   string
+		args       string
+		wantFailed bool
+	}{
+		{"success", stubTool{result: "42"}, "stub", `{"a":1}`, false},
+		{"success, no arguments", stubTool{result: "42"}, "stub", ``, false},
+		{"tool error", stubTool{err: errors.New("disk on fire")}, "stub", `{}`, true},
+		{"tool panic", panicTool{boom: func() { panic("kaboom") }}, "boom", `{}`, true},
+		{"unknown tool", stubTool{}, "no_such_tool", `{}`, true},
+		{"invalid JSON", stubTool{}, "stub", `{not json`, true},
+		{"arguments not an object", stubTool{}, "stub", `null`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newChatSessionFixture(t, 10, 100)
+			spy := &recorderSpy{}
+			fx.Session.Recorder = spy
+			if err := fx.Tools.Register(tc.tool); err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			scope := trace.StartTask(spy, "t")
+			call := model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: tc.toolName, Arguments: tc.args}}
+
+			msg := runToolCall(context.Background(), fx.Session, scope, call)
+
+			var evs []scopedEvent
+			for _, e := range spy.events() {
+				if e.typ == trace.ToolRequested || e.typ == trace.ToolFinished {
+					evs = append(evs, e)
+				}
+			}
+			if len(evs) != 2 || evs[0].typ != trace.ToolRequested || evs[1].typ != trace.ToolFinished {
+				t.Fatalf("expected tool_requested then tool_finished, got %v", evs)
+			}
+			if evs[0].scope != scope.ID() || evs[1].scope != scope.ID() {
+				t.Errorf("tool events scope = %q, %q; want %q", evs[0].scope, evs[1].scope, scope.ID())
+			}
+			req := evs[0].data.(trace.ToolRequestedData)
+			if req.CallID != "call_1" || req.Name != tc.toolName || req.Arguments != tc.args {
+				t.Errorf("tool_requested = %+v", req)
+			}
+			fin := evs[1].data.(trace.ToolFinishedData)
+			if fin.CallID != "call_1" || fin.Content != msg.Content || fin.Failed != tc.wantFailed {
+				t.Errorf("tool_finished = %+v, message content %q", fin, msg.Content)
+			}
+		})
 	}
 }

@@ -27,10 +27,10 @@
 //	    model response (response: "Use get_weather MCP tool call") => record "model-response" trace
 //		    |
 //		    v
-//		tool call request (tool: "get_weather", args: ["Paris"]) => record "tool-request" trace
+//		tool call request (tool: "get_weather", args: ["Paris"]) => record "tool_requested" trace
 //	        |
 //	        v
-//	    tool execution response (result: "Sunny in Paris") => record "tool-response" trace
+//	    tool execution response (result: "Sunny in Paris") => record "tool_finished" trace
 //		    |
 //		    v
 //		task end => record "task-end" trace
