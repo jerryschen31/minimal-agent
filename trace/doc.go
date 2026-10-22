@@ -93,7 +93,8 @@
 //
 // Tasks in Chat mode: a task is one user message through to the final answer, with any number of model steps and tool calls in between.
 //
-//	This includes slash commands that trigger model calls or change agent state (/clear, /compact, /summarize).
+//	This includes slash commands that trigger model calls or change agent state (/clear, /compact, /summary, /summarize): each is a task of its own,
+//	with the command text as the task_start input.
 //	If a task ends early (Ctrl+C or an error), the task_end event says how it ended, so a cancelled turn still closes. All events inside the turn share one scope_id (which is the task_id - see # Scope section).
 //
 // Tasks in Autonomous mode: one task from objective.md is one task, no matter how many steps the agent takes.
