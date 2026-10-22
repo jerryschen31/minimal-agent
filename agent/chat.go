@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
@@ -36,12 +37,13 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/clear":
 			taskTrace := trace.StartTask(cs.Recorder, "/clear")
 			defer taskTrace.End()
+			taskTrace.Record(trace.ContextCleared, trace.GetContextClearedData(len(msgContext))) // msgContext was read at the top of this function, before Clear
 			cs.MsgContext.Clear()
 			fmt.Fprintln(cs.OutBuffer, "[system] Chat context cleared")
 		case "/summary", "/summarize":
 			taskTrace := trace.StartTask(cs.Recorder, line)
 			defer taskTrace.End()
-			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.Provider, msgContext, strings.TrimSpace(lineRest))
+			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.getSessionProvider(taskTrace.ID()), msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
 				taskTrace.Fail(err)
 				if errors.Is(err, context.Canceled) {
@@ -94,7 +96,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	defer taskTrace.End()
 
 	// ReAct turn loop - maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
-	turnMsgs, err := reActLoop(ctx, cs, msgContext, userMsg)
+	turnMsgs, err := reActLoop(ctx, cs, taskTrace, msgContext, userMsg)
 	if err != nil {
 		taskTrace.Fail(err) // "canceled" for Ctrl+C, otherwise "error"; the message is recorded either way
 		if errors.Is(err, context.Canceled) {
@@ -196,4 +198,59 @@ func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (contex
 		watcher.Wait() // this waits until the watcher goroutine has exited
 	}
 	return ctx, stop
+}
+
+// *******************************************************************//
+// Chat that includes showing progress dots when the model is thinking
+// *******************************************************************//
+
+// progressDotInterval is how often a "thinking" dot is printed while waiting for the model. A variable rather than a constant so tests can shorten it.
+var progressDotInterval = 2 * time.Second
+
+// chatWithProgress wraps a call to the model provider's Chat request/response method, and outputs thinking dots to the output buffer when cs.ShowProgress is set (e.g., chat mode on a terminal).
+// Example:
+//
+//	> What are best practices for writing Go code?
+//	....
+//	[assistant] ...
+func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
+	if cs.ShowProgress {
+		stop := startProgressDots(cs.OutBuffer, progressDotInterval)
+		defer stop()
+	}
+	return provider.Chat(ctx, msgs, toolDefs)
+}
+
+// startProgressDots prints a "." to out every interval until stop is called.
+func startProgressDots(out io.Writer, interval time.Duration) (stop func()) {
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		dots := 0
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Fprint(out, ".")
+				dots++
+			case <-done:
+				if dots > 0 {
+					fmt.Fprintln(out)
+				}
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
+}
+
+// shouldShowProgress reports whether thinking dots belong in this run's output: e.g., chat mode, writing to a real terminal.
+// Not for headless/oneshot (their output may be JSON or read by a program), and not for when output is redirected or captured (pipes, files, tests).
+func shouldShowProgress(cfg config.Config) bool {
+	return cfg.AgentMode == config.ModeChat && isTerminal(cfg.OutBuffer)
 }

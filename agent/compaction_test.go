@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
@@ -407,4 +409,138 @@ func (s *recorderSpy) eventTypes() []trace.EventType {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.types)
+}
+
+// scopedEvent is one recorded event, for asserting which scope a model call landed in.
+type scopedEvent struct {
+	scope string
+	typ   trace.EventType
+	data  any
+}
+
+func (s *recorderSpy) events() []scopedEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []scopedEvent
+	for i := range s.types {
+		out = append(out, scopedEvent{s.scopes[i], s.types[i], s.data[i]})
+	}
+	return out
+}
+
+// - Verify every model call is recorded as a request followed by a response, inside the scope that made it:
+// a chat turn's steps carry step numbers and the task ID, /summary and /compact carry their own command's task ID.
+func Test_ModelCalls_AreRecordedInTheirScope(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Session.Config.MaxSteps = 3
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+	ctx := context.Background()
+
+	fx.Provider.Script = []model.ChatMessage{
+		modeltest.AssistantToolCall("c1", "no_such_tool", "{}"),
+		modeltest.AssistantText("done"),
+		modeltest.AssistantText("a summary"),
+		modeltest.AssistantText("a compact summary"),
+	}
+	handleUserInput(ctx, fx.Session, "hello")
+	handleUserInput(ctx, fx.Session, "/summary")
+	handleUserInput(ctx, fx.Session, "/compact")
+
+	// group the model events by scope, in order
+	byScope := map[string][]scopedEvent{}
+	var order []string
+	for _, e := range spy.events() {
+		if e.typ != trace.ModelRequest && e.typ != trace.ModelResponse && e.typ != trace.ModelError {
+			continue
+		}
+		if _, ok := byScope[e.scope]; !ok {
+			order = append(order, e.scope)
+		}
+		byScope[e.scope] = append(byScope[e.scope], e)
+	}
+	if len(order) != 3 {
+		t.Fatalf("expected model events in 3 scopes (turn, /summary, /compact), got %d: %v", len(order), order)
+	}
+
+	turn := byScope[order[0]]
+	if len(turn) != 4 || turn[0].typ != trace.ModelRequest || turn[1].typ != trace.ModelResponse || turn[2].typ != trace.ModelRequest || turn[3].typ != trace.ModelResponse {
+		t.Fatalf("turn events = %v", turn)
+	}
+	if got := turn[0].data.(trace.ModelRequestData).Step; got != 1 {
+		t.Errorf("first request step = %d, want 1", got)
+	}
+	if got := turn[2].data.(trace.ModelRequestData).Step; got != 2 {
+		t.Errorf("second request step = %d, want 2", got)
+	}
+	// only the turn's own messages are recorded, so step 2 repeats step 1's user message before the reply and the tool result
+	if r := turn[0].data.(trace.ModelRequestData); r.ContextMessages != 1 || len(r.Messages) != 1 || r.Messages[0].Role != "user" {
+		t.Errorf("step 1 request = %+v, want 1 context message (system) and the user message", r)
+	}
+	if r := turn[2].data.(trace.ModelRequestData); r.ContextMessages != 1 || len(r.Messages) != 3 || r.Messages[1].Role != "assistant" || r.Messages[2].Role != "tool" {
+		t.Errorf("step 2 request = %+v, want 1 context message (system) and the user message, assistant reply, tool result", r)
+	}
+	first := turn[1].data.(trace.ModelResponseData).Message
+	if len(first.ToolCalls) != 1 || first.ToolCalls[0].CallID != "c1" {
+		t.Errorf("first response should carry the tool call: %+v", first)
+	}
+	if got := turn[3].data.(trace.ModelResponseData).Message.Content; got != "done" {
+		t.Errorf("second response content = %q", got)
+	}
+
+	for _, id := range order[1:] {
+		evs := byScope[id]
+		if len(evs) != 2 || evs[0].typ != trace.ModelRequest || evs[1].typ != trace.ModelResponse {
+			t.Errorf("scope %s events = %v", id, evs)
+		}
+		if evs[0].data.(trace.ModelRequestData).Step != 0 {
+			t.Errorf("a call outside the loop should have no step")
+		}
+	}
+}
+
+// - Verify a failed model call records model_request then model_error (flagged canceled for a cancelled context).
+func Test_ModelCalls_ErrorIsRecorded(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+	fx.Provider.Err = context.Canceled
+
+	handleUserInput(context.Background(), fx.Session, "hello")
+
+	var got *trace.ModelErrorData
+	for _, e := range spy.events() {
+		if e.typ == trace.ModelError {
+			d := e.data.(trace.ModelErrorData)
+			got = &d
+		}
+	}
+	if got == nil || !got.Canceled || got.Error == "" {
+		t.Fatalf("model_error = %+v, events %v", got, spy.eventTypes())
+	}
+}
+
+// - Verify a later turn does not repeat earlier turns: the system prompt and the prior context are only counted.
+func Test_ModelRequest_SecondTurnRecordsOnlyItsOwnMessages(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+	fx.Provider.Reply = "ok"
+	ctx := context.Background()
+
+	handleUserInput(ctx, fx.Session, "first") // adds user + assistant to the context
+	handleUserInput(ctx, fx.Session, "second")
+
+	var reqs []trace.ModelRequestData
+	for _, e := range spy.events() {
+		if e.typ == trace.ModelRequest {
+			reqs = append(reqs, e.data.(trace.ModelRequestData))
+		}
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 model requests, got %d", len(reqs))
+	}
+	if r := reqs[1]; r.ContextMessages != 3 || len(r.Messages) != 1 || r.Messages[0].Content != "second" {
+		t.Errorf("second turn request = %+v, want 3 context messages (system, first, ok) and only %q", r, "second")
+	}
 }

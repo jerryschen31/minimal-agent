@@ -375,6 +375,14 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
     - A token or cost budget (`MaxTokens` is still unread).
     - *Revisit:* after step 1 works end to end.
 
+13. **Shared helper for creating subscriber files** (`trace/subscriber.go`, `trace/digest.go`; decided 2026-10-22).
+    - *Today:* `NewJSONLSubscriber` and `NewDigestSubscriber` repeat the same run-ID check, `MkdirAll(0700)` and
+      `O_CREATE|O_EXCL` open at `0600`.
+    - *Fix:* one `createTraceFile(dir, runID, suffix)` helper. Deferred by Jerry until a third file-writing subscriber
+      exists, so the shape of the helper is known; two copies of about ten lines is cheaper than a guessed abstraction.
+    - *Revisit:* when a third subscriber that writes a file is added. Until then, a change to the file-creation
+      security rules (mode, `O_EXCL`, ID check) must be made in both places.
+
 
 ---
 
@@ -2640,3 +2648,71 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
   `abcd1234efgh`, repeated-character keys). The two PEM fixtures were changed from real PKCS#8 header bytes to base64 of
   "fake-key-body". gitleaks still flags 6 test lines (generic key patterns, a PEM header); they are the redactor's inputs
   and have to look like credentials. `mvp1/.env` holds real-format keys but is gitignored and was never committed.
+
+### 2026-10-22 — Model calls are traced by a Provider wrapper (`trace.TracedProvider`)
+
+- `trace.WrapProvider(p, rec, scopeID, cfg)` returns a `model.Provider` that records `model_request` before and `model_response` / `model_error` after each `Chat`, under one scope ID. `ChatSession.tracedProvider(scopeID)` is the one place the agent builds it. Three call sites use it: `reActLoop` (task scope, sets `Step` = 1-based step before each call), `/summary` (command's task scope), `compactAndTrace` (the command's scope for `/compact`, the run ID for auto-compaction). `chatWithProgress` and `reActLoop` take the provider / `*trace.Scope` as parameters.
+- Payload builders `GetModelRequestData`, `GetModelResponseData`, `GetModelErrorData` live in `trace/event.go`, like the run and task ones.
+- **`model_request` records the full message list**, not a diff. Self-contained events; downside: a K-step turn repeats the context K times (bounded by `traceMaxEventBytes`, which swaps an oversize payload for a marker). A diff against already-seen message IDs is possible later.
+- **Not available yet:** `usage`, `stop_reason`, reasoning, and `http_status` (the `Provider` interface returns only a `ChatMessage` / plain error). The response message has no ID at record time (the loop assigns it afterwards), so a response is matched to its later appearance in a request by content and order.
+
+### 2026-10-22 — Renames: `GetTracedProvider` and `getSessionProvider`
+
+`trace.WrapProvider` is now `trace.GetTracedProvider` (matches the `Get…Data` builders) and `ChatSession.tracedProvider` is now `ChatSession.getSessionProvider`. Flow: a call site asks `cs.getSessionProvider(scopeID)` for the provider to use, which calls `trace.GetTracedProvider(...)` and returns a `*trace.TracedProvider`. Behaviour is unchanged; the entry above still uses the old names.
+
+### 2026-10-22 — `model_request` records only what the turn added (supersedes "full message list" above)
+
+The earlier entry recorded the full request with every call. Jerry: that would overwhelm the trace, so record only the newest messages of the turn.
+
+- `ModelRequestData.Messages` holds the messages added since the previous request of the same turn: the user's message at step 1; the assistant reply and tool results at later steps. `ContextMessages` counts the leading messages that were sent but are not repeated (system prompt + prior context at step 1, everything earlier in the turn afterwards).
+- Mechanism: `TracedProvider.Baseline` (set by `reActLoop` to `1 + len(priorMsgs)`) and an internal `prevLen`; the skip count for a call is `max(Baseline, prevLen)`. Calls outside the loop (`/summary`, compaction) leave `Baseline` 0 and record their whole request.
+- **Downside:** the trace no longer holds the exact context the model saw. It must be rebuilt from earlier events (the system prompt from `run_start`, prior turns from their own events), and a compaction in between changes what "prior context" means. It relies on the loop only appending within a turn; a step that rewrote earlier messages would not show. `/summary` and compaction still record their whole transcript, which restates earlier messages; it is the one remaining big payload.
+
+### 2026-10-22 — `model_request` bookkeeping simplified: the loop passes its turn messages (supersedes `Baseline` / `prevLen`)
+
+Jerry: the `Baseline` + `prevLen` arithmetic was too much bookkeeping, since `reActLoop` already holds the turn's messages as `requestMsgs`. `TracedProvider` now has `TurnMsgs`, which the loop sets next to `Step` each step: `provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs`. When set, `Chat` records `TurnMsgs` and counts the rest of the request as `ContextMessages`; when nil (`/summary`, compaction) it records the whole request. `GetModelRequestData(cfg, step, contextMessages, msgs, toolDefs)` records exactly the `msgs` it is given.
+
+**Trade-off accepted:** `requestMsgs` is the whole turn so far, so step 2 repeats step 1's user message and step 3 repeats steps 1-2. The repetition is bounded by one turn. Everything else from the previous entry still holds (no exact context in the trace; `/summary` and compaction still record their whole transcript).
+
+### 2026-10-22 — Tool calls are traced: `tool_requested` / `tool_finished`
+
+- `runToolCall(ctx, cs, taskTrace, call)` is now the only place a tool call is recorded: `tool_requested` (call ID, name, arguments) before, `tool_finished` (call ID, name, content, failed, duration) after. The old body moved to `executeToolCall`, which returns `(string, error)`; `runToolCall` turns an error into the same `"error: …"` text as before, so what the model sees is unchanged. All outcomes (unknown tool, invalid JSON, non-object arguments, tool error, tool panic, success) go through the same two `Record` calls.
+- `tool_requested` is recorded for **every** call the model makes, including ones that then fail validation.
+- **`tool_finished.content` is what the agent sees**, not what the tool could have returned. `read_file` (1 MB) and MCP results (256 KB) are capped by the tools themselves and carry their own truncation note, so there is no separate `truncated` flag. Downside: if a cap is set too low, the trace cannot show what was cut. `traceMaxEventBytes` stays a backstop for tools with no cap of their own.
+- `tool_requested` repeats the arguments already in `model_response`'s tool calls. Kept so the event stands alone and marks when execution started.
+- **Parallel tools later:** `Scope.Record`/`ID` only read fields set at creation and the recorder has its own lock, so they are safe from several goroutines; `Fail`/`End` stay with the goroutine that owns the scope (tool goroutines must return their errors, not call `Fail`). Events of different calls will interleave; `call_id` pairs them. Results must still be appended in the model's order.
+
+### 2026-10-22 — `command_start` / `command_end` dropped; slash commands stay tasks
+
+Slash commands that call the model or change agent state (`/clear`, `/compact`, `/summary`, `/summarize`) are traced as tasks (`task_start` / `task_end`, command text as the input), as already decided. The unused `CommandStart` / `CommandEnd` event types and `CommandStartData` / `CommandEndData` were deleted, and `doc.go` now says so. Supersedes the "intended event types for commands" in the task-ID entry above. **Trade-off:** a reader tells a command from a chat turn by its input starting with `/`, not by event type; a `StartCommand` can be added later without touching the rest.
+
+### 2026-10-22 — Hash chain (slice 3) deferred; threat model first
+
+Jerry: an unkeyed per-line hash chain can be rewritten and recomputed in full by anyone who can write the file, including a malicious agent, so it adds little on its own. Nothing was implemented. The `prev_hash` / `Verify` design sketched in the session (hash of each raw line, first `prev` = sha256(run ID), verify walks the raw bytes) is still valid, but only worth building once there is something the agent cannot rewrite:
+- an external `Subscriber` sending events or hashes to a sink the agent cannot write to;
+- periodic (not only `run_end`) anchoring of the chain head outside the agent, e.g. the PR comment or a remote service;
+- signing with a key held by a different process or machine (a key on the agent's machine adds nothing);
+- OS-level separation of the trace file from the agent (other user, sandbox), including closing write paths such as `RunCommand`.
+Currently in place: `0600` file in a `0700` directory, and `.agent-trace` on the `read_file` deny list (the model cannot read its own trace). Neither stops a same-user process from writing the file.
+
+### 2026-10-22 — L1 digest: `Digester` interface, `ActivityDigest`, `digestEnabled`
+
+- **Shape.** `trace.Digester` has `Add(Event)` and `Render(io.Writer)`; it sees only L0 events. `NewDigestSubscriber` is the live adapter (a `Subscriber`: decodes each line, calls `Add`, renders `<run_id>.digest.md` at `Close`, `0600`, create-only). `Replay(r, d)` feeds a finished `.jsonl` file to any `Digester`, so a digest can be rebuilt after a crash or with a newer implementation. `Replay` reads with `bufio.Reader.ReadBytes`, not `Scanner`, because one event can be as large as `traceMaxEventBytes`. Chosen over a model-based or file-only digest: live and offline from one reducer, and nothing ever reads more than the already-redacted events, so a digest cannot leak more than L0.
+- **`ActivityDigest`** (first implementation; purpose: a quick human "what did the agent do and change" review). Per task: the user input as a heading, then one block of tool calls (`N tool calls:` + a line each, in finish order, failures marked `(failed: …)`), or for a text-only turn a one-liner (`answered, no tools (N chars)`). Built from `tool_requested` / `tool_finished` paired by `call_id`, never from model text. Calls requested but never finished are counted and flagged. Footer counts redactions, model errors and compactions. Grouped per task, not per step, because tool events carry no step number.
+- **Describers.** `describe(name, args, content, failed)` is a per-tool switch: `read_file` → `read <path>`; `shell` / `run_command` / `bash` → the command verbatim (whitespace collapsed, cut at 300 chars; L0 keeps the original); everything else → name plus truncated arguments. Downside: a new tool shows the generic line until someone adds a case. `write_file` will need its result text to say `created` / `overwrote`, since the digest cannot infer "new file" from events.
+- **Untrusted text.** User input, arguments and error text are collapsed to one line and cut, so they cannot start a new markdown heading or bullet in the digest.
+- **Text-only turns: no model-written summary.** A `/summarize`-style call per run would cost a model call, make the digest non-deterministic, and put model prose into an audit document. A deterministic one-liner is used instead; an opt-in `LLMDigester` can be a second implementation of the same interface later.
+- **Config.** `digestEnabled` (default `true`; only takes effect when `traceEnabled` is on). If the digest file can't be created, `SetupRecorder` fails (like the trace file) and closes the JSONL file it had already opened.
+- **Known limits.** (1) The digest is written at `Close`; a crash leaves none until `Replay`. Rendering after every `task_end` would fix it at the cost of rewriting the file each time. (2) Once a shell tool exists, files changed through it are invisible to a tool-call digest; a separate workdir-diff `Digester` (e.g. `git status` at task end) would cover that. (3) `/clear` and the skipped "compaction already in progress" are not L0 events yet, so they are not in the digest. (4) The first user-visible gap: no `usage` or `stop_reason` in the footer until `Provider` reports them.
+- Shared file-creation helper for the two subscribers deferred: see Deferred for Later, item 13.
+
+### 2026-10-22 — `context_cleared` event; digest shows what slash commands did (corrects the digest entry above)
+
+- **Correction:** the digest entry above said `/clear` was "not an L0 event". That was wrong: `/clear` was already traced as a task (`task_start` / `task_end`, input `/clear`). What was missing was its *effect*, so the digest showed "no tools, no reply" under it.
+- **New event `context_cleared`** (`ContextClearedData{messages_dropped}`), recorded by `/clear` inside its own task, before `Clear()`, from the message list `handleUserInput` already read at its top. Chat history (the durable record) is not touched, and the event says nothing about it.
+- **Digest rendering.** `ActivityDigest` prints a command task's effect under its heading: `context cleared (N messages)`, or for `/compact` `compaction ok: B -> A messages` (a `compaction` event whose scope is a known task). An auto compaction is recorded under the run ID, which is not a task, so it is only counted in the footer. Otherwise the digest would show a bogus task.
+- **Not done (Jerry: ignore):** the skipped "compaction already in progress" is still unrecorded. The "Known limits" bullet (3) in the digest entry is therefore replaced by this one.
+
+### 2026-10-22 — Digest: missing-payload markers are reported, not decoded (Copilot, PR #20)
+
+When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":true,"original_bytes":N}`, and a redaction failure writes `{"dropped":"…"}`. Both decode without error into any typed payload (all zero values), so a truncated `tool_finished` became a nameless "finished" call and left the real request "never finished". `ActivityDigest.Add` now checks for the two markers first (`isMissingPayload`; no real payload has either key), counts the event as incomplete (per task, or per run when its scope is the run ID) and does not read it. The digest says `N events had incomplete data (payload truncated or dropped)`, and an unmatched request in such a task reads `result missing (trace incomplete)` instead of "never finished", since the finish event may be one of the missing ones. **Downside:** with several calls in one task and one lost completion, the digest cannot say which call it was; L0 holds the `call_id`s and `original_bytes`.

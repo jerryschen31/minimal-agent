@@ -1,12 +1,15 @@
 package trace
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"runtime/debug"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/model"
 )
 
 // Version is the event format version written into an event's EventData field.
@@ -15,18 +18,17 @@ const Version = 1
 type EventType string
 
 const (
-	RunStart      EventType = "run_start"
-	TaskStart     EventType = "task_start"
-	CommandStart  EventType = "command_start" // a slash command that calls the model or changes agent state (not /config, /quit)
-	ModelRequest  EventType = "model_request"
-	ModelResponse EventType = "model_response"
-	ModelError    EventType = "model_error"
-	ToolRequested EventType = "tool_requested"
-	ToolFinished  EventType = "tool_finished"
-	Compaction    EventType = "compaction"
-	TaskEnd       EventType = "task_end"
-	CommandEnd    EventType = "command_end"
-	RunEnd        EventType = "run_end"
+	RunStart       EventType = "run_start"
+	TaskStart      EventType = "task_start"
+	ModelRequest   EventType = "model_request"
+	ModelResponse  EventType = "model_response"
+	ModelError     EventType = "model_error"
+	ToolRequested  EventType = "tool_requested"
+	ToolFinished   EventType = "tool_finished"
+	Compaction     EventType = "compaction"
+	ContextCleared EventType = "context_cleared"
+	TaskEnd        EventType = "task_end"
+	RunEnd         EventType = "run_end"
 	// TODO: add more event types as needed
 )
 
@@ -137,7 +139,7 @@ func GetTaskStartData(input string) TaskStartData {
 	}
 }
 
-// TaskEndData is the EventData for a TaskEnd or CommandEnd event.
+// TaskEndData is the EventData for a TaskEnd event.
 type TaskEndData struct {
 	Status     string `json:"status"`          // "ok" | "canceled" | "error"
 	Error      string `json:"error,omitempty"` // the error text when Status is "error"
@@ -152,18 +154,6 @@ func GetTaskEndData(status, err string, durationMS int64) TaskEndData {
 	}
 }
 
-// CommandStartData is the EventData for a CommandStart event. The command shares the scope_id of the events inside it.
-type CommandStartData struct {
-	Name string `json:"name"`           // e.g. "/compact"
-	Args string `json:"args,omitempty"` // text after the command; goes through redaction
-}
-
-type CommandEndData struct {
-	Status     string `json:"status"`          // "ok" | "canceled" | "error"
-	Error      string `json:"error,omitempty"` // the error text when Status is "error"
-	DurationMS int64  `json:"duration_ms"`
-}
-
 // CompactionData is the EventData for a Compaction event: the context was summarized and old messages were replaced by one summary.
 // The model call it makes is a separate model_request / model_response pair.
 type CompactionData struct {
@@ -174,6 +164,16 @@ type CompactionData struct {
 	MessagesAfter  int    `json:"messages_after"`       // for an auto compaction this can include messages a later turn added meanwhile
 	SummaryID      string `json:"summary_id,omitempty"` // the ID of the summary message that replaced the old messages; empty on failure
 	DurationMS     int64  `json:"duration_ms"`
+}
+
+// ContextClearedData is the EventData for a ContextCleared event: /clear emptied the model's context.
+// Chat history, the durable record, is not touched.
+type ContextClearedData struct {
+	MessagesDropped int `json:"messages_dropped"` // how many messages the context held before it was cleared
+}
+
+func GetContextClearedData(dropped int) ContextClearedData {
+	return ContextClearedData{MessagesDropped: dropped}
 }
 
 // MessageRecord is one message as it was sent to the model.
@@ -187,13 +187,45 @@ type MessageRecord struct {
 	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
-// ModelRequestData records new messages in a model request and the tools available at this step.
+// ModelRequestData is the EventData for a ModelRequest event: what is new in one call to the model.
+// Messages holds only the messages this turn has added so far (the user's message, then each assistant reply and
+// tool result), so a later step repeats the earlier ones of the same turn. The system prompt and earlier turns were
+// sent too but are not repeated here: ContextMessages counts them, and they are recorded by run_start and the
+// earlier events of the trace.
 type ModelRequestData struct {
-	Provider  string          `json:"provider"`
-	Model     string          `json:"model"`
-	Step      int             `json:"step,omitempty"`
-	Messages  []MessageRecord `json:"messages"`
-	ToolNames []string        `json:"tool_names,omitempty"`
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	Step            int             `json:"step,omitempty"`   // 1-based ReAct step; 0 (omitted) for calls outside the loop (/summary, compaction)
+	ContextMessages int             `json:"context_messages"` // how many messages at the front of the request are not repeated in Messages
+	Messages        []MessageRecord `json:"messages"`
+	ToolNames       []string        `json:"tool_names,omitempty"`
+}
+
+// GetModelRequestData builds the model_request payload. msgs are the messages to record; contextMessages is how many
+// more were sent in front of them and are only counted.
+func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
+	d := ModelRequestData{
+		Provider:        cfg.Provider,
+		Model:           cfg.Model,
+		Step:            step,
+		ContextMessages: contextMessages,
+		Messages:        make([]MessageRecord, len(msgs)),
+	}
+	for i, m := range msgs {
+		d.Messages[i] = messageRecord(m)
+	}
+	for _, t := range toolDefs {
+		d.ToolNames = append(d.ToolNames, t.Function.Name)
+	}
+	return d
+}
+
+func messageRecord(m model.ChatMessage) MessageRecord {
+	r := MessageRecord{ID: m.ID, Role: m.Role, Type: m.Type, Content: m.Content, ToolCallID: m.ToolCallID}
+	for _, tc := range m.ToolCalls {
+		r.ToolCalls = append(r.ToolCalls, ToolCallRecord{CallID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+	}
+	return r
 }
 
 // ToolCallRecord is one tool call the model asked for, as it appears in a ModelResponseData.
@@ -219,10 +251,49 @@ type ModelResponseData struct {
 	DurationMS int64         `json:"duration_ms"`
 }
 
+// GetModelResponseData builds the model_response payload. StopReason and Usage stay empty until model.Provider reports them.
+func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData {
+	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
+}
+
+// ToolRequestedData is the EventData for a ToolRequested event: the model asked for this tool call. It is recorded for
+// every call the model makes, including ones that then fail validation (unknown tool, bad arguments).
+type ToolRequestedData struct {
+	CallID    string `json:"call_id"` // the same ID as in the model_response tool_calls and the matching tool_finished
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // a string, not json.RawMessage: models sometimes emit invalid JSON
+}
+
+func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
+	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}
+}
+
+// ToolFinishedData is the EventData for a ToolFinished event: what the agent got back from one tool call.
+type ToolFinishedData struct {
+	CallID     string `json:"call_id"`
+	Name       string `json:"name"`
+	Content    string `json:"content"` // exactly what the model is sent back, including "error: ..." text and any truncation note the tool added
+	Failed     bool   `json:"failed"`  // unknown tool, bad arguments, a tool error or a tool panic
+	DurationMS int64  `json:"duration_ms"`
+}
+
+func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData {
+	return ToolFinishedData{CallID: call.ID, Name: call.Function.Name, Content: content, Failed: failed, DurationMS: elapsed.Milliseconds()}
+}
+
 // ModelErrorData is the EventData for a ModelError event: a model call that produced no response.
 type ModelErrorData struct {
 	Error      string `json:"error"`                 // the error text; passes through redaction (URLs can carry keys)
 	HTTPStatus int    `json:"http_status,omitempty"` // 0 when there was no HTTP response (network failure, timeout)
 	Canceled   bool   `json:"canceled,omitempty"`    // the context was cancelled (Ctrl+C), not a provider failure
 	DurationMS int64  `json:"duration_ms"`           // time spent before the call failed
+}
+
+// GetModelErrorData builds the model_error payload. HTTPStatus stays 0 until model.Provider returns a typed error that carries it.
+func GetModelErrorData(err error, elapsed time.Duration) ModelErrorData {
+	return ModelErrorData{
+		Error:      err.Error(),
+		Canceled:   errors.Is(err, context.Canceled),
+		DurationMS: elapsed.Milliseconds(),
+	}
 }

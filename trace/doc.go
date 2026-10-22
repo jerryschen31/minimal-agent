@@ -27,10 +27,10 @@
 //	    model response (response: "Use get_weather MCP tool call") => record "model-response" trace
 //		    |
 //		    v
-//		tool call request (tool: "get_weather", args: ["Paris"]) => record "tool-request" trace
+//		tool call request (tool: "get_weather", args: ["Paris"]) => record "tool_requested" trace
 //	        |
 //	        v
-//	    tool execution response (result: "Sunny in Paris") => record "tool-response" trace
+//	    tool execution response (result: "Sunny in Paris") => record "tool_finished" trace
 //		    |
 //		    v
 //		task end => record "task-end" trace
@@ -71,7 +71,7 @@
 //	+---------------------------------+
 //	    |
 //	    v
-//	[ Subscribers ]                   default subscriber is a JSON log file; a console print stream or live digest could follow
+//	[ Subscribers ]                   the JSON log file, and the L1 digest (digest.md) when digestEnabled; a console print stream could follow
 //
 // # Redacting Secrets
 //
@@ -93,7 +93,8 @@
 //
 // Tasks in Chat mode: a task is one user message through to the final answer, with any number of model steps and tool calls in between.
 //
-//	This includes slash commands that trigger model calls or change agent state (/clear, /compact, /summarize).
+//	This includes slash commands that trigger model calls or change agent state (/clear, /compact, /summary, /summarize): each is a task of its own,
+//	with the command text as the task_start input.
 //	If a task ends early (Ctrl+C or an error), the task_end event says how it ended, so a cancelled turn still closes. All events inside the turn share one scope_id (which is the task_id - see # Scope section).
 //
 // Tasks in Autonomous mode: one task from objective.md is one task, no matter how many steps the agent takes.
@@ -112,7 +113,7 @@
 //   - event.go: the trace event envelope, event types and payload structs
 //   - redact.go: secrets detector and redactor
 //   - recorder.go: Recorder, Subscriber, channel queue plus tracewriter goroutine
-//   - digest.go (TBD): L1 digest, essentially a condensed trace summary, built from the redacted trace events; this is meant for quick inspection and analysis of the trace, e.g. within a pull request or a run review
+//   - digest.go, digest_activity.go: L1 digest (Digester interface, live Subscriber adapter, Replay for old .jsonl files; ActivityDigest is the first implementation), a condensed summary built from the redacted trace events; this is meant for quick inspection and analysis of the trace, e.g. within a pull request or a run review
 //   - subscriber.go: defines the Subscriber interface and built-in implementations for handling trace events; first is the JSONL log file subscriber
 //   - scope.go: defines the Scope object that tracks the start time, status, and errors for a scope (run or task), ensuring all events within the scope are correctly associated with the scope ID
 package trace
