@@ -2677,3 +2677,12 @@ Jerry: the `Baseline` + `prevLen` arithmetic was too much bookkeeping, since `re
 ### 2026-10-22 — `command_start` / `command_end` dropped; slash commands stay tasks
 
 Slash commands that call the model or change agent state (`/clear`, `/compact`, `/summary`, `/summarize`) are traced as tasks (`task_start` / `task_end`, command text as the input), as already decided. The unused `CommandStart` / `CommandEnd` event types and `CommandStartData` / `CommandEndData` were deleted, and `doc.go` now says so. Supersedes the "intended event types for commands" in the task-ID entry above. **Trade-off:** a reader tells a command from a chat turn by its input starting with `/`, not by event type; a `StartCommand` can be added later without touching the rest.
+
+### 2026-10-22 — Hash chain (slice 3) deferred; threat model first
+
+Jerry: an unkeyed per-line hash chain can be rewritten and recomputed in full by anyone who can write the file, including a malicious agent, so it adds little on its own. Nothing was implemented. The `prev_hash` / `Verify` design sketched in the session (hash of each raw line, first `prev` = sha256(run ID), verify walks the raw bytes) is still valid, but only worth building once there is something the agent cannot rewrite:
+- an external `Subscriber` sending events or hashes to a sink the agent cannot write to;
+- periodic (not only `run_end`) anchoring of the chain head outside the agent, e.g. the PR comment or a remote service;
+- signing with a key held by a different process or machine (a key on the agent's machine adds nothing);
+- OS-level separation of the trace file from the agent (other user, sandbox), including closing write paths such as `RunCommand`.
+Currently in place: `0600` file in a `0700` directory, and `.agent-trace` on the `read_file` deny list (the model cannot read its own trace). Neither stops a same-user process from writing the file.
