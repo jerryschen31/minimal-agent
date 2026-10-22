@@ -3,8 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // - Verify that the system prompt is still the first message in the message list even after context compaction.
@@ -340,4 +344,67 @@ func Test_ContextCompaction_NextChatRequestDoesNotContainOldCompactedMessages(t 
 			t.Errorf("expected the next request not to contain the pre-compaction message (ID %q), but it did", oldUserMsgID)
 		}
 	}
+}
+
+// recorderSpy is a trace.Recorder that keeps what it was given.
+type recorderSpy struct {
+	mu     sync.Mutex
+	scopes []string
+	types  []trace.EventType
+	data   []any
+}
+
+func (s *recorderSpy) Record(scopeID string, eventType trace.EventType, data any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.scopes = append(s.scopes, scopeID)
+	s.types = append(s.types, eventType)
+	s.data = append(s.data, data)
+}
+func (s *recorderSpy) RunID() string { return "r-test" }
+func (s *recorderSpy) Close() error  { return nil }
+
+// - Verify that a manual /compact records one compaction event inside the command's scope, and an auto compaction uses the run ID.
+func Test_Compaction_RecordsAnEvent(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Provider.Reply = "a summary"
+	spy := &recorderSpy{}
+	fx.Session.Recorder = spy
+	ctx := context.Background()
+
+	handleUserInput(ctx, fx.Session, "hello")
+	handleUserInput(ctx, fx.Session, "/compact")
+
+	var manual *trace.CompactionData
+	for i, typ := range spy.types {
+		if typ == trace.Compaction {
+			d := spy.data[i].(trace.CompactionData)
+			manual = &d
+			if spy.scopes[i] == "r-test" || spy.scopes[i] == "" {
+				t.Errorf("manual compaction scope = %q, want the command's task ID", spy.scopes[i])
+			}
+		}
+	}
+	if manual == nil {
+		t.Fatalf("no compaction event recorded: %v", spy.types)
+	}
+	if manual.Trigger != "manual" || manual.Status != "ok" || manual.SummaryID == "" || manual.MessagesAfter >= manual.MessagesBefore {
+		t.Errorf("compaction = %+v", *manual)
+	}
+
+	fx.Provider.Reply = "second summary"
+	handleUserInput(ctx, fx.Session, "more")
+	if _, err := compactAndTrace(ctx, fx.Session, fx.Session.Recorder.RunID(), "auto", ""); err != nil {
+		t.Fatal(err)
+	}
+	last := len(spy.types) - 1
+	if spy.types[last] != trace.Compaction || spy.scopes[last] != "r-test" || spy.data[last].(trace.CompactionData).Trigger != "auto" {
+		t.Errorf("auto compaction event = %v %q %+v", spy.types[last], spy.scopes[last], spy.data[last])
+	}
+}
+
+func (s *recorderSpy) eventTypes() []trace.EventType {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.types)
 }

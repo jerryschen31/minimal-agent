@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 //***********************************************************//
@@ -32,11 +34,16 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/exit", "/quit":
 			return true
 		case "/clear":
+			taskTrace := trace.StartTask(cs.Recorder, "/clear")
+			defer taskTrace.End()
 			cs.MsgContext.Clear()
 			fmt.Fprintln(cs.OutBuffer, "[system] Chat context cleared")
 		case "/summary", "/summarize":
+			taskTrace := trace.StartTask(cs.Recorder, line)
+			defer taskTrace.End()
 			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.Provider, msgContext, strings.TrimSpace(lineRest))
 			if err != nil {
+				taskTrace.Fail(err)
 				if errors.Is(err, context.Canceled) {
 					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
 					return false
@@ -51,9 +58,12 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.")
 				return false
 			}
+			taskTrace := trace.StartTask(cs.Recorder, line)
+			defer taskTrace.End()
 			fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...")
-			summaryMsg, err := contextwindow.CompactChatContext(ctx, cs.MsgContext, cs.Provider, strings.TrimSpace(lineRest))
+			summaryMsg, err := compactAndTrace(ctx, cs, taskTrace.ID(), "manual", strings.TrimSpace(lineRest))
 			if err != nil {
+				taskTrace.Fail(err)
 				if errors.Is(err, context.Canceled) {
 					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
 					return false
@@ -79,11 +89,16 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// initial user message
 	userMsg := model.CreateChatMessage("user", "user", line, "", nil)
 
-	// maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
+	// trace this user turn: task_start now, task_end (with status and duration) when this function returns
+	taskTrace := trace.StartTask(cs.Recorder, line)
+	defer taskTrace.End()
+
+	// ReAct turn loop - maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
 	turnMsgs, err := reActLoop(ctx, cs, msgContext, userMsg)
 	if err != nil {
+		taskTrace.Fail(err) // "canceled" for Ctrl+C, otherwise "error"; the message is recorded either way
 		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn; nothing is added to memory
+			fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C canceled the turn; nothing is added to memory
 			return false
 		}
 		fmt.Fprintln(cs.OutBuffer, "[error] ReAct loop error:", err)
@@ -104,9 +119,10 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 		go func() {
 			defer cs.MsgContext.CompactWG.Done() // ensure the WaitGroup counter is decremented when the goroutine finishes
 			fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...")
-			_, err := contextwindow.CompactChatContext(ctx, cs.MsgContext, cs.Provider, "")
+			_, err := compactAndTrace(ctx, cs, cs.Recorder.RunID(), "auto", "")
 			if err != nil {
 				fmt.Fprintln(cs.OutBuffer, "[error] Auto-compaction error:", err)
+				return // don't also claim it completed
 			}
 			fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction complete.")
 		}()
@@ -117,13 +133,16 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 // Run loop for handling chat session
 // ***********************************************************//
 
-func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) {
+func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error {
 	reader := newPromptReader(ctx, cs.InBuffer, cs.OutBuffer)
 
 	for {
 		line, err := reader.ReadPrompt(ctx)
 		if err != nil {
-			return
+			if errors.Is(err, io.EOF) { // Ctrl+D or end of piped input is a normal quit, not a failure
+				return nil
+			}
+			return err
 		}
 
 		// this is here to drain any stray Ctrl+C presses from the previous turn (e.g., the user gets impatient when canceling a turn and presses Ctrl+C a bunch of times; the 1-buffer channel absorbs that second press and ignores the rest)
@@ -134,8 +153,11 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 		quit := handleUserInput(turnCtx, cs, line)
 		// stop is called when a turn is done; it releases the watcher so it can't take a later interrupt.
 		stop()
-		if quit || ctx.Err() != nil {
-			return
+		if quit {
+			return nil
+		}
+		if err := ctx.Err(); err != nil { // the root context was cancelled (SIGTERM)
+			return err
 		}
 
 		// use non-interruptible root context; this way, interrupting a turn with Ctrl+C doesn't affect background compaction

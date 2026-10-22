@@ -10,6 +10,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/tools"
+	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // chatSessionFixture bundles a fully wired ChatSession (history + context + a fake provider)
@@ -60,7 +61,7 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		t.Fatalf("tools.NewToolRegistry() returned an error: %v", err)
 	}
 
-	session, err := NewChatSession(provider, history, chatContext, tools, cfg)
+	session, err := NewChatSession(provider, history, chatContext, tools, trace.Nop(), cfg)
 	if err != nil {
 		t.Fatalf("NewChatSession() returned an error: %v", err)
 	}
