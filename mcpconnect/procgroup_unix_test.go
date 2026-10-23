@@ -4,6 +4,7 @@ package mcpconnect
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,10 +69,27 @@ func Test_Unit_ConnectLocalMCP_ServerRunsInItsOwnProcessGroup(t *testing.T) {
 }
 
 // - Verify Close also stops what the server started (as npx starts node): the grandchild must be gone after Close,
-// although closing the session only stops the server itself
+// although closing the session only stops the server itself. Liveness is checked with a FIFO the grandchild holds
+// open as its stdout, not kill(pid, 0): the orphaned grandchild may stay a zombie where PID 1 does not reap it
+// (some containers), and a zombie still answers signal 0. Its open files are closed when it exits, reaped or not.
 func Test_Unit_McpConnectionClose_KillsTheServersGrandchildren(t *testing.T) {
-	gcFile := filepath.Join(t.TempDir(), "grandchild.pid")
+	dir := t.TempDir()
+	gcFile, fifo := filepath.Join(dir, "grandchild.pid"), filepath.Join(dir, "grandchild.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatalf("Mkfifo: %v", err)
+	}
 	t.Setenv("GO_MCP_HELPER_GRANDCHILD_PIDFILE", gcFile)
+	t.Setenv("GO_MCP_HELPER_GRANDCHILD_FIFO", fifo)
+	gone := make(chan struct{})
+	go func() { // opening blocks until the helper opens the write end; reading ends at EOF, when the grandchild exits
+		defer close(gone)
+		f, err := os.Open(fifo)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		io.Copy(io.Discard, f)
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	c, _ := startHelperServer(t, ctx)
@@ -79,13 +97,10 @@ func Test_Unit_McpConnectionClose_KillsTheServersGrandchildren(t *testing.T) {
 
 	c.Close()
 
-	// signal 0 checks that a process exists; ESRCH means it is gone
-	deadline := time.Now().Add(5 * time.Second)
-	for syscall.Kill(gc, 0) == nil {
-		if time.Now().After(deadline) {
-			syscall.Kill(gc, syscall.SIGKILL) // don't leave the leaked grandchild behind
-			t.Fatalf("the server's grandchild (pid %d) is still running after Close", gc)
-		}
-		time.Sleep(20 * time.Millisecond)
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		syscall.Kill(gc, syscall.SIGKILL) // don't leave the leaked grandchild behind
+		t.Fatalf("the server's grandchild (pid %d) is still running after Close", gc)
 	}
 }
