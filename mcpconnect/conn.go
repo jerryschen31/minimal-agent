@@ -21,6 +21,7 @@ type McpConnection struct {
 	Name    string // server name from config
 	Config  config.McpServerConfig
 	Session *mcp.ClientSession
+	cmd     *exec.Cmd // the server process for a local (stdio) server, nil for a remote one; Close kills its process group
 }
 
 // SetupMCPConns connects to every MCP server listed in the config, in name order, and returns one connection per server
@@ -82,6 +83,7 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// This is the command that is executed to start a local MCP server
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
+	startInOwnGroup(cmd) // so a Ctrl+C that cancels a chat turn does not also kill the server
 	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
 	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.
 	if len(config.Env) > 0 {
@@ -95,10 +97,11 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// Create client-server connection (session)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		killGroup(cmd) // the SDK stopped the server on a failed handshake; this also stops anything it started
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
 
-	return &McpConnection{Name: name, Config: config, Session: session}, nil
+	return &McpConnection{Name: name, Config: config, Session: session, cmd: cmd}, nil
 }
 
 // withDebugLogging wraps the transport so every JSON-RPC message is written to stderr, but only in debug mode.
@@ -206,6 +209,12 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // closes an MCP server connection
+// Close ends the session (for a local server, the SDK closes its stdin, waits, then signals it) and then kills
+// whatever is left in a local server's process group, so a grandchild such as node under npx cannot outlive it.
 func (s *McpConnection) Close() error {
-	return s.Session.Close()
+	err := s.Session.Close()
+	if s.cmd != nil {
+		killGroup(s.cmd)
+	}
+	return err
 }

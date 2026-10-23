@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -280,6 +281,18 @@ func TestHelperMCPServer(t *testing.T) {
 			}
 		}
 		if err := os.WriteFile(envFile, []byte(strings.Join(seen, "\n")), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
+			os.Exit(1)
+		}
+	}
+	// a test can ask the child to start a grandchild (as npx starts node) and record its pid
+	if gcFile := os.Getenv("GO_MCP_HELPER_GRANDCHILD_PIDFILE"); gcFile != "" {
+		gc := exec.Command("sleep", "60")
+		if err := gc.Start(); err != nil {
+			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(gcFile, []byte(strconv.Itoa(gc.Process.Pid)), 0o644); err != nil {
 			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
 			os.Exit(1)
 		}
