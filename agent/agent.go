@@ -23,7 +23,10 @@ type Agent struct {
 	runTrace     *trace.Scope // the run's trace scope: started by RunAgent, ended by ShutdownAgent
 }
 
-func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
+// SetupAgent builds the agent from cfg. A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent
+// then returns context.Canceled, and the MCP servers that had already connected are kept in agent.mcpConns, so
+// ShutdownAgent closes them. A nil interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
+func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupts <-chan os.Signal) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
 	}
@@ -58,18 +61,30 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
+	// Ctrl+C during the slow part of setup (connecting MCP servers, listing their tools) cancels setupCtx.
+	// Only the MCP steps get setupCtx: stop() cancels it when setup returns, so nothing that lives on may keep it
+	// (MCP sessions detach from it; see DECISIONS.md § Deferred for Later, item 15).
+	setupCtx, stop := createInterruptWatcher(ctx, interrupts)
+	defer stop()
+
 	// 5. connect to MCP servers (if applicable)
 	// a server that fails is skipped, the others still connect; the error lists every failed server, one per line.
 	// mcpConns is kept even on error: ShutdownAgent closes it, also when a later setup step fails
-	mcpConns, err := mcpconnect.SetupMCPConns(ctx, cfg)
+	mcpConns, err := mcpconnect.SetupMCPConns(setupCtx, cfg)
+	agent.mcpConns = mcpConns
+	if err := setupCtx.Err(); err != nil { // interrupted: abort instead of starting without the remaining servers
+		return err
+	}
 	if err != nil {
 		// print errors on MCP server connect fails - but don't exit
 		fmt.Fprintf(cfg.OutBuffer, "MCP servers that failed to connect (continuing without their tools):\n%v\n", err)
 	}
-	agent.mcpConns = mcpConns
 
 	// 6. setup MCP tools (if applicable) - mcpTools satisfies Tool interface
-	mcpTools, err := mcpconnect.SetupMCPTools(ctx, mcpConns, cfg.MCPResultMaxBytes)
+	mcpTools, err := mcpconnect.SetupMCPTools(setupCtx, mcpConns, cfg.MCPResultMaxBytes)
+	if err := setupCtx.Err(); err != nil {
+		return err
+	}
 	if err != nil {
 		// print errors on MCP tools setup fails - but don't exit
 		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %v\n", err)

@@ -420,6 +420,7 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
       Ctrl+C mid-turn is used with MCP servers.
 
 15. **Ctrl+C cannot interrupt setup** (`main.go`, `agent/agent.go`, `SetupAgent`; noted 2026-10-23).
+    - **Resolved 2026-10-23** (`§ 2026-10-23 — Ctrl+C during setup aborts gracefully`).
     - *Today:* `main` catches Ctrl+C on `intsigCh` before `SetupAgent`, but nothing reads the channel until the first
       turn, and `discardStrayInterrupts` then drops the press. Setup (e.g. a slow `npx` download) can only be stopped
       by SIGTERM (`kill <pid>`) or Ctrl+\ (SIGQUIT, no cleanup). A user who forgot a flag has to wait.
@@ -2813,3 +2814,34 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
   but one that ignores it is left running. (3) `killGroup` runs after the server is reaped, so in theory its PID
   could be reused by a new group leader in that moment; with SIGKILL as the signal this is accepted as negligible.
 - **Next:** Deferred item 15 (Ctrl+C gracefully aborts setup), which needed this first.
+
+### 2026-10-23 — Ctrl+C during setup aborts gracefully (resolves Deferred item 15)
+
+- **Before:** nothing read the Ctrl+C channel until the first turn, so a press during setup (e.g. a slow `npx`
+  download) did nothing and was then discarded. Jerry: during setup Ctrl+C should quit gracefully; in the chat loop
+  it only cancels a turn.
+- **Now.** `SetupAgent(ctx, cfg, interrupts)` takes the channel and wraps the MCP steps (connect, list tools) in
+  `createInterruptWatcher` (renamed from `createTurnWatcher`, now used for turns and setup). After each MCP step, a
+  cancelled setup context returns its error (`context.Canceled`) instead of "print and continue without the
+  remaining servers". The servers that had connected stay in `agent.mcpConns`. `main` now returns on **any** setup
+  error, prints `setup interrupted, exiting` for `context.Canceled`, and its deferred `ShutdownAgent` closes the
+  servers. A server still in its handshake fails it and is closed by the SDK, then `killGroup`.
+- **Also fixed:** `main` used to skip only the *message* for a `context.Canceled` setup error and then went on to
+  the welcome text and `RunAgent`. Harmless for SIGTERM (`RunAgent` checks the root context first), but a Ctrl+C
+  abort would have started the chat loop anyway.
+- **Only the MCP steps get the setup context**, because `stop()` cancels it when `SetupAgent` returns, even after a
+  successful setup. The other steps are instant, and anything long-lived (the recorder, the session) must not keep
+  it. MCP sessions detach from their connect context (checked in the SDK), so connected servers survive `stop()`.
+  A nil channel (tests) means setup cannot be interrupted by Ctrl+C.
+- **Depends on** the process-group change above: before it, the same Ctrl+C also killed the stdio servers.
+- **Tests.** `Test_SetupAgent_CtrlCWhileConnecting_AbortsAndKeepsConnectedServersForShutdown`: a remote server
+  (in-process, `httptest`) connects, a stdio server (`sh -c 'echo $$ > pid; exec sleep 60'`) never answers; Ctrl+C
+  arrives during its handshake. Checks `context.Canceled`, the remote server kept for shutdown, no session created,
+  the hanging process gone, and `ShutdownAgent` safe without a session. Fails with the abort checks disabled.
+  Scratch run with the real filesystem server plus a hanging one: `setup interrupted, exiting`; `npm exec`, `node`
+  and `sleep` all gone.
+- **Honest downsides.** (1) **Aborting takes up to 5 s** when a server is stuck in its handshake: the SDK's close
+  waits `TerminateDuration` (default 5 s) for the server to exit after closing its stdin, before SIGTERM. Setting
+  `CommandTransport.TerminateDuration` lower would speed this up but also shortens the grace period of a normal
+  shutdown; left at the default. (2) The program still exits with status 0 after an interrupted setup (Deferred
+  item 3). (3) A Ctrl+C right as setup finishes either aborts or is discarded before the first prompt.
