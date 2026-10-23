@@ -1314,7 +1314,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
 - **Honest downsides.** The namespace is shared across primitives, so unexported names can collide;
   if the package grows past a thousand lines, split by primitive then (the connection type is
   already the shared base, so that is cheap).
-- **`SetupMCPConns` closes what it connected when a later server fails (fixed 2026-10-07).** It used to
+- **`SetupMCPConns` closes what it connected when a later server fails (fixed 2026-10-07; superseded by `§ 2026-10-23 — One failing MCP server no longer drops the others`).** It used to
   return `nil, err` at the first failing server, dropping the connections already made without
   `Close()`, so their child processes outlived the failed setup. Now every error path (bad transport
   config, connect failure, unsupported transport) closes the connections made so far and returns
@@ -2716,3 +2716,12 @@ Currently in place: `0600` file in a `0700` directory, and `.agent-trace` on the
 ### 2026-10-22 — Digest: missing-payload markers are reported, not decoded (Copilot, PR #20)
 
 When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":true,"original_bytes":N}`, and a redaction failure writes `{"dropped":"…"}`. Both decode without error into any typed payload (all zero values), so a truncated `tool_finished` became a nameless "finished" call and left the real request "never finished". `ActivityDigest.Add` now checks for the two markers first (`isMissingPayload`; no real payload has either key), counts the event as incomplete (per task, or per run when its scope is the run ID) and does not read it. The digest says `N events had incomplete data (payload truncated or dropped)`, and an unmatched request in such a task reads `result missing (trace incomplete)` instead of "never finished", since the finish event may be one of the missing ones. **Downside:** with several calls in one task and one lost completion, the digest cannot say which call it was; L0 holds the `call_id`s and `original_bytes`.
+
+### 2026-10-23 — One failing MCP server no longer drops the others (supersedes the 2026-10-07 `SetupMCPConns` bullet)
+
+- **The problem.** Since 2026-10-07, `SetupMCPConns` closed every connection and returned `nil, err` at the first failing server, and `SetupAgent` carried on with **no MCP tools**. So a remote server with an expired token also took away a working local server. Jerry expected "skip it and connect the next one", which is the behaviour users expect.
+- **Now.** `ConnectMCPServer(ctx, name, cfg)` (exported) connects one server and picks its transport; every error names the server. `SetupMCPConns` loops over it in sorted name order, skips a server that fails, and returns the servers that connected plus every failure joined with `errors.Join` (nil if all connected). The deprecated SSE transport is now one of those errors instead of a separate stderr warning. `SetupAgent` prints the failures (one per line, "continuing without their tools") and keeps the connections.
+- **The 2026-10-07 concern (callers must remember to close a partial list).** There is one caller, and it stores the list in `agent.mcpConns`, which `ShutdownAgent` closes, also when a later setup step fails (`main` defers `ShutdownAgent`). The doc comment says the connections must be closed even when the error is non-nil.
+- **Why a separate `ConnectMCPServer`.** Info mode (`PLAN-info-mode.md`) needs a status line per server, and connecting each server in its own goroutine later only changes the loop.
+- **Test.** `Test_Unit_SetupMCPConns_ServerFails_SkipsItAndKeepsTheOthers` replaces the 2026-10-07 test: a good local server (the test binary as a child) between three bad ones (cannot start, bad config, SSE). Only the good one is returned, it answers a tool call, the error names all three bad ones, and closing it leaves no child process.
+- **Honest downside.** The agent can start with fewer tools than the config lists. The failure is one printed line that is easy to miss in chat; `-mode info` will be the reliable check, and the welcome message could show the tool count later. Connecting is still sequential, so a slow server delays the next one.

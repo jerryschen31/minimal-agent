@@ -59,10 +59,12 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config) error {
 	}
 
 	// 5. connect to MCP servers (if applicable)
+	// a server that fails is skipped, the others still connect; the error lists every failed server, one per line.
+	// mcpConns is kept even on error: ShutdownAgent closes it, also when a later setup step fails
 	mcpConns, err := mcpconnect.SetupMCPConns(ctx, cfg)
 	if err != nil {
 		// print errors on MCP server connect fails - but don't exit
-		fmt.Fprintf(cfg.OutBuffer, "error connecting to MCP servers: %v\n", err)
+		fmt.Fprintf(cfg.OutBuffer, "MCP servers that failed to connect (continuing without their tools):\n%v\n", err)
 	}
 	agent.mcpConns = mcpConns
 
