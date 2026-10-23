@@ -32,6 +32,12 @@ func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, er
 	var errs []error
 	// map order is random; sorted names make the connection order and the error order repeatable
 	for _, sname := range slices.Sorted(maps.Keys(cfg.McpServers)) {
+		// stop once setup is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
+		// context (exec.Command ignores it), so trying the rest would launch processes only to tear them down
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("MCP setup stopped before server %s: %w", sname, err))
+			break
+		}
 		mcpConn, err := ConnectMCPServer(ctx, sname, cfg)
 		if err != nil {
 			errs = append(errs, err)

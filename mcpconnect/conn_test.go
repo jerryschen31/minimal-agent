@@ -383,6 +383,32 @@ func Test_Unit_SetupMCPConns_ServerFails_SkipsItAndKeepsTheOthers(t *testing.T) 
 	}
 }
 
+// - Verify SetupMCPConns starts nothing once its context is cancelled (Copilot, PR #22): a local server's process
+// would otherwise start anyway, because exec.Command ignores the context, only to be torn down again
+func Test_Unit_SetupMCPConns_CancelledContext_StartsNoServer(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	t.Setenv("GO_WANT_MCP_HELPER", "1")
+	t.Setenv("GO_MCP_HELPER_PIDFILE", pidFile) // the helper writes it first thing, so a started process leaves it behind
+	cfg := config.Config{McpServers: map[string]config.McpServerConfig{
+		"good": {Command: exe, Args: []string{"-test.run=^TestHelperMCPServer$"}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	conns, err := SetupMCPConns(ctx, cfg)
+
+	if len(conns) != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected no connections and a context.Canceled error, got %d connections, err %v", len(conns), err)
+	}
+	if _, statErr := os.Stat(pidFile); statErr == nil {
+		t.Error("a server process was started although the context was already cancelled")
+	}
+}
+
 // - Verify ConnectMCPServer rejects a name that is not in the config, naming it
 func Test_Unit_ConnectMCPServer_UnknownName_ReturnsErrorNamingServer(t *testing.T) {
 	c, err := ConnectMCPServer(context.Background(), "missing", config.Config{})
