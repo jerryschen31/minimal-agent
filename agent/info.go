@@ -34,15 +34,26 @@ func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interr
 	fmt.Fprintln(w)
 	config.PrintConfig(cfg)
 	code := InfoOK
+	// the same checks SetupAgent makes, so info never passes a config that chat mode refuses
+	configErr := checkConfig(cfg)
+	if configErr != nil {
+		fmt.Fprintf(w, "Configuration: FAILED: %v\n", configErr)
+		code = InfoFailed
+	}
 	fmt.Fprintln(w)
 	if !printBuiltinTools(w, cfg) {
 		code = InfoFailed
 	}
 
+	fmt.Fprintln(w)
+	if configErr != nil {
+		// a bad mcpResultMaxBytes makes every MCP tool fail to load, so the servers would look connected with no tools
+		fmt.Fprintln(w, "MCP servers: not started (fix the configuration error above first)")
+		return code
+	}
 	// Ctrl+C while the MCP servers start aborts info, as it aborts setup
 	infoCtx, stopWatch := createInterruptWatcher(ctx, interrupts)
 	defer stopWatch()
-	fmt.Fprintln(w)
 	if !printMCP(infoCtx, w, cfg) {
 		code = InfoFailed
 	}

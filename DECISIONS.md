@@ -2908,3 +2908,14 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
   with a 5 s timeout and waits for it (seen in the test; same for chat-mode setup, like the 5 s stdio
   `TerminateDuration` in the setup-abort entry). Its HTTP requests to that server also stay open until exit.
 
+
+### 2026-10-23 — Info mode: PR #25 review fixes (corrects two points of the info-mode entry above)
+
+- **Info runs `SetupAgent`'s config checks** (shared `checkConfig`: positive `maxSteps`, positive
+  `mcpResultMaxBytes`), so it no longer passes a config chat mode refuses. On failure it prints
+  `Configuration: FAILED`, exits 1 and **starts no MCP server** (a bad cap would show servers as connected with no
+  tools). This replaces the "info skips `SetupAgent`'s checks" downside above.
+- **The mode is validated again after the config merge** (`config.ValidateMode`, called in `main`), so
+  `"agentMode": "info"` in a config file with `--json`, `-q` or `-mission` is refused like `-mode info`. Side
+  effect: an unknown `agentMode` in a config file now fails at startup (exit 2) instead of at `RunAgent`.
+  Downside: the error text still says `-mode` when the mode came from the file.

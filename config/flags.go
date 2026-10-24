@@ -151,21 +151,27 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 
 	// validate each mode contains appropriate flags
 	if f.Mode != nil {
-		if err := f.validateMode(); err != nil {
+		if err := f.validateMode(*f.Mode); err != nil {
 			return Flags{}, err
 		}
 	}
 	return f, nil
 }
 
-// validateMode checks the mode value (when provided) and that the other flags make sense with it.
-func (f Flags) validateMode() error {
-	switch *f.Mode {
+// ValidateMode checks the effective mode, after the config file and flags are merged, against the flags given.
+// ParseFlags can only check an explicit -mode; this also covers a mode chosen by the config file's "agentMode",
+// so `"agentMode": "info"` with --json is refused just like `-mode info --json`.
+func ValidateMode(cfg Config, f Flags) error {
+	return f.validateMode(cfg.AgentMode)
+}
+
+// validateMode checks the mode value and that the other flags make sense with it.
+func (f Flags) validateMode(mode string) error {
+	switch mode {
 	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo:
 	default:
-		return fmt.Errorf("-mode must be one of %s|%s|%s|%s, got %q", ModeChat, ModeHeadless, ModeOneshot, ModeInfo, *f.Mode)
+		return fmt.Errorf("-mode must be one of %s|%s|%s|%s, got %q", ModeChat, ModeHeadless, ModeOneshot, ModeInfo, mode)
 	}
-	mode := *f.Mode
 
 	if f.Query != nil && mode != ModeOneshot {
 		return fmt.Errorf("-query only applies to -mode %s, not %s", ModeOneshot, mode)

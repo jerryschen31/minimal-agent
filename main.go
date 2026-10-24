@@ -43,6 +43,11 @@ func main() {
 
 	// flag values override any corresponding values from the config file
 	cfg = config.FlagsOverlay(cfg, flags)
+	// the mode may have come from the config file, so check it against the flags again now
+	if err := config.ValidateMode(cfg, flags); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 
 	// setup context - catch OS SIGTERM signals (e.g., process termination signal (kill)) and terminate gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)

@@ -157,3 +157,41 @@ func Test_Unit_ParseFlags_UnknownMode_ListsInfo(t *testing.T) {
 		t.Errorf("expected the error to list info, got %v", err)
 	}
 }
+
+// - Verify ValidateMode checks the effective mode (from the config file or -mode) against the flags given
+func Test_Unit_ValidateMode(t *testing.T) {
+	withMode := func(mode string) Config {
+		cfg := GetDefaultConfig()
+		cfg.AgentMode = mode
+		return cfg
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		flags   Flags
+		wantErr string // "" means no error expected
+	}{
+		{"config info with --json", withMode(ModeInfo), Flags{JSON: new(true)}, "--json only applies"},
+		{"config info with -q", withMode(ModeInfo), Flags{Query: new("x")}, "-query only applies"},
+		{"config info with -mission", withMode(ModeInfo), Flags{Mission: new("mission.md")}, "-mission only applies"},
+		{"config info alone", withMode(ModeInfo), Flags{}, ""},
+		{"config chat alone", withMode(ModeChat), Flags{}, ""},
+		{"config bogus", withMode("bogus"), Flags{}, "-mode must be one of"},
+		{"-mode info overlaid, with --json", FlagsOverlay(GetDefaultConfig(), Flags{Mode: new(ModeInfo)}),
+			Flags{Mode: new(ModeInfo), JSON: new(true)}, "--json only applies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMode(tc.cfg, tc.flags)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected an error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}

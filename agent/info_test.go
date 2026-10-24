@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -428,5 +429,50 @@ func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
 	}
 	if lineWith(out, "docs", "connected") == "" {
 		t.Errorf("expected docs connected in output:\n%s", out)
+	}
+}
+
+// - Verify a config SetupAgent would refuse (maxSteps or mcpResultMaxBytes not positive) prints
+// "Configuration: FAILED" naming the field, still lists the built-in tools, starts no MCP server, and returns InfoFailed
+func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		set   func(*config.Config)
+	}{
+		{"maxSteps 0", "maxSteps", func(c *config.Config) { c.MaxSteps = 0 }},
+		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// [agent] counts every request; a started MCP server would send at least an initialize request
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				http.Error(w, "should not be contacted", http.StatusInternalServerError)
+			}))
+			t.Cleanup(srv.Close)
+			cfg := config.GetDefaultConfig()
+			cfg.WorkDir = t.TempDir()
+			cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: srv.URL}}
+			tt.set(&cfg)
+
+			code, out := runInfo(t, cfg, "")
+			if code != InfoFailed {
+				t.Errorf("expected exit code %d, got %d:\n%s", InfoFailed, code, out)
+			}
+			if lineWith(out, "Configuration: FAILED", tt.field) == "" {
+				t.Errorf("expected Configuration: FAILED naming %s in output:\n%s", tt.field, out)
+			}
+			if !strings.Contains(out, "Built-in tools (1)\n") {
+				t.Errorf("expected the built-in tools still listed in output:\n%s", out)
+			}
+			if !strings.Contains(out, "MCP servers: not started (fix the configuration error above first)\n") {
+				t.Errorf("expected the MCP servers not started line in output:\n%s", out)
+			}
+			if n := hits.Load(); n != 0 {
+				t.Errorf("expected no request to the MCP server, got %d", n)
+			}
+		})
 	}
 }
