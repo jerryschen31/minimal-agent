@@ -456,6 +456,9 @@ Decisions made before this track went dormant (see `SESSION.md` for current stat
 - **`requires_approval`** (renamed from `mvp1`'s `approve`) = tools that need a human `[y/N]`.
   A *restriction* list, not an allowlist. Empty list ⇒ hook never installed ⇒ nothing gated.
   `["*"]` ⇒ everything gated.
+  **Superseded by `§ 2026-10-23 — Approval gate v1: open questions settled`:** never built; replaced by
+  `DenyRules` (globs that deny, plus a built-in delete/remove list) with an "allow once? [y/N]" ask only for a
+  denied call. Nothing asks by default.
 - **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
   `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
 - **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
@@ -2845,3 +2848,28 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
   `CommandTransport.TerminateDuration` lower would speed this up but also shortens the grace period of a normal
   shutdown; left at the default. (2) The program still exits with status 0 after an interrupted setup (Deferred
   item 3). (3) A Ctrl+C right as setup finishes either aborts or is discarded before the first prompt.
+
+### 2026-10-23 — Approval gate v1: open questions settled (plan only, nothing built)
+
+Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. Both plans are updated.
+
+- **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
+  (`<server>_<tool>`), and info mode is how you see them; the default list is checked against real names before
+  it is fixed. Info mode's deny-rules section waits until `DenyRules` exists.
+- **Ctrl+C at the "allow once? [y/N]" prompt cancels the whole turn**, the call included. During a turn Ctrl+C is
+  a signal (the line editor's raw mode is off), and the turn's interrupt watcher already cancels on it. Rejected:
+  reading the answer through the line editor so Ctrl+C only denies the call. Downside: you can't refuse one call
+  with Ctrl+C and let the model carry on; `n` or Enter does that.
+- **Default deny list: anything that deletes.** `*delete*` and `*remove*`, matched case-insensitively;
+  `run_command:rm` / `rmdir` once `run_command` exists. **Moving, writing and editing files stay allowed**, so the
+  agent can still do edits without prompts. Downsides: a move can overwrite a file, which is a delete in effect;
+  `*remove*` may catch harmless tools (e.g. "remove_label"), which then only cost one `y`; a destructive tool with
+  another name (`tidy`, `purge`) gets through — add it in config.
+- **Supersedes** the Track 1 `requires_approval` decision (a list of tools that always ask): never built, and asking
+  on every listed call is what v1 is meant to avoid.
+- **Two guardrails against a tampered config** (from the `exec.Command` discussion), added to the plans:
+  1. Info mode shows each stdio server's program and argument count (`npx (4 args)`), never the arguments or env.
+     Part of info mode's build.
+  2. A first-run trust prompt per stdio server, keyed on a hash of `command` + `args` + `env`, stored in a local
+     `0600` trust file (hash and name only). In autonomous mode an untrusted or changed server is not started unless
+     trusted beforehand or `allow-all` is set. Under "Later" in the approval plan; needs a trust-file decision first.
