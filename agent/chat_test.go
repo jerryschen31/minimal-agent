@@ -408,7 +408,7 @@ func Test_ChatLoop_EOF_EndsLoop(t *testing.T) {
 // - Verify the turn watcher cancels the turn's context when an interrupt arrives
 func Test_CreateTurnWatcher_InterruptCancelsContext(t *testing.T) {
 	interrupts := make(chan os.Signal, 1)
-	turnCtx, stop := createTurnWatcher(context.Background(), interrupts)
+	turnCtx, stop := createInterruptWatcher(context.Background(), interrupts)
 	defer stop()
 
 	interrupts <- os.Interrupt
@@ -422,7 +422,7 @@ func Test_CreateTurnWatcher_InterruptCancelsContext(t *testing.T) {
 // next turn's discard) instead of being taken by an old watcher
 func Test_CreateTurnWatcher_AfterStop_InterruptStaysInChannel(t *testing.T) {
 	interrupts := make(chan os.Signal, 1)
-	_, stop := createTurnWatcher(context.Background(), interrupts)
+	_, stop := createInterruptWatcher(context.Background(), interrupts)
 	stop()
 
 	interrupts <- os.Interrupt
@@ -435,7 +435,7 @@ func Test_CreateTurnWatcher_AfterStop_InterruptStaysInChannel(t *testing.T) {
 // - Verify the root context (SIGTERM / quit) still cancels the turn context through the parent
 func Test_CreateTurnWatcher_ParentCancelCancelsTurn(t *testing.T) {
 	root, cancelRoot := context.WithCancel(context.Background())
-	turnCtx, stop := createTurnWatcher(root, make(chan os.Signal, 1))
+	turnCtx, stop := createInterruptWatcher(root, make(chan os.Signal, 1))
 	defer stop()
 
 	cancelRoot()

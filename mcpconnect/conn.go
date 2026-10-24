@@ -21,49 +21,55 @@ type McpConnection struct {
 	Name    string // server name from config
 	Config  config.McpServerConfig
 	Session *mcp.ClientSession
+	cmd     *exec.Cmd // the server process for a local (stdio) server, nil for a remote one; Close kills its process group
 }
 
-// SetupMCPConns connects to all MCP servers listed in the config, in name order, and returns one connection per server.
-// If any server fails, the connections already made are closed (so no child process outlives the failed setup) and the error is returned.
+// SetupMCPConns connects to every MCP server listed in the config, in name order, and returns one connection per server
+// that connected. A server that fails is skipped: its error (naming the server) is collected and the next server is tried,
+// so one bad server does not take the others' tools away. The returned error joins every failure (nil if all connected).
+// The connections are returned even when the error is non-nil, and the caller must close them.
 func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
 	var mcpConns []*McpConnection
-	closeAll := func() {
-		for _, c := range mcpConns {
-			c.Close()
-		}
-	}
-	// map order is random; sorted names make which server fails first (and the error shown) repeatable
+	var errs []error
+	// map order is random; sorted names make the connection order and the error order repeatable
 	for _, sname := range slices.Sorted(maps.Keys(cfg.McpServers)) {
-		sconfig := cfg.McpServers[sname] // already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
-		transportType, err := sconfig.TransportType()
-		// if transport type is not supported or error in config, do not connect to this MCP server
+		// stop once setup is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
+		// context (exec.Command ignores it), so trying the rest would launch processes only to tear them down
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, fmt.Errorf("MCP setup stopped before server %s: %w", sname, err))
+			break
+		}
+		mcpConn, err := ConnectMCPServer(ctx, sname, cfg)
 		if err != nil {
-			closeAll()
-			return nil, fmt.Errorf("failed to determine transport type for server %s: %w", sname, err)
+			errs = append(errs, err)
+			continue
 		}
-		switch transportType {
-		case config.TransportStdio:
-			mcpConn, err := connectLocalMCPServer(ctx, sname, sconfig, cfg)
-			if err != nil {
-				closeAll()
-				return nil, err
-			}
-			mcpConns = append(mcpConns, mcpConn)
-		case config.TransportHTTP:
-			mcpConn, err := connectRemoteMCPServer(ctx, sname, sconfig, cfg)
-			if err != nil {
-				closeAll()
-				return nil, err
-			}
-			mcpConns = append(mcpConns, mcpConn)
-		case config.TransportSSE:
-			fmt.Fprintf(os.Stderr, "warning: skipping deprecated SSE MCP server %s\n", sname)
-		default:
-			closeAll()
-			return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
-		}
+		mcpConns = append(mcpConns, mcpConn)
 	}
-	return mcpConns, nil
+	return mcpConns, errors.Join(errs...)
+}
+
+// ConnectMCPServer connects to the one MCP server named in cfg.McpServers, choosing the transport from its config.
+// Every error names the server.
+func ConnectMCPServer(ctx context.Context, sname string, cfg config.Config) (*McpConnection, error) {
+	sconfig, ok := cfg.McpServers[sname] // already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
+	if !ok {
+		return nil, fmt.Errorf("no MCP server named %s in the config", sname)
+	}
+	transportType, err := sconfig.TransportType()
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine transport type for server %s: %w", sname, err)
+	}
+	switch transportType {
+	case config.TransportStdio:
+		return connectLocalMCPServer(ctx, sname, sconfig, cfg)
+	case config.TransportHTTP:
+		return connectRemoteMCPServer(ctx, sname, sconfig, cfg)
+	case config.TransportSSE:
+		return nil, fmt.Errorf("skipping server %s: the SSE transport is deprecated and not supported", sname)
+	default:
+		return nil, fmt.Errorf("unsupported transport type %q for server %s", transportType, sname)
+	}
 }
 
 // connects to a local MCP server
@@ -77,6 +83,7 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// This is the command that is executed to start a local MCP server
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
+	startInOwnGroup(cmd) // so a Ctrl+C that cancels a chat turn does not also kill the server
 	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
 	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.
 	if len(config.Env) > 0 {
@@ -90,10 +97,11 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// Create client-server connection (session)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
+		killGroup(cmd) // the SDK stopped the server on a failed handshake; this also stops anything it started
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
 
-	return &McpConnection{Name: name, Config: config, Session: session}, nil
+	return &McpConnection{Name: name, Config: config, Session: session, cmd: cmd}, nil
 }
 
 // withDebugLogging wraps the transport so every JSON-RPC message is written to stderr, but only in debug mode.
@@ -201,6 +209,12 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // closes an MCP server connection
+// Close ends the session (for a local server, the SDK closes its stdin, waits, then signals it) and then kills
+// whatever is left in a local server's process group, so a grandchild such as node under npx cannot outlive it.
 func (s *McpConnection) Close() error {
-	return s.Session.Close()
+	err := s.Session.Close()
+	if s.cmd != nil {
+		killGroup(s.cmd)
+	}
+	return err
 }

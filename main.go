@@ -59,9 +59,14 @@ func main() {
 		myAgent.ShutdownAgent(ctx)
 	}()
 
-	// setup the agent - make sure errors are handled properly
-	if err := myAgent.SetupAgent(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
-		fmt.Fprintln(os.Stderr, "error setting up agent:", err)
+	// setup the agent - Ctrl+C (intsigCh) or SIGTERM during setup aborts it; the deferred ShutdownAgent then closes
+	// any MCP servers that had already connected
+	if err := myAgent.SetupAgent(ctx, cfg, intsigCh); err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "setup interrupted, exiting")
+		} else {
+			fmt.Fprintln(os.Stderr, "error setting up agent:", err)
+		}
 		return
 	}
 	// print a welcome message (debug purposes)
