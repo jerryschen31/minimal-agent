@@ -2873,3 +2873,38 @@ Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. 
   2. A first-run trust prompt per stdio server, keyed on a hash of `command` + `args` + `env`, stored in a local
      `0600` trust file (hash and name only). In autonomous mode an untrusted or changed server is not started unless
      trusted beforehand or `allow-all` is set. Under "Later" in the approval plan; needs a trust-file decision first.
+
+### 2026-10-23 — Info mode (`-mode info`) built (`PLAN-info-mode.md` steps 1–4, 6)
+
+`go run . -mode info [-config f] [-workdir d]` prints the header (agent name/version, config file or "none,
+defaults only", absolute resolved working dir, whether the API-key variable is set), `config.PrintConfig`, the
+built-in tools (with `read_file`'s "never reads" list), every MCP server's status and every MCP tool by its
+model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`, `config/flags.go`,
+`mcpconnect/tools.go` (`ToolHints`, `HintsOf`), `tools/builtin/readfile.go` (`DeniedNames`).
+
+- **`main` dispatches before the agent is created** and never calls `SetupAgent`: no provider, memory or trace
+  recorder, so no model call, no API key needed, no trace file. `main` takes the config path from `flags.Config`,
+  so `config/` did not need to report which file it loaded (the plan's small `config/` change was dropped).
+- **Same setup functions as chat mode** (`SetupBuiltinTools`, `ConnectMCPServer`, `GetMCPTools`), so the names it
+  prints are the names the model gets. That replaces the plan's "compare both paths" drift test. What can still
+  drift is the wiring around them (info skips `SetupAgent`'s checks such as a positive `maxSteps`).
+- **One server at a time**: connect, list tools, close (`defer` in `inspectServer`), then the next. A failed server
+  gets a FAILED row and the rest still run. Stdio rows show the program and argument count (`npx (3 args)`), never
+  arguments or env. Connection errors have the configured URL replaced by `scheme://host/[rest hidden]` (the SDK's
+  error quotes the URL, which can hold a token).
+- **Hints** come from the server's MCP annotations, with the spec's default (`destructiveHint` true unless the tool
+  is read-only). Shown as `read-only`, `destructive`, `idempotent`, `additive` or `(no hints)`; they are claims.
+- **Exit codes**: 0 all good, 1 a server or the built-in tools failed, 130 Ctrl+C/SIGTERM. `main` calls `os.Exit`
+  in the info branch only; that is safe because no `defer` is registered yet and `PrintInfo` closed its servers.
+  Ctrl+C uses `createInterruptWatcher`, as setup does; servers not yet started are listed as "not started".
+- **Found while building:** the real filesystem server (1.0.0) has **no delete tool**, so the default deny rules
+  `*delete*` / `*remove*` match nothing there today; `move_file` and `write_file` are its destructive tools. The
+  default list earns its keep with other servers and with `run_command`.
+- **Honest downsides.** Info starts every configured server (real processes, network, auth). Serial, so a slow
+  `npx` download makes it slow (Deferred item 16). The exit code says that something failed, not which. A
+  server's own name/version and tool descriptions are printed as the server sent them. The `hideURL` scrub only
+  covers info: chat-mode setup still prints the raw connect error, URL included (pre-existing; see `SESSION.md`).
+  Ctrl+C while a **remote** server hangs in its handshake takes about 5 s: the SDK sends `notifications/cancelled`
+  with a 5 s timeout and waits for it (seen in the test; same for chat-mode setup, like the 5 s stdio
+  `TerminateDuration` in the setup-abort entry). Its HTTP requests to that server also stay open until exit.
+

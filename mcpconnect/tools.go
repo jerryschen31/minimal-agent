@@ -25,6 +25,37 @@ type mcpTool struct {
 	toolDef     model.ToolDef  // tool definition
 	safeToRetry bool           // are retries okay on this tool call (i.e., idempotent?)
 	maxBytes    int            // most of a result that is passed to the model (config mcpResultMaxBytes)
+	hints       ToolHints      // the server's annotations, for display (-mode info)
+}
+
+// ToolHints are the server's own claims about a tool (MCP annotations). They are hints, not guarantees:
+// fine for display and retry decisions, never for skipping approval.
+type ToolHints struct {
+	Known       bool // the server sent annotations; false means nothing is known about the tool
+	ReadOnly    bool
+	Destructive bool // the MCP default is true when the tool is not read-only and the server didn't say
+	Idempotent  bool
+}
+
+// HintsOf returns an MCP tool's hints; ok is false when t is not an MCP tool.
+func HintsOf(t tools.Tool) (hints ToolHints, ok bool) {
+	mt, ok := t.(*mcpTool)
+	if !ok {
+		return ToolHints{}, false
+	}
+	return mt.hints, true
+}
+
+func hintsFrom(a *mcp.ToolAnnotations) ToolHints {
+	if a == nil {
+		return ToolHints{}
+	}
+	return ToolHints{
+		Known:       true,
+		ReadOnly:    a.ReadOnlyHint,
+		Destructive: !a.ReadOnlyHint && (a.DestructiveHint == nil || *a.DestructiveHint),
+		Idempotent:  a.IdempotentHint,
+	}
 }
 
 func (t *mcpTool) GetToolDefinition() model.ToolDef {
@@ -116,6 +147,7 @@ func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, er
 		toolDef:     model.NewToolDef(modelName, t.Description, params),
 		safeToRetry: safeToRetry,
 		maxBytes:    maxBytes,
+		hints:       hintsFrom(t.Annotations),
 	}, nil
 }
 

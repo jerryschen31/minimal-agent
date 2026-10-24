@@ -123,6 +123,8 @@ go test ./contextwindow -run OrphanedTool -v     # one test family
 go test -run XXX -bench . ./contextwindow        # window-strategy benchmarks
 go run . [-config file] [-model m] [-workdir dir] [-debug]  # bare `go run .` = chat mode; read_file confined to -workdir (default .)
                                                  # -debug (or "debug": true): per-turn context dump + MCP protocol log on stderr
+go run . -mode info [-config file]               # print config, built-in + MCP tools (model-facing names), then exit;
+                                                 # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.

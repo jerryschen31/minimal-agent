@@ -51,6 +51,19 @@ func main() {
 	intsigCh := make(chan os.Signal, 1)
 	signal.Notify(intsigCh, os.Interrupt)
 
+	// info mode prints what the agent would have and exits; it never calls SetupAgent, so no model call and no trace files
+	if cfg.AgentMode == config.ModeInfo {
+		configFile := ""
+		if flags.Config != nil {
+			configFile = *flags.Config
+		}
+		code := agent.PrintInfo(ctx, cfg, configFile, intsigCh)
+		stop()
+		// [agent] os.Exit skips deferred calls; safe here because none are registered yet and PrintInfo has
+		// already closed every MCP server it started
+		os.Exit(code)
+	}
+
 	// create the agent instance
 	myAgent := agent.Agent{}
 	defer func() {

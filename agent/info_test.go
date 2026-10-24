@@ -1,0 +1,432 @@
+package agent
+
+import (
+	"bytes"
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/tools/builtin"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+// runInfo runs PrintInfo with a buffer as OutBuffer and returns the exit code and the output.
+func runInfo(t *testing.T, cfg config.Config, configFile string) (int, string) {
+	t.Helper()
+	var out bytes.Buffer
+	cfg.OutBuffer = &out
+	return PrintInfo(context.Background(), cfg, configFile, nil), out.String()
+}
+
+// - Verify the working dir line shows WorkDir as an absolute path with symlinks resolved, and the exit code is 0
+func Test_Unit_PrintInfo_WorkDir_ResolvesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Fatalf("creating symlink: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = link
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d", InfoOK, code)
+	}
+	if !strings.Contains(out, "working dir:  "+want+"\n") {
+		t.Errorf("expected working dir %q in output:\n%s", want, out)
+	}
+}
+
+// - Verify the config file line shows the given path, or "none, defaults only" when there is none
+func Test_Unit_PrintInfo_ConfigFileLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	for configFile, want := range map[string]string{
+		"my-config.json": "config file:  my-config.json\n",
+		"":               "config file:  none, defaults only\n",
+	} {
+		if _, out := runInfo(t, cfg, configFile); !strings.Contains(out, want) {
+			t.Errorf("configFile %q: expected %q in output:\n%s", configFile, want, out)
+		}
+	}
+}
+
+// - Verify the api key line says whether the variable is set, never prints its value, and handles no apiKeyName
+func Test_Unit_PrintInfo_ApiKeyLine(t *testing.T) {
+	const name = "MINAGENT_TEST_INFO_API_KEY"
+	const fakeKey = "sk-test-not-a-real-key-123"
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.ApiKeyName = name
+
+	t.Setenv(name, fakeKey)
+	_, out := runInfo(t, cfg, "")
+	if !strings.Contains(out, name+" is set: yes") {
+		t.Errorf("expected %q is set: yes in output:\n%s", name, out)
+	}
+	if strings.Contains(out, fakeKey) {
+		t.Errorf("output leaked the api key value:\n%s", out)
+	}
+
+	t.Setenv(name, "") // [agent] os.Getenv returns "" for empty and unset alike, so this counts as not set
+	if _, out := runInfo(t, cfg, ""); !strings.Contains(out, name+" is set: no") {
+		t.Errorf("expected %q is set: no in output:\n%s", name, out)
+	}
+
+	cfg.ApiKeyName = ""
+	if _, out := runInfo(t, cfg, ""); !strings.Contains(out, "no apiKeyName configured") {
+		t.Errorf("expected no apiKeyName configured in output:\n%s", out)
+	}
+}
+
+// - Verify no MCP server secret (args, env, url, headers) appears in the output
+func Test_Unit_PrintInfo_DoesNotLeakMcpSecrets(t *testing.T) {
+	secrets := []string{"FAKE_SECRET_ARG_123", "FAKE_SECRET_ENV_123", "FAKE_SECRET_URL_123", "FAKE_SECRET_HDR_123"}
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{
+		"local":  {Command: "fake-server", Args: []string{"--token", secrets[0]}, Env: map[string]string{"TOKEN": secrets[1]}},
+		"remote": {URL: "https://example.invalid/?token=" + secrets[2], Headers: map[string]string{"Authorization": "Bearer " + secrets[3]}},
+	}
+
+	_, out := runInfo(t, cfg, "")
+	for _, s := range secrets {
+		if strings.Contains(out, s) {
+			t.Errorf("output leaked %q:\n%s", s, out)
+		}
+	}
+}
+
+// - Verify the default config lists read_file with a "never reads:" line naming every deny-list entry, and returns 0
+func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d", InfoOK, code)
+	}
+	if !strings.Contains(out, "Built-in tools (1)\n") {
+		t.Errorf("expected Built-in tools (1) in output:\n%s", out)
+	}
+	var toolLine, neverLine string
+	for line := range strings.Lines(out) {
+		switch {
+		case strings.Contains(line, "never reads:"):
+			neverLine = line
+		case strings.Contains(line, "read_file"):
+			toolLine = line
+		}
+	}
+	if toolLine == "" {
+		t.Errorf("expected a read_file line in output:\n%s", out)
+	}
+	if neverLine == "" {
+		t.Fatalf("expected a never reads: line in output:\n%s", out)
+	}
+	for _, name := range builtin.DeniedNames() {
+		if !strings.Contains(neverLine, name) {
+			t.Errorf("expected %q in never reads: line %q", name, neverLine)
+		}
+	}
+}
+
+// - Verify an empty BuiltinTools list prints "Built-in tools (0)" and returns 0
+func Test_Unit_PrintInfo_BuiltinTools_None(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.BuiltinTools = []string{}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d", InfoOK, code)
+	}
+	if !strings.Contains(out, "Built-in tools (0)\n") {
+		t.Errorf("expected Built-in tools (0) in output:\n%s", out)
+	}
+}
+
+// - Verify an unknown built-in tool prints a FAILED row after the config section and returns InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_Unknown_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.BuiltinTools = []string{"Bogus"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	cfgAt := strings.Index(out, "Current agent configuration:")
+	failAt := strings.Index(out, "Built-in tools: FAILED")
+	if cfgAt < 0 || failAt < 0 || cfgAt > failAt {
+		t.Errorf("expected the config section, then Built-in tools: FAILED, in output:\n%s", out)
+	}
+}
+
+// - Verify firstLine keeps only the first sentence of the first line
+func Test_Unit_FirstLine(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		{"multi-line", "Reads a file\nMore detail here.", "Reads a file"},
+		{"two sentences", "One. Two.", "One."},
+		{"no period", "Reads a file", "Reads a file"},
+		{"leading whitespace", "\n\n  Reads a file\nmore", "Reads a file"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstLine(tt.in); got != tt.want {
+				t.Errorf("firstLine(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// startInfoMCPServer serves an in-process MCP server named "infotest" 1.2.3 over Streamable HTTP, with two tools:
+// "lookup" (annotated read-only) and "write" (no annotations). Both descriptions have two sentences.
+func startInfoMCPServer(t *testing.T) string {
+	t.Helper()
+	noop := func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	}
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		server := mcp.NewServer(&mcp.Implementation{Name: "infotest", Version: "1.2.3"}, nil)
+		mcp.AddTool(server, &mcp.Tool{Name: "lookup", Description: "Looks a word up. Second sentence is hidden.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, noop)
+		mcp.AddTool(server, &mcp.Tool{Name: "write", Description: "Writes a note. Also hidden."}, noop)
+		return server
+	}, nil))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// lineWith returns the first output line containing every one of parts, or "" if none does.
+func lineWith(out string, parts ...string) string {
+	for line := range strings.Lines(out) {
+		matches := true
+		for _, p := range parts {
+			matches = matches && strings.Contains(line, p)
+		}
+		if matches {
+			return line
+		}
+	}
+	return ""
+}
+
+// - Verify a working MCP server is shown as connected with its name, version and tool count, and each tool is
+// listed by its model-facing name with its hint label and only the first sentence of its description
+func Test_Unit_PrintInfo_MCP_ConnectedServerAndTools(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if lineWith(out, "docs", "connected  server: infotest 1.2.3  2 tools") == "" {
+		t.Errorf("expected docs connected with server infotest 1.2.3 and 2 tools in output:\n%s", out)
+	}
+	if !strings.Contains(out, "MCP tools (2)\n") {
+		t.Errorf("expected MCP tools (2) in output:\n%s", out)
+	}
+	if lineWith(out, "docs_lookup", "read-only", "Looks a word up.") == "" {
+		t.Errorf("expected a docs_lookup read-only row in output:\n%s", out)
+	}
+	if lineWith(out, "docs_write", "(no hints)", "Writes a note.") == "" {
+		t.Errorf("expected a docs_write (no hints) row in output:\n%s", out)
+	}
+	if strings.Contains(out, "hidden") {
+		t.Errorf("expected only the first sentence of each description in output:\n%s", out)
+	}
+}
+
+// - Verify a stdio server that can't start shows its command and arg count and FAILED, never its args or env,
+// the working server is still listed with its tools, and the exit code is InfoFailed
+func Test_Unit_PrintInfo_MCP_FailedStdioServer_OthersStillListed(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{
+		"broken": {Command: "does-not-exist-minagent-test", Args: []string{"--token=FAKE_SECRET_ARG_123"},
+			Env: map[string]string{"T": "FAKE_SECRET_ENV_123"}},
+		"docs": {URL: startInfoMCPServer(t)},
+	}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if lineWith(out, "broken", "stdio", "does-not-exist-minagent-test (1 arg)", "FAILED") == "" {
+		t.Errorf("expected a broken stdio row with (1 arg) and FAILED in output:\n%s", out)
+	}
+	if lineWith(out, "docs", "connected", "2 tools") == "" {
+		t.Errorf("expected docs still connected in output:\n%s", out)
+	}
+	if lineWith(out, "docs_lookup") == "" || lineWith(out, "docs_write") == "" {
+		t.Errorf("expected docs tools still listed in output:\n%s", out)
+	}
+	for _, s := range []string{"FAKE_SECRET_ARG_123", "FAKE_SECRET_ENV_123"} {
+		if strings.Contains(out, s) {
+			t.Errorf("output leaked %q:\n%s", s, out)
+		}
+	}
+}
+
+// - Verify a remote server that can't be reached shows FAILED without leaking the token in its URL or headers
+func Test_Unit_PrintInfo_MCP_FailedRemoteServer_HidesURLAndHeaders(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{
+		"remote": {URL: "http://127.0.0.1:1/mcp?token=FAKE_SECRET_URL_123",
+			Headers: map[string]string{"Authorization": "Bearer FAKE_SECRET_HDR_123"}},
+	}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if lineWith(out, "remote", "FAILED") == "" {
+		t.Errorf("expected a remote FAILED row in output:\n%s", out)
+	}
+	for _, s := range []string{"FAKE_SECRET_URL_123", "FAKE_SECRET_HDR_123"} {
+		if strings.Contains(out, s) {
+			t.Errorf("output leaked %q:\n%s", s, out)
+		}
+	}
+}
+
+// - Verify runsWhat shows the command and arg count (singular for one), and nothing for a remote server
+func Test_Unit_RunsWhat(t *testing.T) {
+	tests := []struct {
+		name string
+		in   config.McpServerConfig
+		want string
+	}{
+		{"no args", config.McpServerConfig{Command: "srv"}, "srv (0 args)"},
+		{"one arg", config.McpServerConfig{Command: "srv", Args: []string{"a"}}, "srv (1 arg)"},
+		{"two args", config.McpServerConfig{Command: "srv", Args: []string{"a", "b"}}, "srv (2 args)"},
+		{"remote", config.McpServerConfig{URL: "https://example.invalid/mcp"}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := runsWhat(tt.in); got != tt.want {
+				t.Errorf("runsWhat(%+v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// - Verify hideURL replaces the configured URL with its scheme and host, and leaves the message alone without one
+func Test_Unit_HideURL(t *testing.T) {
+	const rawURL = "https://example.invalid/mcp?token=FAKE_SECRET_URL_123"
+	got := hideURL(`Post "`+rawURL+`": connection refused`, rawURL)
+	if want := `Post "https://example.invalid/[rest hidden]": connection refused`; got != want {
+		t.Errorf("hideURL = %q, want %q", got, want)
+	}
+	if got := hideURL("some error", ""); got != "some error" {
+		t.Errorf("hideURL with empty URL = %q, want the message unchanged", got)
+	}
+}
+
+// - Verify an already-cancelled context (SIGTERM before info starts) starts no MCP server: every row says
+// "not started (interrupted)", "interrupted" is printed, and the exit code is InfoInterrupted
+func Test_Unit_PrintInfo_ContextAlreadyCancelled_StartsNoServer(t *testing.T) {
+	url := startInfoMCPServer(t)
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{"a": {URL: url}, "b": {URL: url}}
+	var out bytes.Buffer
+	cfg.OutBuffer = &out
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	code := PrintInfo(ctx, cfg, "", nil)
+	if code != InfoInterrupted {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoInterrupted, code, out.String())
+	}
+	for _, name := range []string{"a", "b"} {
+		if lineWith(out.String(), name+" ", "not started (interrupted)") == "" {
+			t.Errorf("expected %s not started (interrupted) in output:\n%s", name, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "\ninterrupted\n") {
+		t.Errorf("expected an interrupted line in output:\n%s", out.String())
+	}
+}
+
+// - Verify Ctrl+C while a server is starting cancels that server's connect (FAILED, context canceled), skips the
+// remaining servers, prints "interrupted", returns InfoInterrupted, and does so promptly
+func Test_Unit_PrintInfo_CtrlC_WhileServerStarts(t *testing.T) {
+	interrupts := make(chan os.Signal, 1)
+	release := make(chan struct{})
+	// [agent] the hung server presses Ctrl+C on its first request, then never answers. The MCP SDK leaves its
+	// in-flight POSTs open after a cancelled connect, so the handler also returns on release, closed at cleanup
+	// before hung.Close (cleanups run last-in first-out), or hung.Close would wait for it forever.
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case interrupts <- os.Interrupt:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(hung.Close)
+	t.Cleanup(func() { close(release) })
+
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{"a": {URL: hung.URL}, "b": {URL: startInfoMCPServer(t)}}
+	var out bytes.Buffer
+	cfg.OutBuffer = &out
+	// [agent] guard: a missed cancel fails instead of hanging. ~5s is expected: the SDK's failed Connect closes its
+	// session, which waits up to 5s for the "notifications/cancelled" POST the hung server never answers.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	code := PrintInfo(ctx, cfg, "", interrupts)
+	t.Logf("PrintInfo returned after %v", time.Since(start))
+	if ctx.Err() != nil {
+		t.Fatalf("PrintInfo only returned after the 10s guard; Ctrl+C did not cancel the connect:\n%s", out.String())
+	}
+	if code != InfoInterrupted {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoInterrupted, code, out.String())
+	}
+	if lineWith(out.String(), "a ", "FAILED", "context canceled") == "" {
+		t.Errorf("expected a FAILED (context canceled) row in output:\n%s", out.String())
+	}
+	if lineWith(out.String(), "b ", "not started (interrupted)") == "" {
+		t.Errorf("expected b not started (interrupted) in output:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "\ninterrupted\n") {
+		t.Errorf("expected an interrupted line in output:\n%s", out.String())
+	}
+}
+
+// - Verify a built-in tool failure still returns InfoFailed when every MCP server connects
+func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.BuiltinTools = []string{"Bogus"}
+	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoFailed, code, out)
+	}
+	if lineWith(out, "docs", "connected") == "" {
+		t.Errorf("expected docs connected in output:\n%s", out)
+	}
+}

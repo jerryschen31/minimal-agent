@@ -893,3 +893,21 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >
 > **Deferred, tracked in `DECISIONS.md`:** client-side limit on raw MCP responses (HTTP wrapper and stdio
 > wrapper), detector registry / `plugins.go` and the gitleaks detector, effects and snapshots, the L1 digest.
+
+### 2026-10-23 — tracing + digest merged, MCP setup fixes, info mode built; approval gate next
+
+> **State:** tracing L0 + the L1 digest merged (PR #20). One failing MCP server no longer drops the others
+> (PR #22); stdio servers run in their own process groups and Ctrl+C during setup aborts gracefully (PR #23).
+> **`-mode info` is built** (`DECISIONS.md § Info mode (-mode info) built`): config, built-in and MCP tools by
+> model-facing name with hints, server status; exit 0/1/130.
+>
+> **Next:** approval gate v1 (`PLAN-approval-gates.md`; open questions settled in `DECISIONS.md § Approval gate
+> v1: open questions settled`), then info mode's deny-rules section (`PLAN-info-mode.md` step 5).
+>
+> **Small open items:**
+> - `builtinTools` takes `"ReadFile"` but the model sees `read_file`; a config with `"read_file"` fails setup
+>   ("unsupported built-in tool"). Accept both, or document it.
+> - Chat-mode setup prints a remote MCP connect error with the full URL (a token in the URL would show on
+>   screen; not in traces). Info mode already hides it with `hideURL`; reuse it in `SetupAgent`.
+> - Older items still open: `AgentVersion` as a constant; `PrintConfig` label alignment; `model/anthropic.tmp`.
+

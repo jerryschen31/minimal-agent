@@ -13,6 +13,7 @@ const (
 	ModeChat     = "chat"
 	ModeHeadless = "headless"
 	ModeOneshot  = "oneshot"
+	ModeInfo     = "info" // print what the agent would have (config, tools, MCP servers), it starts each MCP server to list its tools, then exits
 )
 
 type Flags struct {
@@ -160,9 +161,9 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 // validateMode checks the mode value (when provided) and that the other flags make sense with it.
 func (f Flags) validateMode() error {
 	switch *f.Mode {
-	case ModeChat, ModeHeadless, ModeOneshot:
+	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo:
 	default:
-		return fmt.Errorf("-mode must be one of %s|%s|%s, got %q", ModeChat, ModeHeadless, ModeOneshot, *f.Mode)
+		return fmt.Errorf("-mode must be one of %s|%s|%s|%s, got %q", ModeChat, ModeHeadless, ModeOneshot, ModeInfo, *f.Mode)
 	}
 	mode := *f.Mode
 
@@ -178,7 +179,7 @@ func (f Flags) validateMode() error {
 	if mode == ModeHeadless && f.Mission == nil {
 		return fmt.Errorf("-mode %s requires -mission", ModeHeadless)
 	}
-	if f.JSON != nil && mode == ModeChat {
+	if f.JSON != nil && (mode == ModeChat || mode == ModeInfo) {
 		return fmt.Errorf("--json only applies to -mode %s or %s, not %s", ModeOneshot, ModeHeadless, mode)
 	}
 	return nil
@@ -214,7 +215,7 @@ func printUsage(w io.Writer) {
   -h, --help             Show this help
   -config <file>         Path to configuration file (flags override its values)
   
-  -mode <mode>           chat | headless | oneshot (chat is default)
+  -mode <mode>           chat | headless | oneshot | info (chat is default)
   -q, -query <text>      Query text; required for, and only used in, oneshot mode
   --json                 Output result as JSON (oneshot and headless modes)
   -model <name>          Language model to use
