@@ -385,8 +385,8 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
 
 14. **Ctrl+C kills the stdio MCP servers** (`mcpconnect/conn.go`, `connectLocalMCPServer`; verified 2026-10-23).
     - **Resolved 2026-10-23 for Unix and for Windows Ctrl+C** (`§ 2026-10-23 — Each stdio MCP server runs in its own process
-      group`). Still open from this item: the Windows tree kill (Job Object), and reusing the helper for `run_command`
-      and orchestrator workers when they are ported.
+      group`). Still open from this item: the Windows tree kill (Job Object, now item 17), and reusing the helper for
+      `run_command` and orchestrator workers when they are ported.
     - *Today:* stdio servers are started with plain `exec.Command`, so they share the agent's process group (Unix) or
       console (Windows). Outside the line editor's raw mode (during setup and during every running turn), the terminal
       sends Ctrl+C's SIGINT to the whole foreground process group. The agent survives (Go catches SIGINT with
@@ -443,6 +443,28 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
       each one itself (stdin closed, up to 5 s, then SIGTERM, then SIGKILL), in parallel.
     - *Add with it:* a per-server connect timeout (`context.WithTimeout`, configurable) so one hung server cannot hold
       up startup.
+
+17. **Windows: no tree kill for stdio MCP servers** (`mcpconnect/procgroup_windows.go`, `killGroup`; Copilot on PR #24,
+    accepted by Jerry 2026-10-23).
+    - *Copilot:* `killGroup` is a no-op on Windows, and the new process group stops the console's Ctrl+C from reaching
+      the server, so a launcher's descendants (`node` under `npx`) can outlive `McpConnection.Close` on quit or on an
+      interrupted setup. Asked for a Job Object / tree kill, or to gate Windows support until there is one.
+    - *Today:* `Close` closes the server's stdin, the SDK waits up to 5 s, then kills the direct child (`npx`) only.
+      A well-behaved stdio server exits on stdin EOF, so a normal quit usually still cleans up. What is missing is
+      the backstop Unix has (`kill(-pgid)`): a server that ignores EOF can leave its child running.
+    - *Not Windows-only:* a hard kill of the agent (Task Manager's End Task, `kill -9`) leaves servers running on both
+      OSes, since no code of ours runs after it; on Unix the separate groups even help them survive. Only a Job
+      Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` would cover that, and only on Windows.
+    - *Before PR #24* the Windows "cleanup" was accidental: console Ctrl+C reached every process, servers included —
+      the bug item 14 fixed (it killed servers mid-turn).
+    - *Fix:* create a Job Object per server (`golang.org/x/sys/windows`, already an indirect dependency; ~40 lines),
+      assign the process right after start, set kill-on-close; `killGroup` = `TerminateJobObject`. A `taskkill /T`
+      call is not enough: by the time `killGroup` runs the SDK has already killed `npx`, so the tree can no longer
+      be found from its PID.
+    - *Why deferred:* nothing in this project runs or is tested on Windows yet, and untested process-handling code
+      is worse than a known, documented gap.
+    - *Revisit:* when the agent is first run on Windows, or with `run_command` / orchestrator workers (they start
+      children too and should share the helper).
 
 
 ---
