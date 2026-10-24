@@ -1,6 +1,6 @@
 # PLAN: info mode (`-mode info`)
 
-Status: **plan only, nothing implemented** (2026-10-23). Companion to `PLAN-approval-gates.md`: deny rules match on tool names, so you need a way to see the exact names (and what the agent can reach) before writing rules.
+Status: **steps 1–4 and 6 built (2026-10-23)**, see `DECISIONS.md § Info mode (-mode info) built`; step 5 (deny rules) waits for approval-gates v1. **Built before `PLAN-approval-gates.md`** (decided 2026-10-23): rules are easier to write once you can see the real tool names. Companion to `PLAN-approval-gates.md`: deny rules match on tool names, so you need a way to see the exact names (and what the agent can reach) before writing rules.
 
 ## Goal
 
@@ -20,8 +20,8 @@ Built-in tools (1)
                       never reads: .env, .env.*, *.pem, *.key, id_rsa*, .ssh/, .agent-trace
 
 MCP servers (2)
-  filesystem  stdio  connected   server: secure-filesystem-server 0.2.0   14 tools
-  github      http   FAILED      connecting: 401 Unauthorized
+  filesystem  stdio  npx (4 args)  connected   server: secure-filesystem-server 0.2.0   14 tools
+  github      http                FAILED      connecting: 401 Unauthorized
 
 MCP tools (14)
   filesystem_read_file        read-only     Read the complete contents of a file
@@ -30,8 +30,8 @@ MCP tools (14)
   …
 
 Deny rules (once PLAN-approval-gates v1 lands)
-  *_delete_*   (built-in)   matches: filesystem_delete_file
-  *_move_*     (built-in)   matches: filesystem_move_file
+  *delete*     (built-in)   matches: github_delete_file
+  *remove*     (built-in)   matches: nothing
   my_rule      (config)     matches: nothing   ← warning
 ```
 
@@ -48,13 +48,14 @@ Suggested additions:
 6. **First line of each tool description.** Enough to tell what a tool does without flooding the screen.
 7. **MCP annotations**: `read-only`, `destructive`, `idempotent`, from the server's tool hints. The fastest way to spot candidates for deny rules. Shown as hints, since a server can claim anything.
 8. **Per-server status**: transport, connected or the error, the server's own reported name/version, tool count.
+8a. **What each stdio server will run** (guardrail against a tampered config, decided 2026-10-23): the program and the argument count, e.g. `npx (4 args)`. Never the arguments or env themselves: they can hold tokens (`--token=…`). Enough to notice `filesystem` suddenly running `curl` or `sh`. Shown even when the server fails to connect. Downside: a tampered argument with the same program and count looks the same; the first-run trust prompt (`PLAN-approval-gates.md § Later`) is what catches that.
 9. **Which config file was loaded**, or that only defaults applied. Explains a surprising value.
 10. **Whether the API key env var is set** (yes/no). The most common "why doesn't it work" answer. Never print the value.
 11. **`read_file`'s fixed deny list**, so you know which files the model can never read, independent of deny rules.
 12. **Deny rules and what each one matches** (after approval-gates v1). A rule that matches no tool is printed with a warning: usually a typo, or a `:` instead of `_`.
 
 Left out on purpose:
-- **MCP server `command`/`args`/`env`/`headers`/`url`**: they hold tokens (same rule as traces and `/config`).
+- **MCP server `args`/`env`/`headers`/`url`**: they hold tokens (same rule as traces and `/config`). Only the stdio `command` and an argument count are shown (item 8a).
 - **Full input schemas**: long; use `-debug` or a later `-mode info -v` if needed.
 - **A model connectivity check**: it costs a request and can fail for reasons unrelated to config. Possible later as `-check`.
 - **`--json` output**: useful for scripts, not needed to write rules. Later.
@@ -105,9 +106,9 @@ Every connection is closed before `PrintInfo` returns (`defer`), and `main` retu
 
 1. `main.go` dispatch + `ModeInfo` in flags/validation; `agent.PrintInfo` printing workdir, config file, config, API-key-set. Test: `PrintInfo` output contains the workdir and no secret values (reuse the credential-leak style of the `/config` tests).
 2. Built-in tools section.
-3. The MCP servers and tools sections with status and annotations. Test with the existing fake/in-memory MCP server setup; a failing server must not hide a working one; connections closed.
+3. The MCP servers and tools sections with status, the command + argument count, and annotations. Test that no argument or env value appears in the output. Test with the existing fake/in-memory MCP server setup; a failing server must not hide a working one; connections closed.
 4. Exit code.
-5. Deny-rules section, after approval-gates v1 step 2.
+5. Deny-rules section, after approval-gates v1 step 2 (so steps 1–4 and 6 ship first, as their own PR).
 6. Docs: `DECISIONS.md` entry, `SESSION.md`, README/CLAUDE.md commands line.
 
 ## Honest downsides

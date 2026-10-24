@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -22,6 +23,9 @@ import (
 // Only that default name is listed, so a traceDir set to another name inside workDir is not protected.
 // ".env.example" is the one exception to the ".env.*" pattern.
 var deniedNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh", ".agent-trace"}
+
+// DeniedNames returns a copy of the deny list, for display (-mode info). ".env.example" is still allowed.
+func DeniedNames() []string { return slices.Clone(deniedNames) }
 
 // ReadFileTool reads text files, but only inside root (the configured workDir and its subdirectories)
 // and never a file on the deny list. Absolute paths, "..", and symlinks are all resolved first, so none of

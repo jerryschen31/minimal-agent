@@ -456,6 +456,9 @@ Decisions made before this track went dormant (see `SESSION.md` for current stat
 - **`requires_approval`** (renamed from `mvp1`'s `approve`) = tools that need a human `[y/N]`.
   A *restriction* list, not an allowlist. Empty list ⇒ hook never installed ⇒ nothing gated.
   `["*"]` ⇒ everything gated.
+  **Superseded by `§ 2026-10-23 — Approval gate v1: open questions settled`:** never built; replaced by
+  `DenyRules` (globs that deny, plus a built-in delete/remove list) with an "allow once? [y/N]" ask only for a
+  denied call. Nothing asks by default.
 - **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
   `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
 - **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
@@ -2845,3 +2848,82 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
   `CommandTransport.TerminateDuration` lower would speed this up but also shortens the grace period of a normal
   shutdown; left at the default. (2) The program still exits with status 0 after an interrupted setup (Deferred
   item 3). (3) A Ctrl+C right as setup finishes either aborts or is discarded before the first prompt.
+
+### 2026-10-23 — Approval gate v1: open questions settled (plan only, nothing built)
+
+Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. Both plans are updated.
+
+- **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
+  (`<server>_<tool>`), and info mode is how you see them; the default list is checked against real names before
+  it is fixed. Info mode's deny-rules section waits until `DenyRules` exists.
+- **Ctrl+C at the "allow once? [y/N]" prompt cancels the whole turn**, the call included. During a turn Ctrl+C is
+  a signal (the line editor's raw mode is off), and the turn's interrupt watcher already cancels on it. Rejected:
+  reading the answer through the line editor so Ctrl+C only denies the call. Downside: you can't refuse one call
+  with Ctrl+C and let the model carry on; `n` or Enter does that.
+- **Default deny list: anything that deletes.** `*delete*` and `*remove*`, matched case-insensitively;
+  `run_command:rm` / `rmdir` once `run_command` exists. **Moving, writing and editing files stay allowed**, so the
+  agent can still do edits without prompts. Downsides: a move can overwrite a file, which is a delete in effect;
+  `*remove*` may catch harmless tools (e.g. "remove_label"), which then only cost one `y`; a destructive tool with
+  another name (`tidy`, `purge`) gets through — add it in config.
+- **Supersedes** the Track 1 `requires_approval` decision (a list of tools that always ask): never built, and asking
+  on every listed call is what v1 is meant to avoid.
+- **Two guardrails against a tampered config** (from the `exec.Command` discussion), added to the plans:
+  1. Info mode shows each stdio server's program and argument count (`npx (4 args)`), never the arguments or env.
+     Part of info mode's build.
+  2. A first-run trust prompt per stdio server, keyed on a hash of `command` + `args` + `env`, stored in a local
+     `0600` trust file (hash and name only). In autonomous mode an untrusted or changed server is not started unless
+     trusted beforehand or `allow-all` is set. Under "Later" in the approval plan; needs a trust-file decision first.
+
+### 2026-10-23 — Info mode (`-mode info`) built (`PLAN-info-mode.md` steps 1–4, 6)
+
+`go run . -mode info [-config f] [-workdir d]` prints the header (agent name/version, config file or "none,
+defaults only", absolute resolved working dir, whether the API-key variable is set), `config.PrintConfig`, the
+built-in tools (with `read_file`'s "never reads" list), every MCP server's status and every MCP tool by its
+model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`, `config/flags.go`,
+`mcpconnect/tools.go` (`ToolHints`, `HintsOf`), `tools/builtin/readfile.go` (`DeniedNames`).
+
+- **`main` dispatches before the agent is created** and never calls `SetupAgent`: no provider, memory or trace
+  recorder, so no model call, no API key needed, no trace file. `main` takes the config path from `flags.Config`,
+  so `config/` did not need to report which file it loaded (the plan's small `config/` change was dropped).
+- **Same setup functions as chat mode** (`SetupBuiltinTools`, `ConnectMCPServer`, `GetMCPTools`), so the names it
+  prints are the names the model gets. That replaces the plan's "compare both paths" drift test. What can still
+  drift is the wiring around them (info skips `SetupAgent`'s checks such as a positive `maxSteps`).
+- **One server at a time**: connect, list tools, close (`defer` in `inspectServer`), then the next. A failed server
+  gets a FAILED row and the rest still run. Stdio rows show the program and argument count (`npx (3 args)`), never
+  arguments or env. Connection errors have the configured URL replaced by `scheme://host/[rest hidden]` (the SDK's
+  error quotes the URL, which can hold a token).
+- **Hints** come from the server's MCP annotations, with the spec's default (`destructiveHint` true unless the tool
+  is read-only). Shown as `read-only`, `destructive`, `idempotent`, `additive` or `(no hints)`; they are claims.
+- **Exit codes**: 0 all good, 1 a server or the built-in tools failed, 130 Ctrl+C/SIGTERM. `main` calls `os.Exit`
+  in the info branch only; that is safe because no `defer` is registered yet and `PrintInfo` closed its servers.
+  Ctrl+C uses `createInterruptWatcher`, as setup does; servers not yet started are listed as "not started".
+- **Found while building:** the real filesystem server (1.0.0) has **no delete tool**, so the default deny rules
+  `*delete*` / `*remove*` match nothing there today; `move_file` and `write_file` are its destructive tools. The
+  default list earns its keep with other servers and with `run_command`.
+- **Honest downsides.** Info starts every configured server (real processes, network, auth). Serial, so a slow
+  `npx` download makes it slow (Deferred item 16). The exit code says that something failed, not which. A
+  server's own name/version and tool descriptions are printed as the server sent them. The `hideURL` scrub only
+  covers info: chat-mode setup still prints the raw connect error, URL included (pre-existing; see `SESSION.md`).
+  Ctrl+C while a **remote** server hangs in its handshake takes about 5 s: the SDK sends `notifications/cancelled`
+  with a 5 s timeout and waits for it (seen in the test; same for chat-mode setup, like the 5 s stdio
+  `TerminateDuration` in the setup-abort entry). Its HTTP requests to that server also stay open until exit.
+
+
+### 2026-10-23 — Info mode: PR #25 review fixes (corrects two points of the info-mode entry above)
+
+- **Info runs `SetupAgent`'s config checks** (shared `checkConfig`: positive `maxSteps`, positive
+  `mcpResultMaxBytes`), so it no longer passes a config chat mode refuses. On failure it prints
+  `Configuration: FAILED`, exits 1 and **starts no MCP server** (a bad cap would show servers as connected with no
+  tools). This replaces the "info skips `SetupAgent`'s checks" downside above.
+- **The mode is validated again after the config merge** (`config.ValidateMode`, called in `main`), so
+  `"agentMode": "info"` in a config file with `--json`, `-q` or `-mission` is refused like `-mode info`. Side
+  effect: an unknown `agentMode` in a config file now fails at startup (exit 2) instead of at `RunAgent`.
+  Downside: the error text still says `-mode` when the mode came from the file.
+- **`baseUrl` is printed through `config.DisplayURL`** (`/config` and info, via `PrintConfig`): scheme, host and
+  path stay; `user:password@`, the query and the fragment become `[hidden]`; an unparseable or host-less value is
+  hidden whole. It hides by **position in the URL, not by recognising tokens**, so it needs no detector and can't
+  miss an unusual token format there. Not `trace/redact.go`: `config/` is a leaf and `PrintConfig` is already an
+  allowlist. Downsides: a token in the **path** is still shown; a malformed query can't be seen on screen. Info's
+  `hideURL` for MCP errors stays separate and stricter (it hides the path too, since some MCP hosts put the key
+  in the path). A token in `baseUrl` is still a config mistake (keys belong in the `apiKeyName` variable); this
+  only keeps it out of CI logs and screen shares.
