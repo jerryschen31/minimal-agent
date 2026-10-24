@@ -23,8 +23,7 @@ runToolCall(call)
   │     if err != nil:
   │         chat mode → "allow once? [y/N]"  (ask-on-deny)
   │             y → run the tool
-  │             N / Enter / EOF / no terminal → denied
-  │             Ctrl+C → denied, and the whole turn is cancelled
+  │             N / Enter / EOF / Ctrl+C / no terminal → denied (the turn goes on)
   │         other modes → denied
   │     denied → error observation "denied by rule …"; skip the tool
   ├─ callToolSafely                                              (existing)
@@ -60,11 +59,12 @@ type Hook interface {
 
 - Shown **only for a denied call**, so prompts stay rare: `filesystem_delete_file was denied by rule "*delete*". Allow once? [y/N]`.
 - Default is No. Enter, `n` and EOF mean deny; the model sees the denial and can adapt.
-- **Ctrl+C cancels the whole turn** (decided 2026-10-23), the call included. During a turn the terminal is not in the line editor's raw mode, so Ctrl+C arrives as a signal and the turn's interrupt watcher cancels the turn, as it does anywhere else in a turn: `[interrupted]`, nothing added to memory. Reading the answer through the line editor (so Ctrl+C is a key and only denies the call) was rejected: more input code inside a running turn, for little gain. Ctrl+C keeps meaning "stop".
+- **Ctrl+C denies this call; the turn goes on** (decided 2026-10-24, superseding the 2026-10-23 "Ctrl+C cancels the turn"; `DECISIONS.md § Ask-on-deny reads through the prompt reader`). The question is asked through the chat loop's own prompt reader (the line editor), so stdin has one reader and Ctrl+C is a key there, not a signal.
+- ~~**Ctrl+C cancels the whole turn** (decided 2026-10-23), the call included.~~ Superseded 2026-10-24: During a turn the terminal is not in the line editor's raw mode, so Ctrl+C arrives as a signal and the turn's interrupt watcher cancels the turn, as it does anywhere else in a turn: `[interrupted]`, nothing added to memory. Reading the answer through the line editor (so Ctrl+C is a key and only denies the call) was rejected: more input code inside a running turn, for little gain. Ctrl+C keeps meaning "stop".
 - "Once" means this one call. No session grants in v1.
 - Only when stdin is a real terminal (the same check `ttyReader` uses). Pipes, tests, autonomous and worker modes never ask: denied.
 - Parallel tool calls (later) must serialize prompts with a mutex; v1 runs tools in order, so not needed yet.
-- How the prompt is wired: the asker is a small function on the session (`AskOnDeny func(call, reason) bool`), nil outside chat. It is not a `Hook`, because asking changes the outcome of a veto rather than issuing one. `hooks/` stays free of terminal code.
+- How the prompt is wired: the asker is a small function on the session (`AskOnDeny func(ctx, call, reason) bool`), nil outside chat on a terminal. `runChatLoop` sets it to a closure over its `ttyReader`, which asks with an `Allow once? [y/N] ` prompt. It is not a `Hook`, because asking changes the outcome of a veto rather than issuing one. `hooks/` stays free of terminal code.
 
 ## Tracing and digest
 
@@ -76,6 +76,9 @@ type Hook interface {
 | Field | Flag | Default | Notes |
 |---|---|---|---|
 | `denyRules` | none in v1 | `[]` (added to the built-in list) | printed by `/config` and `-mode info` |
+
+- **v1 is the JSON array only** (decided 2026-10-24): `"denyRules": ["*move*", "*_write_file"]`. A rule file (`denyRulesFile`, later `-deny <file>`) is a separate field under "Later", never a second meaning of `denyRules`.
+- **Bare names are accepted** (2026-10-24): `"mv"` is a glob with no wildcard, so it matches only a tool named exactly `mv`. Blocking the *program* `mv` needs `run_command:mv`, once `run_command` exists. Info mode shows such a rule as "matches nothing".
 
 ## Build order (top-down)
 

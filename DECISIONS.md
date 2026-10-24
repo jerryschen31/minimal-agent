@@ -2878,7 +2878,8 @@ Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. 
 - **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
   (`<server>_<tool>`), and info mode is how you see them; the default list is checked against real names before
   it is fixed. Info mode's deny-rules section waits until `DenyRules` exists.
-- **Ctrl+C at the "allow once? [y/N]" prompt cancels the whole turn**, the call included. During a turn Ctrl+C is
+- **Ctrl+C at the "allow once? [y/N]" prompt cancels the whole turn**, the call included. **Superseded by
+  `§ 2026-10-24 — Ask-on-deny reads through the prompt reader; Ctrl+C there denies the call`.** During a turn Ctrl+C is
   a signal (the line editor's raw mode is off), and the turn's interrupt watcher already cancels on it. Rejected:
   reading the answer through the line editor so Ctrl+C only denies the call. Downside: you can't refuse one call
   with Ctrl+C and let the model carry on; `n` or Enter does that.
@@ -2949,3 +2950,22 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
   `hideURL` for MCP errors stays separate and stricter (it hides the path too, since some MCP hosts put the key
   in the path). A token in `baseUrl` is still a config mistake (keys belong in the `apiKeyName` variable); this
   only keeps it out of CI logs and screen shares.
+
+### 2026-10-24 — Ask-on-deny reads through the prompt reader; Ctrl+C there denies the call (supersedes 2026-10-23)
+
+- **Why the old decision broke:** reading the y/N answer straight from stdin during a turn, with Ctrl+C cancelling
+  the turn, leaves the blocked read running after the cancel. It then swallows the next line typed at the chat
+  prompt, and it competes for stdin with the line editor.
+- **Now:** `runChatLoop` owns the `ttyReader`, so it sets `cs.AskOnDeny` to a closure that asks through the line
+  editor (`Allow once? [y/N] `). One reader of stdin, nothing left behind. The terminal is in raw mode while it
+  asks, so Ctrl+C is a key there and means **deny this call**; the model sees the denial and the turn goes on.
+  Not a terminal → `AskOnDeny` stays nil → denied without asking.
+- The old reason for rejecting this ("more input code inside a running turn") was wrong: it is less code than a
+  second stdin reader. Tests drive the prompt through `auto.Pilot`; the gate logic uses a fake `AskOnDeny`.
+- **Downside:** during that prompt Ctrl+C does not stop the whole turn; press `n`, then Ctrl+C at the next step.
+- **Same day, `denyRules` shape:** v1 is a JSON array of globs only; a rule file is a separate field later
+  (`denyRulesFile`, `-deny`), not a string form of `denyRules` (that would need custom decoding and be ambiguous).
+  Bare names (`"mv"`) are accepted and match only a tool of exactly that name; the `x:y` form is still rejected
+  until `run_command` gives it a meaning. Downside: `"mv"` looks like it blocks the program and doesn't yet; info
+  mode's "matches nothing" warning is the hint.
+
