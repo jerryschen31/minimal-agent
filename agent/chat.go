@@ -151,7 +151,7 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 		discardStrayInterrupts(intsigChRecv)
 
 		// turnCtx is a cancellable context for the current turn (i.e. turn can be cancelled using Ctrl+C)
-		turnCtx, stop := createTurnWatcher(ctx, intsigChRecv)
+		turnCtx, stop := createInterruptWatcher(ctx, intsigChRecv)
 		quit := handleUserInput(turnCtx, cs, line)
 		// stop is called when a turn is done; it releases the watcher so it can't take a later interrupt.
 		stop()
@@ -176,10 +176,11 @@ func discardStrayInterrupts(interrupts <-chan os.Signal) {
 	}
 }
 
-// createTurnWatcher starts a watcher goroutine and returns a child of the root agent context  (cancelled by SIGTERM or on quit) that can be cancelled when an interrupt (Ctrl+C) arrives.
-func createTurnWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func()) {
+// createInterruptWatcher starts a watcher goroutine and returns a child of the root agent context (cancelled by SIGTERM or on quit) that can be cancelled when an interrupt (Ctrl+C) arrives.
+// Used for one chat turn, and for setup. stop() cancels the returned context too, so nothing that outlives the turn or setup may keep it.
+func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{}) // this channel is closed when the turn is done (i.e., stop() is called)
+	done := make(chan struct{}) // this channel is closed when the turn (or setup) is done (i.e., stop() is called)
 
 	var watcher sync.WaitGroup
 	// watcher goroutine checks for either an interrupt (Ctrl+C) or the turn being done (done channel closed)

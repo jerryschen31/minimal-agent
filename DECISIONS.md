@@ -383,6 +383,67 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
     - *Revisit:* when a third subscriber that writes a file is added. Until then, a change to the file-creation
       security rules (mode, `O_EXCL`, ID check) must be made in both places.
 
+14. **Ctrl+C kills the stdio MCP servers** (`mcpconnect/conn.go`, `connectLocalMCPServer`; verified 2026-10-23).
+    - **Resolved 2026-10-23 for Unix and for Windows Ctrl+C** (`§ 2026-10-23 — Each stdio MCP server runs in its own process
+      group`). Still open from this item: the Windows tree kill (Job Object), and reusing the helper for `run_command`
+      and orchestrator workers when they are ported.
+    - *Today:* stdio servers are started with plain `exec.Command`, so they share the agent's process group (Unix) or
+      console (Windows). Outside the line editor's raw mode (during setup and during every running turn), the terminal
+      sends Ctrl+C's SIGINT to the whole foreground process group. The agent survives (Go catches SIGINT with
+      `signal.Notify`), but `npx`/`node` exit. Every tool of that server then fails for the rest of the session, and
+      the only sign is `error closing MCP server: signal: interrupt` at shutdown.
+    - *Verified:* scratch run with the filesystem server; the agent started in its own process group, `kill -INT` to
+      the group (what the terminal does): `npm exec` and `node` gone, agent still running.
+    - *Fix, Unix* (`procgroup_unix.go`): `cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}`, so the terminal's
+      Ctrl+C never reaches the server; on close, kill the whole group (`syscall.Kill(-pgid, …)`), so a grandchild
+      (`node` under `npx`) cannot outlive the agent. The SDK's own close signals only the direct child.
+    - *Fix, Windows* (`procgroup_windows.go`): the console sends Ctrl+C to every process attached to it, so the same
+      problem exists. `CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP` makes the server ignore console Ctrl+C
+      (Ctrl+Break still reaches it). Windows has no group kill: `cmd.Process.Kill()` kills only `npx`, not its `node`.
+      Killing the tree needs a Job Object (`golang.org/x/sys/windows`, ~40 lines).
+    - *Why two files:* `syscall.SysProcAttr` has different fields per OS (`Setpgid` vs `CreationFlags`), so each
+      setting only compiles on its own OS; build-tagged files (`_unix.go` / `_windows.go`) select one.
+    - *Plan:* Ctrl+C isolation on both OSes (one line each); group kill on Unix; Windows tree kill (Job Object)
+      deferred further, since nothing here is run or tested on Windows. Test: the helper server started through
+      `connectLocalMCPServer` survives a SIGINT sent to the test's process group.
+    - *Alternative considered:* keep the terminal from generating SIGINT at all (clear `ISIG` for the whole session
+      and read Ctrl+C as a key during turns, as full-screen TUIs do). Rejected for now: the line editor owns stdin at
+      the prompt, a second reader is needed during turns, and child processes stay exposed to anything else that
+      signals the group.
+    - *Also applies to orchestrator workers:* mvp4's `worker/mcp.go` starts each `-mode worker` child with plain
+      `exec.Command`, so workers share the group too. A worker survives Ctrl+C only because it is the same Go binary
+      and catches SIGINT; its own stdio MCP servers (grandchildren) die. Harmless while Ctrl+C ends the whole run,
+      but not once Ctrl+C pauses it (item 12, human takeover). mvp4's `run_command` already uses `Setpgid`
+      (`tools/builtin/runcommand_unix.go`), which is the pattern to copy. When porting, the same helper should start
+      worker processes.
+    - *Revisit:* before `run_command` (it starts children too, and needs the same group handling) or as soon as
+      Ctrl+C mid-turn is used with MCP servers.
+
+15. **Ctrl+C cannot interrupt setup** (`main.go`, `agent/agent.go`, `SetupAgent`; noted 2026-10-23).
+    - **Resolved 2026-10-23** (`§ 2026-10-23 — Ctrl+C during setup aborts gracefully`).
+    - *Today:* `main` catches Ctrl+C on `intsigCh` before `SetupAgent`, but nothing reads the channel until the first
+      turn, and `discardStrayInterrupts` then drops the press. Setup (e.g. a slow `npx` download) can only be stopped
+      by SIGTERM (`kill <pid>`) or Ctrl+\ (SIGQUIT, no cleanup). A user who forgot a flag has to wait.
+    - *Fix:* pass `intsigCh` to `SetupAgent`, wrap setup in the turn watcher (rename `createTurnWatcher` to
+      `createInterruptWatcher`), return `context.Canceled` from `SetupAgent` when `SetupMCPConns` fails with it
+      (today any MCP error is "print and continue"), and let `main` exit quietly; the deferred `ShutdownAgent` closes
+      servers that already connected. Depends on item 14: until then, that same Ctrl+C also kills the servers.
+    - *Invariant to record with the fix:* the watcher's `stop()` cancels the setup context even after a successful
+      setup, so nothing long-lived may keep it (same rule as auto-compaction). Checked 2026-10-23: MCP sessions detach
+      from the connect context (`jsonrpc2.NewConnection` wraps it in `notDone`; the HTTP transport uses
+      `xcontext.Detach`), and `SetupRecorder` ignores its `ctx`.
+    - *Downside:* a Ctrl+C right as setup finishes either aborts or is discarded, depending on timing.
+
+16. **Connecting MCP servers in parallel** (`mcpconnect/conn.go`, `SetupMCPConns`; noted 2026-10-23).
+    - *Today:* sequential, so a slow server delays the next, and a hung one blocks startup.
+    - *Rules for the parallel loop:* one goroutine per `ConnectMCPServer`; results in a slice indexed by the server's
+      sorted position (repeatable order); **wait for every goroutine before returning, even when cancelled**, or a
+      connection finishing late has no owner and its process leaks; then `errors.Join`. The `ctx.Err()` check before
+      each server stops helping (all start at once); a cancel then fails the in-flight handshakes, and the SDK closes
+      each one itself (stdin closed, up to 5 s, then SIGTERM, then SIGKILL), in parallel.
+    - *Add with it:* a per-server connect timeout (`context.WithTimeout`, configurable) so one hung server cannot hold
+      up startup.
+
 
 ---
 
@@ -2725,3 +2786,62 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
 - **Why a separate `ConnectMCPServer`.** Info mode (`PLAN-info-mode.md`) needs a status line per server, and connecting each server in its own goroutine later only changes the loop.
 - **Test.** `Test_Unit_SetupMCPConns_ServerFails_SkipsItAndKeepsTheOthers` replaces the 2026-10-07 test: a good local server (the test binary as a child) between three bad ones (cannot start, bad config, SSE). Only the good one is returned, it answers a tool call, the error names all three bad ones, and closing it leaves no child process.
 - **Honest downside.** The agent can start with fewer tools than the config lists. The failure is one printed line that is easy to miss in chat; `-mode info` will be the reliable check, and the welcome message could show the tool count later. Connecting is still sequential, so a slow server delays the next one.
+- **Follow-up (Copilot, PR #22): the loop stops once the setup context is cancelled.** `connectLocalMCPServer` builds the process with `exec.Command`, which ignores the context, and the SDK's `CommandTransport.Connect` starts it without checking, so after a SIGTERM during setup the new skip-and-continue loop would have launched every remaining server only to tear it down. The old all-or-nothing loop stopped at the first error, so this was a regression of this change. `SetupMCPConns` now checks `ctx.Err()` before each server, stops, and adds one `MCP setup stopped before server <name>` error (still `errors.Is(err, context.Canceled)`). Test: `Test_Unit_SetupMCPConns_CancelledContext_StartsNoServer` (fails without the check). Info mode's own loop must do the same.
+
+### 2026-10-23 — Each stdio MCP server runs in its own process group (resolves Deferred item 14)
+
+- **The bug** (verified with a scratch run): stdio servers shared the agent's process group, so the terminal's
+  Ctrl+C, meant to cancel a chat turn, also sent SIGINT to `npx`/`node`. The agent survived (it catches SIGINT); the
+  server died, and its tools failed for the rest of the session.
+- **Fix.** `connectLocalMCPServer` calls `startInOwnGroup(cmd)` before starting the server. **One group per server**,
+  led by the server (Jerry asked about one shared group: rejected, since shutdown is per server anyway, killing one
+  server's tree must not touch another, and joining the first server's group fails if it already exited).
+  `McpConnection` keeps the `cmd` (unexported; nil for remote servers), and `Close` calls `killGroup(cmd)` after the
+  SDK's close, because the SDK only stops the direct child and `node` under `npx` could outlive it. A failed handshake
+  also calls `killGroup`.
+- **Per OS** (build-tagged files, since `syscall.SysProcAttr` has different fields per OS):
+  `procgroup_unix.go` sets `Setpgid` and kills with `syscall.Kill(-pid, SIGKILL)` (a negative PID is the group);
+  `procgroup_windows.go` sets `CREATE_NEW_PROCESS_GROUP` (console Ctrl+C no longer reaches the server; Ctrl+Break
+  still does) and `killGroup` is a no-op. Cross-compiles for Windows; not run there. Other OSes (plan9, wasm) have no
+  file and would not compile; none is a target.
+- **Tests** (`procgroup_unix_test.go`): the helper server's process group is its own pid and not the test's group;
+  the helper can start a grandchild (`sleep 60`, as npx starts node), which must be gone after `Close`. Both fail with
+  the fix disabled. Scratch run with the real filesystem server: both `npm exec` and `node` survive a SIGINT sent to
+  the agent's group, and are gone after quitting.
+- **Honest downsides.** (1) The terminal's Ctrl+C was also an accidental "kill everything"; now a server that hangs
+  is only stopped by quitting the agent (or by hand). (2) If the agent itself is killed hard (SIGKILL, crash),
+  servers no longer get the terminal's signals; they rely on stdin closing, which most MCP servers treat as "exit",
+  but one that ignores it is left running. (3) `killGroup` runs after the server is reaped, so in theory its PID
+  could be reused by a new group leader in that moment; with SIGKILL as the signal this is accepted as negligible.
+- **Next:** Deferred item 15 (Ctrl+C gracefully aborts setup), which needed this first.
+
+### 2026-10-23 — Ctrl+C during setup aborts gracefully (resolves Deferred item 15)
+
+- **Before:** nothing read the Ctrl+C channel until the first turn, so a press during setup (e.g. a slow `npx`
+  download) did nothing and was then discarded. Jerry: during setup Ctrl+C should quit gracefully; in the chat loop
+  it only cancels a turn.
+- **Now.** `SetupAgent(ctx, cfg, interrupts)` takes the channel and wraps the MCP steps (connect, list tools) in
+  `createInterruptWatcher` (renamed from `createTurnWatcher`, now used for turns and setup). After each MCP step, a
+  cancelled setup context returns its error (`context.Canceled`) instead of "print and continue without the
+  remaining servers". The servers that had connected stay in `agent.mcpConns`. `main` now returns on **any** setup
+  error, prints `setup interrupted, exiting` for `context.Canceled`, and its deferred `ShutdownAgent` closes the
+  servers. A server still in its handshake fails it and is closed by the SDK, then `killGroup`.
+- **Also fixed:** `main` used to skip only the *message* for a `context.Canceled` setup error and then went on to
+  the welcome text and `RunAgent`. Harmless for SIGTERM (`RunAgent` checks the root context first), but a Ctrl+C
+  abort would have started the chat loop anyway.
+- **Only the MCP steps get the setup context**, because `stop()` cancels it when `SetupAgent` returns, even after a
+  successful setup. The other steps are instant, and anything long-lived (the recorder, the session) must not keep
+  it. MCP sessions detach from their connect context (checked in the SDK), so connected servers survive `stop()`.
+  A nil channel (tests) means setup cannot be interrupted by Ctrl+C.
+- **Depends on** the process-group change above: before it, the same Ctrl+C also killed the stdio servers.
+- **Tests.** `Test_SetupAgent_CtrlCWhileConnecting_AbortsAndKeepsConnectedServersForShutdown`: a remote server
+  (in-process, `httptest`) connects, a stdio server (`sh -c 'echo $$ > pid; exec sleep 60'`) never answers; Ctrl+C
+  arrives during its handshake. Checks `context.Canceled`, the remote server kept for shutdown, no session created,
+  the hanging process gone, and `ShutdownAgent` safe without a session. Fails with the abort checks disabled.
+  Scratch run with the real filesystem server plus a hanging one: `setup interrupted, exiting`; `npm exec`, `node`
+  and `sleep` all gone.
+- **Honest downsides.** (1) **Aborting takes up to 5 s** when a server is stuck in its handshake: the SDK's close
+  waits `TerminateDuration` (default 5 s) for the server to exit after closing its stdin, before SIGTERM. Setting
+  `CommandTransport.TerminateDuration` lower would speed this up but also shortens the grace period of a normal
+  shutdown; left at the default. (2) The program still exits with status 0 after an interrupted setup (Deferred
+  item 3). (3) A Ctrl+C right as setup finishes either aborts or is discarded before the first prompt.
