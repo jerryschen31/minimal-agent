@@ -2919,3 +2919,11 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
   `"agentMode": "info"` in a config file with `--json`, `-q` or `-mission` is refused like `-mode info`. Side
   effect: an unknown `agentMode` in a config file now fails at startup (exit 2) instead of at `RunAgent`.
   Downside: the error text still says `-mode` when the mode came from the file.
+- **`baseUrl` is printed through `config.DisplayURL`** (`/config` and info, via `PrintConfig`): scheme, host and
+  path stay; `user:password@`, the query and the fragment become `[hidden]`; an unparseable or host-less value is
+  hidden whole. It hides by **position in the URL, not by recognising tokens**, so it needs no detector and can't
+  miss an unusual token format there. Not `trace/redact.go`: `config/` is a leaf and `PrintConfig` is already an
+  allowlist. Downsides: a token in the **path** is still shown; a malformed query can't be seen on screen. Info's
+  `hideURL` for MCP errors stays separate and stricter (it hides the path too, since some MCP hosts put the key
+  in the path). A token in `baseUrl` is still a config mistake (keys belong in the `apiKeyName` variable); this
+  only keeps it out of CI logs and screen shares.

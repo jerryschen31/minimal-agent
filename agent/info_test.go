@@ -90,11 +90,13 @@ func Test_Unit_PrintInfo_ApiKeyLine(t *testing.T) {
 	}
 }
 
-// - Verify no MCP server secret (args, env, url, headers) appears in the output
+// - Verify no MCP server secret (args, env, url, headers) and no baseUrl secret (userinfo, query) appears in the output
 func Test_Unit_PrintInfo_DoesNotLeakMcpSecrets(t *testing.T) {
-	secrets := []string{"FAKE_SECRET_ARG_123", "FAKE_SECRET_ENV_123", "FAKE_SECRET_URL_123", "FAKE_SECRET_HDR_123"}
+	secrets := []string{"FAKE_SECRET_ARG_123", "FAKE_SECRET_ENV_123", "FAKE_SECRET_URL_123", "FAKE_SECRET_HDR_123",
+		"FAKE_SECRET_USERINFO_123", "FAKE_SECRET_QUERY_123"}
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
+	cfg.BaseURL = "https://user:" + secrets[4] + "@llm.example.invalid/v1?key=" + secrets[5]
 	cfg.McpServers = map[string]config.McpServerConfig{
 		"local":  {Command: "fake-server", Args: []string{"--token", secrets[0]}, Env: map[string]string{"TOKEN": secrets[1]}},
 		"remote": {URL: "https://example.invalid/?token=" + secrets[2], Headers: map[string]string{"Authorization": "Bearer " + secrets[3]}},

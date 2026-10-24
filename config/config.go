@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -238,7 +239,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  userId:        %s\n", cfg.UserID)
 	fmt.Fprintf(w, "  provider:      %s\n", cfg.Provider)
 	fmt.Fprintf(w, "  model:         %s\n", cfg.Model)
-	fmt.Fprintf(w, "  baseUrl:       %s\n", cfg.BaseURL)
+	fmt.Fprintf(w, "  baseUrl:       %s\n", DisplayURL(cfg.BaseURL))
 	fmt.Fprintf(w, "  apiKeyName:    %s (name of the environment variable, not the key)\n", cfg.ApiKeyName)
 	fmt.Fprintf(w, "  agentName:     %s\n", cfg.AgentName)
 	fmt.Fprintf(w, "  agentVersion:  %s\n", cfg.AgentVersion)
@@ -270,4 +271,29 @@ func PrintConfig(cfg Config) {
 		}
 		fmt.Fprintf(w, "    %s (%s)\n", name, transport)
 	}
+}
+
+// DisplayURL returns raw in a form that is safe to print: scheme, host and path stay, while the parts that can
+// carry a credential (user:password@, the query string, the fragment) are replaced by [hidden], whatever they
+// contain. It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+func DisplayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "[hidden: not an absolute URL]" // can't tell which part is which, so show none of it
+	}
+	shown := u.Scheme + "://"
+	if u.User != nil {
+		shown += "[hidden]@"
+	}
+	shown += u.Host + u.EscapedPath()
+	if u.RawQuery != "" || u.ForceQuery {
+		shown += "?[hidden]"
+	}
+	if u.Fragment != "" {
+		shown += "#[hidden]"
+	}
+	return shown
 }
