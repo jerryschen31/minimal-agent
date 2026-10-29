@@ -1,6 +1,6 @@
 # PLAN: approval gates
 
-Status: **plan only, nothing implemented**. Build-order step 2 in `DECISIONS.md § Build order: tracing core and approval before the autonomous port`. Follows tracing (PR #20) and the L1 digest.
+Status: **v1 built (2026-10-28)**, see `DECISIONS.md § Approval gate v1 built` and `§ tool_vetoed`; everything under "Later" is not built. Build-order step 2 in `DECISIONS.md § Build order: tracing core and approval before the autonomous port`. Follows tracing (PR #20) and the L1 digest.
 
 - 2026-10-22: first full design (allow + deny lists, prompts, session grants, MCP trust). Kept below under "Later".
 - 2026-10-23: **cut to v1.** The goal is to learn how hooks are built and to stop dangerous calls without bothering the user, not a complete approval system. Companion plan: `PLAN-info-mode.md` (lists the exact tool names that deny rules match against).

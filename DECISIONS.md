@@ -2993,3 +2993,43 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
   Downside: a reader has to know the defaults; an empty field does not mean "no rules".
 - Files: `trace/event.go`, `trace/digest_activity.go`, `trace/doc.go`, `agent/react.go` (`executeToolCall` and
   `checkBeforeToolHooks` now take `taskTrace`).
+
+
+### 2026-10-28 — Approval gate v1 built: deny rules, ask-on-deny, info section (`PLAN-approval-gates.md` steps 1–6)
+
+Jerry hand-coded the core (the `Hook` interface, `DenyRules`, the hook loop, the session wiring), tutored step by
+step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents wrote the tests.
+
+- **`hooks/` is its own capability package** (`hook.go`: `Hook{ BeforeTool(ctx, model.ToolCall) error }`;
+  `denyrules.go`: `DenyRules`). It imports only `model`. The loop keeps one call site, `checkBeforeToolHooks`, and
+  every later check (allow list, MCP first-use trust, rate limits) is another `Hook` in `cs.Hooks`, not another
+  `if` in `executeToolCall`. A veto error is returned unwrapped, so the model sees `error: denied by rule "…"`.
+- **Where the check runs:** `executeToolCall` step 3, after the unknown-tool and argument checks and before the tool
+  runs. Not a `continue` in `reActLoop`: every tool call must still get a tool result (providers reject an
+  orphaned call), and the model must see the denial to recover.
+- **`DenyRules`:** the built-in `*delete*`, `*remove*` plus `cfg.DenyRules`. Each rule is trimmed and lowercased;
+  a `:` rule or a malformed glob (`path.Match(rule, "")` fails) is a setup error quoting the rule as written; a
+  duplicate is skipped. Built at `SetupAgent` step 3.5, before any MCP server starts, and installed with
+  `chatSession.Hooks = []hooks.Hook{denyRules}` after `setupChatSession`. `RuleMatches(rule, name)` is the one
+  matcher, used by `BeforeTool` and by info mode. No default in `GetDefaultConfig`: the defaults live in `hooks`,
+  so a config file's `denyRules` adds to them and can't replace them.
+- **Ask-on-deny is a session field, `PromptAllowDenyCall func(ctx, call, reason error) bool`** (renamed by Jerry
+  from `AskOnDeny` in the 2026-10-24 entry: true = allow). `runChatLoop` fills it, only when the reader is a
+  `*ttyReader`, with a closure that prints the tool name, the arguments (`%q`, so model text can't send terminal
+  escape codes) and the reason, then calls `tty.AskYesNo(ctx, "Allow once? [y/N] ")`. `nil` (pipes, tests) =
+  denied without asking. A yes overrides only that hook's veto; later hooks still run.
+- **`(*ttyReader).AskYesNo`** reads through the same line editor (not `ReadPrompt`), with the question as the
+  prompt and an **empty history** while asking (so ↑ can't recall an old "y" sent as a chat message), both put
+  back with `defer`. Only a single-line `y`/`yes` allows; anything else, a multi-line answer, Ctrl+C or a read
+  error is no. Not generalized: a later `Ask(ctx, prompt) (string, error)` is the split, when a second kind of
+  question needs it.
+- **Info mode's "Deny rules" section** (`PLAN-info-mode.md` step 5): each rule, built-in/config, and every tool it
+  matches. A config rule that matches nothing gets a warning; a built-in one doesn't (matching nothing today is
+  normal). When some tools couldn't be listed (built-ins failed, a server failed or wasn't started), a note says
+  so and the warning is left out. An invalid rule prints `Deny rules: FAILED: …` and exits 1.
+- **Tracing:** `tool_vetoed` (entry above). It is what `§ Build order` step 2 called `tool_decided`: only a veto
+  gets an event, because a call no hook vetoes is already fully described by `tool_requested` / `tool_finished`.
+- **Downsides:** a yes isn't remembered (a retry asks again; "allow always" belongs in config). The
+  `runChatLoop` closure has no automated test, because `newPromptReader` only builds a `ttyReader` for a real
+  terminal. Matching is on names only, so a tool that deletes but isn't named so passes (info mode's hints help
+  spot it).
