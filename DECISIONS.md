@@ -3033,3 +3033,19 @@ step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents w
   `runChatLoop` closure has no automated test, because `newPromptReader` only builds a `ttyReader` for a real
   terminal. Matching is on names only, so a tool that deletes but isn't named so passes (info mode's hints help
   spot it).
+
+
+### 2026-10-28 — Approval gate v1: PR #26 review fixes (corrects the entry above)
+
+- **`RuleMatches` treats a tool name as an opaque string.** `path.Match`'s `*` and `?` stop at `/`, and MCP server
+  labels (so model-facing names) may contain `/`, so `*delete*` missed `team/fs_delete_file`: a deletion tool could
+  skip the default denial and the prompt. `/` is now mapped to a byte with no meaning in a pattern on both sides,
+  so `*` and `?` match across it and a literal `/` in a rule still matches. Chosen over rejecting `/` in names at
+  setup, which would break a working server config to fix a matcher. Test: `Test_Unit_DenyRules_SlashInToolName`.
+- **The approval question prints the tool name with `%q`**, like the arguments: MCP tool names are not checked for
+  control characters, so a server could send terminal escape codes through the name.
+- **`GetMCPTools` reports an incomplete list.** It used to print a warning and return `nil` error when `tools/list`
+  failed (or a tool couldn't be wrapped), so info mode showed the server as connected and the deny rules warned
+  "matches nothing". It now returns the tools that loaded plus the failures (`errors.Join`). Info mode shows
+  `FAILED listing tools` and the incomplete-list note; chat setup (`SetupMCPTools`) keeps the partial list and
+  prints one warning per server, as before. Test: `Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete`.

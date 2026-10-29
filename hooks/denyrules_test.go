@@ -248,3 +248,36 @@ func Test_Unit_DenyRules_BeforeToolAgreesWithRuleMatches(t *testing.T) {
 		}
 	}
 }
+
+// - Verify * and ? match across '/': a tool name is an opaque string, so a server label like "team/fs" can't put a
+// delete tool out of reach of "*delete*" (path.Match alone stops * at '/')
+func Test_Unit_DenyRules_SlashInToolName(t *testing.T) {
+	cases := []struct {
+		rule, name string
+		want       bool
+	}{
+		{"*delete*", "team/fs_delete_file", true},
+		{"*delete*", "Team/FS_Delete_File", true},
+		{"*", "a/b/c", true},
+		{"team/*", "team/fs_write_file", true},
+		{"team/fs_write_file", "team/fs_write_file", true}, // a literal '/' in a rule still matches '/'
+		{"team?fs_write_file", "team/fs_write_file", true}, // ? matches '/' too
+		{"team/*", "teamx_write_file", false},
+		{"*delete*", "team/fs_move_file", false},
+	}
+	for _, c := range cases {
+		if got := RuleMatches(c.rule, c.name); got != c.want {
+			t.Errorf("RuleMatches(%q, %q) = %v, want %v", c.rule, c.name, got, c.want)
+		}
+	}
+
+	d, err := NewDenyRules(nil)
+	if err != nil {
+		t.Fatalf("NewDenyRules: %v", err)
+	}
+	call := model.ToolCall{ID: "call_1"}
+	call.Function.Name = "team/fs_delete_file"
+	if err := d.BeforeTool(context.Background(), call); err == nil {
+		t.Errorf("BeforeTool(%q) = nil, want denied by the default *delete* rule", call.Function.Name)
+	}
+}

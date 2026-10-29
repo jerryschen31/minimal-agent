@@ -67,7 +67,13 @@ func IsBuiltIn(rule string) bool {
 
 // RuleMatches reports whether a rule (as returned by Rules) matches a model-facing tool name, ignoring case.
 // BeforeTool and info mode both use it, so what info mode shows is what the gate does.
+// A tool name is an opaque string, not a path: path.Match's * and ? stop at '/', so "*delete*" would miss a name
+// like "team/fs_delete_file" (an MCP server label can contain '/'). '/' is mapped to a byte that has no special
+// meaning in a pattern, on both sides, so * and ? match across it and a literal '/' in a rule still matches '/'.
 func RuleMatches(rule, toolName string) bool {
-	matched, _ := path.Match(rule, strings.ToLower(toolName)) // the error can be ignored: NewDenyRules rejected malformed rules
+	const opaqueSep = "\x00"
+	rule = strings.ReplaceAll(rule, "/", opaqueSep)
+	name := strings.ReplaceAll(strings.ToLower(toolName), "/", opaqueSep)
+	matched, _ := path.Match(rule, name) // the error can be ignored: NewDenyRules rejected malformed rules
 	return matched
 }

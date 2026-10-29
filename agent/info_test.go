@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -672,5 +673,44 @@ func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
 	// [agent] the bare MCP name "write" is not what the model sees, so it matches nothing and warns
 	if lineWith(out, "write ", "config", "matches nothing  <- warning:") == "" {
 		t.Errorf("expected bare write to match nothing with a warning in output:\n%s", out)
+	}
+}
+
+// - Verify a server that connects but fails tools/list is shown as FAILED (not "connected, 0 tools"), info exits 1,
+// and the deny rules say the tool list is incomplete instead of warning that a config rule matches nothing
+func Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete(t *testing.T) {
+	sdk := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return mcp.NewServer(&mcp.Implementation{Name: "brokenlist", Version: "0.0.1"}, nil)
+	}, nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			if bytes.Contains(body, []byte(`"tools/list"`)) {
+				http.Error(w, "tools/list is broken", http.StatusInternalServerError)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		sdk.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{"broken": {URL: srv.URL}}
+	cfg.DenyRules = []string{"broken_*"}
+	code, out := runInfo(t, cfg, "")
+
+	if code != InfoFailed {
+		t.Errorf("exit code = %d, want %d (InfoFailed)\n%s", code, InfoFailed, out)
+	}
+	if lineWith(out, "broken", "FAILED listing tools") == "" {
+		t.Errorf("expected the server row to say FAILED listing tools:\n%s", out)
+	}
+	if !strings.Contains(out, "(some tools could not be listed above, so a rule may match a tool not shown)") {
+		t.Errorf("expected the incomplete-list note in the deny rules section:\n%s", out)
+	}
+	if strings.Contains(out, "<- warning") {
+		t.Errorf("expected no matches-nothing warning when the tool list is incomplete:\n%s", out)
 	}
 }

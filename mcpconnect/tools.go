@@ -151,25 +151,27 @@ func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, er
 	}, nil
 }
 
+// The list may be incomplete: a failed tools/list request or a tool that can't be wrapped is skipped, and the
+// returned error (all such failures, joined) says so. The tools that did load are returned either way, so the caller
+// decides whether a partial list is usable (chat setup: yes, with a warning; info mode: shows the server as failed).
 func GetMCPTools(ctx context.Context, mcpConn *McpConnection, maxResultBytes int) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
+	var errs []error
 	// query the server for available tools - t is of type *mcp.Tool (from the MCP official Go SDK)
 	for t, err := range mcpConn.Session.Tools(ctx, nil) {
-		// if there is an issue adding a tool, just continue with a warning
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to get tool from server %s: %v\n", mcpConn.Name, err)
+			errs = append(errs, fmt.Errorf("listing tools: %w", err))
 			continue
 		}
 		// otherwise from t of type *mcp.Tool, create a variable that satifies the Tool interface (type mcpTool)
 		mt, err := newMCPTool(mcpConn, t, maxResultBytes) // t is *mcp.Tool, mt is *mcpTool
 		if err != nil {
-			// warn and skip this one tool
-			fmt.Fprintf(os.Stderr, "warning: failed to create MCP tool from server %s: %v\n", mcpConn.Name, err)
+			errs = append(errs, fmt.Errorf("tool %q: %w", t.Name, err)) // skip this one tool
 			continue
 		}
 		mcpTools = append(mcpTools, mt)
 	}
-	return mcpTools, nil
+	return mcpTools, errors.Join(errs...) // nil when errs is empty
 }
 
 func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error) {
@@ -182,7 +184,8 @@ func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultByte
 	for _, s := range mcpConns {
 		sTools, err := GetMCPTools(ctx, s, maxResultBytes)
 		if err != nil {
-			return nil, err
+			// a partial list is still usable: warn and keep the tools that loaded, as one failing server doesn't stop the others
+			fmt.Fprintf(os.Stderr, "warning: MCP server %s: some tools could not be loaded: %v\n", s.Name, err)
 		}
 		mcpTools = append(mcpTools, sTools...)
 	}

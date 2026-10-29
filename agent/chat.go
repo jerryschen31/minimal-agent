@@ -140,7 +140,7 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 	if tty, ok := reader.(*ttyReader); ok {
 		cs.PromptAllowDenyCall = func(ctx context.Context, call model.ToolCall, reason error) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Tool call denied by hook:")
-			fmt.Fprintln(cs.OutBuffer, "Tool:", call.Function.Name)
+			fmt.Fprintf(cs.OutBuffer, "Tool: %q\n", call.Function.Name) // %q: a name from an MCP server could hold terminal escape codes
 			fmt.Fprintf(cs.OutBuffer, "Arguments: %q\n", call.Function.Arguments)
 			fmt.Fprintln(cs.OutBuffer, "Reason:", reason)
 			return tty.AskYesNo(ctx, "Allow once? [y/N] ")
