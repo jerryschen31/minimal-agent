@@ -24,6 +24,7 @@ const (
 	ModelResponse  EventType = "model_response"
 	ModelError     EventType = "model_error"
 	ToolRequested  EventType = "tool_requested"
+	ToolVetoed     EventType = "tool_vetoed"
 	ToolFinished   EventType = "tool_finished"
 	Compaction     EventType = "compaction"
 	ContextCleared EventType = "context_cleared"
@@ -61,6 +62,7 @@ type RunStartData struct {
 	MaxTokens    int               `json:"max_tokens"`              // 0 = unspecified
 	SystemPrompt string            `json:"system_prompt,omitempty"` // full text; goes through redaction like any other string
 	McpServers   map[string]string `json:"mcp_servers,omitempty"`   // server name -> type only; never command, args, env or headers (tokens)
+	DenyRules    []string          `json:"deny_rules,omitempty"`    // the config's deny rules, as written; the built-in defaults are always on too
 }
 
 // GetRunStartData is a helper function that builds the run_start payload from the config and the running process.
@@ -78,6 +80,7 @@ func GetRunStartData(cfg config.Config) RunStartData {
 		MaxSteps:     cfg.MaxSteps,
 		MaxTokens:    cfg.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
+		DenyRules:    cfg.DenyRules,
 	}
 
 	// tracing must not fail a run, so a hostname error just leaves the field empty
@@ -266,6 +269,29 @@ type ToolRequestedData struct {
 
 func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
 	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}
+}
+
+// Decisions recorded in a tool_vetoed event: what happened after a hook vetoed a call.
+const (
+	VetoDenied        = "denied"          // not asked (input is not a terminal): the veto stands
+	VetoDeniedByUser  = "denied_by_user"  // asked, and the user said no (n, Enter, anything but y/yes, or Ctrl+C)
+	VetoAllowedByUser = "allowed_by_user" // asked, and the user allowed it once: the tool may run despite the veto
+)
+
+// ToolVetoedData is the EventData for a ToolVetoed event: a BeforeTool hook vetoed this call, and what happened next.
+// One event per veto, between the call's tool_requested and tool_finished. A call no hook vetoes gets none.
+// [agent] Recorded for every veto, not only overrides, so the trace tells a policy denial apart from a tool failure
+// (both end in a failed tool_finished) and shows whether a person was asked.
+type ToolVetoedData struct {
+	CallID   string `json:"call_id"`
+	Name     string `json:"name"`
+	Reason   string `json:"reason"`            // the hook's veto text, e.g. `denied by rule "*delete*"`
+	Decision string `json:"decision"`          // VetoDenied | VetoDeniedByUser | VetoAllowedByUser
+	WaitMS   int64  `json:"wait_ms,omitempty"` // time spent waiting for the user's answer; 0 when not asked
+}
+
+func GetToolVetoedData(call model.ToolCall, reason error, decision string, wait time.Duration) ToolVetoedData {
+	return ToolVetoedData{CallID: call.ID, Name: call.Function.Name, Reason: reason.Error(), Decision: decision, WaitMS: wait.Milliseconds()}
 }
 
 // ToolFinishedData is the EventData for a ToolFinished event: what the agent got back from one tool call.

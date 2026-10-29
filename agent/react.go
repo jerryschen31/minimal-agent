@@ -34,7 +34,7 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
 
-	content, err := executeToolCall(ctx, cs, call)
+	content, err := executeToolCall(ctx, cs, taskTrace, call)
 	if err != nil {
 		content = fmt.Sprintf("error: %v", err) // every failure becomes an observation the model can recover from
 	}
@@ -44,7 +44,7 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 }
 
 // executeToolCall validates and runs a single tool call. It returns the tool's result, or an error for an unknown tool, bad arguments, a tool error or a tool panic.
-func executeToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) (string, error) {
+func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error) {
 	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, that is an error.
 	tool, ok := cs.Tools.Lookup(call.Function.Name)
 	if !ok {
@@ -62,7 +62,7 @@ func executeToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) 
 	}
 
 	// 3. Call any registered hooks before running the tool
-	if err := checkBeforeToolHooks(ctx, cs, call); err != nil {
+	if err := checkBeforeToolHooks(ctx, cs, taskTrace, call); err != nil {
 		return "", err
 	}
 
@@ -76,14 +76,26 @@ func executeToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) 
 }
 
 // checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook returns a failure (e.g., a tool call deny).
-func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, call model.ToolCall) error {
+// Every veto is recorded as a tool_vetoed event, with what happened next.
+func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error {
 	for _, hook := range cs.Hooks {
 		// BeforeTool returns non-nil if the tool call is denied or vetoed by the hook (e.g., matches a deny rule)
-		if err := hook.BeforeTool(ctx, call); err != nil {
-			// We give the user on a terminal (or a test) a chance to override the denial if desired
-			if cs.PromptAllowDenyCall != nil && cs.PromptAllowDenyCall(ctx, call, err) {
-				continue
+		err := hook.BeforeTool(ctx, call)
+		if err == nil {
+			continue
+		}
+		// We give the user on a terminal (or a test) a chance to override the denial if desired
+		decision, wait := trace.VetoDenied, time.Duration(0)
+		if cs.PromptAllowDenyCall != nil {
+			start := time.Now()
+			decision = trace.VetoDeniedByUser
+			if cs.PromptAllowDenyCall(ctx, call, err) {
+				decision = trace.VetoAllowedByUser
 			}
+			wait = time.Since(start)
+		}
+		taskTrace.Record(trace.ToolVetoed, trace.GetToolVetoedData(call, err, decision, wait))
+		if decision != trace.VetoAllowedByUser {
 			return err
 		}
 	}

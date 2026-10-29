@@ -2969,3 +2969,27 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
   until `run_command` gives it a meaning. Downside: `"mv"` looks like it blocks the program and doesn't yet; info
   mode's "matches nothing" warning is the hint.
 
+
+### 2026-10-28 — `tool_vetoed`: every hook veto is traced with its outcome (supersedes the planned `tool_approved`)
+
+- **One event, `tool_vetoed {call_id, name, reason, decision, wait_ms}`**, recorded by `checkBeforeToolHooks` for
+  every veto, between the call's `tool_requested` and `tool_finished`. `decision` is `denied` (nobody asked: input is
+  not a terminal), `denied_by_user` (asked; n, Enter, anything but y/yes, or Ctrl+C) or `allowed_by_user` (asked, y).
+  A call with several vetoing hooks gets one event per veto. A call no hook vetoes gets none.
+- **Why not `tool_approved` for overrides only** (the 2026-10-23 plan): Jerry asked for user denials to be traced too.
+  With only overrides recorded, a policy denial and a tool failure look the same (both a failed `tool_finished`
+  with an `error: …` result), and nothing shows whether a person was asked. One event with a decision field covers
+  all three outcomes with one shape instead of two or three event types.
+- **`wait_ms`** is the time spent waiting for the user's answer. `tool_finished.duration_ms` includes that wait, so a
+  slow-looking call that was approved is explained by `wait_ms`, not by the tool.
+- **Not recorded in the event:** the arguments (already in `tool_requested`), and which hook vetoed (the reason text
+  names the rule; hooks have no name of their own yet). Everything goes through `Record`'s redaction as usual.
+- **Digest:** the call's line gets a note per veto: `[allowed once by user over: denied by rule "*move*"]`,
+  `[user said no to: …]`, `[vetoed, user not asked: …]`. The footer adds
+  `vetoes: N (allowed once by user: A, denied by user: D, denied without asking: X)`, only when N > 0. It counts
+  vetoes, not calls (a call vetoed by two hooks counts twice); an unknown decision is listed as `unknown decision: K`.
+- **`run_start.deny_rules`**: the config's `denyRules` as written, so the trace shows the policy in effect. The
+  built-in defaults (`*delete*`, `*remove*`) are always on and not repeated, because `trace` does not import `hooks`.
+  Downside: a reader has to know the defaults; an empty field does not mean "no rules".
+- Files: `trace/event.go`, `trace/digest_activity.go`, `trace/doc.go`, `agent/react.go` (`executeToolCall` and
+  `checkBeforeToolHooks` now take `taskTrace`).

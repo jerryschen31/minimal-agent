@@ -74,7 +74,7 @@ func Test_CheckBeforeToolHooks_AskOnDeny_NilDeniesWithoutAsking(t *testing.T) {
 	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
 	fx.Session.PromptAllowDenyCall = nil
 
-	err := checkBeforeToolHooks(context.Background(), fx.Session, deleteCall())
+	err := checkBeforeToolHooks(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 	if !errors.Is(err, errDenied) {
 		t.Errorf("expected the hook's veto error, got %v", err)
@@ -91,7 +91,7 @@ func Test_CheckBeforeToolHooks_AskOnDeny_ReceivesCallAndReason(t *testing.T) {
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, false)
 	call := deleteCall()
 
-	_ = checkBeforeToolHooks(context.Background(), fx.Session, call)
+	_ = checkBeforeToolHooks(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call)
 
 	if len(asked) != 1 {
 		t.Fatalf("expected the user to be asked once, got %d", len(asked))

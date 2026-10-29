@@ -68,8 +68,8 @@ type Hook interface {
 
 ## Tracing and digest
 
-- **No new event in v1.** A denial goes through the existing `tool_finished` with an error: `denied by rule "…"`. The digest already renders it as `(failed: denied by rule …)`.
-- **An approved-once override gets a `tool_approved {call_id, rule}` event** (decided 2026-10-23), recorded only for asked-and-approved calls, before the tool runs. `tool_finished` has no field for it, and putting it in the tool result would show it to the model. Digest: `(approved once, rule …)`, plus a footer count, because an override of a safety rule is exactly what an auditor wants to see.
+- ~~No new event in v1~~ / ~~`tool_approved {call_id, rule}` for overrides only~~ (2026-10-23), **superseded 2026-10-28** by one `tool_vetoed` event for every veto, see `DECISIONS.md § tool_vetoed`:
+  `{call_id, name, reason, decision, wait_ms}`, decision = `denied` (not asked) | `denied_by_user` | `allowed_by_user`, recorded between `tool_requested` and `tool_finished`. Digest: a `[allowed once by user over: …]` / `[user said no to: …]` / `[vetoed, user not asked: …]` note on the call's line, plus a `vetoes:` footer count. `run_start` also records the config's `deny_rules`.
 
 ## Config
 
@@ -87,7 +87,7 @@ type Hook interface {
 2. `hooks/`: the `Hook` interface and `DenyRules` (glob match, defaults + config, invalid pattern = error). Table tests.
 3. Wire it: `SetupAgent` builds the hook list; config field; `/config` prints the rules.
 4. Ask-on-deny in chat: `AskOnDeny` on the session, the terminal prompt, Ctrl+C/EOF = deny; test through the plain reader that `y` runs and anything else denies.
-5. The `tool_approved` event and its digest line.
+5. The `tool_vetoed` event (every veto and its outcome) and its digest note + footer (built 2026-10-28).
 6. Docs: `DECISIONS.md` entry, `SESSION.md`, `trace/doc.go` if an event is added.
 
 ## Honest downsides
