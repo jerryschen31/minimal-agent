@@ -100,6 +100,24 @@ func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error) {
 	}
 }
 
+// AskYesNo is used at the terminal whenever a yes/no response is needed from the user, such as allowing a tool call to execute.
+func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool {
+	// whatever was passed into prompt is shown to the user on the terminal, instead of "> "
+	r.ed.SetPrompt(func(w io.Writer, _ int) (int, error) { return io.WriteString(w, prompt) })
+	defer r.ed.SetPrompt(writePrompt) // put the normal "> " prompt back for the next ReadPrompt
+	// an empty history while asking, so ↑ can't bring back an old "y" sent as a chat message
+	r.ed.SetHistory(simplehistory.New())
+	defer r.ed.SetHistory(r.history)
+
+	lines, err := r.ed.Read(ctx) // not ReadPrompt: that one ignores Ctrl+C and saves to history
+	if err != nil || len(lines) != 1 {
+		return false // includes Ctrl+C, which here means "no", not "cancel the turn"; a multi-line answer is no too
+	}
+	answer := strings.ToLower(strings.TrimSpace(lines[0]))
+	// only "y" or "yes" is considered affirmative; anything else is treated as negative
+	return answer == "y" || answer == "yes"
+}
+
 // ---- reader for non-terminal input (pipes, tests) ----
 
 type plainReader struct {

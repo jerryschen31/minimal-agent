@@ -28,7 +28,8 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 }
 
 // runToolCall executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model.
-// It is the one place that records the call: tool_requested before it runs, tool_finished with what the model will see after.
+// This is essentially a wrapper around the actual tool call execution. This wrapper allows us to record the call before and after:
+// tool_requested before it runs, tool_finished with what the model will see after.
 func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage {
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
@@ -60,13 +61,33 @@ func executeToolCall(ctx context.Context, cs *ChatSession, call model.ToolCall) 
 		}
 	}
 
-	// 3. Run tool.CallTool(ctx, json.RawMessage(args)).
+	// 3. Call any registered hooks before running the tool
+	if err := checkBeforeToolHooks(ctx, cs, call); err != nil {
+		return "", err
+	}
+
+	// 4. Run tool.CallTool(ctx, json.RawMessage(args)).
 	args := json.RawMessage(call.Function.Arguments)
 	// if call.Function.Arguments is empty, json.RawMessage returns an empty byte slice - create a proper empty JSON string in this case.
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
 	return callToolSafely(ctx, tool, args)
+}
+
+// checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook returns a failure (e.g., a tool call deny).
+func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, call model.ToolCall) error {
+	for _, hook := range cs.Hooks {
+		// BeforeTool returns non-nil if the tool call is denied or vetoed by the hook (e.g., matches a deny rule)
+		if err := hook.BeforeTool(ctx, call); err != nil {
+			// We give the user on a terminal (or a test) a chance to override the denial if desired
+			if cs.PromptAllowDenyCall != nil && cs.PromptAllowDenyCall(ctx, call, err) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // reActLoop loops up to MaxSteps. At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise it calls tool functions as needed.

@@ -478,3 +478,199 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 		})
 	}
 }
+
+// - Verify printDenyRules lists each rule with its source and every tool it matches, built-in and MCP alike
+func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
+	var out bytes.Buffer
+	ok := printDenyRules(&out, []string{"*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
+	if !ok {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "Deny rules (3)\n") {
+		t.Errorf("expected Deny rules (3) in output:\n%s", got)
+	}
+	if lineWith(got, "*delete*", "built-in", "matches: docs_delete_note\n") == "" {
+		t.Errorf("expected *delete* built-in matching docs_delete_note in output:\n%s", got)
+	}
+	if lineWith(got, "*remove*", "built-in", "matches: docs_remove_file\n") == "" {
+		t.Errorf("expected *remove* built-in matching docs_remove_file in output:\n%s", got)
+	}
+	if lineWith(got, "*file*", "config", "matches: read_file, docs_remove_file\n") == "" {
+		t.Errorf("expected *file* (lowercased) config matching read_file, docs_remove_file in output:\n%s", got)
+	}
+	if strings.Contains(got, "warning") || strings.Contains(got, "some tools could not be listed") {
+		t.Errorf("expected no warning and no note in output:\n%s", got)
+	}
+}
+
+// - Verify a built-in rule matching nothing prints plain "matches nothing", while a config rule gets a warning
+func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
+	var out bytes.Buffer
+	if !printDenyRules(&out, []string{"*move*"}, []string{"read_file"}, true) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	for _, rule := range []string{"*delete*", "*remove*"} {
+		line := lineWith(got, rule, "built-in", "matches nothing")
+		if line == "" || strings.Contains(line, "warning") {
+			t.Errorf("expected %s built-in matches nothing with no warning, got line %q in output:\n%s", rule, line, got)
+		}
+	}
+	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
+		t.Errorf("expected *move* config matches nothing with a warning in output:\n%s", got)
+	}
+}
+
+// - Verify allListed=false prints the "some tools could not be listed" note, says "among the tools listed", and never warns
+func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
+	var out bytes.Buffer
+	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file"}, false) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "(some tools could not be listed above, so a rule may match a tool not shown)") {
+		t.Errorf("expected the some-tools-not-listed note in output:\n%s", got)
+	}
+	for _, rule := range []string{"*delete*", "*remove*", "*move*"} {
+		if lineWith(got, rule, "matches nothing among the tools listed") == "" {
+			t.Errorf("expected %s matches nothing among the tools listed in output:\n%s", rule, got)
+		}
+	}
+	if lineWith(got, "read_*", "config", "matches: read_file") == "" {
+		t.Errorf("expected read_* still listing its match in output:\n%s", got)
+	}
+	if strings.Contains(got, "warning") {
+		t.Errorf("expected no warning when MCP was not listed:\n%s", got)
+	}
+}
+
+// - Verify an invalid rule (bad glob, or the tool:program form) returns false and prints one FAILED line naming it
+func Test_Unit_PrintDenyRules_InvalidRule_Fails(t *testing.T) {
+	for _, rule := range []string{"*delete[", "run_command:rm"} {
+		var out bytes.Buffer
+		if printDenyRules(&out, []string{rule}, []string{"read_file"}, true) {
+			t.Errorf("%q: expected false, got true", rule)
+		}
+		got := out.String()
+		if lineWith(got, "Deny rules: FAILED: invalid deny rule", rule) == "" {
+			t.Errorf("%q: expected a FAILED line naming the rule in output:\n%s", rule, got)
+		}
+		if strings.Contains(got, "Deny rules (") {
+			t.Errorf("%q: expected no rule list after FAILED:\n%s", rule, got)
+		}
+	}
+}
+
+// - Verify the default config ends with both built-in deny rules (no warning) and returns InfoOK
+func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if !strings.Contains(out, "Deny rules (2)\n") {
+		t.Errorf("expected Deny rules (2) in output:\n%s", out)
+	}
+	for _, rule := range []string{"*delete*", "*remove*"} {
+		if lineWith(out, rule, "built-in", "matches nothing") == "" {
+			t.Errorf("expected %s built-in matches nothing in output:\n%s", rule, out)
+		}
+	}
+	if strings.Contains(out, "warning") {
+		t.Errorf("expected no warning in output:\n%s", out)
+	}
+	if mcpAt, denyAt := strings.Index(out, "MCP tools ("), strings.Index(out, "Deny rules ("); mcpAt < 0 || denyAt < mcpAt {
+		t.Errorf("expected the deny rules section after the MCP tools section:\n%s", out)
+	}
+}
+
+// - Verify a config rule matching the built-in read_file shows that match and returns InfoOK
+func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyRules = []string{"READ_*"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if !strings.Contains(out, "Deny rules (3)\n") {
+		t.Errorf("expected Deny rules (3) in output:\n%s", out)
+	}
+	if lineWith(out, "read_*", "config", "matches: read_file") == "" {
+		t.Errorf("expected read_* config matches: read_file in output:\n%s", out)
+	}
+}
+
+// - Verify an invalid rule returns InfoFailed with a FAILED line, and the built-in and MCP tools are still listed
+func Test_Unit_PrintInfo_DenyRules_Invalid_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyRules = []string{"*delete["}
+	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoFailed, code, out)
+	}
+	if lineWith(out, "Deny rules: FAILED: invalid deny rule", "*delete[") == "" {
+		t.Errorf("expected Deny rules: FAILED naming *delete[ in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Built-in tools (1)\n") || lineWith(out, "read_file") == "" {
+		t.Errorf("expected the built-in tools still listed in output:\n%s", out)
+	}
+	if lineWith(out, "docs_lookup") == "" || lineWith(out, "docs_write") == "" {
+		t.Errorf("expected the MCP tools still listed in output:\n%s", out)
+	}
+	if failAt, mcpAt := strings.Index(out, "Deny rules: FAILED"), strings.Index(out, "MCP tools ("); mcpAt < 0 || failAt < mcpAt {
+		t.Errorf("expected the deny rules FAILED line after the MCP tools section:\n%s", out)
+	}
+}
+
+// - Verify a config error (MCP not started) shows the "some tools could not be listed" note on the deny rules and no warning
+func Test_Unit_PrintInfo_DenyRules_BadConfig_ShowsNote(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.MCPResultMaxBytes = -1
+	cfg.DenyRules = []string{"*move*"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoFailed, code, out)
+	}
+	if !strings.Contains(out, "(some tools could not be listed above, so a rule may match a tool not shown)") {
+		t.Errorf("expected the some-tools-not-listed note in output:\n%s", out)
+	}
+	if lineWith(out, "*move*", "config", "matches nothing among the tools listed") == "" {
+		t.Errorf("expected *move* matches nothing among the tools listed in output:\n%s", out)
+	}
+	if strings.Contains(out, "warning") {
+		t.Errorf("expected no warning in output:\n%s", out)
+	}
+}
+
+// - Verify rules are matched against MCP tools by their model-facing names (server prefix included)
+func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyRules = []string{"*write*", "docs_*", "write"}
+	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if lineWith(out, "*write*", "config", "matches: docs_write\n") == "" {
+		t.Errorf("expected *write* matches: docs_write in output:\n%s", out)
+	}
+	if lineWith(out, "docs_*", "config", "matches: docs_lookup, docs_write\n") == "" {
+		t.Errorf("expected docs_* matches: docs_lookup, docs_write in output:\n%s", out)
+	}
+	// [agent] the bare MCP name "write" is not what the model sees, so it matches nothing and warns
+	if lineWith(out, "write ", "config", "matches nothing  <- warning:") == "" {
+		t.Errorf("expected bare write to match nothing with a warning in output:\n%s", out)
+	}
+}

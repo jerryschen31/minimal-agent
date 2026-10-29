@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
@@ -41,55 +42,109 @@ func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interr
 		code = InfoFailed
 	}
 	fmt.Fprintln(w)
-	if !printBuiltinTools(w, cfg) {
+	toolNames, allListed := printBuiltinTools(w, cfg)
+	if !allListed {
 		code = InfoFailed
 	}
 
 	fmt.Fprintln(w)
 	if configErr != nil {
+		allListed = false
 		// a bad mcpResultMaxBytes makes every MCP tool fail to load, so the servers would look connected with no tools
 		fmt.Fprintln(w, "MCP servers: not started (fix the configuration error above first)")
-		return code
+	} else {
+		// Ctrl+C while the MCP servers start aborts info, as it aborts setup
+		infoCtx, stopWatch := createInterruptWatcher(ctx, interrupts)
+		defer stopWatch()
+		mcpNames, ok := printMCP(infoCtx, w, cfg)
+		if !ok {
+			code = InfoFailed
+			allListed = false
+		}
+		if infoCtx.Err() != nil {
+			fmt.Fprintln(w, "interrupted")
+			return InfoInterrupted
+		}
+		toolNames = append(toolNames, mcpNames...)
 	}
-	// Ctrl+C while the MCP servers start aborts info, as it aborts setup
-	infoCtx, stopWatch := createInterruptWatcher(ctx, interrupts)
-	defer stopWatch()
-	if !printMCP(infoCtx, w, cfg) {
+
+	fmt.Fprintln(w)
+	if !printDenyRules(w, cfg.DenyRules, toolNames, allListed) {
 		code = InfoFailed
-	}
-	if infoCtx.Err() != nil {
-		fmt.Fprintln(w, "interrupted")
-		return InfoInterrupted
 	}
 	return code
 }
 
-// printBuiltinTools lists the built-in tools by the names the model sees, and reports false if they can't be set up.
-func printBuiltinTools(w io.Writer, cfg config.Config) bool {
-	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
+// printDenyRules lists every deny rule (built-in and config) with the tools it matches, using the same matching as
+// the gate itself, and reports false if the rules are invalid (chat mode would refuse to start). A config rule that
+// matches no tool gets a warning: usually a typo. allListed is false when some tools could not be listed (built-ins
+// failed, a server failed or was not started), so the warning could be wrong and is left out.
+func printDenyRules(w io.Writer, extraRules, toolNames []string, allListed bool) bool {
+	denyRules, err := hooks.NewDenyRules(extraRules)
 	if err != nil {
-		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)
+		fmt.Fprintf(w, "Deny rules: FAILED: %v\n", err)
 		return false
 	}
-	fmt.Fprintf(w, "Built-in tools (%d)\n", len(builtins))
-	for _, t := range builtins {
-		def := t.GetToolDefinition().Function
-		fmt.Fprintf(w, "  %-28s %s\n", def.Name, firstLine(def.Desc))
-		if def.Name == "read_file" {
-			fmt.Fprintf(w, "  %-28s never reads: %s (.env.example is allowed)\n", "", strings.Join(builtin.DeniedNames(), ", "))
+	rules := denyRules.Rules()
+	fmt.Fprintf(w, "Deny rules (%d)\n", len(rules))
+	if !allListed {
+		fmt.Fprintln(w, "  (some tools could not be listed above, so a rule may match a tool not shown)")
+	}
+	for _, rule := range rules {
+		source := "config"
+		if hooks.IsBuiltIn(rule) {
+			source = "built-in"
+		}
+		var matches []string
+		for _, name := range toolNames {
+			if hooks.RuleMatches(rule, name) {
+				matches = append(matches, name)
+			}
+		}
+		switch {
+		case len(matches) > 0:
+			fmt.Fprintf(w, "  %-20s %-9s matches: %s\n", rule, source, strings.Join(matches, ", "))
+		case !allListed:
+			fmt.Fprintf(w, "  %-20s %-9s matches nothing among the tools listed\n", rule, source)
+		case source == "built-in":
+			// [agent] the defaults are a safety net for tools that may appear later, so matching nothing today is normal
+			fmt.Fprintf(w, "  %-20s %-9s matches nothing\n", rule, source)
+		default:
+			fmt.Fprintf(w, "  %-20s %-9s matches nothing  <- warning: check the spelling; tool names use '_' (as listed above)\n", rule, source)
 		}
 	}
 	return true
 }
 
+// printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
+// they can't be set up.
+func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
+	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
+	if err != nil {
+		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)
+		return nil, false
+	}
+	fmt.Fprintf(w, "Built-in tools (%d)\n", len(builtins))
+	for _, t := range builtins {
+		def := t.GetToolDefinition().Function
+		names = append(names, def.Name)
+		fmt.Fprintf(w, "  %-28s %s\n", def.Name, firstLine(def.Desc))
+		if def.Name == "read_file" {
+			fmt.Fprintf(w, "  %-28s never reads: %s (.env.example is allowed)\n", "", strings.Join(builtin.DeniedNames(), ", "))
+		}
+	}
+	return names, true
+}
+
 // printMCP connects to each MCP server in name order, lists its tools and closes it, then prints a row per server
-// and a row per tool. It reports false if any server failed. A failed server does not stop the others.
-func printMCP(ctx context.Context, w io.Writer, cfg config.Config) bool {
-	names := slices.Sorted(maps.Keys(cfg.McpServers))
+// and a row per tool, and returns the tool names. ok is false if any server failed. A failed server does not stop
+// the others.
+func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []string, ok bool) {
+	servers := slices.Sorted(maps.Keys(cfg.McpServers))
 	var rows []string
 	var mcpTools []tools.Tool
 	allOK := true
-	for _, name := range names {
+	for _, name := range servers {
 		if ctx.Err() != nil { // interrupted: don't start the remaining servers
 			rows = append(rows, fmt.Sprintf("  %-12s not started (interrupted)", name))
 			continue
@@ -102,7 +157,7 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) bool {
 		mcpTools = append(mcpTools, serverTools...)
 	}
 
-	fmt.Fprintf(w, "MCP servers (%d)\n", len(names))
+	fmt.Fprintf(w, "MCP servers (%d)\n", len(servers))
 	for _, row := range rows {
 		fmt.Fprintln(w, row)
 	}
@@ -111,8 +166,9 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) bool {
 		def := t.GetToolDefinition().Function
 		hints, _ := mcpconnect.HintsOf(t)
 		fmt.Fprintf(w, "  %-36s %-24s %s\n", def.Name, hintLabel(hints), firstLine(def.Desc))
+		names = append(names, def.Name)
 	}
-	return allOK
+	return names, allOK
 }
 
 // inspectServer connects to one server, lists its tools and closes it again. serverTools is nil when it failed
