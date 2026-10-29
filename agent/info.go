@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -31,6 +32,8 @@ const (
 // [agent] It reuses the same setup functions chat mode calls, so the names it prints are the names the model gets.
 func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interrupts <-chan os.Signal) int {
 	w := cfg.OutBuffer
+	// a stdio server can print its environment (tokens) on stderr; info's output is meant to be safe to paste
+	cfg.McpServerStderr = io.Discard
 	printInfoHeader(w, cfg, configFile)
 	fmt.Fprintln(w)
 	config.PrintConfig(cfg)
@@ -98,7 +101,7 @@ func printDenyRules(w io.Writer, extraRules, toolNames []string, allListed bool)
 		var matches []string
 		for _, name := range toolNames {
 			if hooks.RuleMatches(rule, name) {
-				matches = append(matches, name)
+				matches = append(matches, safeText(name))
 			}
 		}
 		switch {
@@ -143,7 +146,7 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []stri
 	servers := slices.Sorted(maps.Keys(cfg.McpServers))
 	var rows []string
 	var mcpTools []tools.Tool
-	allOK := true
+	allOK, stdioFailed := true, false
 	for _, name := range servers {
 		if ctx.Err() != nil { // interrupted: don't start the remaining servers
 			rows = append(rows, fmt.Sprintf("  %-12s not started (interrupted)", name))
@@ -152,6 +155,7 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []stri
 		status, serverTools := inspectServer(ctx, cfg, name)
 		if serverTools == nil {
 			allOK = false
+			stdioFailed = stdioFailed || transportOf(cfg.McpServers[name]) == "stdio"
 		}
 		rows = append(rows, fmt.Sprintf("  %-12s %-6s %-22s %s", name, transportOf(cfg.McpServers[name]), runsWhat(cfg.McpServers[name]), status))
 		mcpTools = append(mcpTools, serverTools...)
@@ -161,11 +165,14 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []stri
 	for _, row := range rows {
 		fmt.Fprintln(w, row)
 	}
+	if stdioFailed {
+		fmt.Fprintln(w, "  (stdio servers' own error output is hidden in info mode, as it can hold tokens; chat mode shows it)")
+	}
 	fmt.Fprintf(w, "\nMCP tools (%d)\n", len(mcpTools))
 	for _, t := range mcpTools {
 		def := t.GetToolDefinition().Function
 		hints, _ := mcpconnect.HintsOf(t)
-		fmt.Fprintf(w, "  %-36s %-24s %s\n", def.Name, hintLabel(hints), firstLine(def.Desc))
+		fmt.Fprintf(w, "  %-36s %-24s %s\n", safeText(def.Name), hintLabel(hints), safeText(firstLine(def.Desc)))
 		names = append(names, def.Name)
 	}
 	return names, allOK
@@ -176,16 +183,16 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []stri
 func inspectServer(ctx context.Context, cfg config.Config, name string) (status string, serverTools []tools.Tool) {
 	conn, err := mcpconnect.ConnectMCPServer(ctx, name, cfg)
 	if err != nil {
-		return "FAILED  " + hideURL(err.Error(), cfg.McpServers[name].URL), nil
+		return "FAILED  " + safeText(hideURL(err.Error(), cfg.McpServers[name].URL)), nil
 	}
 	defer conn.Close() // stops the server (and, for stdio, its process group) before info moves on
 	serverTools, err = mcpconnect.GetMCPTools(ctx, conn, cfg.MCPResultMaxBytes)
 	if err != nil {
-		return "FAILED listing tools  " + hideURL(err.Error(), cfg.McpServers[name].URL), nil
+		return "FAILED listing tools  " + safeText(hideURL(err.Error(), cfg.McpServers[name].URL)), nil
 	}
 	status = "connected"
 	if res := conn.Session.InitializeResult(); res != nil && res.ServerInfo != nil {
-		status += fmt.Sprintf("  server: %s %s", res.ServerInfo.Name, res.ServerInfo.Version)
+		status += fmt.Sprintf("  server: %s %s", safeText(res.ServerInfo.Name), safeText(res.ServerInfo.Version))
 	}
 	return status + fmt.Sprintf("  %d tools", len(serverTools)), serverTools
 }
@@ -243,6 +250,19 @@ func hintLabel(h mcpconnect.ToolHints) string {
 		return "additive"
 	}
 	return strings.Join(labels, ", ")
+}
+
+// safeText returns s unchanged if every character is printable, otherwise Go-quoted ("\x1b[2J", "a\rb"). Names,
+// descriptions, versions and error text from an MCP server go straight to the terminal here, and a carriage return
+// or an escape sequence in them could redraw or hide part of the report. Quoting only the odd value keeps the
+// normal report readable and makes a strange one stand out.
+func safeText(s string) string {
+	for _, r := range s {
+		if !strconv.IsPrint(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }
 
 // firstLine returns the first sentence of a tool description's first line: enough to tell what the tool does.

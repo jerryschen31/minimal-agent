@@ -73,3 +73,35 @@ func Test_SetupAgent_CtrlCWhileConnecting_AbortsAndKeepsConnectedServersForShutd
 
 	a.ShutdownAgent(context.Background()) // closes a-remote; must not panic without a session or run trace
 }
+
+// - Verify info mode never passes a stdio server's own stderr through (a server can print tokens from its
+// environment there), and says it hid it when such a server failed
+func Test_Unit_PrintInfo_StdioServerStderrHidden(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	realStderr := os.Stderr
+	os.Stderr = w // catches anything that would still go to the real stderr
+	defer func() { os.Stderr = realStderr }()
+
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{
+		"leaky": {Command: "sh", Args: []string{"-c", "echo FAKE_SECRET_STDERR_456 >&2; exit 1"}},
+	}
+	code, out := runInfo(t, cfg, "")
+	os.Stderr = realStderr
+	w.Close()
+	stderr, _ := io.ReadAll(r)
+
+	if code != InfoFailed {
+		t.Errorf("exit code = %d, want %d (InfoFailed)", code, InfoFailed)
+	}
+	if strings.Contains(out, "FAKE_SECRET_STDERR_456") || strings.Contains(string(stderr), "FAKE_SECRET_STDERR_456") {
+		t.Errorf("the server's stderr leaked:\nstdout: %s\nstderr: %s", out, stderr)
+	}
+	if !strings.Contains(out, "error output is hidden in info mode") {
+		t.Errorf("expected the hidden-stderr note in the output:\n%s", out)
+	}
+}

@@ -273,3 +273,54 @@ func Test_RunChatLoop_PlainReader_DeniesWithoutAsking(t *testing.T) {
 		t.Errorf("expected the turn to finish with the model's answer, got:\n%s", text)
 	}
 }
+
+// - Verify the ask-on-deny wiring in chatLoop end to end on a (scripted) terminal: the closure is installed for a
+// ttyReader, prints the question with the quoted tool name and arguments, and the answer decides whether the vetoed
+// tool runs. Ctrl+C at the question denies the call and the turn finishes normally (no [interrupted]).
+func Test_ChatLoop_TTY_AskOnDeny(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer []string // keys typed at the "Allow once?" question
+		runs   int
+	}{
+		{"y allows", keystrokes(typed("y"), []string{keys.CtrlM}), 1},
+		{"Enter denies", []string{keys.CtrlM}, 0},
+		{"Ctrl+C denies", []string{keys.CtrlC}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+			fx.Provider.Script = []model.ChatMessage{
+				modeltest.AssistantToolCall("call_1", "delete_file", `{"path":"a.txt"}`),
+				modeltest.AssistantText("done"),
+			}
+			out := &syncBuffer{}
+			fx.Session.OutBuffer = out
+			keyin := keystrokes(typed("delete a.txt"), []string{keys.CtrlM}, c.answer, []string{keys.CtrlD})
+			reader := newTTYReaderWith(&auto.Pilot{Text: keyin}, out)
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				chatLoop(context.Background(), nil, fx.Session, reader)
+			}()
+			receiveOrFail(t, done, "the chat loop to end")
+
+			if fx.Session.PromptAllowDenyCall == nil {
+				t.Fatal("expected chatLoop to install PromptAllowDenyCall for a ttyReader")
+			}
+			got := out.String()
+			for _, want := range []string{`Tool: "delete_file"`, `Arguments: "{\"path\":\"a.txt\"}"`, "Allow once? [y/N] ", "done"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected %q in the output:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, "[interrupted]") {
+				t.Errorf("the turn was interrupted; Ctrl+C at the question should only deny the call:\n%s", got)
+			}
+			if tool.calls != c.runs {
+				t.Errorf("tool ran %d time(s), want %d", tool.calls, c.runs)
+			}
+		})
+	}
+}

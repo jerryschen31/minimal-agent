@@ -83,6 +83,9 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// This is the command that is executed to start a local MCP server
 	cmd := exec.Command(command, args...)
 	cmd.Stderr = os.Stderr
+	if cfg.McpServerStderr != nil {
+		cmd.Stderr = cfg.McpServerStderr
+	}
 	startInOwnGroup(cmd) // so a Ctrl+C that cancels a chat turn does not also kill the server
 	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
 	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.

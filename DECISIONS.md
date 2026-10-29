@@ -3049,3 +3049,25 @@ step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents w
   "matches nothing". It now returns the tools that loaded plus the failures (`errors.Join`). Info mode shows
   `FAILED listing tools` and the incomplete-list note; chat setup (`SetupMCPTools`) keeps the partial list and
   prints one warning per server, as before. Test: `Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete`.
+
+
+### 2026-10-29 — PR #27 review fixes: info mode output is safe to paste; the ask-on-deny wiring is tested
+
+- **Info mode hides stdio servers' stderr.** A server can print a token from its environment on stderr, and
+  `connectLocalMCPServer` sent it straight to `os.Stderr`, past everything info mode keeps out of its report. New
+  runtime field `config.Config.McpServerStderr` (`json:"-"`, nil = `os.Stderr`); `PrintInfo` sets it to
+  `io.Discard`. When a stdio server fails, the report says its error output was hidden and that chat mode shows
+  it. Chosen over capturing and redacting it: the pattern redactor can't know every token format, and info only
+  needs to say a server failed. Downside: diagnosing a broken stdio server needs chat mode (or running the
+  command by hand).
+- **Info mode quotes server-supplied text that isn't printable** (`safeText`: tool names, descriptions, server
+  name/version, error text, deny-rule matches). A carriage return or an escape sequence could otherwise redraw or
+  hide part of the report. Only a value holding such a character is quoted (`strconv.Quote`), so a normal report
+  is unchanged and an odd one stands out. Covers C0/C1 controls and invisible formatting characters (`\u202e`).
+- **The `runChatLoop` ask-on-deny closure is tested** (was a SESSION.md open item). Its body moved to
+  `chatLoop(ctx, interrupts, cs, reader)`; `runChatLoop` builds the reader and calls it. `Test_ChatLoop_TTY_AskOnDeny`
+  drives it with a scripted terminal: `y` runs the vetoed tool, Enter and Ctrl+C deny it, the question shows the
+  quoted name and arguments, and Ctrl+C there doesn't interrupt the turn.
+- **Not changed:** `config.default.json`'s `*read*` rule, kept on purpose for testing (Jerry, PR #27); to be
+  reverted later.
+

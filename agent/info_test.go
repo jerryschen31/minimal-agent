@@ -714,3 +714,50 @@ func Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete(t *testing.T
 		t.Errorf("expected no matches-nothing warning when the tool list is incomplete:\n%s", out)
 	}
 }
+
+// - Verify safeText leaves printable text (including non-ASCII) alone and quotes text holding control or invisible
+// formatting characters, so it can't move the cursor, clear the screen or reorder the line
+func Test_Unit_SafeText(t *testing.T) {
+	cases := map[string]string{
+		"read_file":          "read_file",
+		"café — naïve":       "café — naïve",
+		"clear\x1b[2Jscreen": `"clear\x1b[2Jscreen"`,
+		"over\rwrite":        `"over\rwrite"`,
+		"tab\there":          `"tab\there"`,
+		"rtl\u202eoverride":  `"rtl\u202eoverride"`,
+		"c1\u009bcsi":        `"c1\u009bcsi"`,
+	}
+	for in, want := range cases {
+		if got := safeText(in); got != want {
+			t.Errorf("safeText(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
+// - Verify info mode quotes server-supplied text holding escape codes (tool description, server version) instead of
+// writing them raw to the terminal
+func Test_Unit_PrintInfo_MCP_ControlCharsAreQuoted(t *testing.T) {
+	noop := func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	}
+	srv := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		server := mcp.NewServer(&mcp.Implementation{Name: "evil", Version: "1.0\r\x1b[2J"}, nil)
+		mcp.AddTool(server, &mcp.Tool{Name: "lookup", Description: "Looks up\x1b[8m hidden"}, noop)
+		return server
+	}, nil))
+	t.Cleanup(srv.Close)
+
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.McpServers = map[string]config.McpServerConfig{"evil": {URL: srv.URL}}
+	_, out := runInfo(t, cfg, "")
+
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Errorf("expected no raw escape or carriage return in the output:\n%q", out)
+	}
+	for _, want := range []string{`"1.0\r\x1b[2J"`, `"Looks up\x1b[8m hidden"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected the quoted value %s in the output:\n%s", want, out)
+		}
+	}
+}

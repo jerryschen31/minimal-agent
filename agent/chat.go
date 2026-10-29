@@ -136,7 +136,12 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 // ***********************************************************//
 
 func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error {
-	reader := newPromptReader(ctx, cs.InBuffer, cs.OutBuffer)
+	return chatLoop(ctx, intsigChRecv, cs, newPromptReader(ctx, cs.InBuffer, cs.OutBuffer))
+}
+
+// chatLoop is runChatLoop with the prompt reader passed in. newPromptReader only builds a ttyReader for a real
+// terminal, so tests pass a scripted one (newTTYReaderWith + auto.Pilot) to reach the ask-on-deny path below.
+func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error {
 	if tty, ok := reader.(*ttyReader); ok {
 		cs.PromptAllowDenyCall = func(ctx context.Context, call model.ToolCall, reason error) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Tool call denied by hook:")

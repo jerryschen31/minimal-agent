@@ -42,6 +42,9 @@ type Config struct {
 	// I/O configuration for the chat session
 	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
 	OutBuffer io.Writer `json:"-"`
+	// McpServerStderr is where stdio MCP servers' stderr goes; nil = os.Stderr. Info mode discards it: a server can
+	// print its environment (tokens) there, and info's output is meant to be safe to paste.
+	McpServerStderr io.Writer `json:"-"`
 
 	// system prompt
 	SystemPrompt string `json:"systemPrompt"`

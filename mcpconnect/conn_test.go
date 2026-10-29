@@ -264,6 +264,10 @@ func TestHelperMCPServer(t *testing.T) {
 	if os.Getenv("GO_WANT_MCP_HELPER") != "1" {
 		t.Skip("helper process for the connectLocalMCPServer test, not a real test")
 	}
+	// a test can ask the child to write a line on its stderr, to check where server stderr goes
+	if line := os.Getenv("GO_MCP_HELPER_STDERR"); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	// a test can ask the child to record its pid, to check later whether the process is still alive
 	if pidFile := os.Getenv("GO_MCP_HELPER_PIDFILE"); pidFile != "" {
 		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o644); err != nil {
@@ -748,4 +752,47 @@ func Test_Unit_WithDebugLogging_OnlyWrapsInDebugMode(t *testing.T) {
 	if logged.Transport != mcp.Transport(base) || logged.Writer != os.Stderr {
 		t.Errorf("debug on: expected the original transport logged to stderr, got %+v", logged)
 	}
+}
+
+// - Verify a stdio server's stderr goes to cfg.McpServerStderr when it is set (info mode discards it there, since a
+// server can print tokens from its environment)
+func Test_Unit_ConnectLocalMCP_ServerStderr_GoesToConfiguredWriter(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	t.Setenv("GO_WANT_MCP_HELPER", "1")
+	t.Setenv("GO_MCP_HELPER_STDERR", "FAKE_SECRET_STDERR_123")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var stderr syncWriter
+	s, err := connectLocalMCPServer(ctx, "local", config.McpServerConfig{Command: exe, Args: []string{"-test.run=^TestHelperMCPServer$"}}, config.Config{McpServerStderr: &stderr})
+	if err != nil {
+		t.Fatalf("connectLocalMCPServer: %v", err)
+	}
+	checkEchoRoundTrip(ctx, t, s) // the helper wrote its line before serving, so it has arrived by now
+	s.Close()
+
+	if !strings.Contains(stderr.String(), "FAKE_SECRET_STDERR_123") {
+		t.Errorf("expected the server's stderr in the configured writer, got %q", stderr.String())
+	}
+}
+
+// syncWriter is a bytes.Buffer safe for the os/exec copying goroutine and the test to use together.
+type syncWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *syncWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
