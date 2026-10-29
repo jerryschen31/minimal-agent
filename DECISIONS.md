@@ -385,8 +385,8 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
 
 14. **Ctrl+C kills the stdio MCP servers** (`mcpconnect/conn.go`, `connectLocalMCPServer`; verified 2026-10-23).
     - **Resolved 2026-10-23 for Unix and for Windows Ctrl+C** (`§ 2026-10-23 — Each stdio MCP server runs in its own process
-      group`). Still open from this item: the Windows tree kill (Job Object), and reusing the helper for `run_command`
-      and orchestrator workers when they are ported.
+      group`). Still open from this item: the Windows tree kill (Job Object, now item 17), and reusing the helper for
+      `run_command` and orchestrator workers when they are ported.
     - *Today:* stdio servers are started with plain `exec.Command`, so they share the agent's process group (Unix) or
       console (Windows). Outside the line editor's raw mode (during setup and during every running turn), the terminal
       sends Ctrl+C's SIGINT to the whole foreground process group. The agent survives (Go catches SIGINT with
@@ -444,6 +444,28 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
     - *Add with it:* a per-server connect timeout (`context.WithTimeout`, configurable) so one hung server cannot hold
       up startup.
 
+17. **Windows: no tree kill for stdio MCP servers** (`mcpconnect/procgroup_windows.go`, `killGroup`; Copilot on PR #24,
+    accepted by Jerry 2026-10-23).
+    - *Copilot:* `killGroup` is a no-op on Windows, and the new process group stops the console's Ctrl+C from reaching
+      the server, so a launcher's descendants (`node` under `npx`) can outlive `McpConnection.Close` on quit or on an
+      interrupted setup. Asked for a Job Object / tree kill, or to gate Windows support until there is one.
+    - *Today:* `Close` closes the server's stdin, the SDK waits up to 5 s, then kills the direct child (`npx`) only.
+      A well-behaved stdio server exits on stdin EOF, so a normal quit usually still cleans up. What is missing is
+      the backstop Unix has (`kill(-pgid)`): a server that ignores EOF can leave its child running.
+    - *Not Windows-only:* a hard kill of the agent (Task Manager's End Task, `kill -9`) leaves servers running on both
+      OSes, since no code of ours runs after it; on Unix the separate groups even help them survive. Only a Job
+      Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` would cover that, and only on Windows.
+    - *Before PR #24* the Windows "cleanup" was accidental: console Ctrl+C reached every process, servers included —
+      the bug item 14 fixed (it killed servers mid-turn).
+    - *Fix:* create a Job Object per server (`golang.org/x/sys/windows`, already an indirect dependency; ~40 lines),
+      assign the process right after start, set kill-on-close; `killGroup` = `TerminateJobObject`. A `taskkill /T`
+      call is not enough: by the time `killGroup` runs the SDK has already killed `npx`, so the tree can no longer
+      be found from its PID.
+    - *Why deferred:* nothing in this project runs or is tested on Windows yet, and untested process-handling code
+      is worse than a known, documented gap.
+    - *Revisit:* when the agent is first run on Windows, or with `run_command` / orchestrator workers (they start
+      children too and should share the helper).
+
 
 ---
 
@@ -456,6 +478,9 @@ Decisions made before this track went dormant (see `SESSION.md` for current stat
 - **`requires_approval`** (renamed from `mvp1`'s `approve`) = tools that need a human `[y/N]`.
   A *restriction* list, not an allowlist. Empty list ⇒ hook never installed ⇒ nothing gated.
   `["*"]` ⇒ everything gated.
+  **Superseded by `§ 2026-10-23 — Approval gate v1: open questions settled`:** never built; replaced by
+  `DenyRules` (globs that deny, plus a built-in delete/remove list) with an "allow once? [y/N]" ask only for a
+  denied call. Nothing asks by default.
 - **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
   `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
 - **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
@@ -2845,3 +2870,204 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
   `CommandTransport.TerminateDuration` lower would speed this up but also shortens the grace period of a normal
   shutdown; left at the default. (2) The program still exits with status 0 after an interrupted setup (Deferred
   item 3). (3) A Ctrl+C right as setup finishes either aborts or is discarded before the first prompt.
+
+### 2026-10-23 — Approval gate v1: open questions settled (plan only, nothing built)
+
+Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. Both plans are updated.
+
+- **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
+  (`<server>_<tool>`), and info mode is how you see them; the default list is checked against real names before
+  it is fixed. Info mode's deny-rules section waits until `DenyRules` exists.
+- **Ctrl+C at the "allow once? [y/N]" prompt cancels the whole turn**, the call included. **Superseded by
+  `§ 2026-10-24 — Ask-on-deny reads through the prompt reader; Ctrl+C there denies the call`.** During a turn Ctrl+C is
+  a signal (the line editor's raw mode is off), and the turn's interrupt watcher already cancels on it. Rejected:
+  reading the answer through the line editor so Ctrl+C only denies the call. Downside: you can't refuse one call
+  with Ctrl+C and let the model carry on; `n` or Enter does that.
+- **Default deny list: anything that deletes.** `*delete*` and `*remove*`, matched case-insensitively;
+  `run_command:rm` / `rmdir` once `run_command` exists. **Moving, writing and editing files stay allowed**, so the
+  agent can still do edits without prompts. Downsides: a move can overwrite a file, which is a delete in effect;
+  `*remove*` may catch harmless tools (e.g. "remove_label"), which then only cost one `y`; a destructive tool with
+  another name (`tidy`, `purge`) gets through — add it in config.
+- **Supersedes** the Track 1 `requires_approval` decision (a list of tools that always ask): never built, and asking
+  on every listed call is what v1 is meant to avoid.
+- **Two guardrails against a tampered config** (from the `exec.Command` discussion), added to the plans:
+  1. Info mode shows each stdio server's program and argument count (`npx (4 args)`), never the arguments or env.
+     Part of info mode's build.
+  2. A first-run trust prompt per stdio server, keyed on a hash of `command` + `args` + `env`, stored in a local
+     `0600` trust file (hash and name only). In autonomous mode an untrusted or changed server is not started unless
+     trusted beforehand or `allow-all` is set. Under "Later" in the approval plan; needs a trust-file decision first.
+
+### 2026-10-23 — Info mode (`-mode info`) built (`PLAN-info-mode.md` steps 1–4, 6)
+
+`go run . -mode info [-config f] [-workdir d]` prints the header (agent name/version, config file or "none,
+defaults only", absolute resolved working dir, whether the API-key variable is set), `config.PrintConfig`, the
+built-in tools (with `read_file`'s "never reads" list), every MCP server's status and every MCP tool by its
+model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`, `config/flags.go`,
+`mcpconnect/tools.go` (`ToolHints`, `HintsOf`), `tools/builtin/readfile.go` (`DeniedNames`).
+
+- **`main` dispatches before the agent is created** and never calls `SetupAgent`: no provider, memory or trace
+  recorder, so no model call, no API key needed, no trace file. `main` takes the config path from `flags.Config`,
+  so `config/` did not need to report which file it loaded (the plan's small `config/` change was dropped).
+- **Same setup functions as chat mode** (`SetupBuiltinTools`, `ConnectMCPServer`, `GetMCPTools`), so the names it
+  prints are the names the model gets. That replaces the plan's "compare both paths" drift test. What can still
+  drift is the wiring around them (info skips `SetupAgent`'s checks such as a positive `maxSteps`).
+- **One server at a time**: connect, list tools, close (`defer` in `inspectServer`), then the next. A failed server
+  gets a FAILED row and the rest still run. Stdio rows show the program and argument count (`npx (3 args)`), never
+  arguments or env. Connection errors have the configured URL replaced by `scheme://host/[rest hidden]` (the SDK's
+  error quotes the URL, which can hold a token).
+- **Hints** come from the server's MCP annotations, with the spec's default (`destructiveHint` true unless the tool
+  is read-only). Shown as `read-only`, `destructive`, `idempotent`, `additive` or `(no hints)`; they are claims.
+- **Exit codes**: 0 all good, 1 a server or the built-in tools failed, 130 Ctrl+C/SIGTERM. `main` calls `os.Exit`
+  in the info branch only; that is safe because no `defer` is registered yet and `PrintInfo` closed its servers.
+  Ctrl+C uses `createInterruptWatcher`, as setup does; servers not yet started are listed as "not started".
+- **Found while building:** the real filesystem server (1.0.0) has **no delete tool**, so the default deny rules
+  `*delete*` / `*remove*` match nothing there today; `move_file` and `write_file` are its destructive tools. The
+  default list earns its keep with other servers and with `run_command`.
+- **Honest downsides.** Info starts every configured server (real processes, network, auth). Serial, so a slow
+  `npx` download makes it slow (Deferred item 16). The exit code says that something failed, not which. A
+  server's own name/version and tool descriptions are printed as the server sent them. The `hideURL` scrub only
+  covers info: chat-mode setup still prints the raw connect error, URL included (pre-existing; see `SESSION.md`).
+  Ctrl+C while a **remote** server hangs in its handshake takes about 5 s: the SDK sends `notifications/cancelled`
+  with a 5 s timeout and waits for it (seen in the test; same for chat-mode setup, like the 5 s stdio
+  `TerminateDuration` in the setup-abort entry). Its HTTP requests to that server also stay open until exit.
+
+
+### 2026-10-23 — Info mode: PR #25 review fixes (corrects two points of the info-mode entry above)
+
+- **Info runs `SetupAgent`'s config checks** (shared `checkConfig`: positive `maxSteps`, positive
+  `mcpResultMaxBytes`), so it no longer passes a config chat mode refuses. On failure it prints
+  `Configuration: FAILED`, exits 1 and **starts no MCP server** (a bad cap would show servers as connected with no
+  tools). This replaces the "info skips `SetupAgent`'s checks" downside above.
+- **The mode is validated again after the config merge** (`config.ValidateMode`, called in `main`), so
+  `"agentMode": "info"` in a config file with `--json`, `-q` or `-mission` is refused like `-mode info`. Side
+  effect: an unknown `agentMode` in a config file now fails at startup (exit 2) instead of at `RunAgent`.
+  Downside: the error text still says `-mode` when the mode came from the file.
+- **`baseUrl` is printed through `config.DisplayURL`** (`/config` and info, via `PrintConfig`): scheme, host and
+  path stay; `user:password@`, the query and the fragment become `[hidden]`; an unparseable or host-less value is
+  hidden whole. It hides by **position in the URL, not by recognising tokens**, so it needs no detector and can't
+  miss an unusual token format there. Not `trace/redact.go`: `config/` is a leaf and `PrintConfig` is already an
+  allowlist. Downsides: a token in the **path** is still shown; a malformed query can't be seen on screen. Info's
+  `hideURL` for MCP errors stays separate and stricter (it hides the path too, since some MCP hosts put the key
+  in the path). A token in `baseUrl` is still a config mistake (keys belong in the `apiKeyName` variable); this
+  only keeps it out of CI logs and screen shares.
+
+### 2026-10-24 — Ask-on-deny reads through the prompt reader; Ctrl+C there denies the call (supersedes 2026-10-23)
+
+- **Why the old decision broke:** reading the y/N answer straight from stdin during a turn, with Ctrl+C cancelling
+  the turn, leaves the blocked read running after the cancel. It then swallows the next line typed at the chat
+  prompt, and it competes for stdin with the line editor.
+- **Now:** `runChatLoop` owns the `ttyReader`, so it sets `cs.AskOnDeny` to a closure that asks through the line
+  editor (`Allow once? [y/N] `). One reader of stdin, nothing left behind. The terminal is in raw mode while it
+  asks, so Ctrl+C is a key there and means **deny this call**; the model sees the denial and the turn goes on.
+  Not a terminal → `AskOnDeny` stays nil → denied without asking.
+- The old reason for rejecting this ("more input code inside a running turn") was wrong: it is less code than a
+  second stdin reader. Tests drive the prompt through `auto.Pilot`; the gate logic uses a fake `AskOnDeny`.
+- **Downside:** during that prompt Ctrl+C does not stop the whole turn; press `n`, then Ctrl+C at the next step.
+- **Same day, `denyRules` shape:** v1 is a JSON array of globs only; a rule file is a separate field later
+  (`denyRulesFile`, `-deny`), not a string form of `denyRules` (that would need custom decoding and be ambiguous).
+  Bare names (`"mv"`) are accepted and match only a tool of exactly that name; the `x:y` form is still rejected
+  until `run_command` gives it a meaning. Downside: `"mv"` looks like it blocks the program and doesn't yet; info
+  mode's "matches nothing" warning is the hint.
+
+
+### 2026-10-28 — `tool_vetoed`: every hook veto is traced with its outcome (supersedes the planned `tool_approved`)
+
+- **One event, `tool_vetoed {call_id, name, reason, decision, wait_ms}`**, recorded by `checkBeforeToolHooks` for
+  every veto, between the call's `tool_requested` and `tool_finished`. `decision` is `denied` (nobody asked: input is
+  not a terminal), `denied_by_user` (asked; n, Enter, anything but y/yes, or Ctrl+C) or `allowed_by_user` (asked, y).
+  A call with several vetoing hooks gets one event per veto. A call no hook vetoes gets none.
+- **Why not `tool_approved` for overrides only** (the 2026-10-23 plan): Jerry asked for user denials to be traced too.
+  With only overrides recorded, a policy denial and a tool failure look the same (both a failed `tool_finished`
+  with an `error: …` result), and nothing shows whether a person was asked. One event with a decision field covers
+  all three outcomes with one shape instead of two or three event types.
+- **`wait_ms`** is the time spent waiting for the user's answer. `tool_finished.duration_ms` includes that wait, so a
+  slow-looking call that was approved is explained by `wait_ms`, not by the tool.
+- **Not recorded in the event:** the arguments (already in `tool_requested`), and which hook vetoed (the reason text
+  names the rule; hooks have no name of their own yet). Everything goes through `Record`'s redaction as usual.
+- **Digest:** the call's line gets a note per veto: `[allowed once by user over: denied by rule "*move*"]`,
+  `[user said no to: …]`, `[vetoed, user not asked: …]`. The footer adds
+  `vetoes: N (allowed once by user: A, denied by user: D, denied without asking: X)`, only when N > 0. It counts
+  vetoes, not calls (a call vetoed by two hooks counts twice); an unknown decision is listed as `unknown decision: K`.
+- **`run_start.deny_rules`**: the config's `denyRules` as written, so the trace shows the policy in effect. The
+  built-in defaults (`*delete*`, `*remove*`) are always on and not repeated, because `trace` does not import `hooks`.
+  Downside: a reader has to know the defaults; an empty field does not mean "no rules".
+- Files: `trace/event.go`, `trace/digest_activity.go`, `trace/doc.go`, `agent/react.go` (`executeToolCall` and
+  `checkBeforeToolHooks` now take `taskTrace`).
+
+
+### 2026-10-28 — Approval gate v1 built: deny rules, ask-on-deny, info section (`PLAN-approval-gates.md` steps 1–6)
+
+Jerry hand-coded the core (the `Hook` interface, `DenyRules`, the hook loop, the session wiring), tutored step by
+step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents wrote the tests.
+
+- **`hooks/` is its own capability package** (`hook.go`: `Hook{ BeforeTool(ctx, model.ToolCall) error }`;
+  `denyrules.go`: `DenyRules`). It imports only `model`. The loop keeps one call site, `checkBeforeToolHooks`, and
+  every later check (allow list, MCP first-use trust, rate limits) is another `Hook` in `cs.Hooks`, not another
+  `if` in `executeToolCall`. A veto error is returned unwrapped, so the model sees `error: denied by rule "…"`.
+- **Where the check runs:** `executeToolCall` step 3, after the unknown-tool and argument checks and before the tool
+  runs. Not a `continue` in `reActLoop`: every tool call must still get a tool result (providers reject an
+  orphaned call), and the model must see the denial to recover.
+- **`DenyRules`:** the built-in `*delete*`, `*remove*` plus `cfg.DenyRules`. Each rule is trimmed and lowercased;
+  a `:` rule or a malformed glob (`path.Match(rule, "")` fails) is a setup error quoting the rule as written; a
+  duplicate is skipped. Built at `SetupAgent` step 3.5, before any MCP server starts, and installed with
+  `chatSession.Hooks = []hooks.Hook{denyRules}` after `setupChatSession`. `RuleMatches(rule, name)` is the one
+  matcher, used by `BeforeTool` and by info mode. No default in `GetDefaultConfig`: the defaults live in `hooks`,
+  so a config file's `denyRules` adds to them and can't replace them.
+- **Ask-on-deny is a session field, `PromptAllowDenyCall func(ctx, call, reason error) bool`** (renamed by Jerry
+  from `AskOnDeny` in the 2026-10-24 entry: true = allow). `runChatLoop` fills it, only when the reader is a
+  `*ttyReader`, with a closure that prints the tool name, the arguments (`%q`, so model text can't send terminal
+  escape codes) and the reason, then calls `tty.AskYesNo(ctx, "Allow once? [y/N] ")`. `nil` (pipes, tests) =
+  denied without asking. A yes overrides only that hook's veto; later hooks still run.
+- **`(*ttyReader).AskYesNo`** reads through the same line editor (not `ReadPrompt`), with the question as the
+  prompt and an **empty history** while asking (so ↑ can't recall an old "y" sent as a chat message), both put
+  back with `defer`. Only a single-line `y`/`yes` allows; anything else, a multi-line answer, Ctrl+C or a read
+  error is no. Not generalized: a later `Ask(ctx, prompt) (string, error)` is the split, when a second kind of
+  question needs it.
+- **Info mode's "Deny rules" section** (`PLAN-info-mode.md` step 5): each rule, built-in/config, and every tool it
+  matches. A config rule that matches nothing gets a warning; a built-in one doesn't (matching nothing today is
+  normal). When some tools couldn't be listed (built-ins failed, a server failed or wasn't started), a note says
+  so and the warning is left out. An invalid rule prints `Deny rules: FAILED: …` and exits 1.
+- **Tracing:** `tool_vetoed` (entry above). It is what `§ Build order` step 2 called `tool_decided`: only a veto
+  gets an event, because a call no hook vetoes is already fully described by `tool_requested` / `tool_finished`.
+- **Downsides:** a yes isn't remembered (a retry asks again; "allow always" belongs in config). The
+  `runChatLoop` closure has no automated test, because `newPromptReader` only builds a `ttyReader` for a real
+  terminal. Matching is on names only, so a tool that deletes but isn't named so passes (info mode's hints help
+  spot it).
+
+
+### 2026-10-28 — Approval gate v1: PR #26 review fixes (corrects the entry above)
+
+- **`RuleMatches` treats a tool name as an opaque string.** `path.Match`'s `*` and `?` stop at `/`, and MCP server
+  labels (so model-facing names) may contain `/`, so `*delete*` missed `team/fs_delete_file`: a deletion tool could
+  skip the default denial and the prompt. `/` is now mapped to a byte with no meaning in a pattern on both sides,
+  so `*` and `?` match across it and a literal `/` in a rule still matches. Chosen over rejecting `/` in names at
+  setup, which would break a working server config to fix a matcher. Test: `Test_Unit_DenyRules_SlashInToolName`.
+- **The approval question prints the tool name with `%q`**, like the arguments: MCP tool names are not checked for
+  control characters, so a server could send terminal escape codes through the name.
+- **`GetMCPTools` reports an incomplete list.** It used to print a warning and return `nil` error when `tools/list`
+  failed (or a tool couldn't be wrapped), so info mode showed the server as connected and the deny rules warned
+  "matches nothing". It now returns the tools that loaded plus the failures (`errors.Join`). Info mode shows
+  `FAILED listing tools` and the incomplete-list note; chat setup (`SetupMCPTools`) keeps the partial list and
+  prints one warning per server, as before. Test: `Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete`.
+
+
+### 2026-10-29 — PR #27 review fixes: info mode output is safe to paste; the ask-on-deny wiring is tested
+
+- **Info mode hides stdio servers' stderr.** A server can print a token from its environment on stderr, and
+  `connectLocalMCPServer` sent it straight to `os.Stderr`, past everything info mode keeps out of its report. New
+  runtime field `config.Config.McpServerStderr` (`json:"-"`, nil = `os.Stderr`); `PrintInfo` sets it to
+  `io.Discard`. When a stdio server fails, the report says its error output was hidden and that chat mode shows
+  it. Chosen over capturing and redacting it: the pattern redactor can't know every token format, and info only
+  needs to say a server failed. Downside: diagnosing a broken stdio server needs chat mode (or running the
+  command by hand).
+- **Info mode quotes server-supplied text that isn't printable** (`safeText`: tool names, descriptions, server
+  name/version, error text, deny-rule matches). A carriage return or an escape sequence could otherwise redraw or
+  hide part of the report. Only a value holding such a character is quoted (`strconv.Quote`), so a normal report
+  is unchanged and an odd one stands out. Covers C0/C1 controls and invisible formatting characters (`\u202e`).
+- **The `runChatLoop` ask-on-deny closure is tested** (was a SESSION.md open item). Its body moved to
+  `chatLoop(ctx, interrupts, cs, reader)`; `runChatLoop` builds the reader and calls it. `Test_ChatLoop_TTY_AskOnDeny`
+  drives it with a scripted terminal: `y` runs the vetoed tool, Enter and Ctrl+C deny it, the question shows the
+  quoted name and arguments, and Ctrl+C there doesn't interrupt the turn.
+- **Not changed:** `config.default.json`'s `*read*` rule, kept on purpose for testing (Jerry, PR #27); to be
+  reverted later.
+

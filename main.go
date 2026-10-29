@@ -43,6 +43,11 @@ func main() {
 
 	// flag values override any corresponding values from the config file
 	cfg = config.FlagsOverlay(cfg, flags)
+	// the mode may have come from the config file, so check it against the flags again now
+	if err := config.ValidateMode(cfg, flags); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 
 	// setup context - catch OS SIGTERM signals (e.g., process termination signal (kill)) and terminate gracefully
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
@@ -50,6 +55,19 @@ func main() {
 	// handle OS interrupt signals (e.g., Ctrl+C) through a separate channel
 	intsigCh := make(chan os.Signal, 1)
 	signal.Notify(intsigCh, os.Interrupt)
+
+	// info mode prints what the agent would have and exits; it never calls SetupAgent, so no model call and no trace files
+	if cfg.AgentMode == config.ModeInfo {
+		configFile := ""
+		if flags.Config != nil {
+			configFile = *flags.Config
+		}
+		code := agent.PrintInfo(ctx, cfg, configFile, intsigCh)
+		stop()
+		// [agent] os.Exit skips deferred calls; safe here because none are registered yet and PrintInfo has
+		// already closed every MCP server it started
+		os.Exit(code)
+	}
 
 	// create the agent instance
 	myAgent := agent.Agent{}

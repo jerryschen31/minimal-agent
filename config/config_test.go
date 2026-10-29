@@ -434,3 +434,60 @@ func Test_Unit_PrintConfig_ShowsDebug(t *testing.T) {
 		t.Errorf("expected debug to be printed, got:\n%s", out.String())
 	}
 }
+
+// - Verify DisplayURL keeps scheme, host (with port) and path, replaces userinfo, query and fragment with
+// [hidden], and shows nothing of an input that isn't an absolute URL
+func Test_Unit_DisplayURL(t *testing.T) {
+	const notAbsolute = "[hidden: not an absolute URL]"
+	tests := []struct {
+		name   string
+		raw    string
+		want   string
+		secret string // must not appear in the result; "" when nothing is hidden
+	}{
+		{"plain https with path", "https://api.openai.com/v1", "https://api.openai.com/v1", ""},
+		{"http with port", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/v1", ""},
+		{"user and password", "https://user:FAKE_SECRET_PW_123@host.example/v1", "https://[hidden]@host.example/v1", "FAKE_SECRET_PW_123"},
+		{"user only", "https://FAKE_SECRET_USER_123@host.example/v1", "https://[hidden]@host.example/v1", "FAKE_SECRET_USER_123"},
+		{"query", "https://host.example/v1?key=FAKE_SECRET_QUERY_123", "https://host.example/v1?[hidden]", "FAKE_SECRET_QUERY_123"},
+		{"bare question mark", "https://host.example/v1?", "https://host.example/v1?[hidden]", ""},
+		{"fragment", "https://host.example/v1#FAKE_SECRET_FRAG_123", "https://host.example/v1#[hidden]", "FAKE_SECRET_FRAG_123"},
+		{"userinfo, query and fragment", "https://user:tok@host/v1?key=x#frag", "https://[hidden]@host/v1?[hidden]#[hidden]", "tok"},
+		{"userinfo and query", "https://user:tok@host/v1?key=x", "https://[hidden]@host/v1?[hidden]", "tok"},
+		{"empty", "", "", ""},
+		{"not a url", "not a url", notAbsolute, "not a url"},
+		{"no scheme", "host.example/v1", notAbsolute, "host.example"},
+		{"invalid url", "http://[::1", notAbsolute, "::1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DisplayURL(tt.raw)
+			if got != tt.want {
+				t.Errorf("DisplayURL(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+			if tt.secret != "" && strings.Contains(got, tt.secret) {
+				t.Errorf("DisplayURL(%q) = %q, leaked %q", tt.raw, got, tt.secret)
+			}
+		})
+	}
+}
+
+// - Verify PrintConfig shows baseUrl through DisplayURL: the host is printed, the password and query are not
+func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.BaseURL = "https://user:FAKE_SECRET_USERINFO_123@llm.example.invalid/v1?key=FAKE_SECRET_QUERY_123"
+
+	PrintConfig(cfg)
+
+	got := out.String()
+	for _, secret := range []string{"FAKE_SECRET_USERINFO_123", "FAKE_SECRET_QUERY_123"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("expected PrintConfig not to print %q, got:\n%s", secret, got)
+		}
+	}
+	if want := "baseUrl:       https://[hidden]@llm.example.invalid/v1?[hidden]\n"; !strings.Contains(got, want) {
+		t.Errorf("expected PrintConfig output to contain %q, got:\n%s", want, got)
+	}
+}

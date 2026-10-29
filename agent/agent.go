@@ -8,6 +8,7 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
@@ -27,12 +28,8 @@ type Agent struct {
 // then returns context.Canceled, and the MCP servers that had already connected are kept in agent.mcpConns, so
 // ShutdownAgent closes them. A nil interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
 func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupts <-chan os.Signal) error {
-	if cfg.MaxSteps <= 0 {
-		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
-	}
-	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
-	if cfg.MCPResultMaxBytes <= 0 {
-		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
+	if err := checkConfig(cfg); err != nil {
+		return err
 	}
 	// agent mode
 	agent.agentMode = cfg.AgentMode
@@ -51,6 +48,12 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 
 	// 3. setup context struct for managing active conversation context
 	chatContext, err := contextwindow.SetupChatContext(cfg)
+	if err != nil {
+		return err
+	}
+
+	// 3.5 setup deny rules list / approval gates
+	denyRules, err := hooks.SetupDenyRules(cfg.DenyRules)
 	if err != nil {
 		return err
 	}
@@ -109,6 +112,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 		return err
 	}
 	chatSession.ShowProgress = shouldShowProgress(cfg)
+	chatSession.Hooks = []hooks.Hook{denyRules}
 	agent.session = chatSession
 
 	return nil
@@ -159,6 +163,19 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 			fmt.Fprintf(os.Stderr, "trace: %v\n", err)
 		}
 	}
+}
+
+// checkConfig rejects config values that would make the agent fail later, quietly or on every turn. Shared by
+// SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
+func checkConfig(cfg config.Config) error {
+	if cfg.MaxSteps <= 0 {
+		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
+	}
+	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
+	if cfg.MCPResultMaxBytes <= 0 {
+		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
+	}
+	return nil
 }
 
 func createSystemMessage(systemPrompt string) model.ChatMessage {

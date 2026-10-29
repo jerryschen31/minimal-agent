@@ -114,3 +114,84 @@ func Test_Unit_FlagsOverlay_Debug(t *testing.T) {
 		t.Errorf("expected -debug=false to win over the config file")
 	}
 }
+
+// - Verify -mode info parses on its own, and rejects the flags that only other modes use
+func Test_Unit_ParseFlags_ModeInfo(t *testing.T) {
+	mission := filepath.Join(t.TempDir(), "mission.md")
+	if err := os.WriteFile(mission, []byte("x"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", mission, err)
+	}
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr string // "" means no error expected
+	}{
+		{"alone", []string{"-mode", "info"}, ""},
+		{"with --json", []string{"-mode", "info", "--json"}, "--json only applies"},
+		{"with -q", []string{"-mode", "info", "-q", "x"}, "-query only applies"},
+		{"with -mission", []string{"-mode", "info", "-mission", mission}, "-mission only applies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flags, err := ParseFlags(tc.args, io.Discard)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if flags.Mode == nil || *flags.Mode != ModeInfo {
+					t.Errorf("expected Mode %q, got %v", ModeInfo, flags.Mode)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected an error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// - Verify the unknown-mode error lists info among the valid modes
+func Test_Unit_ParseFlags_UnknownMode_ListsInfo(t *testing.T) {
+	_, err := ParseFlags([]string{"-mode", "bogus"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "|info") {
+		t.Errorf("expected the error to list info, got %v", err)
+	}
+}
+
+// - Verify ValidateMode checks the effective mode (from the config file or -mode) against the flags given
+func Test_Unit_ValidateMode(t *testing.T) {
+	withMode := func(mode string) Config {
+		cfg := GetDefaultConfig()
+		cfg.AgentMode = mode
+		return cfg
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		flags   Flags
+		wantErr string // "" means no error expected
+	}{
+		{"config info with --json", withMode(ModeInfo), Flags{JSON: new(true)}, "--json only applies"},
+		{"config info with -q", withMode(ModeInfo), Flags{Query: new("x")}, "-query only applies"},
+		{"config info with -mission", withMode(ModeInfo), Flags{Mission: new("mission.md")}, "-mission only applies"},
+		{"config info alone", withMode(ModeInfo), Flags{}, ""},
+		{"config chat alone", withMode(ModeChat), Flags{}, ""},
+		{"config bogus", withMode("bogus"), Flags{}, "-mode must be one of"},
+		{"-mode info overlaid, with --json", FlagsOverlay(GetDefaultConfig(), Flags{Mode: new(ModeInfo)}),
+			Flags{Mode: new(ModeInfo), JSON: new(true)}, "--json only applies"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateMode(tc.cfg, tc.flags)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected an error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}

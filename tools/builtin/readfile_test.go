@@ -530,3 +530,16 @@ func Test_ReadFile_UsesConfiguredCap(t *testing.T) {
 		t.Errorf("got %q, %v", got, err)
 	}
 }
+
+// - Verify DeniedNames returns a copy: changing the result does not change the deny list
+func Test_DeniedNames_ReturnsCopy(t *testing.T) {
+	first := DeniedNames()
+	if len(first) == 0 {
+		t.Fatal("expected a non-empty deny list")
+	}
+	want := first[0]
+	first[0] = "mutated"
+	if got := DeniedNames()[0]; got != want {
+		t.Errorf("expected %q after mutating a previous result, got %q", want, got)
+	}
+}

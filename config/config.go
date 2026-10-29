@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -41,12 +42,18 @@ type Config struct {
 	// I/O configuration for the chat session
 	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
 	OutBuffer io.Writer `json:"-"`
+	// McpServerStderr is where stdio MCP servers' stderr goes; nil = os.Stderr. Info mode discards it: a server can
+	// print its environment (tokens) there, and info's output is meant to be safe to paste.
+	McpServerStderr io.Writer `json:"-"`
 
 	// system prompt
 	SystemPrompt string `json:"systemPrompt"`
 
 	// memory configuration
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
+
+	// deny rules configuration
+	DenyRules []string `json:"denyRules"` // deny rules - glob pattern-matches on model-facing tool names
 
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
@@ -151,6 +158,7 @@ func GetDefaultConfig() Config {
 		TraceEnabled:   true,
 		DigestEnabled:  true,
 		RedactionLevel: "standard",
+		// DenyRules:      []string{"*move*"},
 
 		TraceDir:           ".agent-trace",
 		TraceMaxEventBytes: 100 << 20, // 100 MB
@@ -238,7 +246,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  userId:        %s\n", cfg.UserID)
 	fmt.Fprintf(w, "  provider:      %s\n", cfg.Provider)
 	fmt.Fprintf(w, "  model:         %s\n", cfg.Model)
-	fmt.Fprintf(w, "  baseUrl:       %s\n", cfg.BaseURL)
+	fmt.Fprintf(w, "  baseUrl:       %s\n", DisplayURL(cfg.BaseURL))
 	fmt.Fprintf(w, "  apiKeyName:    %s (name of the environment variable, not the key)\n", cfg.ApiKeyName)
 	fmt.Fprintf(w, "  agentName:     %s\n", cfg.AgentName)
 	fmt.Fprintf(w, "  agentVersion:  %s\n", cfg.AgentVersion)
@@ -258,6 +266,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
+	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return
@@ -270,4 +279,29 @@ func PrintConfig(cfg Config) {
 		}
 		fmt.Fprintf(w, "    %s (%s)\n", name, transport)
 	}
+}
+
+// DisplayURL returns raw in a form that is safe to print: scheme, host and path stay, while the parts that can
+// carry a credential (user:password@, the query string, the fragment) are replaced by [hidden], whatever they
+// contain. It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+func DisplayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "[hidden: not an absolute URL]" // can't tell which part is which, so show none of it
+	}
+	shown := u.Scheme + "://"
+	if u.User != nil {
+		shown += "[hidden]@"
+	}
+	shown += u.Host + u.EscapedPath()
+	if u.RawQuery != "" || u.ForceQuery {
+		shown += "?[hidden]"
+	}
+	if u.Fragment != "" {
+		shown += "#[hidden]"
+	}
+	return shown
 }

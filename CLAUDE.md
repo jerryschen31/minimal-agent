@@ -123,6 +123,8 @@ go test ./contextwindow -run OrphanedTool -v     # one test family
 go test -run XXX -bench . ./contextwindow        # window-strategy benchmarks
 go run . [-config file] [-model m] [-workdir dir] [-debug]  # bare `go run .` = chat mode; read_file confined to -workdir (default .)
                                                  # -debug (or "debug": true): per-turn context dump + MCP protocol log on stderr
+go run . -mode info [-config file]               # print config, built-in + MCP tools (model-facing names), then exit;
+                                                 # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
@@ -136,8 +138,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `model/` (shared message/tool types, `Provider` interface, OpenAI-compatible adapter),
   `memory/` (chat history), `contextwindow/` (`ChatContext` + the four window strategies +
   summarize/compact), `tools/` (the `Tool` interface, `ToolRegistry`, built-in tool setup) with
-  `tools/builtin/` (`ReadFileTool`), and `mcpconnect/` (MCP client connections + the adapter that
-  wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts).
+  `tools/builtin/` (`ReadFileTool`), `mcpconnect/` (MCP client connections + the adapter that
+  wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
+  `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
@@ -190,6 +193,15 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 - **Two prompt readers (`agent/input.go`):** `ttyReader` (go-multiline-ny line editor) only when stdin is a
   real terminal; `plainReader` (line by line) for pipes, files and tests. Tests drive the editor through
   `newTTYReaderWith(&auto.Pilot{...}, io.Discard)`; the terminal must be set before the first `BindKey`.
+- **Every tool call passes `checkBeforeToolHooks` (`agent/react.go`) before it runs**, after the unknown-tool and
+  argument checks. A veto is returned as the tool result (`error: denied by rule "…"`), never by skipping the call,
+  because every tool call needs a result. Each veto is traced as `tool_vetoed` (`denied` | `denied_by_user` |
+  `allowed_by_user`). The user is asked only through `cs.PromptAllowDenyCall`, which `runChatLoop` sets for a
+  `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second reader would
+  steal the next prompt line); `nil` means deny without asking. Model text shown in the question is printed with
+  `%q`. A new path that runs tools must go through this check. Deny rules match model-facing names
+  (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule fails setup.
+  See `DECISIONS.md § Approval gate v1 built`.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
