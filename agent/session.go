@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
@@ -14,17 +16,18 @@ import (
 
 // chatSession holds the state and configuration for an ongoing chat session
 type ChatSession struct {
-	Config     config.Config
-	Provider   model.Provider
-	MsgHistory memory.ChatHistory
-	MsgContext *contextwindow.ChatContext
-	Tools      *tools.ToolRegistry
-	SystemMsg  model.ChatMessage
-	UserID     string
-	InBuffer   io.Reader
-	OutBuffer  io.Writer
-	Recorder   trace.Recorder
-
+	Config              config.Config
+	Provider            model.Provider
+	MsgHistory          memory.ChatHistory
+	MsgContext          *contextwindow.ChatContext
+	Tools               *tools.ToolRegistry
+	Hooks               []hooks.Hook
+	SystemMsg           model.ChatMessage
+	UserID              string
+	InBuffer            io.Reader
+	OutBuffer           io.Writer
+	Recorder            trace.Recorder
+	PromptAllowDenyCall func(ctx context.Context, call model.ToolCall, reason error) bool
 	// ShowProgress prints "thinking" dots while waiting for the model (see chatWithProgress).
 	// Set by SetupAgent only for chat mode on a terminal; tests leave it off.
 	ShowProgress bool

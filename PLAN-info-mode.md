@@ -1,6 +1,6 @@
 # PLAN: info mode (`-mode info`)
 
-Status: **steps 1–4 and 6 built (2026-10-23)**, see `DECISIONS.md § Info mode (-mode info) built`; step 5 (deny rules) waits for approval-gates v1. **Built before `PLAN-approval-gates.md`** (decided 2026-10-23): rules are easier to write once you can see the real tool names. Companion to `PLAN-approval-gates.md`: deny rules match on tool names, so you need a way to see the exact names (and what the agent can reach) before writing rules.
+Status: **all steps built**: 1–4 and 6 on 2026-10-23 (`DECISIONS.md § Info mode (-mode info) built`), step 5 (deny rules) on 2026-10-28 (`DECISIONS.md § Approval gate v1 built`). **Built before `PLAN-approval-gates.md`** (decided 2026-10-23): rules are easier to write once you can see the real tool names. Companion to `PLAN-approval-gates.md`: deny rules match on tool names, so you need a way to see the exact names (and what the agent can reach) before writing rules.
 
 ## Goal
 

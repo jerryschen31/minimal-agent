@@ -1,6 +1,6 @@
 # PLAN: approval gates
 
-Status: **plan only, nothing implemented**. Build-order step 2 in `DECISIONS.md § Build order: tracing core and approval before the autonomous port`. Follows tracing (PR #20) and the L1 digest.
+Status: **v1 built (2026-10-28)**, see `DECISIONS.md § Approval gate v1 built` and `§ tool_vetoed`; everything under "Later" is not built. Build-order step 2 in `DECISIONS.md § Build order: tracing core and approval before the autonomous port`. Follows tracing (PR #20) and the L1 digest.
 
 - 2026-10-22: first full design (allow + deny lists, prompts, session grants, MCP trust). Kept below under "Later".
 - 2026-10-23: **cut to v1.** The goal is to learn how hooks are built and to stop dangerous calls without bothering the user, not a complete approval system. Companion plan: `PLAN-info-mode.md` (lists the exact tool names that deny rules match against).
@@ -23,8 +23,7 @@ runToolCall(call)
   │     if err != nil:
   │         chat mode → "allow once? [y/N]"  (ask-on-deny)
   │             y → run the tool
-  │             N / Enter / EOF / no terminal → denied
-  │             Ctrl+C → denied, and the whole turn is cancelled
+  │             N / Enter / EOF / Ctrl+C / no terminal → denied (the turn goes on)
   │         other modes → denied
   │     denied → error observation "denied by rule …"; skip the tool
   ├─ callToolSafely                                              (existing)
@@ -60,22 +59,26 @@ type Hook interface {
 
 - Shown **only for a denied call**, so prompts stay rare: `filesystem_delete_file was denied by rule "*delete*". Allow once? [y/N]`.
 - Default is No. Enter, `n` and EOF mean deny; the model sees the denial and can adapt.
-- **Ctrl+C cancels the whole turn** (decided 2026-10-23), the call included. During a turn the terminal is not in the line editor's raw mode, so Ctrl+C arrives as a signal and the turn's interrupt watcher cancels the turn, as it does anywhere else in a turn: `[interrupted]`, nothing added to memory. Reading the answer through the line editor (so Ctrl+C is a key and only denies the call) was rejected: more input code inside a running turn, for little gain. Ctrl+C keeps meaning "stop".
+- **Ctrl+C denies this call; the turn goes on** (decided 2026-10-24, superseding the 2026-10-23 "Ctrl+C cancels the turn"; `DECISIONS.md § Ask-on-deny reads through the prompt reader`). The question is asked through the chat loop's own prompt reader (the line editor), so stdin has one reader and Ctrl+C is a key there, not a signal.
+- ~~**Ctrl+C cancels the whole turn** (decided 2026-10-23), the call included.~~ Superseded 2026-10-24: During a turn the terminal is not in the line editor's raw mode, so Ctrl+C arrives as a signal and the turn's interrupt watcher cancels the turn, as it does anywhere else in a turn: `[interrupted]`, nothing added to memory. Reading the answer through the line editor (so Ctrl+C is a key and only denies the call) was rejected: more input code inside a running turn, for little gain. Ctrl+C keeps meaning "stop".
 - "Once" means this one call. No session grants in v1.
 - Only when stdin is a real terminal (the same check `ttyReader` uses). Pipes, tests, autonomous and worker modes never ask: denied.
 - Parallel tool calls (later) must serialize prompts with a mutex; v1 runs tools in order, so not needed yet.
-- How the prompt is wired: the asker is a small function on the session (`AskOnDeny func(call, reason) bool`), nil outside chat. It is not a `Hook`, because asking changes the outcome of a veto rather than issuing one. `hooks/` stays free of terminal code.
+- How the prompt is wired: the asker is a small function on the session (`AskOnDeny func(ctx, call, reason) bool`), nil outside chat on a terminal. `runChatLoop` sets it to a closure over its `ttyReader`, which asks with an `Allow once? [y/N] ` prompt. It is not a `Hook`, because asking changes the outcome of a veto rather than issuing one. `hooks/` stays free of terminal code.
 
 ## Tracing and digest
 
-- **No new event in v1.** A denial goes through the existing `tool_finished` with an error: `denied by rule "…"`. The digest already renders it as `(failed: denied by rule …)`.
-- **An approved-once override gets a `tool_approved {call_id, rule}` event** (decided 2026-10-23), recorded only for asked-and-approved calls, before the tool runs. `tool_finished` has no field for it, and putting it in the tool result would show it to the model. Digest: `(approved once, rule …)`, plus a footer count, because an override of a safety rule is exactly what an auditor wants to see.
+- ~~No new event in v1~~ / ~~`tool_approved {call_id, rule}` for overrides only~~ (2026-10-23), **superseded 2026-10-28** by one `tool_vetoed` event for every veto, see `DECISIONS.md § tool_vetoed`:
+  `{call_id, name, reason, decision, wait_ms}`, decision = `denied` (not asked) | `denied_by_user` | `allowed_by_user`, recorded between `tool_requested` and `tool_finished`. Digest: a `[allowed once by user over: …]` / `[user said no to: …]` / `[vetoed, user not asked: …]` note on the call's line, plus a `vetoes:` footer count. `run_start` also records the config's `deny_rules`.
 
 ## Config
 
 | Field | Flag | Default | Notes |
 |---|---|---|---|
 | `denyRules` | none in v1 | `[]` (added to the built-in list) | printed by `/config` and `-mode info` |
+
+- **v1 is the JSON array only** (decided 2026-10-24): `"denyRules": ["*move*", "*_write_file"]`. A rule file (`denyRulesFile`, later `-deny <file>`) is a separate field under "Later", never a second meaning of `denyRules`.
+- **Bare names are accepted** (2026-10-24): `"mv"` is a glob with no wildcard, so it matches only a tool named exactly `mv`. Blocking the *program* `mv` needs `run_command:mv`, once `run_command` exists. Info mode shows such a rule as "matches nothing".
 
 ## Build order (top-down)
 
@@ -84,7 +87,7 @@ type Hook interface {
 2. `hooks/`: the `Hook` interface and `DenyRules` (glob match, defaults + config, invalid pattern = error). Table tests.
 3. Wire it: `SetupAgent` builds the hook list; config field; `/config` prints the rules.
 4. Ask-on-deny in chat: `AskOnDeny` on the session, the terminal prompt, Ctrl+C/EOF = deny; test through the plain reader that `y` runs and anything else denies.
-5. The `tool_approved` event and its digest line.
+5. The `tool_vetoed` event (every veto and its outcome) and its digest note + footer (built 2026-10-28).
 6. Docs: `DECISIONS.md` entry, `SESSION.md`, `trace/doc.go` if an event is added.
 
 ## Honest downsides

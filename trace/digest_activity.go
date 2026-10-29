@@ -9,7 +9,7 @@ import (
 
 // ActivityDigest is the first Digester: "what did the agent do and change", for a quick human review (a PR review, an audit).
 // Per task it lists the user input, then either the tool calls grouped into one block, or, for a text-only turn, a one-liner.
-// It is built from tool_requested / tool_finished, never from model text, so it shows what the agent did, not what it claimed.
+// It is built from tool_requested / tool_vetoed / tool_finished, never from model text, so it shows what the agent did, not what it claimed.
 type ActivityDigest struct {
 	run           runSummary
 	tasks         []*taskSummary          // in order of first appearance
@@ -19,6 +19,7 @@ type ActivityDigest struct {
 	modelErrs     int
 	runIncomplete int // same, for run-level events (their scope is the run ID, which is not a task)
 	compacts      int
+	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser)
 }
 
 type runSummary struct {
@@ -41,6 +42,7 @@ type taskSummary struct {
 // pendingCall is a tool call between tool_requested and tool_finished.
 type pendingCall struct {
 	name, args, scope string
+	vetoNotes         []string // one per tool_vetoed for this call, e.g. "allowed once by user over: denied by rule "*move*""
 }
 
 const (
@@ -51,7 +53,7 @@ const (
 
 // NewActivityDigest returns an empty ActivityDigest.
 func NewActivityDigest() *ActivityDigest {
-	return &ActivityDigest{byScope: map[string]*taskSummary{}, calls: map[string]*pendingCall{}}
+	return &ActivityDigest{byScope: map[string]*taskSummary{}, calls: map[string]*pendingCall{}, vetoes: map[string]int{}}
 }
 
 // task returns the task for a scope ID, making one if the task_start was not seen (e.g. a replay of a partial file).
@@ -95,6 +97,15 @@ func (a *ActivityDigest) Add(ev Event) {
 			a.calls[d.CallID] = &pendingCall{name: d.Name, args: d.Arguments, scope: ev.ScopeID}
 			a.task(ev.ScopeID).pending++
 		}
+	case ToolVetoed:
+		var d ToolVetoedData
+		if json.Unmarshal(ev.EventData, &d) != nil {
+			return
+		}
+		a.vetoes[d.Decision]++
+		if p, ok := a.calls[d.CallID]; ok {
+			p.vetoNotes = append(p.vetoNotes, vetoNote(d))
+		}
 	case ToolFinished:
 		var d ToolFinishedData
 		if json.Unmarshal(ev.EventData, &d) != nil {
@@ -104,7 +115,11 @@ func (a *ActivityDigest) Add(ev Event) {
 		if p, ok := a.calls[d.CallID]; ok {
 			delete(a.calls, d.CallID)
 			t.pending--
-			t.calls = append(t.calls, describe(p.name, p.args, d.Content, d.Failed))
+			line := describe(p.name, p.args, d.Content, d.Failed)
+			for _, note := range p.vetoNotes {
+				line += " [" + note + "]"
+			}
+			t.calls = append(t.calls, line)
 		} else { // finished without a request: still show it
 			t.calls = append(t.calls, describe(d.Name, "", d.Content, d.Failed))
 		}
@@ -208,6 +223,19 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	}
 
 	fmt.Fprintf(&b, "\n---\nredactions: %d, model errors: %d, compactions: %d\n", a.redacted, a.modelErrs, a.compacts)
+	// vetoes, not calls: a call vetoed by two hooks counts twice
+	total := 0
+	for _, n := range a.vetoes {
+		total += n
+	}
+	if total > 0 {
+		fmt.Fprintf(&b, "vetoes: %d (allowed once by user: %d, denied by user: %d, denied without asking: %d",
+			total, a.vetoes[VetoAllowedByUser], a.vetoes[VetoDeniedByUser], a.vetoes[VetoDenied])
+		if other := total - a.vetoes[VetoAllowedByUser] - a.vetoes[VetoDeniedByUser] - a.vetoes[VetoDenied]; other > 0 {
+			fmt.Fprintf(&b, ", unknown decision: %d", other) // a trace from a newer or hand-edited version
+		}
+		b.WriteString(")\n")
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -239,6 +267,22 @@ func describe(name, args, content string, failed bool) string {
 		line += " (failed: " + oneLine(content, maxArgsChars) + ")"
 	}
 	return strings.Join(strings.Fields(line), " ")
+}
+
+// vetoNote describes one tool_vetoed event for the call's digest line. An override says which rule it overrode,
+// because an override of a safety rule is what a reviewer most needs to see.
+func vetoNote(d ToolVetoedData) string {
+	reason := oneLine(d.Reason, maxArgsChars)
+	switch d.Decision {
+	case VetoAllowedByUser:
+		return "allowed once by user over: " + reason
+	case VetoDeniedByUser:
+		return "user said no to: " + reason
+	case VetoDenied:
+		return "vetoed, user not asked: " + reason
+	default:
+		return fmt.Sprintf("vetoed (decision %q): %s", d.Decision, reason)
+	}
 }
 
 // oneLine collapses whitespace (so a multi-line value stays one markdown line) and cuts to max characters.

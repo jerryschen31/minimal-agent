@@ -911,3 +911,25 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >   screen; not in traces). Info mode already hides it with `hideURL`; reuse it in `SetupAgent`.
 > - Older items still open: `AgentVersion` as a constant; `PrintConfig` label alignment; `model/anthropic.tmp`.
 
+### 2026-10-28 — approval gate v1 built (deny rules, ask-on-deny, tool_vetoed); PR next
+
+> **State:** branch `feat/approval-gate-impl-v1`, pushed, no PR yet. Built per `PLAN-approval-gates.md` steps 1–6
+> (`DECISIONS.md § Approval gate v1 built` and `§ tool_vetoed`): `hooks/` (`Hook`, `DenyRules`), the
+> `checkBeforeToolHooks` call in `executeToolCall`, `denyRules` config, ask-on-deny in chat on a terminal
+> (`PromptAllowDenyCall` + `AskYesNo`), the `tool_vetoed` event + digest note/footer, and info mode's "Deny rules"
+> section. `go test -race ./...` passes.
+>
+> **Next:** open the PR to `master`. After that, step 3 of `DECISIONS.md § Build order: tracing core and approval
+> before the autonomous port`: the `run_command` tool, ported from `mvp4/tools/builtin/runcommand.go`. It gives the
+> `tool:program` deny-rule form its meaning (rejected until then). Then the autonomous / orchestrator port.
+>
+> **Small open items:**
+> - The `runChatLoop` closure (what it prints, that it calls `AskYesNo`) has no automated test: `newPromptReader`
+>   only builds a `ttyReader` for a real terminal. Passing the reader into `runChatLoop` would make it testable.
+> - Digest: a rule like `"*delete*"` in a veto note (and `*` in tool arguments) can render as italics in a
+>   markdown viewer.
+> - Info mode: a rule longer than 20 characters pushes its row out of line.
+> - If more per-turn values join `taskTrace` on the `reActLoop` → `checkBeforeToolHooks` chain, group them in a
+>   per-turn struct (not on `ChatSession`: auto-compaction reads the session from another goroutine).
+> - Still open from 2026-10-23: `builtinTools` `"ReadFile"` vs `read_file`; chat-mode setup prints a remote MCP
+>   URL in connect errors (reuse `hideURL`); `AgentVersion` constant; `model/anthropic.tmp`.

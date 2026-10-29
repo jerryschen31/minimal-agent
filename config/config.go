@@ -49,6 +49,9 @@ type Config struct {
 	// memory configuration
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
+	// deny rules configuration
+	DenyRules []string `json:"denyRules"` // deny rules - glob pattern-matches on model-facing tool names
+
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
 	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
@@ -152,6 +155,7 @@ func GetDefaultConfig() Config {
 		TraceEnabled:   true,
 		DigestEnabled:  true,
 		RedactionLevel: "standard",
+		// DenyRules:      []string{"*move*"},
 
 		TraceDir:           ".agent-trace",
 		TraceMaxEventBytes: 100 << 20, // 100 MB
@@ -259,6 +263,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
+	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return

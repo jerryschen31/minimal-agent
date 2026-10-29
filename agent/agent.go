@@ -8,6 +8,7 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/memory"
 	"github.com/jerryschen31/minimal-agent/model"
@@ -47,6 +48,12 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 
 	// 3. setup context struct for managing active conversation context
 	chatContext, err := contextwindow.SetupChatContext(cfg)
+	if err != nil {
+		return err
+	}
+
+	// 3.5 setup deny rules list / approval gates
+	denyRules, err := hooks.SetupDenyRules(cfg.DenyRules)
 	if err != nil {
 		return err
 	}
@@ -105,6 +112,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 		return err
 	}
 	chatSession.ShowProgress = shouldShowProgress(cfg)
+	chatSession.Hooks = []hooks.Hook{denyRules}
 	agent.session = chatSession
 
 	return nil

@@ -9,6 +9,7 @@
   "workDir": ".",
   "memory": "in-memory",
   "contextWindow": 10,
+  "denyRules": ["*read*"],
   "mcpServers": {
     "fs": {
       "command": "npx",
