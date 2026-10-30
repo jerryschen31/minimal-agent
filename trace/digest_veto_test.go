@@ -86,11 +86,20 @@ func Test_Digest_VetoWithoutRequest_CountedInFooter(t *testing.T) {
 	}
 }
 
-// - Verify run_start carries the config's deny rules, and leaves the key out when there are none
+// - Verify run_start carries the deny rules in force: the defaults when the config leaves them alone, the config's
+// list when it replaces them, and no key at all when there are none (nil or [])
 func Test_GetRunStartData_DenyRules(t *testing.T) {
 	cfg := config.GetDefaultConfig()
-	cfg.DenyRules = []string{"*delete*", "*move*"}
 	b, err := json.Marshal(GetRunStartData(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"deny_rules":["*delete*","*remove*"]`) {
+		t.Errorf("run_start JSON missing the default deny_rules: %s", b)
+	}
+
+	cfg.DenyRules = []string{"*delete*", "*move*"}
+	b, err = json.Marshal(GetRunStartData(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,12 +107,14 @@ func Test_GetRunStartData_DenyRules(t *testing.T) {
 		t.Errorf("run_start JSON missing deny_rules: %s", b)
 	}
 
-	cfg.DenyRules = nil
-	b, err = json.Marshal(GetRunStartData(cfg))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "deny_rules") {
-		t.Errorf("expected no deny_rules key when empty: %s", b)
+	for _, rules := range [][]string{nil, {}} {
+		cfg.DenyRules = rules
+		b, err = json.Marshal(GetRunStartData(cfg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "deny_rules") {
+			t.Errorf("expected no deny_rules key for %#v: %s", rules, b)
+		}
 	}
 }

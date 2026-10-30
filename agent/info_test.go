@@ -480,10 +480,11 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	}
 }
 
-// - Verify printDenyRules lists each rule with its source and every tool it matches, built-in and MCP alike
+// - Verify printDenyRules lists each rule with its source (default or config) and every tool it matches, built-in
+// and MCP alike
 func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	var out bytes.Buffer
-	ok := printDenyRules(&out, []string{"*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
+	ok := printDenyRules(&out, []string{"*delete*", "*remove*", "*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
 	if !ok {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
@@ -491,11 +492,11 @@ func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	if !strings.Contains(got, "Deny rules (3)\n") {
 		t.Errorf("expected Deny rules (3) in output:\n%s", got)
 	}
-	if lineWith(got, "*delete*", "built-in", "matches: docs_delete_note\n") == "" {
-		t.Errorf("expected *delete* built-in matching docs_delete_note in output:\n%s", got)
+	if lineWith(got, "*delete*", "default", "matches: docs_delete_note\n") == "" {
+		t.Errorf("expected *delete* default matching docs_delete_note in output:\n%s", got)
 	}
-	if lineWith(got, "*remove*", "built-in", "matches: docs_remove_file\n") == "" {
-		t.Errorf("expected *remove* built-in matching docs_remove_file in output:\n%s", got)
+	if lineWith(got, "*remove*", "default", "matches: docs_remove_file\n") == "" {
+		t.Errorf("expected *remove* default matching docs_remove_file in output:\n%s", got)
 	}
 	if lineWith(got, "*file*", "config", "matches: read_file, docs_remove_file\n") == "" {
 		t.Errorf("expected *file* (lowercased) config matching read_file, docs_remove_file in output:\n%s", got)
@@ -505,17 +506,17 @@ func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	}
 }
 
-// - Verify a built-in rule matching nothing prints plain "matches nothing", while a config rule gets a warning
+// - Verify a default rule matching nothing prints plain "matches nothing", while a config rule gets a warning
 func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*move*"}, []string{"read_file"}, true) {
+	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*"}, []string{"read_file"}, true) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
 	for _, rule := range []string{"*delete*", "*remove*"} {
-		line := lineWith(got, rule, "built-in", "matches nothing")
+		line := lineWith(got, rule, "default", "matches nothing")
 		if line == "" || strings.Contains(line, "warning") {
-			t.Errorf("expected %s built-in matches nothing with no warning, got line %q in output:\n%s", rule, line, got)
+			t.Errorf("expected %s default matches nothing with no warning, got line %q in output:\n%s", rule, line, got)
 		}
 	}
 	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
@@ -526,7 +527,7 @@ func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
 // - Verify allListed=false prints the "some tools could not be listed" note, says "among the tools listed", and never warns
 func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file"}, false) {
+	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*", "read_*"}, []string{"read_file"}, false) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
@@ -543,6 +544,42 @@ func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	}
 	if strings.Contains(got, "warning") {
 		t.Errorf("expected no warning when MCP was not listed:\n%s", got)
+	}
+}
+
+// - Verify an empty or nil rule list prints exactly the one "none" line and returns true
+func Test_Unit_PrintDenyRules_Empty_PrintsNone(t *testing.T) {
+	for _, rulesIn := range [][]string{{}, nil} {
+		for _, allListed := range []bool{true, false} {
+			var out bytes.Buffer
+			if !printDenyRules(&out, rulesIn, []string{"read_file", "docs_delete_note"}, allListed) {
+				t.Errorf("rules %#v, allListed %v: expected true, got false", rulesIn, allListed)
+			}
+			if got, want := out.String(), "Deny rules (0): none, every tool call is allowed\n"; got != want {
+				t.Errorf("rules %#v, allListed %v: output = %q, want %q", rulesIn, allListed, got, want)
+			}
+		}
+	}
+}
+
+// - Verify a config list that replaces the defaults shows only its own rules, labelled config, and no default rule
+func Test_Unit_PrintDenyRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.T) {
+	var out bytes.Buffer
+	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file", "docs_delete_note"}, true) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "Deny rules (2)\n") {
+		t.Errorf("expected Deny rules (2) in output:\n%s", got)
+	}
+	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
+		t.Errorf("expected *move* config matches nothing with a warning in output:\n%s", got)
+	}
+	if lineWith(got, "read_*", "config", "matches: read_file\n") == "" {
+		t.Errorf("expected read_* config matches: read_file in output:\n%s", got)
+	}
+	if strings.Contains(got, "*delete*") || strings.Contains(got, "*remove*") || strings.Contains(got, "default") {
+		t.Errorf("expected no default rule in output:\n%s", got)
 	}
 }
 
@@ -563,7 +600,7 @@ func Test_Unit_PrintDenyRules_InvalidRule_Fails(t *testing.T) {
 	}
 }
 
-// - Verify the default config ends with both built-in deny rules (no warning) and returns InfoOK
+// - Verify the default config ends with both default deny rules (no warning) and returns InfoOK
 func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
@@ -576,8 +613,8 @@ func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 		t.Errorf("expected Deny rules (2) in output:\n%s", out)
 	}
 	for _, rule := range []string{"*delete*", "*remove*"} {
-		if lineWith(out, rule, "built-in", "matches nothing") == "" {
-			t.Errorf("expected %s built-in matches nothing in output:\n%s", rule, out)
+		if lineWith(out, rule, "default", "matches nothing") == "" {
+			t.Errorf("expected %s default matches nothing in output:\n%s", rule, out)
 		}
 	}
 	if strings.Contains(out, "warning") {
@@ -588,7 +625,7 @@ func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 	}
 }
 
-// - Verify a config rule matching the built-in read_file shows that match and returns InfoOK
+// - Verify a config rule matching the built-in read_file shows that match, replaces the defaults, and returns InfoOK
 func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
@@ -598,8 +635,8 @@ func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if !strings.Contains(out, "Deny rules (3)\n") {
-		t.Errorf("expected Deny rules (3) in output:\n%s", out)
+	if !strings.Contains(out, "Deny rules (1)\n") {
+		t.Errorf("expected Deny rules (1) in output:\n%s", out)
 	}
 	if lineWith(out, "read_*", "config", "matches: read_file") == "" {
 		t.Errorf("expected read_* config matches: read_file in output:\n%s", out)
@@ -673,6 +710,21 @@ func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
 	// [agent] the bare MCP name "write" is not what the model sees, so it matches nothing and warns
 	if lineWith(out, "write ", "config", "matches nothing  <- warning:") == "" {
 		t.Errorf("expected bare write to match nothing with a warning in output:\n%s", out)
+	}
+}
+
+// - Verify an empty denyRules list in the config prints the "none" line and returns InfoOK
+func Test_Unit_PrintInfo_DenyRules_Empty(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyRules = []string{}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if !strings.HasSuffix(out, "Deny rules (0): none, every tool call is allowed\n") {
+		t.Errorf("expected the output to end with the none line:\n%s", out)
 	}
 }
 

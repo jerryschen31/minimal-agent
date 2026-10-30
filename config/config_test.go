@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -489,5 +490,50 @@ func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
 	}
 	if want := "baseUrl:       https://[hidden]@llm.example.invalid/v1?[hidden]\n"; !strings.Contains(got, want) {
 		t.Errorf("expected PrintConfig output to contain %q, got:\n%s", want, got)
+	}
+}
+
+// - Verify the default deny rules are *delete* and *remove*, and a config file's denyRules replaces them: a file
+// without the key keeps the defaults, a list replaces them, and [] or null leaves no rules
+func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"no denyRules key keeps defaults", `{"model": "fake-model"}`, []string{"*delete*", "*remove*"}},
+		{"a list replaces defaults", `{"denyRules": ["*move*"]}`, []string{"*move*"}},
+		{"empty list means no rules", `{"denyRules": []}`, []string{}},
+		{"null means no rules", `{"denyRules": null}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.DenyRules, c.want) {
+				t.Errorf("DenyRules = %q, want %q", cfg.DenyRules, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify GetDefaultConfig returns a fresh DenyRules slice each call, so changing one result can't change the defaults
+func Test_Unit_GetDefaultConfig_DenyRules_FreshSlice(t *testing.T) {
+	first := GetDefaultConfig()
+	first.DenyRules[0] = "changed"
+	first.DenyRules = append(first.DenyRules, "extra")
+
+	if got, want := GetDefaultConfig().DenyRules, []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
+		t.Errorf("GetDefaultConfig().DenyRules = %q after changing an earlier result, want %q", got, want)
 	}
 }

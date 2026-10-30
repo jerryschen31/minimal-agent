@@ -201,7 +201,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   steal the next prompt line); `nil` means deny without asking. Model text shown in the question is printed with
   `%q`. A new path that runs tools must go through this check. Deny rules match model-facing names
   (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule fails setup.
-  See `DECISIONS.md § Approval gate v1 built`.
+  `hooks` holds no rules of its own: the defaults (`*delete*`, `*remove*`) are `GetDefaultConfig().DenyRules`, and a
+  config file's `denyRules` replaces them (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built` and
+  `§ Policy out of the core`.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

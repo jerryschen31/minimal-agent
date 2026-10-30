@@ -53,7 +53,7 @@ type Config struct {
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
 	// deny rules configuration
-	DenyRules []string `json:"denyRules"` // deny rules - glob pattern-matches on model-facing tool names
+	DenyRules []string `json:"denyRules"` // glob rules on model-facing tool names; a config file's list replaces the default, [] means no rules
 
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
@@ -158,7 +158,7 @@ func GetDefaultConfig() Config {
 		TraceEnabled:   true,
 		DigestEnabled:  true,
 		RedactionLevel: "standard",
-		// DenyRules:      []string{"*move*"},
+		DenyRules:      []string{"*delete*", "*remove*"},
 
 		TraceDir:           ".agent-trace",
 		TraceMaxEventBytes: 100 << 20, // 100 MB

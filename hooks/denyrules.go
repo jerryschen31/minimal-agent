@@ -12,23 +12,21 @@ import (
 
 var _ Hook = (*DenyRules)(nil) // compile-time check: *DenyRules satisfies Hook
 
-// defaultDenyRules are always on; config rules are added to them, never replace them.
-var defaultDenyRules = []string{"*delete*", "*remove*"}
-
 // DenyRules specifies the tool call name patterns that are denied; any tool call matching a rule will be vetoed.
 type DenyRules struct {
 	rules []string // lowercased, checked at construction
 }
 
-// SetupDenyRules constructs the deny rules from the configuration, combining default and extra rules.
+// SetupDenyRules constructs the deny rules from the configuration (cfg.DenyRules: the defaults from
+// config.GetDefaultConfig, or the config file's list that replaced them).
 func SetupDenyRules(denyRules []string) (*DenyRules, error) {
 	return NewDenyRules(denyRules)
 }
 
-// NewDenyRules creates the combined list of default and extra rules, all lowercased and validated; an invalid rule will result in an error naming it
-func NewDenyRules(extraRules []string) (*DenyRules, error) {
+// NewDenyRules creates the list of deny rules, all lowercased and validated; an invalid rule will result in an error naming it
+func NewDenyRules(rulesIn []string) (*DenyRules, error) {
 	d := &DenyRules{}
-	for _, raw := range append(defaultDenyRules, extraRules...) {
+	for _, raw := range rulesIn {
 		rule := strings.ToLower(strings.TrimSpace(raw)) // lowercase for case-insensitive matching; a stray space would match nothing
 		// errors quote raw, the rule as the user wrote it
 		if strings.Contains(rule, ":") {
@@ -37,7 +35,7 @@ func NewDenyRules(extraRules []string) (*DenyRules, error) {
 		if _, err := path.Match(rule, ""); err != nil { // check for malformed search patterns such as invalid wildcards or open bracket without a closing bracket
 			return nil, fmt.Errorf("invalid deny rule %q: %w", raw, err)
 		}
-		if slices.Contains(d.rules, rule) { // a duplicate (e.g. a config rule repeating a default) adds nothing
+		if slices.Contains(d.rules, rule) { // a duplicate (e.g. the same rule in two cases, *Delete* and *delete*) adds nothing
 			continue
 		}
 		d.rules = append(d.rules, rule)
@@ -55,14 +53,9 @@ func (d *DenyRules) BeforeTool(ctx context.Context, call model.ToolCall) error {
 	return nil
 }
 
-// Rules returns the rules in the order BeforeTool checks them: the built-in defaults first, then the config ones.
+// Rules returns the rules in the order BeforeTool checks them.
 func (d *DenyRules) Rules() []string {
 	return slices.Clone(d.rules) // a copy, so a caller can't change the rules in use
-}
-
-// IsBuiltIn reports whether rule is one of the always-on defaults rather than one from the config.
-func IsBuiltIn(rule string) bool {
-	return slices.Contains(defaultDenyRules, rule)
 }
 
 // RuleMatches reports whether a rule (as returned by Rules) matches a model-facing tool name, ignoring case.

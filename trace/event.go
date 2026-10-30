@@ -62,7 +62,7 @@ type RunStartData struct {
 	MaxTokens    int               `json:"max_tokens"`              // 0 = unspecified
 	SystemPrompt string            `json:"system_prompt,omitempty"` // full text; goes through redaction like any other string
 	McpServers   map[string]string `json:"mcp_servers,omitempty"`   // server name -> type only; never command, args, env or headers (tokens)
-	DenyRules    []string          `json:"deny_rules,omitempty"`    // the config's deny rules, as written; the built-in defaults are always on too
+	DenyRules    []string          `json:"deny_rules,omitempty"`    // the deny rules in force, as written: the defaults, unless a config file replaced them; empty = no rules
 }
 
 // GetRunStartData is a helper function that builds the run_start payload from the config and the running process.

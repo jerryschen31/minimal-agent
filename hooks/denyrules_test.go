@@ -16,12 +16,16 @@ func call(name, args string) model.ToolCall {
 	return model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: name, Arguments: args}}
 }
 
+// exampleRules mirrors the config defaults (config.GetDefaultConfig); hooks has no defaults of its own, so tests
+// pass them explicitly.
+var exampleRules = []string{"*delete*", "*remove*"}
+
 // newRules builds DenyRules and fails the test on a constructor error.
-func newRules(t *testing.T, extra []string) *DenyRules {
+func newRules(t *testing.T, rulesIn []string) *DenyRules {
 	t.Helper()
-	d, err := NewDenyRules(extra)
+	d, err := NewDenyRules(rulesIn)
 	if err != nil {
-		t.Fatalf("NewDenyRules(%q): %v", extra, err)
+		t.Fatalf("NewDenyRules(%q): %v", rulesIn, err)
 	}
 	return d
 }
@@ -42,7 +46,8 @@ func checkCall(t *testing.T, d *DenyRules, tc model.ToolCall, wantRule string) {
 	}
 }
 
-func Test_Unit_DenyRules_Defaults(t *testing.T) {
+// - Verify the rules given are the rules enforced: *delete* and *remove* deny matching names, any case, and allow the rest
+func Test_Unit_DenyRules_GivenRulesEnforced(t *testing.T) {
 	cases := []struct {
 		name     string
 		wantRule string // "" = allowed
@@ -55,20 +60,43 @@ func Test_Unit_DenyRules_Defaults(t *testing.T) {
 		{"filesystem_write_file", ""},
 		{"read_file", ""},
 	}
-	for _, extra := range [][]string{nil, {}} {
-		d := newRules(t, extra)
-		for _, c := range cases {
-			checkCall(t, d, call(c.name, "{}"), c.wantRule)
+	d := newRules(t, exampleRules)
+	for _, c := range cases {
+		checkCall(t, d, call(c.name, "{}"), c.wantRule)
+	}
+}
+
+// - Verify nil and an empty list both mean no rules: Rules is empty and BeforeTool allows every name
+func Test_Unit_DenyRules_NoRules_AllowsEverything(t *testing.T) {
+	for _, rulesIn := range [][]string{nil, {}} {
+		d := newRules(t, rulesIn)
+		if got := d.Rules(); len(got) != 0 {
+			t.Errorf("NewDenyRules(%#v).Rules() = %q, want none", rulesIn, got)
+		}
+		for _, name := range []string{"github_delete_file", "fs_remove_dir", "filesystem_move_file", "read_file", ""} {
+			checkCall(t, d, call(name, "{}"), "")
 		}
 	}
 }
 
-func Test_Unit_DenyRules_ExtrasAddToDefaults(t *testing.T) {
-	d := newRules(t, []string{"*move*"})
-	checkCall(t, d, call("filesystem_move_file", "{}"), "*move*")
-	checkCall(t, d, call("github_delete_file", "{}"), "*delete*")
-	checkCall(t, d, call("fs_remove_dir", "{}"), "*remove*")
+// - Verify only the rules given apply: a list without *delete* and *remove* adds nothing implicit
+func Test_Unit_DenyRules_OnlyGivenRules(t *testing.T) {
+	d := newRules(t, []string{"*rename*"})
+	checkCall(t, d, call("filesystem_rename_file", "{}"), "*rename*")
+	checkCall(t, d, call("github_delete_file", "{}"), "")
+	checkCall(t, d, call("fs_remove_dir", "{}"), "")
 	checkCall(t, d, call("read_file", "{}"), "")
+	if got, want := d.Rules(), []string{"*rename*"}; !slices.Equal(got, want) {
+		t.Errorf("Rules() = %q, want %q", got, want)
+	}
+}
+
+// - Verify a repeated rule (after trimming and lowercasing) is kept once, at its first position
+func Test_Unit_DenyRules_DuplicatesSkipped(t *testing.T) {
+	d := newRules(t, []string{"*move*", "mv", " *MOVE* ", "mv"})
+	if got, want := d.Rules(), []string{"*move*", "mv"}; !slices.Equal(got, want) {
+		t.Errorf("Rules() = %q, want %q", got, want)
+	}
 }
 
 func Test_Unit_DenyRules_CaseInsensitive(t *testing.T) {
@@ -94,8 +122,8 @@ func Test_Unit_DenyRules_BareName(t *testing.T) {
 }
 
 func Test_Unit_DenyRules_FirstMatchWins(t *testing.T) {
-	d := newRules(t, []string{"fs_*"})
-	checkCall(t, d, call("fs_delete_x", "{}"), "*delete*") // default comes before the extra
+	d := newRules(t, []string{"*delete*", "fs_*"})
+	checkCall(t, d, call("fs_delete_x", "{}"), "*delete*") // the earlier rule wins
 	checkCall(t, d, call("fs_list", "{}"), "fs_*")
 }
 
@@ -139,24 +167,34 @@ func Test_Unit_DenyRules_InvalidRules(t *testing.T) {
 	})
 }
 
+// - Verify two instances keep their own rules, and NewDenyRules does not change the slice it was given
 func Test_Unit_DenyRules_SeparateInstancesDontShareRules(t *testing.T) {
-	before := slices.Clone(defaultDenyRules)
+	inA := []string{" AAA "}
+	inB := []string{"bbb"}
 
-	a := newRules(t, []string{"aaa"})
-	b := newRules(t, []string{"bbb"})
+	a := newRules(t, inA)
+	b := newRules(t, inB)
 
 	checkCall(t, a, call("aaa", "{}"), "aaa")
 	checkCall(t, a, call("bbb", "{}"), "")
 	checkCall(t, b, call("bbb", "{}"), "bbb")
 	checkCall(t, b, call("aaa", "{}"), "")
 
-	if !slices.Equal(defaultDenyRules, before) {
-		t.Errorf("defaultDenyRules changed: got %q, want %q", defaultDenyRules, before)
+	if !slices.Equal(inA, []string{" AAA "}) || !slices.Equal(inB, []string{"bbb"}) {
+		t.Errorf("input slices changed: got %q and %q", inA, inB)
 	}
+
+	// [agent] a shared backing array is the bug to catch: append into one input's spare capacity must not leak
+	shared := make([]string, 1, 4)
+	shared[0] = "ccc"
+	c := newRules(t, shared)
+	d := newRules(t, append(shared, "ddd"))
+	checkCall(t, c, call("ddd", "{}"), "")
+	checkCall(t, d, call("ddd", "{}"), "ddd")
 }
 
 func Test_Unit_DenyRules_ArgumentsIgnored(t *testing.T) {
-	d := newRules(t, nil)
+	d := newRules(t, exampleRules)
 	cases := []struct {
 		name, args string
 		wantRule   string
@@ -172,21 +210,21 @@ func Test_Unit_DenyRules_ArgumentsIgnored(t *testing.T) {
 	}
 }
 
-// - Verify Rules returns the defaults first, then the config rules lowercased and trimmed, in that order
+// - Verify Rules returns exactly the rules given, lowercased and trimmed, in the order given
 func Test_Unit_DenyRules_Rules_Order(t *testing.T) {
-	d := newRules(t, []string{"  *MOVE* ", "mv"})
-	want := []string{"*delete*", "*remove*", "*move*", "mv"}
+	d := newRules(t, []string{"  *MOVE* ", "mv", "*Delete*"})
+	want := []string{"*move*", "mv", "*delete*"}
 	if got := d.Rules(); !slices.Equal(got, want) {
 		t.Errorf("Rules() = %q, want %q", got, want)
 	}
-	if got := newRules(t, nil).Rules(); !slices.Equal(got, defaultDenyRules) {
-		t.Errorf("Rules() with no extras = %q, want %q", got, defaultDenyRules)
+	if got := newRules(t, exampleRules).Rules(); !slices.Equal(got, exampleRules) {
+		t.Errorf("Rules() = %q, want %q", got, exampleRules)
 	}
 }
 
 // - Verify changing the slice Rules returns changes neither the rules BeforeTool uses nor a later Rules call
 func Test_Unit_DenyRules_Rules_ReturnsCopy(t *testing.T) {
-	d := newRules(t, []string{"*move*"})
+	d := newRules(t, []string{"*delete*", "*remove*", "*move*"})
 	got := d.Rules()
 	for i := range got {
 		got[i] = "nothing_matches_this"
@@ -195,23 +233,6 @@ func Test_Unit_DenyRules_Rules_ReturnsCopy(t *testing.T) {
 	checkCall(t, d, call("filesystem_move_file", "{}"), "*move*")
 	if again := d.Rules(); !slices.Equal(again, []string{"*delete*", "*remove*", "*move*"}) {
 		t.Errorf("Rules() after mutating a copy = %q", again)
-	}
-}
-
-// - Verify IsBuiltIn is true only for the exact default rules
-func Test_Unit_DenyRules_IsBuiltIn(t *testing.T) {
-	cases := map[string]bool{
-		"*delete*": true,
-		"*remove*": true,
-		"*move*":   false,
-		"*DELETE*": false, // [agent] takes a rule as Rules returns it (lowercased), so no case folding here
-		"delete":   false,
-		"":         false,
-	}
-	for rule, want := range cases {
-		if got := IsBuiltIn(rule); got != want {
-			t.Errorf("IsBuiltIn(%q) = %v, want %v", rule, got, want)
-		}
 	}
 }
 
@@ -271,13 +292,13 @@ func Test_Unit_DenyRules_SlashInToolName(t *testing.T) {
 		}
 	}
 
-	d, err := NewDenyRules(nil)
+	d, err := NewDenyRules(exampleRules)
 	if err != nil {
 		t.Fatalf("NewDenyRules: %v", err)
 	}
 	call := model.ToolCall{ID: "call_1"}
 	call.Function.Name = "team/fs_delete_file"
 	if err := d.BeforeTool(context.Background(), call); err == nil {
-		t.Errorf("BeforeTool(%q) = nil, want denied by the default *delete* rule", call.Function.Name)
+		t.Errorf("BeforeTool(%q) = nil, want denied by the *delete* rule", call.Function.Name)
 	}
 }

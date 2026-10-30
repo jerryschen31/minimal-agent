@@ -480,7 +480,8 @@ Decisions made before this track went dormant (see `SESSION.md` for current stat
   `["*"]` ⇒ everything gated.
   **Superseded by `§ 2026-10-23 — Approval gate v1: open questions settled`:** never built; replaced by
   `DenyRules` (globs that deny, plus a built-in delete/remove list) with an "allow once? [y/N]" ask only for a
-  denied call. Nothing asks by default.
+  denied call. Nothing asks by default. (The delete/remove list itself moved to config on 2026-10-29: see "Policy out of
+  the core" at the end of this log.)
 - **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
   `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
 - **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
@@ -2875,6 +2876,8 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
 
 ### 2026-10-23 — Approval gate v1: open questions settled (plan only, nothing built)
 
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the default list (`*delete*`, `*remove*`) stays, but it lives in `GetDefaultConfig` and a config file's `denyRules` replaces it.
+
 Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. Both plans are updated.
 
 - **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
@@ -3001,7 +3004,7 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
 
 ### 2026-10-28 — Approval gate v1 built: deny rules, ask-on-deny, info section (`PLAN-approval-gates.md` steps 1–6)
 
-> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the built-in `*delete*`/`*remove*` move to `GetDefaultConfig`, and a config file's `denyRules` replaces them instead of adding to them.
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the built-in `*delete*`/`*remove*` move to `GetDefaultConfig`, and a config file's `denyRules` replaces them instead of adding to them. Info mode labels them "default" instead of "built-in".
 
 Jerry hand-coded the core (the `Hook` interface, `DenyRules`, the hook loop, the session wiring), tutored step by
 step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents wrote the tests.
@@ -3182,3 +3185,39 @@ built in). Full write-up: `prompts/20261029-session-question-2.md`. Jerry agreed
   configurable request timeout (`model.ResponseTimeout` is 5 minutes), and the error body in HTTP errors.
 - **Recorded, not changed:** a turn that hits `maxSteps` is discarded whole, tool results included, so a failed turn
   never leaves half a turn in memory. Downside: paid-for work is lost.
+
+
+### 2026-10-29 — Policy cleanup item 1 built: deny defaults live in config
+
+Built per the entry above (item 1). Jerry wrote `config/`, `hooks/` and `trace/`; Claude wrote the info-mode part,
+and a sub-agent wrote the tests.
+
+- **`hooks` holds no rules of its own.** `defaultDenyRules` and `IsBuiltIn` are gone; `NewDenyRules(rulesIn)` builds
+  exactly the rules it is given (trimmed, lowercased, `:` and malformed globs rejected, duplicates skipped), so
+  `NewDenyRules(nil)` means no rules.
+- **`GetDefaultConfig().DenyRules = ["*delete*", "*remove*"]`.** No merge code was needed: `SetDefaultConfig`
+  unmarshals the file over the defaults, so a missing key keeps them, `["*move*"]` replaces them, and `[]` or `null`
+  gives no rules. `GetDefaultConfig` builds a new slice per call, so unmarshalling can't change another caller's
+  defaults.
+- **`/config`, info mode and `run_start.deny_rules` now show the rules in force**, because all three already read
+  `cfg.DenyRules`. An empty `deny_rules` in a trace now really means no rules (this removes the downside recorded in
+  the `tool_vetoed` entry).
+- **Info mode labels a rule `default` (was `built-in`)** when it is in `GetDefaultConfig().DenyRules`
+  (`isDefaultDenyRule`), and still doesn't warn when a default rule matches nothing. An empty list prints
+  `Deny rules (0): none, every tool call is allowed`. Downside: a config file that repeats a default rule shows it
+  as `default`; telling them apart would mean recording which keys the file set.
+- **Watch out:** `config.default.json`'s `"denyRules": ["*read*"]` now replaces the defaults, so running with that
+  file allows delete/remove tools until cleanup item 5 removes `*read*`.
+- **Tests:**
+  - `hooks/denyrules_test.go`: `Test_Unit_DenyRules_GivenRulesEnforced`, `_OnlyGivenRules`,
+    `_NoRules_AllowsEverything`, `_DuplicatesSkipped`, plus a rewritten `_SeparateInstancesDontShareRules` and
+    `_Rules_Order`. `_IsBuiltIn` was removed.
+  - `agent/denyrules_wiring_test.go`: `Test_Unit_SetupAgent_EmptyDenyRules_VetoesNothing`; the config-rule test now
+    checks replacement.
+  - `agent/info_test.go`: `Test_Unit_PrintDenyRules_Empty_PrintsNone`, `_ConfigReplacesDefaults_OnlyConfigShown`,
+    `Test_Unit_PrintInfo_DenyRules_Empty`.
+  - `config/config_test.go`: `Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults` (missing key / list / `[]`
+    / `null`), `Test_Unit_GetDefaultConfig_DenyRules_FreshSlice`.
+  - `trace/digest_veto_test.go`: the default config's rules appear in `run_start`.
+  - Each was mutation-checked: merging instead of replacing, dropping the empty-list line, and re-adding the
+    defaults in `hooks` each fail tests.

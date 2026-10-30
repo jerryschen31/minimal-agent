@@ -950,3 +950,7 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >
 > **Open questions** (from `§ Command execution`): what "ask" means without a terminal; one auto-approve switch or
 > one per level; interpreters as their own category; `run_command` off by default until a sandbox exists.
+>
+> **Progress (same day):** cleanup item 1 is built and tested, not committed (`DECISIONS.md § Policy cleanup item 1
+> built`). `config.default.json`'s `*read*` now *replaces* the default deny rules; item 5 removes it. Next: item 2
+> (`read_file` protects the configured `traceDir`).
