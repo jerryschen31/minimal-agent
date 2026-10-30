@@ -24,7 +24,7 @@ type Config struct {
 	UserID string `json:"userId"`
 
 	// LLM service provider configuration
-	Provider   string `json:"provider"` // "openai" (any OpenAI-compatible server) | "anthropic"
+	Provider   string `json:"provider"` // "openai" (any OpenAI-compatible server) | "anthropic" (TODO)
 	Model      string `json:"model"`
 	BaseURL    string `json:"baseUrl"`
 	ApiKeyName string `json:"apiKeyName"`
@@ -32,11 +32,11 @@ type Config struct {
 	// run configuration
 	AgentName    string `json:"agentName"`
 	AgentVersion string `json:"agentVersion"`
-	AgentMode    string `json:"agentMode"`   // "chat" | "headless" | "oneshot"
-	MissionFile  string `json:"missionFile"` // path to mission file, headless mode only
+	AgentMode    string `json:"agentMode"`   // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info"
+	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
 	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
-	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
+	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
 	Debug        bool   `json:"debug"`       // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
@@ -50,7 +50,7 @@ type Config struct {
 	SystemPrompt string `json:"systemPrompt"`
 
 	// memory configuration
-	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
+	ChatStoreType string `json:"chatStoreType"` // "in-memory" (TODO)| "persistent" (TODO)
 
 	// context window and compaction configuration (validated by contextwindow.CheckConfig)
 	ContextWindowMessages int     `json:"contextWindowMessages"` // most messages the context window holds; the oldest are dropped first; at least 4 (default 50)
@@ -91,7 +91,7 @@ type McpServerConfig struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// transportType works out which transport an MCP server uses, and rejects entries that are ambiguous or contradictory.
+// TransportType works out which transport an MCP server uses, and rejects entries that are ambiguous or contradictory.
 //
 //		command             -> stdio
 //		url                 -> http
@@ -153,7 +153,7 @@ func GetDefaultConfig() Config {
 		BaseURL:        "https://api.openai.com/v1",
 		ApiKeyName:     "OPENAI_API_KEY",
 		AgentName:      "minagent",
-		AgentVersion:   "0.1.0",
+		AgentVersion:   "0.1.13",
 		AgentMode:      ModeChat,
 		WorkDir:        ".",
 		SystemPrompt:   "You are a helpful assistant. Keep your responses concise and relevant.",
@@ -180,26 +180,12 @@ func GetDefaultConfig() Config {
 	}
 }
 
-// func GetDefaultConfig() Config {
-// 	return Config{
-// 		UserID:        "default_user",
-// 		Provider:     "openai", // Ollama exposes an OpenAI-compatible endpoint
-// 		Model:        "qwen2.5:0.5b",
-// 		BaseURL:      "http://127.0.0.1:11434/v1",
-// 		ApiKeyName:   "", // no auth needed for a local Ollama server
-// 		SystemPrompt: "You are a helpful assistant. Keep your responses concise and relevant.",
-// 		ChatStoreType: "in-memory",
-// 		InBuffer:      os.Stdin,
-// 		OutBuffer:     os.Stdout,
-// 	}
-// }
-
 // setDefaultConfig builds a Config from a config JSON file. An empty filename parses the default config file (config.default.json)
 func SetDefaultConfig(flags Flags) (Config, error) {
 	// first get the default config, so missing keys in the file keep their defaults
 	cfg := GetDefaultConfig()
 
-	// if no config file is specified in the flags, just return the default config
+	// if no config file is specified in the flags, just return the built-in config defaults
 	if flags.Config == nil || *flags.Config == "" {
 		return cfg, nil
 	}
@@ -211,7 +197,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
 
-	// parse config JSON - unrecognized fields display a warning and get ignored ; error if file not found
+	// parse config JSON - unrecognized fields display a warning and get ignored ; error if JSON cannot be parsed
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
 	}
@@ -235,7 +221,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 }
 
 // configJSONKeys returns the lowercased JSON key of every Config field that can be set from a file.
-// Untagged or `json:"-"` fields (InBuffer, OutBuffer) are left out.
+// Untagged or `json:"-"` fields (InBuffer, OutBuffer, McpServerStderr) are left out.
 func configJSONKeys() map[string]bool {
 	keys := make(map[string]bool)
 	t := reflect.TypeOf(Config{})
@@ -249,10 +235,8 @@ func configJSONKeys() map[string]bool {
 	return keys
 }
 
-// PrintConfig prints an explicit allowlist of settings that are safe to show. MCP servers are listed by
-// name and transport only: their args, env, url and headers are left out because they commonly hold
-// credentials (e.g. an Authorization header or a token in a URL or argument). A field added to Config
-// stays hidden until it is added here on purpose.
+// PrintConfig prints an explicit allowlist of settings that are safe to show.
+// MCP servers are listed by name and transport only.
 func PrintConfig(cfg Config) {
 	w := cfg.OutBuffer
 	fmt.Fprintln(w, "Current agent configuration:")
