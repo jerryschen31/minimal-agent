@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -182,5 +183,59 @@ func Test_ChatRequest_ResponseDecodesAPIFieldsAndIgnoresExtras(t *testing.T) {
 	}
 	if reply.ID != "" {
 		t.Errorf("expected the provider's message id not to populate our internal ID, got %q", reply.ID)
+	}
+}
+
+// delayedReplyServer answers "hi there" after delay, or gives up early when the client goes away (so Close won't wait).
+func delayedReplyServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body) // [agent] the server notices a client hang-up (r.Context done) only once the body is read
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(ChatResponse{
+			Choices: []struct {
+				Message ChatMessage `json:"message"`
+			}{
+				{Message: ChatMessage{Role: "assistant", Content: "hi there"}},
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// - Verify Chat gives up after Timeout: a server slower than the timeout makes it return a deadline error promptly
+func Test_ChatRequest_Timeout_SlowServerFailsPromptly(t *testing.T) {
+	srv := delayedReplyServer(t, 5*time.Second)
+	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model", Timeout: 50 * time.Millisecond}
+
+	start := time.Now()
+	_, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected a deadline exceeded error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("expected Chat to return soon after the 50ms timeout, took %v", elapsed)
+	}
+}
+
+// - Verify a zero Timeout sets no limit of its own: a reply that takes a little while still arrives
+func Test_ChatRequest_ZeroTimeout_NoLimit(t *testing.T) {
+	srv := delayedReplyServer(t, 100*time.Millisecond)
+	p := OpenAICompat{BaseURL: srv.URL, Model: "test-model"}
+
+	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
+
+	if err != nil {
+		t.Fatalf("Chat() returned an unexpected error: %v", err)
+	}
+	if reply.Content != "hi there" {
+		t.Errorf("expected reply %q, got %q", "hi there", reply.Content)
 	}
 }

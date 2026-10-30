@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 type OpenAICompat struct {
 	BaseURL string
 	Model   string
-	ApiKey  string // empty for Ollama
+	ApiKey  string        // empty for Ollama
+	Timeout time.Duration // most one Chat call may take (config's responseTimeoutSeconds); 0 = no limit of its own
 }
 
 func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error) {
@@ -30,8 +32,11 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 	}
 
 	// 3. build an *http.Request with http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", ...)
-	ctx, cancel := context.WithTimeout(ctx, ResponseTimeout)
-	defer cancel()
+	if p.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.Timeout)
+		defer cancel()
+	}
 	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
 		return ChatMessage{}, err

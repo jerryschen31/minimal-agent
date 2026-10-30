@@ -376,8 +376,8 @@ func Test_ChatLoop_Interrupt_DoesNotCancelAutoCompaction(t *testing.T) {
 	if strings.Contains(out.String(), "Auto-compaction error") {
 		t.Errorf("the interrupt must not reach background compaction; output:\n%s", out.String())
 	}
-	if fx.Context.GetSize() != 1 {
-		t.Errorf("expected compaction to have replaced the context with 1 summary message, got size %d", fx.Context.GetSize())
+	if fx.Context.GetSize() != 2 {
+		t.Errorf("expected compaction to have replaced the context with the 2-message summary pair, got size %d", fx.Context.GetSize())
 	}
 }
 

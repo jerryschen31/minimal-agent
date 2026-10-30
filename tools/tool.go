@@ -18,14 +18,19 @@ type Tool interface {
 	CallTool(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// setup built-in tools
-func SetupBuiltinTools(toolList []string, workDir string, readFileMaxBytes int) ([]Tool, error) {
+// setup built-in tools; traceDir is passed so read_file can refuse to read the trace files, and denyFileNames adds
+// name patterns to the built-in file deny list (checked even when no file tool is enabled, so a bad pattern fails setup)
+func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxBytes int, denyFileNames []string) ([]Tool, error) {
+	deny, err := builtin.NewDenyList(denyFileNames)
+	if err != nil {
+		return nil, err
+	}
 	tools := []Tool{}
 	// add the built-in tools specified in the config
 	for _, t := range toolList {
 		switch t {
-		case "ReadFile":
-			readFile, err := builtin.NewReadFileTool(workDir, readFileMaxBytes)
+		case "read_file", "ReadFile": // the model-facing name, as in deny rules; "ReadFile" is the old spelling, still accepted
+			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes, deny)
 			if err != nil {
 				return nil, err
 			}

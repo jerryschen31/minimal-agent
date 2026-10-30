@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -50,12 +51,15 @@ func namedCall(name string) model.ToolCall {
 	return model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: name, Arguments: `{}`}}
 }
 
-// - Verify SetupAgent with no denyRules in config installs exactly one hook, a *hooks.DenyRules with the defaults:
-// a *delete* name is denied, a name matching no rule is allowed
+// - Verify SetupAgent with the default config's denyRules installs exactly one hook, a *hooks.DenyRules with exactly
+// the defaults: a *delete* name is denied, a name matching no rule is allowed
 func Test_Unit_SetupAgent_NoConfigDenyRules_InstallsDefaultDenyRules(t *testing.T) {
-	cfg := denyWiringConfig(t)
-	cfg.DenyRules = nil
+	cfg := denyWiringConfig(t) // [agent] starts from config.GetDefaultConfig, as a config file without denyRules does
 	_, dr := setupDenyWiringAgent(t, cfg)
+
+	if got, want := dr.Rules(), []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
+		t.Errorf("Rules() = %q, want %q", got, want)
+	}
 
 	err := dr.BeforeTool(context.Background(), namedCall("github_delete_file"))
 	if err == nil || !strings.Contains(err.Error(), `denied by rule "*delete*"`) {
@@ -66,7 +70,25 @@ func Test_Unit_SetupAgent_NoConfigDenyRules_InstallsDefaultDenyRules(t *testing.
 	}
 }
 
-// - Verify a config extra rule is applied, lowercased and trimmed, on top of the defaults
+// - Verify an empty or nil denyRules list installs a DenyRules hook with no rules that vetoes nothing
+func Test_Unit_SetupAgent_EmptyDenyRules_VetoesNothing(t *testing.T) {
+	for _, rulesIn := range [][]string{{}, nil} {
+		cfg := denyWiringConfig(t)
+		cfg.DenyRules = rulesIn
+		_, dr := setupDenyWiringAgent(t, cfg)
+
+		if got := dr.Rules(); len(got) != 0 {
+			t.Errorf("DenyRules %#v: Rules() = %q, want none", rulesIn, got)
+		}
+		for _, name := range []string{"github_delete_file", "fs_remove_dir", "read_file"} {
+			if err := dr.BeforeTool(context.Background(), namedCall(name)); err != nil {
+				t.Errorf("DenyRules %#v: %s: expected allowed, got %v", rulesIn, name, err)
+			}
+		}
+	}
+}
+
+// - Verify a config rule is applied, lowercased and trimmed, and replaces the defaults rather than adding to them
 func Test_Unit_SetupAgent_ConfigDenyRule_IsApplied(t *testing.T) {
 	cfg := denyWiringConfig(t)
 	cfg.DenyRules = []string{"  *Purge* "}
@@ -76,8 +98,11 @@ func Test_Unit_SetupAgent_ConfigDenyRule_IsApplied(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `denied by rule "*purge*"`) {
 		t.Errorf("db_purge_all: err = %v, want one containing %q", err, `denied by rule "*purge*"`)
 	}
-	if err := dr.BeforeTool(context.Background(), namedCall("github_delete_file")); err == nil {
-		t.Error("github_delete_file: expected the default *delete* rule to still deny it")
+	if err := dr.BeforeTool(context.Background(), namedCall("github_delete_file")); err != nil {
+		t.Errorf("github_delete_file: expected allowed once the config list replaced the defaults, got %v", err)
+	}
+	if got, want := dr.Rules(), []string{"*purge*"}; !slices.Equal(got, want) {
+		t.Errorf("Rules() = %q, want %q", got, want)
 	}
 }
 
@@ -138,5 +163,38 @@ func Test_Unit_SetupAgent_ReActLoop_DeleteToolCallVetoed(t *testing.T) {
 	second := fake.Calls[1]
 	if last := second[len(second)-1]; last.Role != "tool" || last.Content != `error: denied by rule "*delete*"` {
 		t.Errorf("expected the second request to end with the denial observation, got %+v", last)
+	}
+}
+
+// - Verify SetupAgent passes the config's denyFileNames to read_file: the read_file it registers refuses a matching file
+// and still reads others, and a bad pattern fails SetupAgent before any session is built
+func Test_Unit_SetupAgent_DenyFileNames_AppliedToReadFile(t *testing.T) {
+	cfg := denyWiringConfig(t)
+	cfg.DenyFileNames = []string{"*.secret"}
+	for name, body := range map[string]string{"db.secret": "FAKE_SECRET_TOKEN_123", "notes.txt": "ALLOWED-NOTES"} {
+		if err := os.WriteFile(filepath.Join(cfg.WorkDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := setupDenyWiringAgent(t, cfg)
+	readFile, ok := a.session.Tools.Lookup("read_file")
+	if !ok {
+		t.Fatal("expected read_file to be registered")
+	}
+
+	if got, err := readFile.CallTool(context.Background(), []byte(`{"path":"db.secret"}`)); err == nil || !strings.Contains(err.Error(), "*.secret") {
+		t.Errorf("expected db.secret to be blocked by *.secret, got (%q, %v)", got, err)
+	}
+	if got, err := readFile.CallTool(context.Background(), []byte(`{"path":"notes.txt"}`)); err != nil || got != "ALLOWED-NOTES" {
+		t.Errorf("expected notes.txt to read, got (%q, %v)", got, err)
+	}
+
+	bad := denyWiringConfig(t)
+	bad.DenyFileNames = []string{"[abc"}
+	b := &Agent{}
+	err := b.SetupAgent(context.Background(), bad, nil)
+	defer b.ShutdownAgent(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "denyFileNames") || b.session != nil {
+		t.Errorf("expected SetupAgent to fail on a bad denyFileNames pattern, got err %v, session %v", err, b.session != nil)
 	}
 }

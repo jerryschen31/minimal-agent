@@ -933,3 +933,51 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >   per-turn struct (not on `ChatSession`: auto-compaction reads the session from another goroutine).
 > - Still open from 2026-10-23: `builtinTools` `"ReadFile"` vs `read_file`; chat-mode setup prints a remote MCP
 >   URL in connect errors (reuse `hideURL`); `AgentVersion` constant; `model/anthropic.tmp`.
+
+### 2026-10-29 — design detour: command execution and policy out of the core; cleanup next
+
+> **State:** `master` at `bed4ead` (PR #27 fixes). No code changed this session; design only. Two sub-agent
+> fan-outs, saved in `prompts/20261029-session-question-1.md` (guardrails vs containment) and
+> `prompts/20261029-session-question-2.md` (policy audit of the code so far).
+>
+> **Decided:** see `DECISIONS.md § Command execution: contain, don't detect; file tools before run_command` and
+> `§ Policy out of the core: deny defaults move to config`.
+>
+> **Next:** the policy cleanup, items 1–7 of `§ Policy out of the core` (deny defaults into `GetDefaultConfig`,
+> configured `traceDir` protected, summarizer system message, configurable context window, config cleanups,
+> extendable `DenyList`, printing out of `reActLoop`). Then the deny/ask/run levels, then the pure-Go file tools,
+> then `run_command` with an allow list, then `/reload`, then the autonomous port.
+>
+> **Open questions** (from `§ Command execution`): what "ask" means without a terminal; one auto-approve switch or
+> one per level; interpreters as their own category; `run_command` off by default until a sandbox exists.
+>
+> **Progress (same day):** cleanup item 1 is built and tested, not committed (`DECISIONS.md § Policy cleanup item 1
+> built`). `config.default.json`'s `*read*` now *replaces* the default deny rules; item 5 removes it. Item 2 also built
+> (`read_file` refuses the configured `traceDir`; `DECISIONS.md § Policy cleanup item 2 built`). Next: item 3
+> (summarizer system message, summary framing, empty system prompt).
+>
+> Item 3 fixes B and C built (`DECISIONS.md § Policy cleanup item 3 built (part)`): one summarizer system message, and
+> compaction stores a user/assistant summary pair. Next: windows always start at a user message (Jerry's next step),
+> then fix A (an empty `systemPrompt` sends no system message).
+>
+> Windows now start at a user message after a trim (`DECISIONS.md § Windows start at a user message after a trim`).
+> Next: item 3 fix A (an empty `systemPrompt` sends no system message).
+>
+> Fix A built (`DECISIONS.md § Policy cleanup item 3 fix A built`), so item 3 is done. Next: item 4 (configurable
+> context window size, strategy, auto-compact threshold with an off switch, summarizer prompt; validation must require
+> a window of at least 2 and a threshold above 2, see `§ Policy cleanup item 3 built (part)`).
+>
+> Item 4 built (`DECISIONS.md § Policy cleanup item 4 built`): context window size/strategy, `autoCompact` switch,
+> threshold and `summarizerPrompt` are config keys; the hidden buffer is gone; `config/doc.go` lists every key. Next:
+> item 5 (`config.default.json` cleanup: `*read*`, the unknown `memory`/`contextWindow` keys; stale comments; the
+> welcome text's version).
+>
+> Small fixes built (`DECISIONS.md § Small fixes: MCP URLs hidden…`): chat-mode MCP setup errors hide server URLs;
+> `builtinTools` takes `read_file`; `responseTimeoutSeconds` config key. Still small and open: the welcome banner's
+> hard-coded version (Jerry is doing it), mark deferred item 2 resolved, `model/anthropic.tmp`, exit status on failure
+> (deferred item 3), prompt-reader errors (item 11), `maxTokens` unused, `maxSteps` discarding a whole turn. Next policy
+> item: 6 (extendable `DenyList`).
+>
+> Item 6 built (`DECISIONS.md § Policy cleanup item 6 built`): `builtin.DenyList` (built-ins + config
+> `denyFileNames`, extend-only). Note: `contextwindow` `Test_Unit_CheckConfig` fails since ef46747 (the new threshold
+> rule rejects 4 messages × 0.75); not from item 6. Next policy item: 7 (printing out of `reActLoop`).

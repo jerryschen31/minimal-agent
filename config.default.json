@@ -7,9 +7,7 @@
   "systemPrompt": "You are a helpful assistant. Keep your responses concise and relevant. Use tools when they help; when finished, answer in plain text.",
   "maxSteps": 10,
   "workDir": ".",
-  "memory": "in-memory",
-  "contextWindow": 10,
-  "denyRules": ["*read*"],
+  "denyRules": ["*delete*", "*remove*"],
   "mcpServers": {
     "fs": {
       "command": "npx",

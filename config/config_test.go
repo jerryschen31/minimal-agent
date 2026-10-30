@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -489,5 +490,282 @@ func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
 	}
 	if want := "baseUrl:       https://[hidden]@llm.example.invalid/v1?[hidden]\n"; !strings.Contains(got, want) {
 		t.Errorf("expected PrintConfig output to contain %q, got:\n%s", want, got)
+	}
+}
+
+// - Verify the default deny rules are *delete* and *remove*, and a config file's denyRules replaces them: a file
+// without the key keeps the defaults, a list replaces them, and [] or null leaves no rules
+func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"no denyRules key keeps defaults", `{"model": "fake-model"}`, []string{"*delete*", "*remove*"}},
+		{"a list replaces defaults", `{"denyRules": ["*move*"]}`, []string{"*move*"}},
+		{"empty list means no rules", `{"denyRules": []}`, []string{}},
+		{"null means no rules", `{"denyRules": null}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.DenyRules, c.want) {
+				t.Errorf("DenyRules = %q, want %q", cfg.DenyRules, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify GetDefaultConfig returns a fresh DenyRules slice each call, so changing one result can't change the defaults
+func Test_Unit_GetDefaultConfig_DenyRules_FreshSlice(t *testing.T) {
+	first := GetDefaultConfig()
+	first.DenyRules[0] = "changed"
+	first.DenyRules = append(first.DenyRules, "extra")
+
+	if got, want := GetDefaultConfig().DenyRules, []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
+		t.Errorf("GetDefaultConfig().DenyRules = %q after changing an earlier result, want %q", got, want)
+	}
+}
+
+// - Verify a config file's "systemPrompt": "" replaces the default with an empty prompt, and a file without the key keeps the default
+func Test_Unit_SetDefaultConfig_SystemPrompt_EmptyReplacesDefault(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want string
+	}{
+		{"no systemPrompt key keeps default", `{"model": "fake-model"}`, GetDefaultConfig().SystemPrompt},
+		{"empty string replaces default", `{"systemPrompt": ""}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if cfg.SystemPrompt != c.want {
+				t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify the built-in defaults for the context window settings: a 50-message "offset" window,
+// auto-compaction on at 0.9, and a non-empty summarizer prompt
+func Test_Unit_GetDefaultConfig_ContextWindowSettings(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if cfg.ContextWindowMessages != 50 {
+		t.Errorf("ContextWindowMessages = %d, want 50", cfg.ContextWindowMessages)
+	}
+	if cfg.ContextStrategy != "offset" {
+		t.Errorf("ContextStrategy = %q, want %q", cfg.ContextStrategy, "offset")
+	}
+	if !cfg.AutoCompact {
+		t.Errorf("expected AutoCompact to be on by default")
+	}
+	if cfg.AutoCompactThreshold != 0.9 {
+		t.Errorf("AutoCompactThreshold = %g, want 0.9", cfg.AutoCompactThreshold)
+	}
+	const wantPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
+	if cfg.SummarizerPrompt != wantPrompt {
+		t.Errorf("SummarizerPrompt = %q, want %q", cfg.SummarizerPrompt, wantPrompt)
+	}
+}
+
+// - Verify a config file can set each context window setting ("autoCompact": false included) without a
+// warning, and a file that sets none of them keeps every default
+func Test_Unit_SetDefaultConfig_ContextWindowSettings(t *testing.T) {
+	t.Run("file sets each key", func(t *testing.T) {
+		path := writeTempFile(t, "config.json", []byte(`{
+			"contextWindowMessages": 7,
+			"contextStrategy": "ring-buffer",
+			"autoCompact": false,
+			"autoCompactThreshold": 0.5,
+			"summarizerPrompt": "fake test summarizer prompt"
+		}`))
+
+		var cfg Config
+		var err error
+		out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+		}
+		if cfg.ContextWindowMessages != 7 || cfg.ContextStrategy != "ring-buffer" || cfg.AutoCompact ||
+			cfg.AutoCompactThreshold != 0.5 || cfg.SummarizerPrompt != "fake test summarizer prompt" {
+			t.Errorf("expected every context window setting from the file, got messages=%d strategy=%q autoCompact=%t threshold=%g prompt=%q",
+				cfg.ContextWindowMessages, cfg.ContextStrategy, cfg.AutoCompact, cfg.AutoCompactThreshold, cfg.SummarizerPrompt)
+		}
+		if out != "" {
+			t.Errorf("expected no warnings, got %q", out)
+		}
+	})
+
+	t.Run("missing keys keep defaults", func(t *testing.T) {
+		path := writeTempFile(t, "config.json", []byte(`{"model": "fake-model"}`))
+
+		var cfg Config
+		var err error
+		captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+		}
+		def := GetDefaultConfig()
+		if cfg.ContextWindowMessages != def.ContextWindowMessages || cfg.ContextStrategy != def.ContextStrategy ||
+			cfg.AutoCompact != def.AutoCompact || cfg.AutoCompactThreshold != def.AutoCompactThreshold ||
+			cfg.SummarizerPrompt != def.SummarizerPrompt {
+			t.Errorf("expected the context window defaults kept, got messages=%d strategy=%q autoCompact=%t threshold=%g prompt=%q",
+				cfg.ContextWindowMessages, cfg.ContextStrategy, cfg.AutoCompact, cfg.AutoCompactThreshold, cfg.SummarizerPrompt)
+		}
+	})
+}
+
+// - Verify /config shows each context window setting
+func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.ContextWindowMessages = 7
+	cfg.ContextStrategy = "linked-list"
+	cfg.AutoCompact = false
+	cfg.AutoCompactThreshold = 0.75
+	cfg.SummarizerPrompt = "fake test summarizer prompt"
+
+	PrintConfig(cfg)
+
+	for _, want := range []string{
+		"contextWindowMessages: 7",
+		"contextStrategy: linked-list",
+		"autoCompact:   false",
+		"autoCompactThreshold: 0.75",
+		`summarizerPrompt: "fake test summarizer prompt"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q to be printed, got:\n%s", want, out.String())
+		}
+	}
+}
+
+// - Verify the defaults name the built-in tool by its model-facing name, and give each model call 300 seconds
+func Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if !slices.Equal(cfg.BuiltinTools, []string{"read_file"}) {
+		t.Errorf("expected BuiltinTools [read_file], got %v", cfg.BuiltinTools)
+	}
+	if cfg.ResponseTimeoutSeconds != 300 {
+		t.Errorf("expected ResponseTimeoutSeconds 300, got %d", cfg.ResponseTimeoutSeconds)
+	}
+}
+
+// - Verify "responseTimeoutSeconds" in a config file is applied without a warning
+func Test_Unit_SetDefaultConfig_ResponseTimeout_AppliedWithoutWarning(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"responseTimeoutSeconds": 42}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.ResponseTimeoutSeconds != 42 {
+		t.Errorf("expected ResponseTimeoutSeconds 42 from the file, got %d", cfg.ResponseTimeoutSeconds)
+	}
+	if out != "" {
+		t.Errorf("expected no warnings, got %q", out)
+	}
+}
+
+// - Verify /config shows responseTimeoutSeconds
+func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.ResponseTimeoutSeconds = 42
+
+	PrintConfig(cfg)
+
+	if !strings.Contains(out.String(), "responseTimeoutSeconds: 42") {
+		t.Errorf("expected responseTimeoutSeconds to be printed, got:\n%s", out.String())
+	}
+}
+
+// - Verify denyFileNames is empty by default, so only the built-in file deny list applies
+func Test_Unit_GetDefaultConfig_DenyFileNames_Empty(t *testing.T) {
+	if got := GetDefaultConfig().DenyFileNames; len(got) != 0 {
+		t.Errorf("expected no default DenyFileNames, got %q", got)
+	}
+}
+
+// - Verify "denyFileNames" in a config file is applied as given, without a warning, and a file without the key leaves it empty
+func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"a list is applied", `{"denyFileNames": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
+		{"no key leaves it empty", `{"model": "fake-model"}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.DenyFileNames, c.want) {
+				t.Errorf("DenyFileNames = %q, want %q", cfg.DenyFileNames, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows denyFileNames, both when set and when empty
+func Test_Unit_PrintConfig_ShowsDenyFileNames(t *testing.T) {
+	for _, c := range []struct {
+		names []string
+		want  string
+	}{
+		{[]string{"*.secret", "creds.json"}, "denyFileNames: [*.secret creds.json] (added to the built-in list)"},
+		{nil, "denyFileNames: [] (added to the built-in list)"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.DenyFileNames = c.names
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
 	}
 }

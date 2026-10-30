@@ -7,12 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
 )
-
-const ResponseTimeout = 5 * time.Minute
 
 type Provider interface {
 	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
@@ -78,6 +77,7 @@ func SetupProvider(cfg config.Config) (Provider, error) {
 			Model:   cfg.Model,
 			BaseURL: cfg.BaseURL,
 			ApiKey:  os.Getenv(cfg.ApiKeyName),
+			Timeout: time.Duration(cfg.ResponseTimeoutSeconds) * time.Second,
 		}, nil
 	} else {
 		// provider not supported
@@ -97,14 +97,16 @@ func CreateChatMessage(role string, msgType string, content string, toolCallID s
 	}
 }
 
-// prepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the context, and the messages this turn into a single slice of ChatMessage.
-// [note2agent] turnMsgs []ChatMessage breaks old tests on this
+// PrepareChatRequest prepares the chat messages to be sent to the provider by combining the system message, the context, and the messages this turn into a single slice of ChatMessage.
+// An empty (or whitespace-only) system message is left out, so a config file's "systemPrompt": "" really sends no system prompt.
 func PrepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage {
-	chat2send := make([]ChatMessage, len(msgContext)+len(turnMsgs)+1)
-	chat2send[0] = systemMsg
-	copy(chat2send[1:], msgContext)
-	copy(chat2send[len(msgContext)+1:], turnMsgs)
-	return chat2send
+	// [agent] length 0 but room for every message; append fills it in place, and the new slice never shares the caller's arrays
+	chat2send := make([]ChatMessage, 0, len(msgContext)+len(turnMsgs)+1)
+	if strings.TrimSpace(systemMsg.Content) != "" {
+		chat2send = append(chat2send, systemMsg)
+	}
+	chat2send = append(chat2send, msgContext...)
+	return append(chat2send, turnMsgs...)
 }
 
 // instantiates a new tool definition instance

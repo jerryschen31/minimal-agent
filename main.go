@@ -14,7 +14,7 @@ import (
 )
 
 const LogoLines = `
-  <[o_o]>  minimal-agent v0.1.13
+  <[o_o]>  minimal-agent v%s
    /| |\   Ask me anything!
 `
 const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /exit to exit\n     /compact to compact the conversation\n     /config to see the current agent configuration\n"
@@ -88,7 +88,7 @@ func main() {
 		return
 	}
 	// print a welcome message (debug purposes)
-	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg)
+	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg, cfg.AgentVersion)
 	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
 	// run the agent main loop (blocking call)

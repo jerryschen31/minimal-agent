@@ -47,7 +47,7 @@ type Hook interface {
 
 - A rule is a glob on the **tool name the model sees** (`path.Match` syntax), e.g. `filesystem_write_file`, `filesystem_*`, `*_delete_*`. MCP tools are named `<server>_<tool>` (`mcpconnect/tools.go`); `-mode info` prints these names.
 - Once `run_command` exists, a rule may also name the program: `run_command:rm`. Not built in v1 (no `run_command` yet); the parser rejects the `:` form until then, so nobody writes a rule that silently matches nothing.
-- **Built-in default list in code**, plus config `denyRules []string`, which **adds to** the defaults and never replaces them.
+- ~~**Built-in default list in code**, plus config `denyRules []string`, which **adds to** the defaults and never replaces them.~~ Superseded 2026-10-29 (`DECISIONS.md § Policy out of the core`): the defaults move to `GetDefaultConfig`, and a config file's `denyRules` replaces them (`[]` turns them off).
 - **Default list (decided 2026-10-23): anything that deletes.**
   - v1: `*delete*`, `*remove*`. Matched case-insensitively (both sides lowercased), so `DeleteFile` and `bulk_delete` are caught too.
   - With `run_command`: `run_command:rm` (and `rmdir`).
@@ -75,7 +75,7 @@ type Hook interface {
 
 | Field | Flag | Default | Notes |
 |---|---|---|---|
-| `denyRules` | none in v1 | `[]` (added to the built-in list) | printed by `/config` and `-mode info` |
+| `denyRules` | none in v1 | `[]` (added to the built-in list); from 2026-10-29 `["*delete*", "*remove*"]`, replaced by a config file's list | printed by `/config` and `-mode info` |
 
 - **v1 is the JSON array only** (decided 2026-10-24): `"denyRules": ["*move*", "*_write_file"]`. A rule file (`denyRulesFile`, later `-deny <file>`) is a separate field under "Later", never a second meaning of `denyRules`.
 - **Bare names are accepted** (2026-10-24): `"mv"` is a glob with no wildcard, so it matches only a tool named exactly `mv`. Blocking the *program* `mv` needs `run_command:mv`, once `run_command` exists. Info mode shows such a rule as "matches nothing".

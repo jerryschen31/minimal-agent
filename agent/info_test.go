@@ -3,11 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -126,7 +128,7 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 	var toolLine, neverLine string
 	for line := range strings.Lines(out) {
 		switch {
-		case strings.Contains(line, "never reads:"):
+		case strings.Contains(line, "never reads:") && !strings.Contains(line, "trace directory"): // the deny-list line, not the trace-directory one
 			neverLine = line
 		case strings.Contains(line, "read_file"):
 			toolLine = line
@@ -142,6 +144,36 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 		if !strings.Contains(neverLine, name) {
 			t.Errorf("expected %q in never reads: line %q", name, neverLine)
 		}
+	}
+}
+
+// - Verify read_file gets a "never reads: anything in the trace directory (...)" line naming a configured TraceDir
+func Test_Unit_PrintInfo_BuiltinTools_TraceDirLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.TraceDir = filepath.Join(t.TempDir(), "fake-traces")
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if want := "never reads: anything in the trace directory (" + cfg.TraceDir + ")\n"; !strings.Contains(out, want) {
+		t.Errorf("expected %q in output:\n%s", want, out)
+	}
+}
+
+// - Verify an empty TraceDir prints no trace-directory line
+func Test_Unit_PrintInfo_BuiltinTools_NoTraceDir_NoLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.TraceDir = ""
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if strings.Contains(out, "trace directory") {
+		t.Errorf("expected no trace-directory line in output:\n%s", out)
 	}
 }
 
@@ -435,7 +467,8 @@ func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
 	}
 }
 
-// - Verify a config SetupAgent would refuse (maxSteps or mcpResultMaxBytes not positive) prints
+// - Verify a config SetupAgent would refuse (maxSteps, responseTimeoutSeconds or mcpResultMaxBytes not positive, or a context window
+// setting contextwindow.CheckConfig rejects) prints
 // "Configuration: FAILED" naming the field, still lists the built-in tools, starts no MCP server, and returns InfoFailed
 func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	tests := []struct {
@@ -444,7 +477,10 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 		set   func(*config.Config)
 	}{
 		{"maxSteps 0", "maxSteps", func(c *config.Config) { c.MaxSteps = 0 }},
+		{"responseTimeoutSeconds 0", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = 0 }},
+		{"responseTimeoutSeconds -1", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = -1 }},
 		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
+		{"contextWindowMessages 2", "contextWindowMessages", func(c *config.Config) { c.ContextWindowMessages = 2 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -480,10 +516,11 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	}
 }
 
-// - Verify printDenyRules lists each rule with its source and every tool it matches, built-in and MCP alike
+// - Verify printDenyRules lists each rule with its source (default or config) and every tool it matches, built-in
+// and MCP alike
 func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	var out bytes.Buffer
-	ok := printDenyRules(&out, []string{"*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
+	ok := printDenyRules(&out, []string{"*delete*", "*remove*", "*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
 	if !ok {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
@@ -491,11 +528,11 @@ func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	if !strings.Contains(got, "Deny rules (3)\n") {
 		t.Errorf("expected Deny rules (3) in output:\n%s", got)
 	}
-	if lineWith(got, "*delete*", "built-in", "matches: docs_delete_note\n") == "" {
-		t.Errorf("expected *delete* built-in matching docs_delete_note in output:\n%s", got)
+	if lineWith(got, "*delete*", "default", "matches: docs_delete_note\n") == "" {
+		t.Errorf("expected *delete* default matching docs_delete_note in output:\n%s", got)
 	}
-	if lineWith(got, "*remove*", "built-in", "matches: docs_remove_file\n") == "" {
-		t.Errorf("expected *remove* built-in matching docs_remove_file in output:\n%s", got)
+	if lineWith(got, "*remove*", "default", "matches: docs_remove_file\n") == "" {
+		t.Errorf("expected *remove* default matching docs_remove_file in output:\n%s", got)
 	}
 	if lineWith(got, "*file*", "config", "matches: read_file, docs_remove_file\n") == "" {
 		t.Errorf("expected *file* (lowercased) config matching read_file, docs_remove_file in output:\n%s", got)
@@ -505,17 +542,17 @@ func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	}
 }
 
-// - Verify a built-in rule matching nothing prints plain "matches nothing", while a config rule gets a warning
+// - Verify a default rule matching nothing prints plain "matches nothing", while a config rule gets a warning
 func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*move*"}, []string{"read_file"}, true) {
+	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*"}, []string{"read_file"}, true) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
 	for _, rule := range []string{"*delete*", "*remove*"} {
-		line := lineWith(got, rule, "built-in", "matches nothing")
+		line := lineWith(got, rule, "default", "matches nothing")
 		if line == "" || strings.Contains(line, "warning") {
-			t.Errorf("expected %s built-in matches nothing with no warning, got line %q in output:\n%s", rule, line, got)
+			t.Errorf("expected %s default matches nothing with no warning, got line %q in output:\n%s", rule, line, got)
 		}
 	}
 	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
@@ -526,7 +563,7 @@ func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
 // - Verify allListed=false prints the "some tools could not be listed" note, says "among the tools listed", and never warns
 func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file"}, false) {
+	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*", "read_*"}, []string{"read_file"}, false) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
@@ -543,6 +580,42 @@ func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	}
 	if strings.Contains(got, "warning") {
 		t.Errorf("expected no warning when MCP was not listed:\n%s", got)
+	}
+}
+
+// - Verify an empty or nil rule list prints exactly the one "none" line and returns true
+func Test_Unit_PrintDenyRules_Empty_PrintsNone(t *testing.T) {
+	for _, rulesIn := range [][]string{{}, nil} {
+		for _, allListed := range []bool{true, false} {
+			var out bytes.Buffer
+			if !printDenyRules(&out, rulesIn, []string{"read_file", "docs_delete_note"}, allListed) {
+				t.Errorf("rules %#v, allListed %v: expected true, got false", rulesIn, allListed)
+			}
+			if got, want := out.String(), "Deny rules (0): none, every tool call is allowed\n"; got != want {
+				t.Errorf("rules %#v, allListed %v: output = %q, want %q", rulesIn, allListed, got, want)
+			}
+		}
+	}
+}
+
+// - Verify a config list that replaces the defaults shows only its own rules, labelled config, and no default rule
+func Test_Unit_PrintDenyRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.T) {
+	var out bytes.Buffer
+	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file", "docs_delete_note"}, true) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	if !strings.Contains(got, "Deny rules (2)\n") {
+		t.Errorf("expected Deny rules (2) in output:\n%s", got)
+	}
+	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
+		t.Errorf("expected *move* config matches nothing with a warning in output:\n%s", got)
+	}
+	if lineWith(got, "read_*", "config", "matches: read_file\n") == "" {
+		t.Errorf("expected read_* config matches: read_file in output:\n%s", got)
+	}
+	if strings.Contains(got, "*delete*") || strings.Contains(got, "*remove*") || strings.Contains(got, "default") {
+		t.Errorf("expected no default rule in output:\n%s", got)
 	}
 }
 
@@ -563,7 +636,7 @@ func Test_Unit_PrintDenyRules_InvalidRule_Fails(t *testing.T) {
 	}
 }
 
-// - Verify the default config ends with both built-in deny rules (no warning) and returns InfoOK
+// - Verify the default config ends with both default deny rules (no warning) and returns InfoOK
 func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
@@ -576,8 +649,8 @@ func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 		t.Errorf("expected Deny rules (2) in output:\n%s", out)
 	}
 	for _, rule := range []string{"*delete*", "*remove*"} {
-		if lineWith(out, rule, "built-in", "matches nothing") == "" {
-			t.Errorf("expected %s built-in matches nothing in output:\n%s", rule, out)
+		if lineWith(out, rule, "default", "matches nothing") == "" {
+			t.Errorf("expected %s default matches nothing in output:\n%s", rule, out)
 		}
 	}
 	if strings.Contains(out, "warning") {
@@ -588,7 +661,7 @@ func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 	}
 }
 
-// - Verify a config rule matching the built-in read_file shows that match and returns InfoOK
+// - Verify a config rule matching the built-in read_file shows that match, replaces the defaults, and returns InfoOK
 func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
@@ -598,8 +671,8 @@ func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if !strings.Contains(out, "Deny rules (3)\n") {
-		t.Errorf("expected Deny rules (3) in output:\n%s", out)
+	if !strings.Contains(out, "Deny rules (1)\n") {
+		t.Errorf("expected Deny rules (1) in output:\n%s", out)
 	}
 	if lineWith(out, "read_*", "config", "matches: read_file") == "" {
 		t.Errorf("expected read_* config matches: read_file in output:\n%s", out)
@@ -673,6 +746,21 @@ func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
 	// [agent] the bare MCP name "write" is not what the model sees, so it matches nothing and warns
 	if lineWith(out, "write ", "config", "matches nothing  <- warning:") == "" {
 		t.Errorf("expected bare write to match nothing with a warning in output:\n%s", out)
+	}
+}
+
+// - Verify an empty denyRules list in the config prints the "none" line and returns InfoOK
+func Test_Unit_PrintInfo_DenyRules_Empty(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyRules = []string{}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if !strings.HasSuffix(out, "Deny rules (0): none, every tool call is allowed\n") {
+		t.Errorf("expected the output to end with the none line:\n%s", out)
 	}
 }
 
@@ -759,5 +847,118 @@ func Test_Unit_PrintInfo_MCP_ControlCharsAreQuoted(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected the quoted value %s in the output:\n%s", want, out)
 		}
+	}
+}
+
+// - Verify safeMCPError hides a configured URL's path and query (where a token can sit), showing scheme and host
+func Test_Unit_SafeMCPError_HidesURLToken(t *testing.T) {
+	rawURL := "https://mcp.example.test/mcp?token=FAKE_SECRET_TOKEN_123"
+	servers := map[string]config.McpServerConfig{"remote": {URL: rawURL}}
+	got := safeMCPError(errors.New(`failed to connect to MCP server remote: Post "`+rawURL+`": connection refused`), servers)
+
+	if strings.Contains(got, "FAKE_SECRET_TOKEN_123") {
+		t.Errorf("safeMCPError leaked the token: %s", got)
+	}
+	if !strings.Contains(got, "https://mcp.example.test/[rest hidden]") {
+		t.Errorf("expected scheme and host shown, got %s", got)
+	}
+}
+
+// - Verify safeMCPError hides both URLs when one server's URL is a prefix of another's: hiding the short one first
+// would leave the long one's token showing
+func Test_Unit_SafeMCPError_PrefixURLs_NeitherTokenShown(t *testing.T) {
+	short := "https://mcp.example.test/mcp?token=FAKE_SECRET_SHORT_123"
+	long := short + "&key=FAKE_SECRET_LONG_456"
+	servers := map[string]config.McpServerConfig{"a": {URL: short}, "b": {URL: long}}
+	msg := `failed to connect to MCP server a: Post "` + short + `": refused` + "\n" +
+		`failed to connect to MCP server b: Post "` + long + `": refused`
+	// [agent] map order is random, so repeat to make a lucky iteration order unlikely to hide a missing sort
+	for range 20 {
+		got := safeMCPError(errors.New(msg), servers)
+		for _, s := range []string{"FAKE_SECRET_SHORT_123", "FAKE_SECRET_LONG_456"} {
+			if strings.Contains(got, s) {
+				t.Fatalf("safeMCPError leaked %q: %s", s, got)
+			}
+		}
+	}
+}
+
+// - Verify safeMCPError keeps a multi-line (joined) error on separate lines, and quotes only a line holding a control
+// character, leaving the other line unchanged
+func Test_Unit_SafeMCPError_PerLine(t *testing.T) {
+	line1 := "failed to connect to MCP server a: refused"
+	line2 := "failed to connect to MCP server b: bad\x1b[2Jreply"
+	got := safeMCPError(errors.Join(errors.New(line1), errors.New(line2)), nil)
+
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), got)
+	}
+	if lines[0] != line1 {
+		t.Errorf("line 1 = %q, want it unchanged %q", lines[0], line1)
+	}
+	if want := strconv.Quote(line2); lines[1] != want {
+		t.Errorf("line 2 = %s, want quoted %s", lines[1], want)
+	}
+}
+
+// - Verify safeMCPError leaves the message unchanged when no server has a URL (stdio servers only)
+func Test_Unit_SafeMCPError_StdioServers_Unchanged(t *testing.T) {
+	servers := map[string]config.McpServerConfig{"local": {Command: "fake-mcp-server", Args: []string{"--flag"}}}
+	msg := "failed to connect to MCP server local: exit status 1"
+	if got := safeMCPError(errors.New(msg), servers); got != msg {
+		t.Errorf("safeMCPError = %q, want unchanged %q", got, msg)
+	}
+}
+
+// - Verify read_file gets an "also never reads (denyFileNames): ..." line listing the config's extra patterns
+func Test_Unit_PrintInfo_BuiltinTools_DenyFileNamesLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyFileNames = []string{"*.secret", "creds.json"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if want := "also never reads (denyFileNames): *.secret, creds.json\n"; !strings.Contains(out, want) {
+		t.Errorf("expected %q in output:\n%s", want, out)
+	}
+}
+
+// - Verify no denyFileNames (nil or empty) prints no extra deny-list line, while the built-in line is still shown
+func Test_Unit_PrintInfo_BuiltinTools_NoDenyFileNames_NoLine(t *testing.T) {
+	for name, names := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.GetDefaultConfig()
+			cfg.WorkDir = t.TempDir()
+			cfg.DenyFileNames = names
+
+			code, out := runInfo(t, cfg, "")
+			if code != InfoOK {
+				t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+			}
+			if strings.Contains(out, "also never reads") {
+				t.Errorf("expected no also never reads (denyFileNames) line in output:\n%s", out)
+			}
+			if !strings.Contains(out, "never reads: .env") {
+				t.Errorf("expected the built-in never reads: line in output:\n%s", out)
+			}
+		})
+	}
+}
+
+// - Verify a bad denyFileNames pattern makes info mode print Built-in tools: FAILED and return InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_BadDenyFileNames_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyFileNames = []string{"[abc"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if !strings.Contains(out, "Built-in tools: FAILED: denyFileNames") {
+		t.Errorf("expected a Built-in tools: FAILED denyFileNames row in output:\n%s", out)
 	}
 }

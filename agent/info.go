@@ -78,25 +78,30 @@ func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interr
 	return code
 }
 
-// printDenyRules lists every deny rule (built-in and config) with the tools it matches, using the same matching as
-// the gate itself, and reports false if the rules are invalid (chat mode would refuse to start). A config rule that
-// matches no tool gets a warning: usually a typo. allListed is false when some tools could not be listed (built-ins
-// failed, a server failed or was not started), so the warning could be wrong and is left out.
-func printDenyRules(w io.Writer, extraRules, toolNames []string, allListed bool) bool {
-	denyRules, err := hooks.NewDenyRules(extraRules)
+// printDenyRules lists every deny rule in force (the defaults from config.GetDefaultConfig, or the config file's list
+// that replaced them) with the tools it matches, using the same matching as the gate itself, and reports false if
+// the rules are invalid (chat mode would refuse to start). A config rule that matches no tool gets a warning: usually
+// a typo. allListed is false when some tools could not be listed (built-ins failed, a server failed or was not
+// started), so the warning could be wrong and is left out.
+func printDenyRules(w io.Writer, rulesIn, toolNames []string, allListed bool) bool {
+	denyRules, err := hooks.NewDenyRules(rulesIn)
 	if err != nil {
 		fmt.Fprintf(w, "Deny rules: FAILED: %v\n", err)
 		return false
 	}
 	rules := denyRules.Rules()
+	if len(rules) == 0 {
+		fmt.Fprintln(w, "Deny rules (0): none, every tool call is allowed")
+		return true
+	}
 	fmt.Fprintf(w, "Deny rules (%d)\n", len(rules))
 	if !allListed {
 		fmt.Fprintln(w, "  (some tools could not be listed above, so a rule may match a tool not shown)")
 	}
 	for _, rule := range rules {
 		source := "config"
-		if hooks.IsBuiltIn(rule) {
-			source = "built-in"
+		if isDefaultDenyRule(rule) {
+			source = "default"
 		}
 		var matches []string
 		for _, name := range toolNames {
@@ -109,7 +114,7 @@ func printDenyRules(w io.Writer, extraRules, toolNames []string, allListed bool)
 			fmt.Fprintf(w, "  %-20s %-9s matches: %s\n", rule, source, strings.Join(matches, ", "))
 		case !allListed:
 			fmt.Fprintf(w, "  %-20s %-9s matches nothing among the tools listed\n", rule, source)
-		case source == "built-in":
+		case source == "default":
 			// [agent] the defaults are a safety net for tools that may appear later, so matching nothing today is normal
 			fmt.Fprintf(w, "  %-20s %-9s matches nothing\n", rule, source)
 		default:
@@ -119,10 +124,17 @@ func printDenyRules(w io.Writer, extraRules, toolNames []string, allListed bool)
 	return true
 }
 
+// isDefaultDenyRule reports whether rule (lowercased, as Rules returns it) is one of the default rules. A config
+// file that repeats a default rule shows it as "default" too; that's harmless, and telling them apart would mean
+// recording which keys the file set.
+func isDefaultDenyRule(rule string) bool {
+	return slices.Contains(config.GetDefaultConfig().DenyRules, rule) // the defaults are written in lowercase
+}
+
 // printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
 // they can't be set up.
 func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
-	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
+	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes, cfg.DenyFileNames)
 	if err != nil {
 		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)
 		return nil, false
@@ -134,6 +146,12 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 		fmt.Fprintf(w, "  %-28s %s\n", def.Name, firstLine(def.Desc))
 		if def.Name == "read_file" {
 			fmt.Fprintf(w, "  %-28s never reads: %s (.env.example is allowed)\n", "", strings.Join(builtin.DeniedNames(), ", "))
+			if len(cfg.DenyFileNames) > 0 {
+				fmt.Fprintf(w, "  %-28s also never reads (denyFileNames): %s\n", "", safeText(strings.Join(cfg.DenyFileNames, ", ")))
+			}
+			if cfg.TraceDir != "" {
+				fmt.Fprintf(w, "  %-28s never reads: anything in the trace directory (%s)\n", "", safeText(cfg.TraceDir))
+			}
 		}
 	}
 	return names, true
@@ -229,6 +247,29 @@ func hideURL(msg, rawURL string) string {
 		shown = u.Scheme + "://" + u.Host + "/[rest hidden]"
 	}
 	return strings.ReplaceAll(msg, rawURL, shown)
+}
+
+// safeMCPError prepares an MCP setup error (possibly several servers' errors, one per line) for the terminal: every
+// configured server URL is hidden with hideURL, then each line goes through safeText.
+func safeMCPError(err error, servers map[string]config.McpServerConfig) string {
+	msg := err.Error()
+	// longest URL first: if one URL starts with another (…/mcp and …/mcp?token=…), hiding the short one first would
+	// leave the rest of the long one, its token included, showing
+	var urls []string
+	for _, sc := range servers {
+		if sc.URL != "" {
+			urls = append(urls, sc.URL)
+		}
+	}
+	slices.SortFunc(urls, func(a, b string) int { return len(b) - len(a) })
+	for _, u := range urls {
+		msg = hideURL(msg, u)
+	}
+	lines := strings.Split(msg, "\n")
+	for i, line := range lines {
+		lines[i] = safeText(line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // hintLabel shows a tool's annotations. They are the server's claims, so they help spot tools to deny but prove nothing.
