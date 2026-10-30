@@ -30,10 +30,13 @@ MCP tools (14)
   …
 
 Deny rules (once PLAN-approval-gates v1 lands)
-  *delete*     (built-in)   matches: github_delete_file
-  *remove*     (built-in)   matches: nothing
+  *delete*     (default)    matches: github_delete_file
+  *remove*     (default)    matches: nothing
   my_rule      (config)     matches: nothing   ← warning
 ```
+
+(Labels updated 2026-10-29: the defaults now come from `config.GetDefaultConfig` and a config file's list replaces
+them, so "built-in" became "default"; see `DECISIONS.md § Policy out of the core`.)
 
 ## What it lists, and why
 

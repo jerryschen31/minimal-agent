@@ -17,7 +17,7 @@ const testMaxBytes = 4096
 // newTool creates a read_file tool confined to dir, failing the test on error.
 func newTool(t *testing.T, dir string) *ReadFileTool {
 	t.Helper()
-	tool, err := NewReadFileTool(dir, testMaxBytes)
+	tool, err := NewReadFileTool(dir, "", testMaxBytes)
 	if err != nil {
 		t.Fatalf("NewReadFileTool(%q): %v", dir, err)
 	}
@@ -212,7 +212,7 @@ func Test_ReadFile_LimitSmallerThanACharacter_IsAnError(t *testing.T) {
 		t.Errorf("limit 2: got %q, %v", got, err)
 	}
 
-	tiny, err := NewReadFileTool(dir, 1) // the configured cap is the limit when none is given
+	tiny, err := NewReadFileTool(dir, "", 1) // the configured cap is the limit when none is given
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,10 +480,10 @@ func Test_ReadFile_NewReadFileTool_InvalidWorkDir_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	file := writeFile(t, dir, "plain.txt", []byte("x"))
 
-	if _, err := NewReadFileTool(filepath.Join(dir, "missing"), testMaxBytes); err == nil {
+	if _, err := NewReadFileTool(filepath.Join(dir, "missing"), "", testMaxBytes); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := NewReadFileTool(file, testMaxBytes); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := NewReadFileTool(file, "", testMaxBytes); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("expected a 'not a directory' error for a file, got %v", err)
 	}
 }
@@ -511,7 +511,7 @@ func Test_Unit_IsDenied(t *testing.T) {
 // - Verify NewReadFileTool rejects a cap that is zero or negative (a negative cap would panic when slicing)
 func Test_ReadFile_NewReadFileTool_NonPositiveCap_ReturnsError(t *testing.T) {
 	for _, n := range []int{0, -1} {
-		if _, err := NewReadFileTool(t.TempDir(), n); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		if _, err := NewReadFileTool(t.TempDir(), "", n); err == nil || !strings.Contains(err.Error(), "must be positive") {
 			t.Errorf("cap %d: expected a must-be-positive error, got %v", n, err)
 		}
 	}
@@ -521,7 +521,7 @@ func Test_ReadFile_NewReadFileTool_NonPositiveCap_ReturnsError(t *testing.T) {
 func Test_ReadFile_UsesConfiguredCap(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "minagent-read-file-test-cap.txt", bytes.Repeat([]byte("a"), 100))
-	tool, err := NewReadFileTool(dir, 10)
+	tool, err := NewReadFileTool(dir, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,5 +541,195 @@ func Test_DeniedNames_ReturnsCopy(t *testing.T) {
 	first[0] = "mutated"
 	if got := DeniedNames()[0]; got != want {
 		t.Errorf("expected %q after mutating a previous result, got %q", want, got)
+	}
+}
+
+//*************************************//
+// the configured trace directory
+//*************************************//
+
+// newTraceTool creates a read_file tool confined to workDir that must never read traceDir, failing the test on error.
+func newTraceTool(t *testing.T, workDir, traceDir string) *ReadFileTool {
+	t.Helper()
+	tool, err := NewReadFileTool(workDir, traceDir, testMaxBytes)
+	if err != nil {
+		t.Fatalf("NewReadFileTool(%q, %q): %v", workDir, traceDir, err)
+	}
+	return tool
+}
+
+// expectTraceBlocked fails the test unless reading path is refused with the trace-directory error and leaks nothing.
+func expectTraceBlocked(t *testing.T, tool *ReadFileTool, path string) {
+	t.Helper()
+	got, err := readPath(tool, path)
+	if err == nil {
+		t.Fatalf("expected %q to be blocked, got output %q", path, got)
+	}
+	if !strings.Contains(err.Error(), "is inside the trace directory") {
+		t.Errorf("expected a trace-directory error for %q, got %q", path, err.Error())
+	}
+	if got != "" || strings.Contains(err.Error(), "SECRET") {
+		t.Errorf("expected nothing leaked, got output %q and error %q", got, err.Error())
+	}
+}
+
+// expectReadable fails the test unless reading path returns want.
+func expectReadable(t *testing.T, tool *ReadFileTool, path, want string) {
+	t.Helper()
+	got, err := readPath(tool, path)
+	if err != nil {
+		t.Fatalf("expected %q to be readable, got error: %v", path, err)
+	}
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+}
+
+// - Verify a trace directory with a name that is not on the deny list (logs/trace) is refused by path: a file in it
+// by relative path, absolute path or a path through "..", and the directory itself
+func Test_ReadFile_TraceDir_Blocked(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	tool := newTraceTool(t, work, filepath.Join(work, "logs", "trace"))
+
+	for _, path := range []string{
+		"logs/trace/run.jsonl",
+		filepath.Join(work, "logs", "trace", "run.jsonl"),
+		"logs/../logs/trace/run.jsonl",
+		"./logs/trace/run.jsonl",
+		"logs/trace",
+		filepath.Join(work, "logs", "trace"),
+	} {
+		t.Run(path, func(t *testing.T) { expectTraceBlocked(t, tool, path) })
+	}
+}
+
+// - Verify a request that spells the trace directory in a different case is refused (on a case-insensitive
+// filesystem it names the same file and must hit the trace-directory check; on a case-sensitive one it does not exist)
+func Test_ReadFile_TraceDir_DifferentCaseRequest_Blocked(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	tool := newTraceTool(t, work, filepath.Join(work, "logs", "trace"))
+
+	upper := "LOGS/TRACE/run.jsonl"
+	if _, err := os.Stat(filepath.Join(work, upper)); err == nil {
+		expectTraceBlocked(t, tool, upper) // case-insensitive filesystem (macOS, Windows)
+		return
+	}
+	if got, err := readPath(tool, upper); err == nil || got != "" {
+		t.Errorf("expected %q to be refused, got (%q, %v)", upper, got, err)
+	}
+}
+
+// - Verify a traceDir configured in a different case than it has on disk still protects it, on every OS, because
+// the comparison ignores case
+func Test_ReadFile_TraceDir_ConfiguredInDifferentCase_Blocked(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	tool := newTraceTool(t, work, filepath.Join(work, "LOGS", "Trace"))
+
+	expectTraceBlocked(t, tool, "logs/trace/run.jsonl")
+}
+
+// - Verify a traceDir that does not exist yet when the tool is built (the recorder creates it when a run starts)
+// is still protected once it is created
+func Test_ReadFile_TraceDir_CreatedLater_Blocked(t *testing.T) {
+	work := t.TempDir()
+	tool := newTraceTool(t, work, filepath.Join(work, "logs", "trace"))
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+
+	expectTraceBlocked(t, tool, "logs/trace/run.jsonl")
+	expectTraceBlocked(t, tool, "logs/trace")
+}
+
+// - Verify files next to the trace directory whose names merely start with its name (trace-notes.txt, tracex/) and
+// files in its parent are still readable, so the check compares path components, not string prefixes
+func Test_ReadFile_TraceDir_SimilarNames_Allowed(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	writeFile(t, work, "logs/trace-notes.txt", []byte("ALLOWED-NOTES"))
+	writeFile(t, work, "logs/tracex/a.txt", []byte("ALLOWED-TRACEX"))
+	writeFile(t, work, "logs/a.txt", []byte("ALLOWED-LOGS"))
+	tool := newTraceTool(t, work, filepath.Join(work, "logs", "trace"))
+
+	expectReadable(t, tool, "logs/trace-notes.txt", "ALLOWED-NOTES")
+	expectReadable(t, tool, "logs/tracex/a.txt", "ALLOWED-TRACEX")
+	expectReadable(t, tool, "logs/a.txt", "ALLOWED-LOGS")
+	expectTraceBlocked(t, tool, "logs/trace/run.jsonl")
+}
+
+// - Verify traceDir "" protects nothing extra: a file in logs/trace is an ordinary file then
+func Test_ReadFile_TraceDir_Empty_NothingExtraBlocked(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("ALLOWED-TRACE"))
+	writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	tool := newTraceTool(t, work, "")
+
+	expectReadable(t, tool, "logs/trace/run.jsonl", "ALLOWED-TRACE")
+	expectReadable(t, tool, "a.txt", "ALLOWED-A")
+}
+
+// - Verify a traceDir outside workDir is accepted and leaves every workDir file readable
+func Test_ReadFile_TraceDir_OutsideWorkDir_Allowed(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	writeFile(t, work, "trace/b.txt", []byte("ALLOWED-B")) // same name as the trace directory, but a different place
+	tool := newTraceTool(t, work, filepath.Join(t.TempDir(), "trace"))
+
+	expectReadable(t, tool, "a.txt", "ALLOWED-A")
+	expectReadable(t, tool, "trace/b.txt", "ALLOWED-B")
+}
+
+// - Verify NewReadFileTool fails when traceDir is workDir or a parent of it (read_file could then read nothing),
+// including when the two are spelled in different case
+func Test_ReadFile_NewReadFileTool_TraceDirContainsWorkDir_ReturnsError(t *testing.T) {
+	parent := t.TempDir()
+	work := filepath.Join(parent, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, traceDir := range map[string]string{
+		"equal":             work,
+		"equal, trailing /": work + string(filepath.Separator),
+		"parent":            parent,
+		"grandparent":       filepath.Dir(parent),
+		"equal, upper case": filepath.Join(parent, "WORK"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewReadFileTool(work, traceDir, testMaxBytes)
+			if err == nil || !strings.Contains(err.Error(), "is workDir or contains it") {
+				t.Errorf("expected an 'is workDir or contains it' error for traceDir %q, got %v", traceDir, err)
+			}
+		})
+	}
+}
+
+// - Verify a relative traceDir is resolved against the process's current directory (where the recorder writes),
+// not against workDir: with cwd=A, workDir=A/w and traceDir "w/tr", A/w/tr is protected and A/w/w/tr is not
+func Test_ReadFile_TraceDir_RelativeToCwd_NotWorkDir(t *testing.T) {
+	cwd := t.TempDir()
+	work := filepath.Join(cwd, "w")
+	writeFile(t, work, "tr/run.jsonl", []byte("SECRET-TRACE"))
+	writeFile(t, work, "w/tr/run.jsonl", []byte("ALLOWED-NESTED"))
+	t.Chdir(cwd)
+	tool := newTraceTool(t, work, filepath.Join("w", "tr"))
+
+	expectTraceBlocked(t, tool, "tr/run.jsonl")
+	expectReadable(t, tool, "w/tr/run.jsonl", "ALLOWED-NESTED")
+}
+
+// - Verify the deny-list error names every entry of the list (it is built from the list, so .agent-trace is in it)
+func Test_ReadFile_DenyList_ErrorListsEveryName(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, ".env", []byte("SECRET-ENV"))
+
+	_, err := readPath(newTool(t, work), ".env")
+	if err == nil {
+		t.Fatal("expected .env to be blocked")
+	}
+	for _, name := range append(DeniedNames(), ".agent-trace", ".env.example is allowed") {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("expected %q in the deny-list error %q", name, err.Error())
+		}
 	}
 }

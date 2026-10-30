@@ -43,7 +43,7 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		case "/summary", "/summarize":
 			taskTrace := trace.StartTask(cs.Recorder, line)
 			defer taskTrace.End()
-			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.getSessionProvider(taskTrace.ID()), msgContext, strings.TrimSpace(lineRest))
+			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.getSessionProvider(taskTrace.ID()), msgContext, cs.Config.SummarizerPrompt, strings.TrimSpace(lineRest))
 			if err != nil {
 				taskTrace.Fail(err)
 				if errors.Is(err, context.Canceled) {

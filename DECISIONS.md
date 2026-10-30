@@ -50,6 +50,7 @@ not appended. Entries without an exact recorded date are marked as approximate i
   Anthropic takes the system prompt as a separate field, not a message. Options: append the
   instructions to the first system prompt, or to the user message ("Focus on: …"). Open since
   2026-09-25; revisit when an Anthropic provider is added.
+  **Resolved 2026-10-29, superseded by `§ Policy cleanup item 3 built`:** appended to the one system message.
 
 - **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Undecided; no `/undo` command
   exists yet. Leaning window-only, matching `/clear`, per the "history is truth" model.
@@ -480,7 +481,8 @@ Decisions made before this track went dormant (see `SESSION.md` for current stat
   `["*"]` ⇒ everything gated.
   **Superseded by `§ 2026-10-23 — Approval gate v1: open questions settled`:** never built; replaced by
   `DenyRules` (globs that deny, plus a built-in delete/remove list) with an "allow once? [y/N]" ask only for a
-  denied call. Nothing asks by default.
+  denied call. Nothing asks by default. (The delete/remove list itself moved to config on 2026-10-29: see "Policy out of
+  the core" at the end of this log.)
 - **MCP tool names are prefixed** `<server>_<tool>` — approval entries must be
   `fs_write_file`, `fs_edit_file`, `fs_move_file`, `fs_create_directory`.
 - **Grep is a Go-native `tool.Func`, not an MCP server** — no official MCP server does content
@@ -545,11 +547,14 @@ single-flight guarantee. `Should` signals it's a question worth checking, closer
 - **`clampToMax(msgs, maxSize)`** — shared helper, keeps the summary at index `[0]` plus the
   newest `maxSize-1` survivors. Guards the overflow case: window fills with new messages while
   a slow summarization call is in flight, so summary + all survivors exceeds `maxSize`.
+  **Superseded 2026-10-29 by `§ Policy cleanup item 3 built`:** `clampToMax(msgs, numSummary, maxSize)` keeps the
+  first `numSummary` messages (the summary pair).
 - **Summary message `Role` is `"user"`, not `"system"`** — a second `system` message mid-history
   breaks Anthropic and some Ollama chat templates. Known, accepted trade-off: consecutive
   `user` turns after compaction (fine for OpenAI/Ollama, would need merging for Anthropic).
   Revisited in discussion 2026-09-22 (see "Wire format" below) but the decision didn't change —
   `Role` stays `"user"`; a separate marker field was proposed instead of changing `Role`.
+  **Superseded 2026-10-29 by `§ Policy cleanup item 3 built`:** the summary is now a user/assistant pair.
 - **Compaction writes the summary only into `ChatContext`, never into `ChatHistory`** — resolved
   2026-09-21, restated in the gen-6 refactor: "the history should only ever contain what was
   actually said, not a generated artifact." `compactChatContext`/`ChatContext.Compact` only
@@ -1430,6 +1435,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   (3) Window by tokens: the right long-term answer (providers limit tokens, not messages), but a
   separate piece of work that needs the same rule. (4) Raise the limits: only hides it.
   (5) **Chosen:** after trimming from the front, drop leading `tool` messages.
+  **Superseded 2026-10-29 by `§ Windows start at a user message after a trim`:** switched to option (1).
 - **Why (5) is enough.** Trimming from the front removes tool calls *before* their results, so a
   leading tool result is the only invalid shape; an assistant tool call at the front is fine
   because its results follow it. It keeps more context than (1).
@@ -2581,7 +2587,8 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
   every event's `run_id`.
 - Default `traceDir` is `.agent-trace`; it is in `.gitignore` and in `read_file`'s deny list, so the model can't
   read its own audit log. Honest gap: the deny list holds only that default name, so a different `traceDir` inside
-  `workDir` is not protected. An existing directory keeps its permissions (`MkdirAll` doesn't change them); the
+  `workDir` is not protected. (Closed 2026-10-29: `read_file` now refuses the configured `traceDir` by path; see
+  "Policy cleanup item 2" at the end of this log.) An existing directory keeps its permissions (`MkdirAll` doesn't change them); the
   file itself is still `0600`.
 
 **Redaction as built** (supersedes "a detector is data").
@@ -2875,6 +2882,8 @@ When a payload is over `traceMaxEventBytes` the recorder writes `{"truncated":tr
 
 ### 2026-10-23 — Approval gate v1: open questions settled (plan only, nothing built)
 
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the default list (`*delete*`, `*remove*`) stays, but it lives in `GetDefaultConfig` and a config file's `denyRules` replaces it.
+
 Settles the open points of `PLAN-approval-gates.md` v1 and `PLAN-info-mode.md`. Both plans are updated.
 
 - **Order: info mode first**, then the approval gate. Deny rules match tool names exactly as the model sees them
@@ -3001,7 +3010,7 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
 
 ### 2026-10-28 — Approval gate v1 built: deny rules, ask-on-deny, info section (`PLAN-approval-gates.md` steps 1–6)
 
-> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the built-in `*delete*`/`*remove*` move to `GetDefaultConfig`, and a config file's `denyRules` replaces them instead of adding to them.
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the built-in `*delete*`/`*remove*` move to `GetDefaultConfig`, and a config file's `denyRules` replaces them instead of adding to them. Info mode labels them "default" instead of "built-in".
 
 Jerry hand-coded the core (the `Hook` interface, `DenyRules`, the hook loop, the session wiring), tutored step by
 step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents wrote the tests.
@@ -3170,7 +3179,8 @@ built in). Full write-up: `prompts/20261029-session-question-2.md`. Jerry agreed
      system message (`model/provider.go:105`).
   4. Context-window size, strategy, auto-compact threshold (with an off switch) and the summarizer prompt become
      config fields; `SetupChatContext` currently ignores its `cfg`. Document the hidden `buffer = 2`
-     (`contextwindow/window.go:27`).
+     (`contextwindow/window.go:27`). **Built 2026-10-29, see `§ Policy cleanup item 4 built`;** the buffer was dropped
+     instead of documented.
   5. Cleanups: `*read*` and the unknown keys `memory`/`contextWindow` out of `config.default.json`; the stale comment
      at `config/config.go:184` (an empty filename no longer loads that file); the dead `DenyRules` line at
      `config.go:161`; the welcome text's `v0.1.13` vs `AgentVersion`.
@@ -3182,3 +3192,213 @@ built in). Full write-up: `prompts/20261029-session-question-2.md`. Jerry agreed
   configurable request timeout (`model.ResponseTimeout` is 5 minutes), and the error body in HTTP errors.
 - **Recorded, not changed:** a turn that hits `maxSteps` is discarded whole, tool results included, so a failed turn
   never leaves half a turn in memory. Downside: paid-for work is lost.
+
+
+### 2026-10-29 — Policy cleanup item 1 built: deny defaults live in config
+
+Built per the entry above (item 1). Jerry wrote `config/`, `hooks/` and `trace/`; Claude wrote the info-mode part,
+and a sub-agent wrote the tests.
+
+- **`hooks` holds no rules of its own.** `defaultDenyRules` and `IsBuiltIn` are gone; `NewDenyRules(rulesIn)` builds
+  exactly the rules it is given (trimmed, lowercased, `:` and malformed globs rejected, duplicates skipped), so
+  `NewDenyRules(nil)` means no rules.
+- **`GetDefaultConfig().DenyRules = ["*delete*", "*remove*"]`.** No merge code was needed: `SetDefaultConfig`
+  unmarshals the file over the defaults, so a missing key keeps them, `["*move*"]` replaces them, and `[]` or `null`
+  gives no rules. `GetDefaultConfig` builds a new slice per call, so unmarshalling can't change another caller's
+  defaults.
+- **`/config`, info mode and `run_start.deny_rules` now show the rules in force**, because all three already read
+  `cfg.DenyRules`. An empty `deny_rules` in a trace now really means no rules (this removes the downside recorded in
+  the `tool_vetoed` entry).
+- **Info mode labels a rule `default` (was `built-in`)** when it is in `GetDefaultConfig().DenyRules`
+  (`isDefaultDenyRule`), and still doesn't warn when a default rule matches nothing. An empty list prints
+  `Deny rules (0): none, every tool call is allowed`. Downside: a config file that repeats a default rule shows it
+  as `default`; telling them apart would mean recording which keys the file set.
+- **Watch out:** `config.default.json`'s `"denyRules": ["*read*"]` now replaces the defaults, so running with that
+  file allows delete/remove tools until cleanup item 5 removes `*read*`.
+- **Tests:**
+  - `hooks/denyrules_test.go`: `Test_Unit_DenyRules_GivenRulesEnforced`, `_OnlyGivenRules`,
+    `_NoRules_AllowsEverything`, `_DuplicatesSkipped`, plus a rewritten `_SeparateInstancesDontShareRules` and
+    `_Rules_Order`. `_IsBuiltIn` was removed.
+  - `agent/denyrules_wiring_test.go`: `Test_Unit_SetupAgent_EmptyDenyRules_VetoesNothing`; the config-rule test now
+    checks replacement.
+  - `agent/info_test.go`: `Test_Unit_PrintDenyRules_Empty_PrintsNone`, `_ConfigReplacesDefaults_OnlyConfigShown`,
+    `Test_Unit_PrintInfo_DenyRules_Empty`.
+  - `config/config_test.go`: `Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults` (missing key / list / `[]`
+    / `null`), `Test_Unit_GetDefaultConfig_DenyRules_FreshSlice`.
+  - `trace/digest_veto_test.go`: the default config's rules appear in `run_start`.
+  - Each was mutation-checked: merging instead of replacing, dropping the empty-list line, and re-adding the
+    defaults in `hooks` each fail tests.
+
+
+### 2026-10-29 — Policy cleanup item 2 built: `read_file` refuses the configured `traceDir`
+
+Claude wrote it (a bug fix, at Jerry's request); a sub-agent wrote the tests.
+
+- **The gap:** `read_file` refused only the literal name `.agent-trace`, so a `traceDir` like `logs/trace` inside
+  `workDir` let the model read its own audit log.
+- **The fix:** `NewReadFileTool(workDir, traceDir, maxBytes)` (and `SetupBuiltinTools`) take the configured
+  `traceDir`; `""` = none. `resolve()` refuses any path whose **resolved** location is the trace directory or
+  inside it, after the outside-`workDir` and deny-list checks, so `..`, absolute paths and symlinks into it are
+  refused too. `.agent-trace` stays on the name list, so the default name is refused anywhere (e.g. traces copied in
+  from another project).
+- **How the path is resolved:** relative to the **process's** directory, like the recorder that creates it (not
+  to `workDir`). It need not exist yet: `resolvePath` resolves the longest existing part and adds the rest back
+  unchanged, so `/var` vs `/private/var` on macOS still compares equal. A dangling symlink anywhere on the path is
+  refused at setup, because protecting the link's own path would miss where the recorder writes.
+- **Compared case-insensitively** (`isWithin` lowercases both), because macOS and Windows filesystems are. Downside:
+  on Linux a path that differs only in case is refused too, which errs on the safe side.
+- **Setup fails if `traceDir` is `workDir` or a parent of it**, since read_file could then read nothing. A loud
+  config error, not a silently useless tool.
+- **The deny-list error text is built from the list** (it had been hard-coded and left out `.agent-trace`).
+- **Info mode** adds `never reads: anything in the trace directory (<traceDir>)` under `read_file`.
+- **Not fixed (same as the deny list, `Deferred for Later` item 9):** the trace check runs in `resolve()`, before the
+  open; `os.Root` keeps the open inside `workDir` but doesn't recheck the trace directory, so a symlink swapped in
+  between check and open could still reach it.
+- **Tests:**
+  - `tools/builtin`, with mutation checks: `Test_ReadFile_TraceDir_Blocked`, `_DifferentCaseRequest_Blocked`,
+    `_ConfiguredInDifferentCase_Blocked`, `_CreatedLater_Blocked`, `_SimilarNames_Allowed` (guards against a plain
+    string-prefix match), `_Empty_NothingExtraBlocked`, `_OutsideWorkDir_Allowed`, `_RelativeToCwd_NotWorkDir`,
+    `_SymlinkInto_Blocked`, `_SymlinkedWorkDir_Blocked`,
+    `Test_ReadFile_NewReadFileTool_TraceDirContainsWorkDir_ReturnsError` and
+    `Test_ReadFile_DenyList_ErrorListsEveryName`, `Test_ReadFile_NewReadFileTool_TraceDirDanglingSymlink_ReturnsError`.
+  - `tools/tool_test.go`: `Test_SetupBuiltinTools_ReadFile_TraceDir`.
+  - `agent/info_test.go`: `Test_Unit_PrintInfo_BuiltinTools_TraceDirLine` and `_NoTraceDir_NoLine`.
+
+### 2026-10-29 — Policy cleanup item 3 built (part): one summarizer system message; the summary is a user/assistant pair
+
+Fixes B and C of item 3 in `§ Policy out of the core`. Fix A (an empty `systemPrompt` sends no system message) is not
+done yet. **Fix A built later the same day:** see `§ Policy cleanup item 3 fix A built`. Files: `contextwindow/msgcontext.go`.
+
+- **Fix B, the summarizer's extra instructions** (`/summary <text>`, `/compact <text>`) are appended to the one
+  system message (`SummarizeSystemPrompt` + `"\n\nAdditional instructions from the user: …"`) instead of being sent
+  as a second `system` message after the transcript, which Anthropic rejects and some local servers ignore. Resolves
+  the open item from 2026-09-25. **Why the system message, not after the transcript:** the transcript can hold text
+  from files and tools; the system message ranks the user's own text above it. This is the summarizer's own one-off
+  request; the chat's system message (`cs.SystemMsg`) is untouched. **Downside:** the summarizer's system message
+  changes with the instructions, so it can't be cached (it runs rarely).
+- **Fix C, compaction replaces the summarized messages with a pair:** `{user: SummaryRequest}` ("Summarize our
+  conversation up to this point.") then `{assistant: <summary>}`, both `Type: "summary"` with their own IDs. Jerry's
+  proposal, chosen over prefixing a lone `user` summary. Supersedes the 2026-09-22 "summary `Role` is `user`"
+  decision. **Why:**
+  - the model sees a request it already answered, not a summary that reads like a new task;
+  - the context ends with an assistant message, so the next user turn alternates instead of making two `user`
+    messages in a row (the trade-off the old decision accepted);
+  - text injected into the summary from files or tools looks like the assistant's notes, not something the user said.
+- **Shape changes:** `Compact(state, summaryMsgs []model.ChatMessage)`; `clampToMax(msgs, numSummary, maxSize)` always
+  keeps the first `numSummary` messages (assumes `maxSize >= numSummary`). `CompactChatContext` still returns one
+  message, the assistant half, so `/compact`'s printout and the trace's `summary_id` need no change.
+- **Downsides:**
+  - the user half is made up; only the context holds it, chat history keeps what was really said;
+  - the pair takes one more slot in the window;
+  - a later window trim can drop the user half and leave the context starting with the assistant summary. Window
+    trims only skip leading `tool` messages, so this can already happen with any assistant reply; OpenAI-compatible
+    servers accept it, Anthropic's native API doesn't. Next step: windows start at a user message.
+  - compacting 2 or fewer messages no longer shrinks the context, so an auto-compact threshold of 2 or less would
+    fire after every input; and `clampToMax` panics if `maxSize < numSummary`. Neither can happen with today's fixed
+    sizes (a 50-message window, compaction at 90%), but item 4 makes them configurable, so its validation must require a window of
+    at least 2 and a threshold above 2.
+
+### 2026-10-29 — Windows start at a user message after a trim (supersedes the leading-`tool` rule of 2026-10-07)
+
+Files: `contextwindow/window.go` (all four strategies), `contextwindow/msgcontext.go` (`clampToMax`).
+
+- **Why now:** compaction stores a `{user, assistant}` summary pair (`§ Policy cleanup item 3 built (part)`). A trim
+  that dropped only the user half left the window starting with the assistant summary. The 2026-10-07 rule dropped
+  only leading `tool` messages, so a leading assistant message (summary or ordinary reply) was kept. OpenAI-compatible
+  servers accept that; Anthropic's native API requires the first message to be from the user.
+- **The change:** option (1) from 2026-10-07. In each strategy's `AddMessages` and in `clampToMax`, the loop that
+  dropped leading messages while `Role == "tool"` now drops them while `Role != "user"`. One condition per loop, no
+  new code paths. An orphaned tool result is not a user message, so the old protection still holds.
+- **Why this works:** whole turns are added in one call (`agent/chat.go`), each starting with a user message, and the
+  summary pair starts with one too. So the window always starts at the beginning of a turn, and a user/assistant pair
+  is kept whole or dropped whole.
+- **Downsides:**
+  - a trim drops a little more than before: the rest of a partly cut turn (its assistant replies and tool results),
+    which the old rule kept;
+  - if the kept messages hold no user message at all (a single turn longer than the whole window), the window ends
+    up empty. The current turn isn't affected: its messages are sent separately and join the context only when the
+    turn ends;
+  - the ring-buffer and linked-list windows run the loop after every add, not only after a trim, so they would also
+    drop a batch that doesn't start with a user message. Real code never adds one.
+- **Still open:** windowing by tokens instead of message count (2026-10-07, option 3).
+
+### 2026-10-29 — Policy cleanup item 3 fix A built: an empty `systemPrompt` sends no system message
+
+Files: `model/provider.go` (`PrepareChatRequest`). Completes item 3 of `§ Policy out of the core`.
+
+- **The gap:** `"systemPrompt": ""` still sent `{role: "system", content: ""}` first, so the system prompt could never
+  really be removed.
+- **The fix:** `PrepareChatRequest` leaves the system message out when its content is empty or only whitespace. The
+  config side needed nothing: loading a file over `GetDefaultConfig()` means a missing key keeps the default prompt
+  and an explicit `""` replaces it, the same replace semantics as `denyRules`.
+- **Why in `PrepareChatRequest`, not `react.go`:** it already owns the request's message order, and it's in `model`, so
+  any future caller (headless or autonomous mode) gets the same behaviour.
+- **Downsides:** a whitespace-only prompt is dropped too, a small rule the user can't see (almost certainly what anyone
+  would want). The trace's `run_start.system_prompt` is `omitempty`, so an empty prompt shows as absent, which reads
+  the same as "none".
+
+### 2026-10-29 — Policy cleanup item 4 built: context window and summarizer settings live in config; `config/doc.go`
+
+Files: `config/config.go`, `config/doc.go` (new), `contextwindow/msgcontext.go`, `contextwindow/window.go`,
+`agent/agent.go`, `agent/chat.go`, `agent/compaction.go`, `trace/event.go`.
+
+- **Five new config keys**, defaults in `GetDefaultConfig()` (replacing the constants in `contextwindow`):
+  `contextWindowMessages` (50), `contextStrategy` (`"offset"`), `autoCompact` (true), `autoCompactThreshold` (0.9, a
+  fraction of the window, so it still works when the size changes), `summarizerPrompt` (the old summarizer sentence).
+  Flat keys like the trace settings, not a nested object: `config.default.json` still has a stray
+  `"contextWindow": 10`, which would fail to load into an object field. No flags for now.
+- **Turning auto-compaction off: a separate `"autoCompact": false` switch** (Jerry's choice), not a magic threshold
+  of 0 or above 1, and not a `"none"` strategy (that would mix how the window trims with whether it summarizes). It
+  matches `traceEnabled`/`digestEnabled`. Off means a plain sliding window: the oldest messages are dropped, nothing
+  is summarized behind the user's back, and `/compact` still works. Inside `contextwindow`, `SetupChatContext` turns
+  the switch into a threshold of 0, which `NewChatContext` documents as off, and `IsAutoCompactionNeeded` returns
+  false; the loop (`maybeStartAutoCompaction`) is unchanged. **Downside:** a 0 that means "off" still exists, one
+  level down, in an internal API; config never says it.
+- **`summarizerPrompt`:** what a summary should keep is user policy (a coding agent needs file paths, errors and open
+  tasks kept; a chat assistant wants the gist). `SummarizeChatContext` and `CompactChatContext` take it as a
+  parameter; the agent passes `cs.Config.SummarizerPrompt` (the session's config is never written after setup, so the
+  auto-compaction goroutine can read it). `/compact <text>` still adds `<text>` for that one call. `SummaryRequest`
+  stays in code: it's part of how the summary pair is stored, not a choice. Unlike `systemPrompt`, `""` is an error: a
+  summarizer with no instructions tends to continue the conversation instead of summarizing it.
+- **The hidden `buffer = 2` is gone** (Jerry agreed): `contextWindowMessages: 50` holds 50. Its comment claimed room
+  for the system prompt and the pending user message, but the limit is our own message count, not the provider's
+  (providers count tokens), so the 2 protected nothing. **Downside:** a window now holds 2 more messages than before,
+  and auto-compaction starts at 45 instead of 43.
+- **Validation, `contextwindow.CheckConfig`:** run by `SetupChatContext` and by the agent's `checkConfig`, so info mode
+  reports the same errors chat mode would. It rejects:
+  - `contextWindowMessages` below 4 (`MinContextWindowMessages`: the summary pair plus one turn; below 2,
+    `clampToMax` would panic);
+  - an unknown `contextStrategy` (`WindowStrategies` lists them);
+  - `autoCompactThreshold` outside (0, 1], checked even when `autoCompact` is false so a typo is caught before it is
+    turned back on;
+  - with `autoCompact` on, a threshold that starts compaction at 2 messages or fewer (compaction leaves 2, so it would
+    run again after every turn);
+  - an empty `summarizerPrompt`.
+- **Shown:** `/config` and info mode print all five; `run_start` records them (`context_window_messages`,
+  `context_strategy`, `auto_compact`, `auto_compact_threshold`, `summarizer_prompt`, the last redacted like any
+  string). Additive fields, so the trace version stays 1.
+- **`config/doc.go`** (Jerry's request, like `trace/doc.go`): every config key with its choices, what it controls and
+  its default, how the file, the flags and the defaults combine, the `mcpServers` entry fields, and the flags that
+  have no config key. **Keep it in step:** a new `Config` field gets a line there.
+
+### 2026-10-29 — Small fixes: MCP URLs hidden in chat-mode setup errors; `builtinTools` takes `read_file`; `responseTimeoutSeconds`
+
+Files: `agent/agent.go`, `agent/info.go`, `tools/tool.go`, `config/config.go`, `config/doc.go`, `model/provider.go`,
+`model/openai.go`.
+
+- **Chat-mode MCP setup errors hide server URLs.** A connect error can quote a remote server's URL, and a URL can hold a
+  token in its query. Info mode already hid it (`hideURL`); chat mode printed the raw error. New
+  `safeMCPError(err, cfg.McpServers)` hides every configured URL, then runs `safeText` on each line (a joined error is
+  one line per server; quoting the whole thing would collapse it to one line). Used for both setup messages (connect
+  and tool listing). **Longest URL first:** if one URL starts with another (`…/mcp` and `…/mcp?token=…`), hiding the
+  short one first would leave the long one's token showing. **Downside / limit:** only the configured URLs, matched
+  as exact text, are hidden; a differently-encoded copy of the URL in an error would get through.
+- **`builtinTools` takes `"read_file"`,** the name the model sees and deny rules match, and the default is now
+  `["read_file"]`. `"ReadFile"` is still accepted, so existing configs keep loading. **Downside:** two spellings for
+  one tool until the old one is dropped; listing both registers the tool twice, which the registry rejects.
+- **`responseTimeoutSeconds`** (default 300, the old `ResponseTimeout` constant): how long one model call may take,
+  so slow local models can get longer (audit item 8, part). Seconds as an int, not a Go duration: JSON would decode a
+  `time.Duration` as nanoseconds. `OpenAICompat.Timeout` carries it; `0` there means "no limit of its own" (the
+  caller's context still applies), so a provider built by hand in a test doesn't time out at once. `checkConfig`
+  rejects 0 or less, so config never reaches that case. No flag for now.
+

@@ -149,7 +149,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools.Tool` lives in `tools/` (not `agent/`), because the registry, the built-ins and
   `mcpconnect` all name it; `mcpconnect` imports `tools`, never the reverse.
 - `config/` is a leaf (Config, file loading, flag parsing and overlay); the capability `Setup*`
-  functions take a `config.Config`. `main.go` imports `agent` and `config`. Setup takes a `Config`
+  functions take a `config.Config`. `config/doc.go` lists every config key with its choices and default;
+  a new `Config` field gets a line there. `main.go` imports `agent` and `config`. Setup takes a `Config`
   value — never `os.Args`, `flag.*` or `os.Exit`.
 - Config precedence is **flags > config file > defaults**; an unspecified flag is `nil`, never a
   zero value.
@@ -164,18 +165,20 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   token on every redirect hop (and a 307/308 replays the body). Keep both layers if you touch the HTTP
   client; `http` -> `https` redirects are rejected for now (`DECISIONS.md § Deferred for Later`, item 6).
 - **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
-  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`). It resolves symlinks first, checks the *resolved*
+  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), nor anything inside the configured
+  `traceDir` (matched by resolved path, whatever its name). It resolves symlinks first, checks the *resolved*
   path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
   file-reading tool must reuse this, not call `os.Open` on a model-supplied path
   (`DECISIONS.md § read_file is confined to workDir`). It also opens with `O_NONBLOCK` and accepts only regular
   files (checked with `Stat` on the opened descriptor), because opening a named pipe blocks forever.
-- **A context window must never hand out a leading `tool` message.** Windows trim by message count
-  and a turn is several messages, so a trim can land between an assistant tool call and its
-  results; providers reject an orphaned tool result, and since a failed turn is not added back, the
-  same bad context is re-sent forever. Each window strategy's `AddMessages` drops leading `tool`
-  messages after trimming, and `clampToMax` (compaction) does the same. A new window strategy must
-  do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages` runs every strategy.
-  See `DECISIONS.md § Context window never hands out an orphaned tool result`.
+- **After a trim, a context window must start at a `user` message.** Windows trim by message count
+  and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
+  orphaned one, and since a failed turn is not added back, the same bad context is re-sent forever)
+  or on an assistant message (Anthropic requires a user-first context; it would also split the
+  compaction summary's user/assistant pair). Each window strategy's `AddMessages` drops leading
+  messages until a `user` message, and `clampToMax` (compaction) does the same for survivors. A new
+  window strategy must do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages`
+  runs every strategy. See `DECISIONS.md § Windows start at a user message after a trim`.
 - **Ctrl+C stops foreground work, never the program (except during setup); only quitting stops background
   work.** The root context listens for SIGTERM only. `main` registers `os.Interrupt` once, for the whole run, on
   a 1-slot channel passed to `SetupAgent` and `runChatLoop`, so Go's default "Ctrl+C kills the process" never
@@ -201,7 +204,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   steal the next prompt line); `nil` means deny without asking. Model text shown in the question is printed with
   `%q`. A new path that runs tools must go through this check. Deny rules match model-facing names
   (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule fails setup.
-  See `DECISIONS.md § Approval gate v1 built`.
+  `hooks` holds no rules of its own: the defaults (`*delete*`, `*remove*`) are `GetDefaultConfig().DenyRules`, and a
+  config file's `denyRules` replaces them (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built` and
+  `§ Policy out of the core`.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

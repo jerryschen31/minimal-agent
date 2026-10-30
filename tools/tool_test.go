@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -251,7 +252,7 @@ func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
 // - Verify SetupBuiltinTools builds the read_file tool for an existing workDir, and fails for a bad workDir
 // or an unknown tool name, so a misconfigured agent stops at startup instead of at the first file read
 func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), 4096)
+	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), "", 4096)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,10 +260,65 @@ func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
 		t.Errorf("expected one read_file tool, got %v", defNames([]model.ToolDef{built[0].GetToolDefinition()}))
 	}
 
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), "", 4096); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), "", 4096); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool")
+	}
+}
+
+// - Verify SetupBuiltinTools passes traceDir through to read_file: a file in a trace directory under workDir is refused
+func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
+	work := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(work, "logs", "trace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "logs", "trace", "run.jsonl"), []byte("fake-trace"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := SetupBuiltinTools([]string{"ReadFile"}, work, filepath.Join(work, "logs", "trace"), 4096)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"path":"logs/trace/run.jsonl"}`))
+	if err == nil || !strings.Contains(err.Error(), "trace directory") {
+		t.Errorf("expected a trace-directory error, got (%q, %v)", got, err)
+	}
+	if _, err := SetupBuiltinTools([]string{"ReadFile"}, work, work, 4096); err == nil {
+		t.Errorf("expected an error for a traceDir equal to workDir")
+	}
+}
+
+// - Verify SetupBuiltinTools accepts both "read_file" (the model-facing name, the config default) and the old
+// "ReadFile" spelling, each giving one tool named read_file; an unknown name still errors
+func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
+	for _, name := range []string{"read_file", "ReadFile"} {
+		built, err := SetupBuiltinTools([]string{name}, t.TempDir(), "", 4096)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if len(built) != 1 || built[0].GetToolDefinition().Function.Name != "read_file" {
+			t.Errorf("%s: expected one read_file tool, got %d tools", name, len(built))
+		}
+	}
+	if _, err := SetupBuiltinTools([]string{"Read_File"}, t.TempDir(), "", 4096); err == nil {
+		t.Errorf("expected an error for an unknown built-in tool name")
+	}
+}
+
+// - Verify listing both spellings builds two read_file tools, and the duplicate is caught when they are registered
+// (NewToolRegistry), not by SetupBuiltinTools
+func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *testing.T) {
+	built, err := SetupBuiltinTools([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096)
+	if err != nil {
+		t.Fatalf("SetupBuiltinTools: unexpected error: %v", err)
+	}
+	if len(built) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(built))
+	}
+	if _, err := NewToolRegistry(built); err == nil {
+		t.Errorf("expected NewToolRegistry to reject the duplicate read_file")
 	}
 }

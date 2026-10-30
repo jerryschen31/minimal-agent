@@ -59,7 +59,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 
 	// 4. setup built-in tools -> builtinTools satisfies Tool interface
-	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
+	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes)
 	if err != nil {
 		return err
 	}
@@ -79,8 +79,9 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 		return err
 	}
 	if err != nil {
-		// print errors on MCP server connect fails - but don't exit
-		fmt.Fprintf(cfg.OutBuffer, "MCP servers that failed to connect (continuing without their tools):\n%v\n", err)
+		// print errors on MCP server connect fails - but don't exit. A connect error can quote a server's URL, which can
+		// hold a token, so the URLs are hidden, as in info mode
+		fmt.Fprintf(cfg.OutBuffer, "MCP servers that failed to connect (continuing without their tools):\n%s\n", safeMCPError(err, cfg.McpServers))
 	}
 
 	// 6. setup MCP tools (if applicable) - mcpTools satisfies Tool interface
@@ -90,7 +91,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 	if err != nil {
 		// print errors on MCP tools setup fails - but don't exit
-		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %v\n", err)
+		fmt.Fprintf(cfg.OutBuffer, "error setting up MCP tools: %s\n", safeMCPError(err, cfg.McpServers))
 	}
 	// agent.mcpTools = mcpTools
 
@@ -171,11 +172,15 @@ func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
 	}
+	// 0 would time out every model call at once
+	if cfg.ResponseTimeoutSeconds <= 0 {
+		return fmt.Errorf("responseTimeoutSeconds must be a positive integer, got %d", cfg.ResponseTimeoutSeconds)
+	}
 	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
 	if cfg.MCPResultMaxBytes <= 0 {
 		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
 	}
-	return nil
+	return contextwindow.CheckConfig(cfg) // also run by SetupChatContext; here so info mode reports it too
 }
 
 func createSystemMessage(systemPrompt string) model.ChatMessage {
