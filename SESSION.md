@@ -971,4 +971,10 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > threshold and `summarizerPrompt` are config keys; the hidden buffer is gone; `config/doc.go` lists every key. Next:
 > item 5 (`config.default.json` cleanup: `*read*`, the unknown `memory`/`contextWindow` keys; stale comments; the
 > welcome text's version).
+>
+> Small fixes built (`DECISIONS.md § Small fixes: MCP URLs hidden…`): chat-mode MCP setup errors hide server URLs;
+> `builtinTools` takes `read_file`; `responseTimeoutSeconds` config key. Still small and open: the welcome banner's
+> hard-coded version (Jerry is doing it), mark deferred item 2 resolved, `model/anthropic.tmp`, exit status on failure
+> (deferred item 3), prompt-reader errors (item 11), `maxTokens` unused, `maxSteps` discarding a whole turn. Next policy
+> item: 6 (extendable `DenyList`).
 

@@ -34,6 +34,8 @@
 //	workDir         the only directory (and below) read_file may read; -workdir                            ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
+//	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
+//	                for slow local models                                                                  [300]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
 //	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
@@ -73,7 +75,8 @@
 //
 // Tools:
 //
-//	builtinTools    built-in tools to enable: "ReadFile" (read_file)                                       [["ReadFile"]]
+//	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
+//	                the old spelling, still works)                                                         [["read_file"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
 //
 // Each mcpServers entry is either local or remote:

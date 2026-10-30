@@ -246,6 +246,29 @@ func hideURL(msg, rawURL string) string {
 	return strings.ReplaceAll(msg, rawURL, shown)
 }
 
+// safeMCPError prepares an MCP setup error (possibly several servers' errors, one per line) for the terminal: every
+// configured server URL is hidden with hideURL, then each line goes through safeText.
+func safeMCPError(err error, servers map[string]config.McpServerConfig) string {
+	msg := err.Error()
+	// longest URL first: if one URL starts with another (…/mcp and …/mcp?token=…), hiding the short one first would
+	// leave the rest of the long one, its token included, showing
+	var urls []string
+	for _, sc := range servers {
+		if sc.URL != "" {
+			urls = append(urls, sc.URL)
+		}
+	}
+	slices.SortFunc(urls, func(a, b string) int { return len(b) - len(a) })
+	for _, u := range urls {
+		msg = hideURL(msg, u)
+	}
+	lines := strings.Split(msg, "\n")
+	for i, line := range lines {
+		lines[i] = safeText(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // hintLabel shows a tool's annotations. They are the server's claims, so they help spot tools to deny but prove nothing.
 func hintLabel(h mcpconnect.ToolHints) string {
 	switch {

@@ -665,3 +665,47 @@ func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
 		}
 	}
 }
+
+// - Verify the defaults name the built-in tool by its model-facing name, and give each model call 300 seconds
+func Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if !slices.Equal(cfg.BuiltinTools, []string{"read_file"}) {
+		t.Errorf("expected BuiltinTools [read_file], got %v", cfg.BuiltinTools)
+	}
+	if cfg.ResponseTimeoutSeconds != 300 {
+		t.Errorf("expected ResponseTimeoutSeconds 300, got %d", cfg.ResponseTimeoutSeconds)
+	}
+}
+
+// - Verify "responseTimeoutSeconds" in a config file is applied without a warning
+func Test_Unit_SetDefaultConfig_ResponseTimeout_AppliedWithoutWarning(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"responseTimeoutSeconds": 42}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.ResponseTimeoutSeconds != 42 {
+		t.Errorf("expected ResponseTimeoutSeconds 42 from the file, got %d", cfg.ResponseTimeoutSeconds)
+	}
+	if out != "" {
+		t.Errorf("expected no warnings, got %q", out)
+	}
+}
+
+// - Verify /config shows responseTimeoutSeconds
+func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.ResponseTimeoutSeconds = 42
+
+	PrintConfig(cfg)
+
+	if !strings.Contains(out.String(), "responseTimeoutSeconds: 42") {
+		t.Errorf("expected responseTimeoutSeconds to be printed, got:\n%s", out.String())
+	}
+}

@@ -36,8 +36,10 @@ type Config struct {
 	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
 	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
-	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
-	Debug        bool   `json:"debug"`       // print the context window each turn and log MCP protocol traffic to stderr
+	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
+
+	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300) (TODO)
+	Debug                  bool `json:"debug"`                  // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
 	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
@@ -147,25 +149,27 @@ func (m McpServerConfig) TransportType() (string, error) {
 
 func GetDefaultConfig() Config {
 	return Config{
-		UserID:         "default_user",
-		Provider:       "openai",
-		Model:          "gpt-4o-mini",
-		BaseURL:        "https://api.openai.com/v1",
-		ApiKeyName:     "OPENAI_API_KEY",
-		AgentName:      "minagent",
-		AgentVersion:   "0.1.13",
-		AgentMode:      ModeChat,
-		WorkDir:        ".",
-		SystemPrompt:   "You are a helpful assistant. Keep your responses concise and relevant.",
-		ChatStoreType:  "in-memory",
-		InBuffer:       os.Stdin,
-		OutBuffer:      os.Stdout,
-		BuiltinTools:   []string{"ReadFile"},
-		MaxSteps:       10,
-		TraceEnabled:   true,
-		DigestEnabled:  true,
-		RedactionLevel: "standard",
-		DenyRules:      []string{"*delete*", "*remove*"},
+		UserID:        "default_user",
+		Provider:      "openai",
+		Model:         "gpt-4o-mini",
+		BaseURL:       "https://api.openai.com/v1",
+		ApiKeyName:    "OPENAI_API_KEY",
+		AgentName:     "minagent",
+		AgentVersion:  "0.1.13",
+		AgentMode:     ModeChat,
+		WorkDir:       ".",
+		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
+		ChatStoreType: "in-memory",
+		InBuffer:      os.Stdin,
+		OutBuffer:     os.Stdout,
+		BuiltinTools:  []string{"read_file"},
+		MaxSteps:      10,
+
+		ResponseTimeoutSeconds: 300, // 5 minutes; slow local models may need more
+		TraceEnabled:           true,
+		DigestEnabled:          true,
+		RedactionLevel:         "standard",
+		DenyRules:              []string{"*delete*", "*remove*"},
 
 		ContextWindowMessages: 50,
 		ContextStrategy:       "offset",
@@ -252,6 +256,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
+	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)

@@ -24,7 +24,7 @@ func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxB
 	// add the built-in tools specified in the config
 	for _, t := range toolList {
 		switch t {
-		case "ReadFile":
+		case "read_file", "ReadFile": // the model-facing name, as in deny rules; "ReadFile" is the old spelling, still accepted
 			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes)
 			if err != nil {
 				return nil, err

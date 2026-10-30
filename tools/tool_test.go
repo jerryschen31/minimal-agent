@@ -290,3 +290,35 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 		t.Errorf("expected an error for a traceDir equal to workDir")
 	}
 }
+
+// - Verify SetupBuiltinTools accepts both "read_file" (the model-facing name, the config default) and the old
+// "ReadFile" spelling, each giving one tool named read_file; an unknown name still errors
+func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
+	for _, name := range []string{"read_file", "ReadFile"} {
+		built, err := SetupBuiltinTools([]string{name}, t.TempDir(), "", 4096)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if len(built) != 1 || built[0].GetToolDefinition().Function.Name != "read_file" {
+			t.Errorf("%s: expected one read_file tool, got %d tools", name, len(built))
+		}
+	}
+	if _, err := SetupBuiltinTools([]string{"Read_File"}, t.TempDir(), "", 4096); err == nil {
+		t.Errorf("expected an error for an unknown built-in tool name")
+	}
+}
+
+// - Verify listing both spellings builds two read_file tools, and the duplicate is caught when they are registered
+// (NewToolRegistry), not by SetupBuiltinTools
+func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *testing.T) {
+	built, err := SetupBuiltinTools([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096)
+	if err != nil {
+		t.Fatalf("SetupBuiltinTools: unexpected error: %v", err)
+	}
+	if len(built) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(built))
+	}
+	if _, err := NewToolRegistry(built); err == nil {
+		t.Errorf("expected NewToolRegistry to reject the duplicate read_file")
+	}
+}

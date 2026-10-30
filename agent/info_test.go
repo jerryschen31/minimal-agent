@@ -3,11 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -465,7 +467,7 @@ func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
 	}
 }
 
-// - Verify a config SetupAgent would refuse (maxSteps or mcpResultMaxBytes not positive, or a context window
+// - Verify a config SetupAgent would refuse (maxSteps, responseTimeoutSeconds or mcpResultMaxBytes not positive, or a context window
 // setting contextwindow.CheckConfig rejects) prints
 // "Configuration: FAILED" naming the field, still lists the built-in tools, starts no MCP server, and returns InfoFailed
 func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
@@ -475,6 +477,8 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 		set   func(*config.Config)
 	}{
 		{"maxSteps 0", "maxSteps", func(c *config.Config) { c.MaxSteps = 0 }},
+		{"responseTimeoutSeconds 0", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = 0 }},
+		{"responseTimeoutSeconds -1", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = -1 }},
 		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
 		{"contextWindowMessages 2", "contextWindowMessages", func(c *config.Config) { c.ContextWindowMessages = 2 }},
 	}
@@ -843,5 +847,66 @@ func Test_Unit_PrintInfo_MCP_ControlCharsAreQuoted(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected the quoted value %s in the output:\n%s", want, out)
 		}
+	}
+}
+
+// - Verify safeMCPError hides a configured URL's path and query (where a token can sit), showing scheme and host
+func Test_Unit_SafeMCPError_HidesURLToken(t *testing.T) {
+	rawURL := "https://mcp.example.test/mcp?token=FAKE_SECRET_TOKEN_123"
+	servers := map[string]config.McpServerConfig{"remote": {URL: rawURL}}
+	got := safeMCPError(errors.New(`failed to connect to MCP server remote: Post "`+rawURL+`": connection refused`), servers)
+
+	if strings.Contains(got, "FAKE_SECRET_TOKEN_123") {
+		t.Errorf("safeMCPError leaked the token: %s", got)
+	}
+	if !strings.Contains(got, "https://mcp.example.test/[rest hidden]") {
+		t.Errorf("expected scheme and host shown, got %s", got)
+	}
+}
+
+// - Verify safeMCPError hides both URLs when one server's URL is a prefix of another's: hiding the short one first
+// would leave the long one's token showing
+func Test_Unit_SafeMCPError_PrefixURLs_NeitherTokenShown(t *testing.T) {
+	short := "https://mcp.example.test/mcp?token=FAKE_SECRET_SHORT_123"
+	long := short + "&key=FAKE_SECRET_LONG_456"
+	servers := map[string]config.McpServerConfig{"a": {URL: short}, "b": {URL: long}}
+	msg := `failed to connect to MCP server a: Post "` + short + `": refused` + "\n" +
+		`failed to connect to MCP server b: Post "` + long + `": refused`
+	// [agent] map order is random, so repeat to make a lucky iteration order unlikely to hide a missing sort
+	for range 20 {
+		got := safeMCPError(errors.New(msg), servers)
+		for _, s := range []string{"FAKE_SECRET_SHORT_123", "FAKE_SECRET_LONG_456"} {
+			if strings.Contains(got, s) {
+				t.Fatalf("safeMCPError leaked %q: %s", s, got)
+			}
+		}
+	}
+}
+
+// - Verify safeMCPError keeps a multi-line (joined) error on separate lines, and quotes only a line holding a control
+// character, leaving the other line unchanged
+func Test_Unit_SafeMCPError_PerLine(t *testing.T) {
+	line1 := "failed to connect to MCP server a: refused"
+	line2 := "failed to connect to MCP server b: bad\x1b[2Jreply"
+	got := safeMCPError(errors.Join(errors.New(line1), errors.New(line2)), nil)
+
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), got)
+	}
+	if lines[0] != line1 {
+		t.Errorf("line 1 = %q, want it unchanged %q", lines[0], line1)
+	}
+	if want := strconv.Quote(line2); lines[1] != want {
+		t.Errorf("line 2 = %s, want quoted %s", lines[1], want)
+	}
+}
+
+// - Verify safeMCPError leaves the message unchanged when no server has a URL (stdio servers only)
+func Test_Unit_SafeMCPError_StdioServers_Unchanged(t *testing.T) {
+	servers := map[string]config.McpServerConfig{"local": {Command: "fake-mcp-server", Args: []string{"--flag"}}}
+	msg := "failed to connect to MCP server local: exit status 1"
+	if got := safeMCPError(errors.New(msg), servers); got != msg {
+		t.Errorf("safeMCPError = %q, want unchanged %q", got, msg)
 	}
 }

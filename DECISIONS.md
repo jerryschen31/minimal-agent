@@ -3380,3 +3380,25 @@ Files: `config/config.go`, `config/doc.go` (new), `contextwindow/msgcontext.go`,
 - **`config/doc.go`** (Jerry's request, like `trace/doc.go`): every config key with its choices, what it controls and
   its default, how the file, the flags and the defaults combine, the `mcpServers` entry fields, and the flags that
   have no config key. **Keep it in step:** a new `Config` field gets a line there.
+
+### 2026-10-29 — Small fixes: MCP URLs hidden in chat-mode setup errors; `builtinTools` takes `read_file`; `responseTimeoutSeconds`
+
+Files: `agent/agent.go`, `agent/info.go`, `tools/tool.go`, `config/config.go`, `config/doc.go`, `model/provider.go`,
+`model/openai.go`.
+
+- **Chat-mode MCP setup errors hide server URLs.** A connect error can quote a remote server's URL, and a URL can hold a
+  token in its query. Info mode already hid it (`hideURL`); chat mode printed the raw error. New
+  `safeMCPError(err, cfg.McpServers)` hides every configured URL, then runs `safeText` on each line (a joined error is
+  one line per server; quoting the whole thing would collapse it to one line). Used for both setup messages (connect
+  and tool listing). **Longest URL first:** if one URL starts with another (`…/mcp` and `…/mcp?token=…`), hiding the
+  short one first would leave the long one's token showing. **Downside / limit:** only the configured URLs, matched
+  as exact text, are hidden; a differently-encoded copy of the URL in an error would get through.
+- **`builtinTools` takes `"read_file"`,** the name the model sees and deny rules match, and the default is now
+  `["read_file"]`. `"ReadFile"` is still accepted, so existing configs keep loading. **Downside:** two spellings for
+  one tool until the old one is dropped; listing both registers the tool twice, which the registry rejects.
+- **`responseTimeoutSeconds`** (default 300, the old `ResponseTimeout` constant): how long one model call may take,
+  so slow local models can get longer (audit item 8, part). Seconds as an int, not a Go duration: JSON would decode a
+  `time.Duration` as nanoseconds. `OpenAICompat.Timeout` carries it; `0` there means "no limit of its own" (the
+  caller's context still applies), so a provider built by hand in a test doesn't time out at once. `checkConfig`
+  rejects 0 or less, so config never reaches that case. No flag for now.
+

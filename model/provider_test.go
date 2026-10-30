@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
 )
@@ -164,5 +165,20 @@ func Test_Unit_PrepareChatRequest_EmptySystem_DoesNotAliasInputs(t *testing.T) {
 	}
 	if spare := ctxMsgs[:cap(ctxMsgs)][1]; spare.ID != "" {
 		t.Errorf("expected the context slice's spare capacity to be untouched, got %+v", spare)
+	}
+}
+
+// - Verify SetupProvider turns the config's responseTimeoutSeconds into the provider's Timeout
+func Test_Unit_SetupProvider_OpenAI_SetsTimeoutFromConfig(t *testing.T) {
+	provider, err := SetupProvider(config.Config{Provider: "openai", BaseURL: "https://example.test/v1", ResponseTimeoutSeconds: 42})
+	if err != nil {
+		t.Fatalf("SetupProvider() returned an error: %v", err)
+	}
+	p, ok := provider.(*OpenAICompat)
+	if !ok {
+		t.Fatalf("expected a *OpenAICompat, got %T", provider)
+	}
+	if p.Timeout != 42*time.Second {
+		t.Errorf("expected Timeout 42s, got %v", p.Timeout)
 	}
 }

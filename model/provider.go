@@ -13,8 +13,6 @@ import (
 	"github.com/jerryschen31/minimal-agent/config"
 )
 
-const ResponseTimeout = 5 * time.Minute
-
 type Provider interface {
 	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
 }
@@ -79,6 +77,7 @@ func SetupProvider(cfg config.Config) (Provider, error) {
 			Model:   cfg.Model,
 			BaseURL: cfg.BaseURL,
 			ApiKey:  os.Getenv(cfg.ApiKeyName),
+			Timeout: time.Duration(cfg.ResponseTimeoutSeconds) * time.Second,
 		}, nil
 	} else {
 		// provider not supported

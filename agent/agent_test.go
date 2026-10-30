@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -57,7 +60,7 @@ func Test_Shutdown_RecordsRunEndAfterBackgroundCompaction(t *testing.T) {
 func Test_SetupAgent_RejectsNonPositiveMCPResultCap(t *testing.T) {
 	for _, n := range []int{0, -1} {
 		var a Agent
-		err := a.SetupAgent(context.Background(), config.Config{MaxSteps: 10, MCPResultMaxBytes: n}, nil)
+		err := a.SetupAgent(context.Background(), config.Config{MaxSteps: 10, ResponseTimeoutSeconds: 300, MCPResultMaxBytes: n}, nil)
 		if err == nil || !strings.Contains(err.Error(), "mcpResultMaxBytes") {
 			t.Errorf("MCPResultMaxBytes %d: err = %v, want an mcpResultMaxBytes error", n, err)
 		}
@@ -76,5 +79,49 @@ func Test_Unit_CheckConfig_ReturnsContextWindowError(t *testing.T) {
 	want := contextwindow.CheckConfig(cfg)
 	if err == nil || want == nil || err.Error() != want.Error() {
 		t.Errorf("expected contextwindow.CheckConfig's error %v, got %v", want, err)
+	}
+}
+
+// - Verify checkConfig rejects a non-positive responseTimeoutSeconds (0 would time out every model call at once),
+// naming the field, while the rest of the config is the valid default
+func Test_Unit_CheckConfig_RejectsNonPositiveResponseTimeout(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		cfg := config.GetDefaultConfig()
+		cfg.ResponseTimeoutSeconds = n
+		err := checkConfig(cfg)
+		if err == nil || !strings.Contains(err.Error(), "responseTimeoutSeconds") {
+			t.Errorf("ResponseTimeoutSeconds %d: err = %v, want a responseTimeoutSeconds error", n, err)
+		}
+	}
+}
+
+// - Verify SetupAgent prints a failed remote MCP server's notice without the token in its URL: the connect error
+// quotes the URL, so SetupAgent must hide it (as info mode does) before writing to OutBuffer
+func Test_SetupAgent_FailedRemoteMCPServer_HidesTokenInURL(t *testing.T) {
+	// [agent] a closed server: connection refused, and that error quotes the URL (a 500 reply would not)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+	cfg := denyWiringConfig(t)
+	var out bytes.Buffer
+	cfg.OutBuffer = &out
+	cfg.McpServers = map[string]config.McpServerConfig{
+		"remote": {URL: srv.URL + "/mcp?token=FAKE_SECRET_TOKEN_123"},
+	}
+
+	var a Agent
+	err := a.SetupAgent(context.Background(), cfg, nil)
+	defer a.ShutdownAgent(context.Background())
+
+	if err != nil {
+		t.Fatalf("SetupAgent: %v (a failed MCP server should only be reported)", err)
+	}
+	if !strings.Contains(out.String(), "MCP servers that failed to connect") {
+		t.Errorf("expected the failure notice in output:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "FAKE_SECRET_TOKEN_123") {
+		t.Errorf("output leaked the token:\n%s", out.String())
+	}
+	if host := strings.TrimPrefix(srv.URL, "http://"); !strings.Contains(out.String(), "http://"+host+"/[rest hidden]") {
+		t.Errorf("expected the URL shown as scheme and host only:\n%s", out.String())
 	}
 }
