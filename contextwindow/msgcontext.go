@@ -220,9 +220,10 @@ func CheckConfig(cfg config.Config) error {
 	if !(cfg.AutoCompactThreshold > 0 && cfg.AutoCompactThreshold <= 1) {
 		return fmt.Errorf("autoCompactThreshold must be above 0 and at most 1 (a fraction of the window), got %g", cfg.AutoCompactThreshold)
 	}
-	// [agent] compaction leaves 2 messages (the summary pair), so a threshold of 2 or less would compact again after every turn
-	if cfg.AutoCompact && autoCompactAt(cfg) <= 2 {
-		return fmt.Errorf("autoCompactThreshold %g of %d messages starts auto-compaction at %d messages; it must be above 2",
+	// [agent] compaction leaves 2 messages (the summary pair) and a plain turn adds at least 2 more, so a threshold of 4 or less
+	// would compact after nearly every turn
+	if cfg.AutoCompact && autoCompactAt(cfg) <= 4 {
+		return fmt.Errorf("autoCompactThreshold %g of %d messages starts auto-compaction at %d messages; it must be above 4 (the summary pair plus one turn)",
 			cfg.AutoCompactThreshold, cfg.ContextWindowMessages, autoCompactAt(cfg))
 	}
 	if strings.TrimSpace(cfg.SummarizerPrompt) == "" {
