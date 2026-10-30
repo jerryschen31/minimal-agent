@@ -161,15 +161,16 @@ func getMessageIDs(messages []model.ChatMessage) map[string]bool {
 
 // clampToMax trims a compacted message slice (the first numSummary messages are the summary, then surviving messages oldest-to-newest)
 // to at most maxSize messages. This only matters in the rare event that enough new messages were added while the summary was being
-// generated that the summary plus every survivor no longer fits. The summary is always kept and the oldest survivors are dropped first.
+// generated that the summary plus every survivor no longer fits. The summary is always kept and the oldest survivors are dropped first,
+// then any survivors before the next user message, so the kept survivors start at a whole turn (possibly leaving just the summary).
 // It assumes maxSize >= numSummary and returns msgs unchanged (not copied) when it already fits.
 func clampToMax(msgs []model.ChatMessage, numSummary, maxSize int) []model.ChatMessage {
 	if len(msgs) <= maxSize {
 		return msgs
 	}
-	// skip orphaned tool messages at the beginning (these are tool messages where the initial user / assistant messages were cut off because they fell outside the context)
+	// skip survivors up to the next user message: the cut may land mid-turn, leaving orphaned tool results or an assistant reply whose question is gone
 	start := len(msgs) - (maxSize - numSummary)
-	for start < len(msgs) && msgs[start].Role == "tool" {
+	for start < len(msgs) && msgs[start].Role != "user" {
 		start++
 	}
 	// allocate a fresh slice so we don't alias msgs' backing array

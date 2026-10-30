@@ -143,7 +143,8 @@ func Test_Unit_ClampToMax_ExactlyAtCapacity_ReturnsUnchanged(t *testing.T) {
 
 // - Verify that ClampToMax truncates the message slice if it exceeds the maximum capacity, keeping the summary and newest survivors
 func Test_Unit_ClampToMax_OverCapacity_KeepsSummaryAndNewestSurvivors(t *testing.T) {
-	messages := modeltest.Msgs(7)
+	messages := modeltest.Msgs(8) // even, so the oldest survivor kept ("4") is a user message, not a mid-turn assistant
+
 	max := 5
 	clamped := clampToMax(messages, 1, max)
 	if len(clamped) != max {
@@ -215,8 +216,9 @@ func Test_ContextCompaction_CompactingEmptyContextReturnsError(t *testing.T) {
 	}
 }
 
-// - Verify clampToMax drops survivors that start with a tool result whose tool call was clamped away
-func Test_Unit_ClampToMax_LeadingToolSurvivor_IsDropped(t *testing.T) {
+// - Verify clampToMax drops survivors that start with a tool result whose tool call was clamped away,
+// and keeps dropping up to the next user message (so the assistant reply after it goes too)
+func Test_Unit_ClampToMax_LeadingToolSurvivor_DropsUpToNextUser(t *testing.T) {
 	// [summary, call, tool, final, user] clamped to 4 keeps the summary and the last 3,
 	// which would start at the tool result
 	messages := append([]model.ChatMessage{{ID: "summary", Role: "user", Type: "summary"}}, toolTurn("A", 1)[1:]...)
@@ -225,7 +227,7 @@ func Test_Unit_ClampToMax_LeadingToolSurvivor_IsDropped(t *testing.T) {
 	clamped := clampToMax(messages, 1, 4)
 
 	got := idsOf(clamped)
-	want := []string{"summary", "A-final", "B-user"}
+	want := []string{"summary", "B-user"}
 	if !slices.Equal(got, want) {
 		t.Errorf("expected %v, got %v", want, got)
 	}
@@ -248,26 +250,31 @@ func Test_Unit_ClampToMax_OnlyToolSurvivors_KeepsOnlySummary(t *testing.T) {
 	}
 }
 
-// - Verify compaction end to end: when messages that arrived during compaction start with an
-// assistant tool call, and the clamp cuts between that call and its result, the orphaned result
-// is dropped rather than left after the summary
+// - Verify compaction end to end: when the summary pair plus the messages that arrived during
+// compaction overflow the window, and the clamp cuts between a tool call and its result, the
+// orphaned result and the rest of that turn are dropped rather than left after the summary pair
 func Test_ContextCompaction_ClampCutsBetweenToolCallAndResult_NoOrphan(t *testing.T) {
-	chatContext, err := NewChatContext(NewOffsetWindow(5), 100)
+	chatContext, err := NewChatContext(NewOffsetWindow(6), 100)
 	if err != nil {
 		t.Fatalf("NewChatContext() returned an error: %v", err)
 	}
 	state := chatContext.Snapshot() // empty: everything added next counts as "arrived during compaction"
 
-	// a window that legitimately starts with an assistant tool call (a previous trim landed there)
-	arrived := append(toolTurn("A", 1)[1:], toolTurn("B", 0)...)[:5] // call, tool, final, B-user, B-final
-	chatContext.AddMessages(arrived)
+	// two whole turns fill the window: A-user, A-call0, A-tool0, A-final, B-user, B-final
+	chatContext.AddMessages(toolTurn("A", 1))
+	chatContext.AddMessages(toolTurn("B", 0))
 
-	if !chatContext.Compact(state, []model.ChatMessage{{ID: "summary", Role: "user", Type: "summary"}}) {
+	// [request, summary, + the 6 above] clamped to 6 keeps the pair and the last 4, starting at A-tool0
+	pair := []model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary"},
+		{ID: "summary", Role: "assistant", Type: "summary"},
+	}
+	if !chatContext.Compact(state, pair) {
 		t.Fatalf("expected Compact() to succeed")
 	}
 
 	got := chatContext.GetMessages()
-	want := []string{"summary", "A-final", "B-user", "B-final"}
+	want := []string{"summary-request", "summary", "B-user", "B-final"}
 	if !slices.Equal(idsOf(got), want) {
 		t.Errorf("expected %v, got %v", want, idsOf(got))
 	}
@@ -377,8 +384,8 @@ func Test_Unit_ClampToMax_TwoSummaryMessages_KeepsBothAndNewestSurvivors(t *test
 	}
 }
 
-// - Verify clampToMax with a 2-message summary still drops a leading tool survivor
-func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingToolSurvivor_IsDropped(t *testing.T) {
+// - Verify clampToMax with a 2-message summary still drops a leading tool survivor, up to the next user message
+func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingToolSurvivor_DropsUpToNextUser(t *testing.T) {
 	// [request, summary, call, tool, final, user] clamped to 5 keeps the pair and the last 3,
 	// which would start at the tool result
 	messages := append([]model.ChatMessage{
@@ -389,9 +396,27 @@ func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingToolSurvivor_IsDropped(t *te
 
 	clamped := clampToMax(messages, 2, 5)
 
-	want := []string{"summary-request", "summary", "A-final", "B-user"}
+	want := []string{"summary-request", "summary", "B-user"}
 	if got := idsOf(clamped); !slices.Equal(got, want) {
 		t.Errorf("expected %v, got %v", want, got)
 	}
 	assertNoOrphanedToolMsgs(t, clamped)
+}
+
+// - Verify clampToMax with a 2-message summary drops a plain assistant survivor the cut lands on: the
+// result is [summary pair, next user, ...], never a pair followed by an assistant reply whose question is gone
+func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingAssistantSurvivor_IsDropped(t *testing.T) {
+	// [request, summary, A-user, A-final, B-user, B-final] clamped to 5 keeps the pair and the last 3,
+	// which would start at A-final
+	messages := append(append([]model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary"},
+		{ID: "summary", Role: "assistant", Type: "summary"},
+	}, toolTurn("A", 0)...), toolTurn("B", 0)...)
+
+	clamped := clampToMax(messages, 2, 5)
+
+	want := []string{"summary-request", "summary", "B-user", "B-final"}
+	if got := idsOf(clamped); !slices.Equal(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
 }

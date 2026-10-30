@@ -1435,6 +1435,7 @@ The "SSE is in scope" bullet above is superseded. Source: spec 2026-07-28, trans
   (3) Window by tokens: the right long-term answer (providers limit tokens, not messages), but a
   separate piece of work that needs the same rule. (4) Raise the limits: only hides it.
   (5) **Chosen:** after trimming from the front, drop leading `tool` messages.
+  **Superseded 2026-10-29 by `§ Windows start at a user message after a trim`:** switched to option (1).
 - **Why (5) is enough.** Trimming from the front removes tool calls *before* their results, so a
   leading tool result is the only invalid shape; an assistant tool call at the front is fine
   because its results follow it. It keeps more context than (1).
@@ -3295,3 +3296,27 @@ done yet. Files: `contextwindow/msgcontext.go`.
     fire after every input; and `clampToMax` panics if `maxSize < numSummary`. Neither can happen with today's fixed
     sizes (a 50-message window, compaction at 90%), but item 4 makes them configurable, so its validation must require a window of
     at least 2 and a threshold above 2.
+
+### 2026-10-29 — Windows start at a user message after a trim (supersedes the leading-`tool` rule of 2026-10-07)
+
+Files: `contextwindow/window.go` (all four strategies), `contextwindow/msgcontext.go` (`clampToMax`).
+
+- **Why now:** compaction stores a `{user, assistant}` summary pair (`§ Policy cleanup item 3 built (part)`). A trim
+  that dropped only the user half left the window starting with the assistant summary. The 2026-10-07 rule dropped
+  only leading `tool` messages, so a leading assistant message (summary or ordinary reply) was kept. OpenAI-compatible
+  servers accept that; Anthropic's native API requires the first message to be from the user.
+- **The change:** option (1) from 2026-10-07. In each strategy's `AddMessages` and in `clampToMax`, the loop that
+  dropped leading messages while `Role == "tool"` now drops them while `Role != "user"`. One condition per loop, no
+  new code paths. An orphaned tool result is not a user message, so the old protection still holds.
+- **Why this works:** whole turns are added in one call (`agent/chat.go`), each starting with a user message, and the
+  summary pair starts with one too. So the window always starts at the beginning of a turn, and a user/assistant pair
+  is kept whole or dropped whole.
+- **Downsides:**
+  - a trim drops a little more than before: the rest of a partly cut turn (its assistant replies and tool results),
+    which the old rule kept;
+  - if the kept messages hold no user message at all (a single turn longer than the whole window), the window ends
+    up empty. The current turn isn't affected: its messages are sent separately and join the context only when the
+    turn ends;
+  - the ring-buffer and linked-list windows run the loop after every add, not only after a trim, so they would also
+    drop a batch that doesn't start with a user message. Real code never adds one.
+- **Still open:** windowing by tokens instead of message count (2026-10-07, option 3).

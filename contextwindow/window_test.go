@@ -87,16 +87,18 @@ func Test_ContextWindow_AddNewMessage_FullWindow_OldestMessageRemoved(t *testing
 // in "Basic context window mechanics": each window type's eviction logic loops once per message
 // in a batch, so a single-message steady-state test passing doesn't guarantee a large batch
 // overflow (N > 1 evicted at once) is handled correctly by that same loop.
+// It overflows by an even number (4) so the oldest survivor is a user message: a trim that left an
+// assistant message in front would drop it too (the window must start at a user message).
 func assertWindowKeepsNewestOnBatchOverflow(t *testing.T, w ContextWindow, maxSize int) {
 	t.Helper()
-	w.AddMessages(modeltest.Msgs(maxSize + 3)) // one batch call, overflowing by 3
+	w.AddMessages(modeltest.Msgs(maxSize + 4)) // one batch call, overflowing by 4
 
 	messages := w.GetMessages()
 	if len(messages) != maxSize {
 		t.Fatalf("expected exactly %d messages after batch overflow, got %d", maxSize, len(messages))
 	}
 	for i, m := range messages {
-		wantID := fmt.Sprintf("%d", i+3) // IDs "0".."maxSize+2" were added; oldest 3 evicted
+		wantID := fmt.Sprintf("%d", i+4) // IDs "0".."maxSize+3" were added; oldest 4 evicted
 		if m.ID != wantID {
 			t.Errorf("expected message at index %d to have ID %q, got %q", i, wantID, m.ID)
 		}
@@ -125,8 +127,9 @@ func Test_Unit_RingBufferWindowWraparoundBehavior(t *testing.T) {
 
 	// add one at a time, well past 2x maxSize, so head wraps around the backing array
 	// multiple times — this is what previously caught a real indexing bug (see DECISIONS.md).
-	for _, m := range modeltest.Msgs(8) { // IDs "0".."7"
-		w.AddMessages([]model.ChatMessage{m})
+	// All user messages, so every trim already lands on a user message and only the indexing is tested.
+	for i := range 8 { // IDs "0".."7"
+		w.AddMessages([]model.ChatMessage{modeltest.Msg("user", fmt.Sprintf("%d", i), "fake")})
 	}
 
 	messages := w.GetMessages()
@@ -284,9 +287,19 @@ func assertNoOrphanedToolMsgs(t *testing.T, msgs []model.ChatMessage) {
 	}
 }
 
-// - Verify that after every add, for all window types, the window never exceeds its max size and
-// never contains a tool result without its tool call, using turns of varying length so the trim
-// point lands mid-turn at different places
+// assertStartsAtUser fails the test unless msgs is empty or its first message is a user message.
+// A trim must never leave the window starting mid-turn (a tool result, an assistant tool call, a
+// plain assistant reply, or the assistant half of a summary pair).
+func assertStartsAtUser(t *testing.T, msgs []model.ChatMessage) {
+	t.Helper()
+	if len(msgs) > 0 && msgs[0].Role != "user" {
+		t.Errorf("expected the window to be empty or start with a user message, got role %q first: %v", msgs[0].Role, idsOf(msgs))
+	}
+}
+
+// - Verify that after every add, for all window types, the window never exceeds its max size,
+// never contains a tool result without its tool call, and is empty or starts with a user message,
+// using turns of varying length so the trim point lands mid-turn at different places
 func Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages(t *testing.T) {
 	forEachWindow(t, 8, func(t *testing.T, w ContextWindow) {
 		for i, rounds := range []int{1, 0, 2, 1, 3, 0, 1, 2, 1, 1} {
@@ -297,20 +310,123 @@ func Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages(t *testing.T
 				t.Fatalf("after turn T%d: expected at most %d messages, got %d: %v", i, w.GetMaxSize(), len(got), idsOf(got))
 			}
 			assertNoOrphanedToolMsgs(t, got)
+			assertStartsAtUser(t, got)
+		}
+	})
+}
+
+// summaryPair is the [user summary request, assistant summary] pair that compaction puts at the
+// front of the context; both halves are typed "summary".
+func summaryPair() []model.ChatMessage {
+	return []model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary", Content: SummaryRequest},
+		{ID: "summary", Role: "assistant", Type: "summary", Content: "a fake summary"},
+	}
+}
+
+// - Verify, for all window types, that wherever a trim lands mid-turn, everything up to the next user
+// message is dropped: the window ends up empty or starting with a user message, with the exact
+// expected messages. Each batch is added with its own AddMessages call, the way a chat adds turns.
+func Test_ContextWindow_AddMessages_TrimLandsMidTurn_StartsAtNextUser(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxSize int
+		batches [][]model.ChatMessage
+		want    []string
+	}{
+		// 8 messages in 6: the trim lands on A-tool0
+		{"tool result", 6, [][]model.ChatMessage{toolTurn("A", 1), toolTurn("B", 1)}, idsOf(toolTurn("B", 1))},
+		// 8 messages in 7: the trim lands on A-call0
+		{"assistant tool call", 7, [][]model.ChatMessage{toolTurn("A", 1), toolTurn("B", 1)}, idsOf(toolTurn("B", 1))},
+		// 4 messages in 3: the trim lands on A-final
+		{"plain assistant reply", 3, [][]model.ChatMessage{toolTurn("A", 0), toolTurn("B", 0)}, idsOf(toolTurn("B", 0))},
+		// 4 messages in 3: the trim lands on the assistant summary
+		{"assistant half of summary pair", 3, [][]model.ChatMessage{summaryPair(), toolTurn("B", 0)}, idsOf(toolTurn("B", 0))},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forEachWindow(t, c.maxSize, func(t *testing.T, w ContextWindow) {
+				for _, b := range c.batches {
+					w.AddMessages(b)
+				}
+
+				got := w.GetMessages()
+				assertStartsAtUser(t, got)
+				assertNoOrphanedToolMsgs(t, got)
+				if !slices.Equal(idsOf(got), c.want) {
+					t.Errorf("expected %v, got %v", c.want, idsOf(got))
+				}
+			})
+		})
+	}
+}
+
+// - Verify, for all window types, that a trim never splits the compaction summary pair: a trim that
+// lands on the user summary request keeps both halves, and one that lands on the assistant summary
+// drops both (never the assistant summary alone)
+func Test_ContextWindow_AddMessages_TrimNeverSplitsSummaryPair(t *testing.T) {
+	cases := []struct {
+		name    string
+		maxSize int
+		batches [][]model.ChatMessage
+		want    []string
+	}{
+		// [X-user, X-final, request, summary, B-user, B-final] in 4: the trim lands on the request
+		{"lands on request: keeps both", 4,
+			[][]model.ChatMessage{toolTurn("X", 0), summaryPair(), toolTurn("B", 0)},
+			append(idsOf(summaryPair()), idsOf(toolTurn("B", 0))...)},
+		// [request, summary, B-user, B-final, C-user, C-final] in 5: the trim lands on the summary
+		{"lands on summary: drops both", 5,
+			[][]model.ChatMessage{summaryPair(), toolTurn("B", 0), toolTurn("C", 0)},
+			append(idsOf(toolTurn("B", 0)), idsOf(toolTurn("C", 0))...)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forEachWindow(t, c.maxSize, func(t *testing.T, w ContextWindow) {
+				for _, b := range c.batches {
+					w.AddMessages(b)
+				}
+
+				got := w.GetMessages()
+				if !slices.Equal(idsOf(got), c.want) {
+					t.Errorf("expected %v, got %v", c.want, idsOf(got))
+				}
+			})
+		})
+	}
+}
+
+// - Verify, for all window types, that when the messages a trim keeps contain no user message at all,
+// the window ends up empty. This is intended: a window of only assistant/tool messages is a turn
+// fragment with no question, which providers reject or misread, and the next turn (which always
+// starts with a user message) refills it. The last 4 of [user, call0, tool0, call1, tool1, call2,
+// tool2, final] are [tool1, call2, tool2, final].
+func Test_ContextWindow_AddMessages_TrimKeepsNoUserMessage_EmptiesWindow(t *testing.T) {
+	forEachWindow(t, 4, func(t *testing.T, w ContextWindow) {
+		w.AddMessages(toolTurn("A", 3))
+
+		if got := w.GetMessages(); len(got) != 0 {
+			t.Fatalf("expected an empty window, got %v", idsOf(got))
+		}
+
+		// the next turn starts with a user message and fills the window again
+		w.AddMessages(toolTurn("B", 0))
+		if got, want := idsOf(w.GetMessages()), idsOf(toolTurn("B", 0)); !slices.Equal(got, want) {
+			t.Errorf("expected %v after the next turn, got %v", want, got)
 		}
 	})
 }
 
 // - Verify the exact result when the trim point lands on a tool result: two 4-message tool turns
-// in a window of 6 trim to [tool A, final A, B...], and the leading tool result is dropped too,
-// leaving 5 messages that start at "final A"
-func Test_ContextWindow_AddMessages_TrimLandsOnToolMessage_DropsIt(t *testing.T) {
+// in a window of 6 trim to [tool A, final A, B...], and everything up to the next user message is
+// dropped, leaving just turn B
+func Test_ContextWindow_AddMessages_TrimLandsOnToolMessage_DropsUpToNextUser(t *testing.T) {
 	forEachWindow(t, 6, func(t *testing.T, w ContextWindow) {
 		w.AddMessages(toolTurn("A", 1))
 		w.AddMessages(toolTurn("B", 1))
 
 		got := idsOf(w.GetMessages())
-		want := []string{"A-final", "B-user", "B-call0", "B-tool0", "B-final"}
+		want := idsOf(toolTurn("B", 1))
 		if !slices.Equal(got, want) {
 			t.Errorf("expected %v, got %v", want, got)
 		}
@@ -318,13 +434,14 @@ func Test_ContextWindow_AddMessages_TrimLandsOnToolMessage_DropsIt(t *testing.T)
 }
 
 // - Verify a single batch bigger than the window still ends with a valid window: the last 4 of
-// [user, call0, tool0, call1, tool1, call2, tool2, final] start at tool1, which is dropped
-func Test_ContextWindow_AddMessages_OversizedBatch_DropsLeadingToolMessage(t *testing.T) {
+// [A-user, call0, tool0, call1, tool1, call2, tool2, A-final, B-user, B-final] start at tool2, and
+// everything up to B-user is dropped
+func Test_ContextWindow_AddMessages_OversizedBatch_DropsUpToNextUser(t *testing.T) {
 	forEachWindow(t, 4, func(t *testing.T, w ContextWindow) {
-		w.AddMessages(toolTurn("A", 3))
+		w.AddMessages(append(toolTurn("A", 3), toolTurn("B", 0)...))
 
 		got := idsOf(w.GetMessages())
-		want := []string{"A-call2", "A-tool2", "A-final"}
+		want := idsOf(toolTurn("B", 0))
 		if !slices.Equal(got, want) {
 			t.Errorf("expected %v, got %v", want, got)
 		}

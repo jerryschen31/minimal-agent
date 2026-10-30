@@ -15,7 +15,7 @@ import (
 // ContextWindow defines the interface for managing the messages within the context window (let's call this message context),
 // allowing different strategies for handling the message context.
 type ContextWindow interface {
-	AddMessages(msgs []model.ChatMessage)
+	AddMessages(msgs []model.ChatMessage) // after a trim, the window must start at a user message (never mid-turn)
 	GetMessages() []model.ChatMessage
 	RemoveLast(n int)
 	Clear()
@@ -74,10 +74,11 @@ func (w *OffsetWindow) AddMessages(msgs []model.ChatMessage) {
 	// After we have added the messages, we check if the total number of messages exceeds the maximum size and trim the oldest messages if necessary.
 	// In practice we want the maxSize to be a bit less than the max context window.
 	// If several messages are added, we don't want to hit the actual max context window before we trim.
-	// Also, when we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we clip them.
+	// Also, a trim can cut a turn in half, leaving orphaned tool results or an assistant reply whose question is gone at the front.
+	// Providers reject an orphaned tool result, and some reject a context that doesn't start with a user message, so we clip up to the next user message.
 	if len(w.messages) > w.maxSize {
 		w.messages = w.messages[len(w.messages)-w.maxSize:]
-		for len(w.messages) > 0 && w.messages[0].Role == "tool" {
+		for len(w.messages) > 0 && w.messages[0].Role != "user" {
 			w.messages = w.messages[1:]
 		}
 	}
@@ -150,9 +151,9 @@ func (w *InPlaceWindow) AddMessages(msgs []model.ChatMessage) {
 	}
 	// similar to the offset window, we want maxSize < maxContextWindow so that there is a buffer and we never hit the actual max context window before trimming.
 	if len(w.messages) > w.maxSize {
-		// note that when we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we clip them.
+		// note that a trim can cut a turn in half (see OffsetWindow), so we also drop everything up to the next user message.
 		num2drop := len(w.messages) - w.maxSize
-		for num2drop < len(w.messages) && w.messages[num2drop].Role == "tool" {
+		for num2drop < len(w.messages) && w.messages[num2drop].Role != "user" {
 			num2drop++
 		}
 		n := copy(w.messages, w.messages[num2drop:])
@@ -228,9 +229,9 @@ func (w *RingBufferWindow) AddMessages(msgs []model.ChatMessage) {
 			w.count++
 		}
 	}
-	// When we trim the context, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we remove them.
+	// A trim can cut a turn in half (see OffsetWindow), so we remove everything up to the next user message.
 	start := (w.head - w.count + w.maxSize) % w.maxSize
-	for w.count > 0 && w.messages[start].Role == "tool" {
+	for w.count > 0 && w.messages[start].Role != "user" {
 		w.messages[start] = model.ChatMessage{} // release the references
 		start = (start + 1) % w.maxSize
 		w.count--
@@ -315,8 +316,8 @@ func (w *LLWindow) AddMessages(msgs []model.ChatMessage) {
 		}
 		w.messages.PushBack(msg)
 	}
-	// when we add new messages, we may introduce orphaned old tool messages in the front. LLMs will complain if context has orphaned tool messages, so we remove them.
-	for e := w.messages.Front(); e != nil && e.Value.(model.ChatMessage).Role == "tool"; e = w.messages.Front() {
+	// a trim can cut a turn in half (see OffsetWindow), so we remove everything up to the next user message.
+	for e := w.messages.Front(); e != nil && e.Value.(model.ChatMessage).Role != "user"; e = w.messages.Front() {
 		w.messages.Remove(e)
 	}
 }

@@ -959,3 +959,6 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > Item 3 fixes B and C built (`DECISIONS.md § Policy cleanup item 3 built (part)`): one summarizer system message, and
 > compaction stores a user/assistant summary pair. Next: windows always start at a user message (Jerry's next step),
 > then fix A (an empty `systemPrompt` sends no system message).
+>
+> Windows now start at a user message after a trim (`DECISIONS.md § Windows start at a user message after a trim`).
+> Next: item 3 fix A (an empty `systemPrompt` sends no system message).

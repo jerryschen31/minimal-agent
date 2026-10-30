@@ -170,13 +170,14 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   file-reading tool must reuse this, not call `os.Open` on a model-supplied path
   (`DECISIONS.md § read_file is confined to workDir`). It also opens with `O_NONBLOCK` and accepts only regular
   files (checked with `Stat` on the opened descriptor), because opening a named pipe blocks forever.
-- **A context window must never hand out a leading `tool` message.** Windows trim by message count
-  and a turn is several messages, so a trim can land between an assistant tool call and its
-  results; providers reject an orphaned tool result, and since a failed turn is not added back, the
-  same bad context is re-sent forever. Each window strategy's `AddMessages` drops leading `tool`
-  messages after trimming, and `clampToMax` (compaction) does the same. A new window strategy must
-  do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages` runs every strategy.
-  See `DECISIONS.md § Context window never hands out an orphaned tool result`.
+- **After a trim, a context window must start at a `user` message.** Windows trim by message count
+  and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
+  orphaned one, and since a failed turn is not added back, the same bad context is re-sent forever)
+  or on an assistant message (Anthropic requires a user-first context; it would also split the
+  compaction summary's user/assistant pair). Each window strategy's `AddMessages` drops leading
+  messages until a `user` message, and `clampToMax` (compaction) does the same for survivors. A new
+  window strategy must do likewise; `Test_ContextWindow_AddMessages_NeverLeavesOrphanedToolMessages`
+  runs every strategy. See `DECISIONS.md § Windows start at a user message after a trim`.
 - **Ctrl+C stops foreground work, never the program (except during setup); only quitting stops background
   work.** The root context listens for SIGTERM only. `main` registers `os.Interrupt` once, for the whole run, on
   a 1-slot channel passed to `SetupAgent` and `runChatLoop`, so Go's default "Ctrl+C kills the process" never
