@@ -59,7 +59,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 
 	// 4. setup built-in tools -> builtinTools satisfies Tool interface
-	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.ReadFileMaxBytes)
+	builtinTools, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes)
 	if err != nil {
 		return err
 	}

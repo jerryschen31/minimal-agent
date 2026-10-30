@@ -126,7 +126,7 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 	var toolLine, neverLine string
 	for line := range strings.Lines(out) {
 		switch {
-		case strings.Contains(line, "never reads:"):
+		case strings.Contains(line, "never reads:") && !strings.Contains(line, "trace directory"): // the deny-list line, not the trace-directory one
 			neverLine = line
 		case strings.Contains(line, "read_file"):
 			toolLine = line
@@ -142,6 +142,36 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 		if !strings.Contains(neverLine, name) {
 			t.Errorf("expected %q in never reads: line %q", name, neverLine)
 		}
+	}
+}
+
+// - Verify read_file gets a "never reads: anything in the trace directory (...)" line naming a configured TraceDir
+func Test_Unit_PrintInfo_BuiltinTools_TraceDirLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.TraceDir = filepath.Join(t.TempDir(), "fake-traces")
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if want := "never reads: anything in the trace directory (" + cfg.TraceDir + ")\n"; !strings.Contains(out, want) {
+		t.Errorf("expected %q in output:\n%s", want, out)
+	}
+}
+
+// - Verify an empty TraceDir prints no trace-directory line
+func Test_Unit_PrintInfo_BuiltinTools_NoTraceDir_NoLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.TraceDir = ""
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if strings.Contains(out, "trace directory") {
+		t.Errorf("expected no trace-directory line in output:\n%s", out)
 	}
 }
 

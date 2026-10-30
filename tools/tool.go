@@ -18,14 +18,14 @@ type Tool interface {
 	CallTool(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// setup built-in tools
-func SetupBuiltinTools(toolList []string, workDir string, readFileMaxBytes int) ([]Tool, error) {
+// setup built-in tools; traceDir is passed so read_file can refuse to read the trace files
+func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxBytes int) ([]Tool, error) {
 	tools := []Tool{}
 	// add the built-in tools specified in the config
 	for _, t := range toolList {
 		switch t {
 		case "ReadFile":
-			readFile, err := builtin.NewReadFileTool(workDir, readFileMaxBytes)
+			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}

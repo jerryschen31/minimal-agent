@@ -2582,7 +2582,8 @@ into the main loop. (Also saved in Claude's memory as `feedback-learning-mode`.)
   every event's `run_id`.
 - Default `traceDir` is `.agent-trace`; it is in `.gitignore` and in `read_file`'s deny list, so the model can't
   read its own audit log. Honest gap: the deny list holds only that default name, so a different `traceDir` inside
-  `workDir` is not protected. An existing directory keeps its permissions (`MkdirAll` doesn't change them); the
+  `workDir` is not protected. (Closed 2026-10-29: `read_file` now refuses the configured `traceDir` by path; see
+  "Policy cleanup item 2" at the end of this log.) An existing directory keeps its permissions (`MkdirAll` doesn't change them); the
   file itself is still `0600`.
 
 **Redaction as built** (supersedes "a detector is data").
@@ -3221,3 +3222,38 @@ and a sub-agent wrote the tests.
   - `trace/digest_veto_test.go`: the default config's rules appear in `run_start`.
   - Each was mutation-checked: merging instead of replacing, dropping the empty-list line, and re-adding the
     defaults in `hooks` each fail tests.
+
+
+### 2026-10-29 — Policy cleanup item 2 built: `read_file` refuses the configured `traceDir`
+
+Claude wrote it (a bug fix, at Jerry's request); a sub-agent wrote the tests.
+
+- **The gap:** `read_file` refused only the literal name `.agent-trace`, so a `traceDir` like `logs/trace` inside
+  `workDir` let the model read its own audit log.
+- **The fix:** `NewReadFileTool(workDir, traceDir, maxBytes)` (and `SetupBuiltinTools`) take the configured
+  `traceDir`; `""` = none. `resolve()` refuses any path whose **resolved** location is the trace directory or
+  inside it, after the outside-`workDir` and deny-list checks, so `..`, absolute paths and symlinks into it are
+  refused too. `.agent-trace` stays on the name list, so the default name is refused anywhere (e.g. traces copied in
+  from another project).
+- **How the path is resolved:** relative to the **process's** directory, like the recorder that creates it (not
+  to `workDir`). It need not exist yet: `resolvePath` resolves the longest existing part and adds the rest back
+  unchanged, so `/var` vs `/private/var` on macOS still compares equal. A dangling symlink anywhere on the path is
+  refused at setup, because protecting the link's own path would miss where the recorder writes.
+- **Compared case-insensitively** (`isWithin` lowercases both), because macOS and Windows filesystems are. Downside:
+  on Linux a path that differs only in case is refused too, which errs on the safe side.
+- **Setup fails if `traceDir` is `workDir` or a parent of it**, since read_file could then read nothing. A loud
+  config error, not a silently useless tool.
+- **The deny-list error text is built from the list** (it had been hard-coded and left out `.agent-trace`).
+- **Info mode** adds `never reads: anything in the trace directory (<traceDir>)` under `read_file`.
+- **Not fixed (same as the deny list, `Deferred for Later` item 9):** the trace check runs in `resolve()`, before the
+  open; `os.Root` keeps the open inside `workDir` but doesn't recheck the trace directory, so a symlink swapped in
+  between check and open could still reach it.
+- **Tests:**
+  - `tools/builtin`, with mutation checks: `Test_ReadFile_TraceDir_Blocked`, `_DifferentCaseRequest_Blocked`,
+    `_ConfiguredInDifferentCase_Blocked`, `_CreatedLater_Blocked`, `_SimilarNames_Allowed` (guards against a plain
+    string-prefix match), `_Empty_NothingExtraBlocked`, `_OutsideWorkDir_Allowed`, `_RelativeToCwd_NotWorkDir`,
+    `_SymlinkInto_Blocked`, `_SymlinkedWorkDir_Blocked`,
+    `Test_ReadFile_NewReadFileTool_TraceDirContainsWorkDir_ReturnsError` and
+    `Test_ReadFile_DenyList_ErrorListsEveryName`, `Test_ReadFile_NewReadFileTool_TraceDirDanglingSymlink_ReturnsError`.
+  - `tools/tool_test.go`: `Test_SetupBuiltinTools_ReadFile_TraceDir`.
+  - `agent/info_test.go`: `Test_Unit_PrintInfo_BuiltinTools_TraceDirLine` and `_NoTraceDir_NoLine`.

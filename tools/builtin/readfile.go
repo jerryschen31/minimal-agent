@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,8 +21,8 @@ import (
 
 // deniedNames are file or directory names (matched case-insensitively against every path component)
 // that read_file refuses even inside the allowed directory, because they usually hold credentials.
-// ".agent-trace" is the default trace directory: the agent must not be able to read its own audit log.
-// Only that default name is listed, so a traceDir set to another name inside workDir is not protected.
+// ".agent-trace" is the default trace directory name, refused anywhere (e.g. another project's traces copied in);
+// the configured traceDir, whatever its name, is refused by path (see NewReadFileTool).
 // ".env.example" is the one exception to the ".env.*" pattern.
 var deniedNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh", ".agent-trace"}
 
@@ -32,12 +34,15 @@ func DeniedNames() []string { return slices.Clone(deniedNames) }
 // them can reach outside root.
 type ReadFileTool struct {
 	root     string // absolute path of the allowed directory, with symlinks resolved
+	traceDir string // absolute path of the trace directory, with symlinks resolved; "" = none configured
 	maxBytes int    // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
 // NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
+// traceDir (config traceDir, "" = none) is never read from, so the agent can't read its own audit log; it need not
+// exist yet, and it must not be workDir or a parent of it (read_file could then read nothing).
 // maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
-func NewReadFileTool(workDir string, maxBytes int) (*ReadFileTool, error) {
+func NewReadFileTool(workDir, traceDir string, maxBytes int) (*ReadFileTool, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
 	}
@@ -56,7 +61,53 @@ func NewReadFileTool(workDir string, maxBytes int) (*ReadFileTool, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	return &ReadFileTool{root: root, maxBytes: maxBytes}, nil
+	t := &ReadFileTool{root: root, maxBytes: maxBytes}
+	if traceDir != "" {
+		// [agent] relative to the process's directory, like the trace recorder that creates it (not to workDir)
+		if t.traceDir, err = resolvePath(traceDir); err != nil {
+			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
+		}
+		if isWithin(t.traceDir, root) {
+			return nil, fmt.Errorf("traceDir %q is workDir or contains it, so read_file could read nothing", traceDir)
+		}
+	}
+	return t, nil
+}
+
+// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with. p need not
+// exist yet (the recorder creates the trace directory when a run starts): the longest existing part is resolved and
+// the rest is added back unchanged.
+func resolvePath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		real, err := filepath.EvalSymlinks(abs)
+		if err == nil {
+			return filepath.Join(real, rest), nil
+		}
+		parent := filepath.Dir(abs)
+		if !errors.Is(err, fs.ErrNotExist) || parent == abs {
+			return "", err
+		}
+		if _, lerr := os.Lstat(abs); lerr == nil {
+			// [agent] abs exists but EvalSymlinks says "not found": a symlink to a missing target. Protecting the
+			// link's own path would miss where the recorder actually writes, so refuse it.
+			return "", fmt.Errorf("%s is a symlink to a path that doesn't exist", abs)
+		}
+		rest = filepath.Join(filepath.Base(abs), rest)
+		abs = parent
+	}
+}
+
+// isWithin reports whether path p is dir or inside it. Both are absolute and symlink-resolved. The comparison ignores
+// case, because macOS and Windows filesystems do (".AGENT-TRACE" is the same directory there); on Linux that can
+// refuse a path that differs only in case, which errs on the safe side.
+func isWithin(dir, p string) bool {
+	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(p))
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // isDenied reports whether any component of rel (a slash- or OS-separated relative path) is on the deny list.
@@ -108,7 +159,10 @@ func (t *ReadFileTool) resolve(requested string) (string, error) {
 		return "", fmt.Errorf("%s is outside the allowed directory", requested)
 	}
 	if isDenied(rel) {
-		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (.env files, *.pem, *.key, id_rsa*, .ssh/)", requested)
+		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(deniedNames, ", "))
+	}
+	if t.traceDir != "" && isWithin(t.traceDir, real) {
+		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)
 	}
 	return rel, nil
 }

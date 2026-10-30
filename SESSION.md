@@ -952,5 +952,6 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > one per level; interpreters as their own category; `run_command` off by default until a sandbox exists.
 >
 > **Progress (same day):** cleanup item 1 is built and tested, not committed (`DECISIONS.md § Policy cleanup item 1
-> built`). `config.default.json`'s `*read*` now *replaces* the default deny rules; item 5 removes it. Next: item 2
-> (`read_file` protects the configured `traceDir`).
+> built`). `config.default.json`'s `*read*` now *replaces* the default deny rules; item 5 removes it. Item 2 also built
+> (`read_file` refuses the configured `traceDir`; `DECISIONS.md § Policy cleanup item 2 built`). Next: item 3
+> (summarizer system message, summary framing, empty system prompt).

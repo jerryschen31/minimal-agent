@@ -149,3 +149,65 @@ func Test_ReadFile_CancelledContext_ReturnsContextError(t *testing.T) {
 		t.Errorf("expected (empty, context.Canceled), got (%q, %v)", got, err)
 	}
 }
+
+// - Verify a symlink inside workDir that points into the trace directory (at a file, or at the directory) is refused,
+// because the check runs on the resolved path
+func Test_ReadFile_TraceDir_SymlinkInto_Blocked(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	symlink(t, "logs/trace/run.jsonl", filepath.Join(work, "notes.txt"))
+	symlink(t, filepath.Join(work, "logs", "trace"), filepath.Join(work, "history"))
+	tool := newTraceTool(t, work, filepath.Join(work, "logs", "trace"))
+
+	expectTraceBlocked(t, tool, "notes.txt")
+	expectTraceBlocked(t, tool, "history/run.jsonl")
+	expectTraceBlocked(t, tool, "history")
+}
+
+// - Verify the trace directory is protected when workDir and traceDir name it through different routes: one through
+// a symlink to the real directory and the other by the real path (t.TempDir on macOS is itself under the /var ->
+// /private/var symlink), and the contains-workDir check sees through the symlink too
+func Test_ReadFile_TraceDir_SymlinkedWorkDir_Blocked(t *testing.T) {
+	real := t.TempDir()
+	writeFile(t, real, "logs/trace/run.jsonl", []byte("SECRET-TRACE"))
+	link := filepath.Join(t.TempDir(), "worklink")
+	symlink(t, real, link)
+
+	t.Run("workDir via symlink, traceDir real", func(t *testing.T) {
+		expectTraceBlocked(t, newTraceTool(t, link, filepath.Join(real, "logs", "trace")), "logs/trace/run.jsonl")
+	})
+	t.Run("workDir real, traceDir via symlink", func(t *testing.T) {
+		expectTraceBlocked(t, newTraceTool(t, real, filepath.Join(link, "logs", "trace")), "logs/trace/run.jsonl")
+	})
+	t.Run("traceDir via symlink, not created yet", func(t *testing.T) {
+		tool := newTraceTool(t, real, filepath.Join(link, "logs", "later"))
+		writeFile(t, real, "logs/later/run.jsonl", []byte("SECRET-LATER"))
+		expectTraceBlocked(t, tool, "logs/later/run.jsonl")
+	})
+	t.Run("traceDir is workDir via symlink", func(t *testing.T) {
+		if _, err := NewReadFileTool(real, link, testMaxBytes); err == nil || !strings.Contains(err.Error(), "is workDir or contains it") {
+			t.Errorf("expected an 'is workDir or contains it' error, got %v", err)
+		}
+	})
+}
+
+// - Verify NewReadFileTool refuses a traceDir that is a dangling symlink, or that goes through one (link/trace with
+// link -> missing): the recorder would write where the link points, not at the link's own path
+func Test_ReadFile_NewReadFileTool_TraceDirDanglingSymlink_ReturnsError(t *testing.T) {
+	work := t.TempDir()
+	other := t.TempDir()
+	link := filepath.Join(other, "link")
+	symlink(t, filepath.Join(work, "missing"), link)
+
+	for name, traceDir := range map[string]string{
+		"traceDir is the link": link,
+		"parent is the link":   filepath.Join(link, "trace"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewReadFileTool(work, traceDir, testMaxBytes)
+			if err == nil || !strings.Contains(err.Error(), "is a symlink to a path that doesn't exist") {
+				t.Errorf("expected a dangling-symlink error for traceDir %q, got %v", traceDir, err)
+			}
+		})
+	}
+}
