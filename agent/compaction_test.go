@@ -588,3 +588,30 @@ func Test_ContextCompaction_NextChatRequest_IsSystemThenSummaryPairThenNewUserMe
 		}
 	}
 }
+
+// - Verify that with an empty system prompt, a chat turn's request has no system message and starts with the user message.
+func Test_ChatRequest_EmptySystemPrompt_NoSystemMessageSent(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	cfg := fx.Session.Config
+	cfg.SystemPrompt = "" // as if a config file set "systemPrompt": ""
+	session, err := NewChatSession(fx.Provider, fx.History, fx.Context, fx.Tools, trace.Nop(), cfg)
+	if err != nil {
+		t.Fatalf("NewChatSession() returned an error: %v", err)
+	}
+	fx.Provider.Reply = "ok"
+
+	handleUserInput(context.Background(), session, "hello")
+
+	if len(fx.Provider.Calls) != 1 {
+		t.Fatalf("expected exactly 1 provider call, got %d", len(fx.Provider.Calls))
+	}
+	sent := fx.Provider.Calls[0]
+	if len(sent) == 0 || sent[0].Role != "user" || sent[0].Content != "hello" {
+		t.Errorf("expected the request to start with the user message %q, got %+v", "hello", sent)
+	}
+	for i, m := range sent {
+		if m.Role == "system" {
+			t.Errorf("expected no system message, found one at index %d: %+v", i, m)
+		}
+	}
+}

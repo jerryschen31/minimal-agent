@@ -962,3 +962,7 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >
 > Windows now start at a user message after a trim (`DECISIONS.md § Windows start at a user message after a trim`).
 > Next: item 3 fix A (an empty `systemPrompt` sends no system message).
+>
+> Fix A built (`DECISIONS.md § Policy cleanup item 3 fix A built`), so item 3 is done. Next: item 4 (configurable
+> context window size, strategy, auto-compact threshold with an off switch, summarizer prompt; validation must require
+> a window of at least 2 and a threshold above 2, see `§ Policy cleanup item 3 built (part)`).

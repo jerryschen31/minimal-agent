@@ -537,3 +537,34 @@ func Test_Unit_GetDefaultConfig_DenyRules_FreshSlice(t *testing.T) {
 		t.Errorf("GetDefaultConfig().DenyRules = %q after changing an earlier result, want %q", got, want)
 	}
 }
+
+// - Verify a config file's "systemPrompt": "" replaces the default with an empty prompt, and a file without the key keeps the default
+func Test_Unit_SetDefaultConfig_SystemPrompt_EmptyReplacesDefault(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want string
+	}{
+		{"no systemPrompt key keeps default", `{"model": "fake-model"}`, GetDefaultConfig().SystemPrompt},
+		{"empty string replaces default", `{"systemPrompt": ""}`, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if cfg.SystemPrompt != c.want {
+				t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}

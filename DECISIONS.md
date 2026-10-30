@@ -3266,7 +3266,7 @@ Claude wrote it (a bug fix, at Jerry's request); a sub-agent wrote the tests.
 ### 2026-10-29 — Policy cleanup item 3 built (part): one summarizer system message; the summary is a user/assistant pair
 
 Fixes B and C of item 3 in `§ Policy out of the core`. Fix A (an empty `systemPrompt` sends no system message) is not
-done yet. Files: `contextwindow/msgcontext.go`.
+done yet. **Fix A built later the same day:** see `§ Policy cleanup item 3 fix A built`. Files: `contextwindow/msgcontext.go`.
 
 - **Fix B, the summarizer's extra instructions** (`/summary <text>`, `/compact <text>`) are appended to the one
   system message (`SummarizeSystemPrompt` + `"\n\nAdditional instructions from the user: …"`) instead of being sent
@@ -3320,3 +3320,18 @@ Files: `contextwindow/window.go` (all four strategies), `contextwindow/msgcontex
   - the ring-buffer and linked-list windows run the loop after every add, not only after a trim, so they would also
     drop a batch that doesn't start with a user message. Real code never adds one.
 - **Still open:** windowing by tokens instead of message count (2026-10-07, option 3).
+
+### 2026-10-29 — Policy cleanup item 3 fix A built: an empty `systemPrompt` sends no system message
+
+Files: `model/provider.go` (`PrepareChatRequest`). Completes item 3 of `§ Policy out of the core`.
+
+- **The gap:** `"systemPrompt": ""` still sent `{role: "system", content: ""}` first, so the system prompt could never
+  really be removed.
+- **The fix:** `PrepareChatRequest` leaves the system message out when its content is empty or only whitespace. The
+  config side needed nothing: loading a file over `GetDefaultConfig()` means a missing key keeps the default prompt
+  and an explicit `""` replaces it, the same replace semantics as `denyRules`.
+- **Why in `PrepareChatRequest`, not `react.go`:** it already owns the request's message order, and it's in `model`, so
+  any future caller (headless or autonomous mode) gets the same behaviour.
+- **Downsides:** a whitespace-only prompt is dropped too, a small rule the user can't see (almost certainly what anyone
+  would want). The trace's `run_start.system_prompt` is `omitempty`, so an empty prompt shows as absent, which reads
+  the same as "none".
