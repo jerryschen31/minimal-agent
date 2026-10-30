@@ -36,9 +36,9 @@ type Config struct {
 	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
 	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
-	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified
+	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
 
-	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300) (TODO)
+	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300)
 	Debug                  bool `json:"debug"`                  // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session

@@ -29,7 +29,7 @@
 //	userId          who the chat session belongs to                                                       ["default_user"]
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
-//	agentMode       "chat" | "info" | "headless" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
+//	agentMode       "chat" | "info" | "autonomous" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) read_file may read; -workdir                            ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
