@@ -9,9 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -19,30 +17,22 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// deniedNames are file or directory names (matched case-insensitively against every path component)
-// that read_file refuses even inside the allowed directory, because they usually hold credentials.
-// ".agent-trace" is the default trace directory name, refused anywhere (e.g. another project's traces copied in);
-// the configured traceDir, whatever its name, is refused by path (see NewReadFileTool).
-// ".env.example" is the one exception to the ".env.*" pattern.
-var deniedNames = []string{".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".ssh", ".agent-trace"}
-
-// DeniedNames returns a copy of the deny list, for display (-mode info). ".env.example" is still allowed.
-func DeniedNames() []string { return slices.Clone(deniedNames) }
-
 // ReadFileTool reads text files, but only inside root (the configured workDir and its subdirectories)
 // and never a file on the deny list. Absolute paths, "..", and symlinks are all resolved first, so none of
 // them can reach outside root.
 type ReadFileTool struct {
-	root     string // absolute path of the allowed directory, with symlinks resolved
-	traceDir string // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	maxBytes int    // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
+	root     string   // absolute path of the allowed directory, with symlinks resolved
+	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
+	deny     DenyList // names never read (the built-ins plus config denyFileNames)
+	maxBytes int      // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
 // NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
 // traceDir (config traceDir, "" = none) is never read from, so the agent can't read its own audit log; it need not
 // exist yet, and it must not be workDir or a parent of it (read_file could then read nothing).
 // maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
-func NewReadFileTool(workDir, traceDir string, maxBytes int) (*ReadFileTool, error) {
+// deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
+func NewReadFileTool(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
 	}
@@ -61,7 +51,7 @@ func NewReadFileTool(workDir, traceDir string, maxBytes int) (*ReadFileTool, err
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	t := &ReadFileTool{root: root, maxBytes: maxBytes}
+	t := &ReadFileTool{root: root, maxBytes: maxBytes, deny: deny}
 	if traceDir != "" {
 		// [agent] relative to the process's directory, like the trace recorder that creates it (not to workDir)
 		if t.traceDir, err = resolvePath(traceDir); err != nil {
@@ -110,22 +100,6 @@ func isWithin(dir, p string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// isDenied reports whether any component of rel (a slash- or OS-separated relative path) is on the deny list.
-func isDenied(rel string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(rel), "/") {
-		name := strings.ToLower(part) // case-insensitive filesystems (macOS, Windows) would otherwise let ".ENV" through
-		if name == ".env.example" {
-			continue
-		}
-		for _, pattern := range deniedNames {
-			if ok, _ := path.Match(pattern, name); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // fileKind names a non-regular file type for the error shown to the model.
 func fileKind(mode os.FileMode) string {
 	switch {
@@ -158,8 +132,8 @@ func (t *ReadFileTool) resolve(requested string) (string, error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s is outside the allowed directory", requested)
 	}
-	if isDenied(rel) {
-		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(deniedNames, ", "))
+	if t.deny.IsDenied(rel) {
+		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(t.deny.Patterns(), ", "))
 	}
 	if t.traceDir != "" && isWithin(t.traceDir, real) {
 		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)

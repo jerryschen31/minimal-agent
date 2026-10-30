@@ -910,3 +910,55 @@ func Test_Unit_SafeMCPError_StdioServers_Unchanged(t *testing.T) {
 		t.Errorf("safeMCPError = %q, want unchanged %q", got, msg)
 	}
 }
+
+// - Verify read_file gets an "also never reads (denyFileNames): ..." line listing the config's extra patterns
+func Test_Unit_PrintInfo_BuiltinTools_DenyFileNamesLine(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyFileNames = []string{"*.secret", "creds.json"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if want := "also never reads (denyFileNames): *.secret, creds.json\n"; !strings.Contains(out, want) {
+		t.Errorf("expected %q in output:\n%s", want, out)
+	}
+}
+
+// - Verify no denyFileNames (nil or empty) prints no extra deny-list line, while the built-in line is still shown
+func Test_Unit_PrintInfo_BuiltinTools_NoDenyFileNames_NoLine(t *testing.T) {
+	for name, names := range map[string][]string{"nil": nil, "empty": {}} {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.GetDefaultConfig()
+			cfg.WorkDir = t.TempDir()
+			cfg.DenyFileNames = names
+
+			code, out := runInfo(t, cfg, "")
+			if code != InfoOK {
+				t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+			}
+			if strings.Contains(out, "also never reads") {
+				t.Errorf("expected no also never reads (denyFileNames) line in output:\n%s", out)
+			}
+			if !strings.Contains(out, "never reads: .env") {
+				t.Errorf("expected the built-in never reads: line in output:\n%s", out)
+			}
+		})
+	}
+}
+
+// - Verify a bad denyFileNames pattern makes info mode print Built-in tools: FAILED and return InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_BadDenyFileNames_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.DenyFileNames = []string{"[abc"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if !strings.Contains(out, "Built-in tools: FAILED: denyFileNames") {
+		t.Errorf("expected a Built-in tools: FAILED denyFileNames row in output:\n%s", out)
+	}
+}

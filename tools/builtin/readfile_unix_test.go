@@ -185,7 +185,7 @@ func Test_ReadFile_TraceDir_SymlinkedWorkDir_Blocked(t *testing.T) {
 		expectTraceBlocked(t, tool, "logs/later/run.jsonl")
 	})
 	t.Run("traceDir is workDir via symlink", func(t *testing.T) {
-		if _, err := NewReadFileTool(real, link, testMaxBytes); err == nil || !strings.Contains(err.Error(), "is workDir or contains it") {
+		if _, err := NewReadFileTool(real, link, testMaxBytes, DenyList{}); err == nil || !strings.Contains(err.Error(), "is workDir or contains it") {
 			t.Errorf("expected an 'is workDir or contains it' error, got %v", err)
 		}
 	})
@@ -204,7 +204,7 @@ func Test_ReadFile_NewReadFileTool_TraceDirDanglingSymlink_ReturnsError(t *testi
 		"parent is the link":   filepath.Join(link, "trace"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewReadFileTool(work, traceDir, testMaxBytes)
+			_, err := NewReadFileTool(work, traceDir, testMaxBytes, DenyList{})
 			if err == nil || !strings.Contains(err.Error(), "is a symlink to a path that doesn't exist") {
 				t.Errorf("expected a dangling-symlink error for traceDir %q, got %v", traceDir, err)
 			}

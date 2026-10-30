@@ -977,4 +977,7 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > hard-coded version (Jerry is doing it), mark deferred item 2 resolved, `model/anthropic.tmp`, exit status on failure
 > (deferred item 3), prompt-reader errors (item 11), `maxTokens` unused, `maxSteps` discarding a whole turn. Next policy
 > item: 6 (extendable `DenyList`).
-
+>
+> Item 6 built (`DECISIONS.md § Policy cleanup item 6 built`): `builtin.DenyList` (built-ins + config
+> `denyFileNames`, extend-only). Note: `contextwindow` `Test_Unit_CheckConfig` fails since ef46747 (the new threshold
+> rule rejects 4 messages × 0.75); not from item 6. Next policy item: 7 (printing out of `reActLoop`).

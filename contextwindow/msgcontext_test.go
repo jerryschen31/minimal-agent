@@ -436,7 +436,8 @@ func Test_Unit_CheckConfig(t *testing.T) {
 	}{
 		{"defaults", func(c *config.Config) {}, ""},
 		{"messages 3", func(c *config.Config) { c.ContextWindowMessages = 3 }, "contextWindowMessages"},
-		{"messages 4", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.75 }, ""},
+		{"messages 4, autoCompact off", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompact = false }, ""},
+		{"messages 4, autoCompact on", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 1.0 }, "autoCompactThreshold"},
 		{"unknown strategy", func(c *config.Config) { c.ContextStrategy = "fake-strategy" }, "contextStrategy"},
 		{"threshold 0", func(c *config.Config) { c.AutoCompactThreshold = 0 }, "autoCompactThreshold"},
 		{"threshold -0.1", func(c *config.Config) { c.AutoCompactThreshold = -0.1 }, "autoCompactThreshold"},
@@ -444,7 +445,8 @@ func Test_Unit_CheckConfig(t *testing.T) {
 		{"threshold 1.0", func(c *config.Config) { c.AutoCompactThreshold = 1.0 }, ""},
 		{"autoCompact off, threshold 0", func(c *config.Config) { c.AutoCompact = false; c.AutoCompactThreshold = 0 }, "autoCompactThreshold"},
 		{"autoCompact on, starts at 2", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.5 }, "autoCompactThreshold"},
-		{"autoCompact on, starts at 3", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.75 }, ""},
+		{"autoCompact on, starts at 4", func(c *config.Config) { c.ContextWindowMessages = 8; c.AutoCompactThreshold = 0.5 }, "autoCompactThreshold"},
+		{"autoCompact on, starts at 5", func(c *config.Config) { c.ContextWindowMessages = 10; c.AutoCompactThreshold = 0.5 }, ""},
 		{"autoCompact off, would start at 2", func(c *config.Config) {
 			c.AutoCompact = false
 			c.ContextWindowMessages = 4

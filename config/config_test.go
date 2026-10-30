@@ -709,3 +709,63 @@ func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
 		t.Errorf("expected responseTimeoutSeconds to be printed, got:\n%s", out.String())
 	}
 }
+
+// - Verify denyFileNames is empty by default, so only the built-in file deny list applies
+func Test_Unit_GetDefaultConfig_DenyFileNames_Empty(t *testing.T) {
+	if got := GetDefaultConfig().DenyFileNames; len(got) != 0 {
+		t.Errorf("expected no default DenyFileNames, got %q", got)
+	}
+}
+
+// - Verify "denyFileNames" in a config file is applied as given, without a warning, and a file without the key leaves it empty
+func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"a list is applied", `{"denyFileNames": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
+		{"no key leaves it empty", `{"model": "fake-model"}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.DenyFileNames, c.want) {
+				t.Errorf("DenyFileNames = %q, want %q", cfg.DenyFileNames, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows denyFileNames, both when set and when empty
+func Test_Unit_PrintConfig_ShowsDenyFileNames(t *testing.T) {
+	for _, c := range []struct {
+		names []string
+		want  string
+	}{
+		{[]string{"*.secret", "creds.json"}, "denyFileNames: [*.secret creds.json] (added to the built-in list)"},
+		{nil, "denyFileNames: [] (added to the built-in list)"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.DenyFileNames = c.names
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}

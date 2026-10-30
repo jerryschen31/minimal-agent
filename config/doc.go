@@ -50,7 +50,7 @@
 //	                       does, and the window just drops its oldest messages                             [true]
 //	autoCompactThreshold   how full the window is when auto-compaction starts: 0 < x <= 1, as messages
 //	                       rounded down (50 × 0.9 = 45). Checked even when autoCompact is false; with it
-//	                       on, it must start above 2 messages                                              [0.9]
+//	                       on, it must start above 4 messages (so a window of 4 needs autoCompact false)  [0.9]
 //	summarizerPrompt       system prompt for /summary, /compact and auto-compaction (what a summary keeps);
 //	                       must not be empty. /compact <text> adds <text> to it for that one call         ["You are a helpful assistant that summarizes …"]
 //
@@ -77,6 +77,11 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works)                                                         [["read_file"]]
+//	denyFileNames   extra file or directory name patterns read_file never reads, e.g. "*.secret",
+//	                "credentials.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
+//	                .ssh, .agent-trace), which can't be removed; matched against each part of the path,
+//	                case-insensitively (path.Match syntax, no / or \); .env.example is always allowed.
+//	                A bad pattern fails startup                                                            [none]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
 //
 // Each mcpServers entry is either local or remote:

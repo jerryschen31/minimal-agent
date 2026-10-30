@@ -165,7 +165,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   token on every redirect hop (and a 307/308 replays the body). Keep both layers if you touch the HTTP
   client; `http` -> `https` redirects are rejected for now (`DECISIONS.md § Deferred for Later`, item 6).
 - **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
-  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), nor anything inside the configured
+  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), plus any config `denyFileNames` patterns (`builtin.DenyList`:
+  config extends the list, never shrinks it), nor anything inside the configured
   `traceDir` (matched by resolved path, whatever its name). It resolves symlinks first, checks the *resolved*
   path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
   file-reading tool must reuse this, not call `os.Open` on a model-supplied path

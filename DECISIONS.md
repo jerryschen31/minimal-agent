@@ -3402,3 +3402,24 @@ Files: `agent/agent.go`, `agent/info.go`, `tools/tool.go`, `config/config.go`, `
   caller's context still applies), so a provider built by hand in a test doesn't time out at once. `checkConfig`
   rejects 0 or less, so config never reaches that case. No flag for now.
 
+
+### 2026-10-30 — Policy cleanup item 6 built: `read_file`'s deny list is a `DenyList` that config can extend
+
+Files: `tools/builtin/denylist.go` (new), `tools/builtin/readfile.go`, `tools/tool.go`, `agent/agent.go`,
+`agent/info.go`, `config/config.go`, `config/doc.go`.
+
+- **`builtin.DenyList`** holds the built-in names (`.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `.ssh`,
+  `.agent-trace`) plus the config's **`denyFileNames`** patterns. Category 2 of the three-question test (a *default*):
+  config can **add** names but never remove the built-ins, and the zero value `DenyList{}` already refuses them, so a
+  missing key, `[]`, or a tool built without the config can't turn the protection off. It moved out of `readfile.go`
+  into its own type so the coming file tools reuse the same list (`NewReadFileTool` now takes one).
+- **Same matching as before, for extras too:** `path.Match` on each path component, case-insensitive (extras are
+  lowercased), on the symlink-resolved path; the "blocked" error lists every pattern in force.
+- **A bad pattern fails setup** (empty, contains `/` or `\`, or malformed like `[abc`), checked in
+  `SetupBuiltinTools` even when no file tool is enabled. Rejecting `/` because a pattern is matched against one name
+  at a time, so `"secrets/*.json"` would silently match nothing. By the shortcut, a typo should crash the run here.
+- **Shown:** `/config` prints `denyFileNames`; info mode prints an "also never reads (denyFileNames)" line under
+  `read_file` when there are extras.
+- **Downsides / limits:** names only, no path patterns (`"secrets/*.json"` can't be said; `"secrets"` blocks every
+  directory of that name); the `.env.example` exception applies to extras too, so an extra like `"*.example"` won't
+  block that one file; no way to *remove* a built-in even when a user has a real reason (by design).

@@ -76,8 +76,9 @@ type Config struct {
 	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
 
 	// tools and MCP servers configuration
-	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
-	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
+	BuiltinTools  []string                   `json:"builtinTools"`  // names of built-in tools to enable
+	DenyFileNames []string                   `json:"denyFileNames"` // name patterns the file tools never read, added to the built-in list (which can't be removed)
+	McpServers    map[string]McpServerConfig `json:"mcpServers"`    // configuration for MCP servers
 }
 
 type McpServerConfig struct {
@@ -273,6 +274,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
+	fmt.Fprintf(w, "  denyFileNames: %v (added to the built-in list)\n", cfg.DenyFileNames)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")

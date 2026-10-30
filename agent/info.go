@@ -134,7 +134,7 @@ func isDefaultDenyRule(rule string) bool {
 // printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
 // they can't be set up.
 func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
-	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes)
+	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes, cfg.DenyFileNames)
 	if err != nil {
 		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)
 		return nil, false
@@ -146,6 +146,9 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 		fmt.Fprintf(w, "  %-28s %s\n", def.Name, firstLine(def.Desc))
 		if def.Name == "read_file" {
 			fmt.Fprintf(w, "  %-28s never reads: %s (.env.example is allowed)\n", "", strings.Join(builtin.DeniedNames(), ", "))
+			if len(cfg.DenyFileNames) > 0 {
+				fmt.Fprintf(w, "  %-28s also never reads (denyFileNames): %s\n", "", safeText(strings.Join(cfg.DenyFileNames, ", ")))
+			}
 			if cfg.TraceDir != "" {
 				fmt.Fprintf(w, "  %-28s never reads: anything in the trace directory (%s)\n", "", safeText(cfg.TraceDir))
 			}

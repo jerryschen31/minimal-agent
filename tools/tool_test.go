@@ -252,7 +252,7 @@ func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
 // - Verify SetupBuiltinTools builds the read_file tool for an existing workDir, and fails for a bad workDir
 // or an unknown tool name, so a misconfigured agent stops at startup instead of at the first file read
 func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), "", 4096)
+	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), "", 4096, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,10 +260,10 @@ func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
 		t.Errorf("expected one read_file tool, got %v", defNames([]model.ToolDef{built[0].GetToolDefinition()}))
 	}
 
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), "", 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), "", 4096, nil); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), "", 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), "", 4096, nil); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool")
 	}
 }
@@ -277,7 +277,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "logs", "trace", "run.jsonl"), []byte("fake-trace"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, work, filepath.Join(work, "logs", "trace"), 4096)
+	built, err := SetupBuiltinTools([]string{"ReadFile"}, work, filepath.Join(work, "logs", "trace"), 4096, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "trace directory") {
 		t.Errorf("expected a trace-directory error, got (%q, %v)", got, err)
 	}
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, work, work, 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"ReadFile"}, work, work, 4096, nil); err == nil {
 		t.Errorf("expected an error for a traceDir equal to workDir")
 	}
 }
@@ -295,7 +295,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 // "ReadFile" spelling, each giving one tool named read_file; an unknown name still errors
 func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 	for _, name := range []string{"read_file", "ReadFile"} {
-		built, err := SetupBuiltinTools([]string{name}, t.TempDir(), "", 4096)
+		built, err := SetupBuiltinTools([]string{name}, t.TempDir(), "", 4096, nil)
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", name, err)
 		}
@@ -303,7 +303,7 @@ func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 			t.Errorf("%s: expected one read_file tool, got %d tools", name, len(built))
 		}
 	}
-	if _, err := SetupBuiltinTools([]string{"Read_File"}, t.TempDir(), "", 4096); err == nil {
+	if _, err := SetupBuiltinTools([]string{"Read_File"}, t.TempDir(), "", 4096, nil); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool name")
 	}
 }
@@ -311,7 +311,7 @@ func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 // - Verify listing both spellings builds two read_file tools, and the duplicate is caught when they are registered
 // (NewToolRegistry), not by SetupBuiltinTools
 func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096)
+	built, err := SetupBuiltinTools([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096, nil)
 	if err != nil {
 		t.Fatalf("SetupBuiltinTools: unexpected error: %v", err)
 	}
@@ -320,5 +320,49 @@ func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *tes
 	}
 	if _, err := NewToolRegistry(built); err == nil {
 		t.Errorf("expected NewToolRegistry to reject the duplicate read_file")
+	}
+}
+
+// - Verify a bad denyFileNames pattern fails SetupBuiltinTools, with no tools enabled as well as with read_file,
+// so a typo in the config stops startup instead of silently protecting nothing
+func Test_SetupBuiltinTools_DenyFileNames_BadPattern_Fails(t *testing.T) {
+	for _, bad := range []string{"[abc", "sub/creds.json", ""} {
+		for _, toolList := range [][]string{nil, {}, {"read_file"}} {
+			built, err := SetupBuiltinTools(toolList, t.TempDir(), "", 4096, []string{"*.secret", bad})
+			if err == nil || !strings.Contains(err.Error(), "denyFileNames") {
+				t.Errorf("pattern %q, tools %v: expected a denyFileNames error, got (%d tools, %v)", bad, toolList, len(built), err)
+			}
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools passes denyFileNames through to read_file: a matching file is refused (the error names the
+// pattern), a non-matching one still reads, and the built-ins stay denied
+func Test_SetupBuiltinTools_DenyFileNames_Enforced(t *testing.T) {
+	work := t.TempDir()
+	for name, body := range map[string]string{"creds.json": "FAKE_SECRET_TOKEN_123", "notes.txt": "ALLOWED-NOTES", ".env": "FAKE_SECRET_TOKEN_123"} {
+		if err := os.WriteFile(filepath.Join(work, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	built, err := SetupBuiltinTools([]string{"read_file"}, work, "", 4096, []string{"Creds.JSON"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	call := func(p string) (string, error) {
+		return built[0].CallTool(context.Background(), json.RawMessage(fmt.Sprintf(`{"path":%q}`, p)))
+	}
+
+	for _, p := range []string{"creds.json", ".env"} {
+		got, err := call(p)
+		if err == nil || !strings.Contains(err.Error(), "deny list") || !strings.Contains(err.Error(), "creds.json") {
+			t.Errorf("%s: expected a deny-list error naming creds.json, got (%q, %v)", p, got, err)
+		}
+		if strings.Contains(got, "FAKE_SECRET") {
+			t.Errorf("%s: secret leaked: %q", p, got)
+		}
+	}
+	if got, err := call("notes.txt"); err != nil || got != "ALLOWED-NOTES" {
+		t.Errorf("notes.txt: expected ALLOWED-NOTES, got (%q, %v)", got, err)
 	}
 }
