@@ -84,23 +84,24 @@ func Test_Unit_ChatContext_RemoveLast_DelegatesToWindow(t *testing.T) {
 	})
 }
 
-// - Verify that SetupChatContext computes the expected auto-compaction threshold from the
-// package constants. config.Config{} (empty) is deliberate: SetupChatContext currently ignores its cfg
-// parameter entirely and builds the window from MaxContextWindow/WindowStrategy directly.
+// - Verify that SetupChatContext computes the expected auto-compaction threshold from the default
+// config: a window of contextWindowMessages (no hidden buffer) that needs compaction at
+// int(contextWindowMessages * autoCompactThreshold) messages
 func Test_Unit_SetupChatContext_ComputesExpectedThreshold(t *testing.T) {
-	chatContext, err := SetupChatContext(config.Config{})
+	cfg := config.GetDefaultConfig()
+	chatContext, err := SetupChatContext(cfg)
 	if err != nil {
 		t.Fatalf("SetupChatContext() returned an error: %v", err)
 	}
 
-	wantMaxSize := MaxContextWindow - 2 // NewContextWindow reserves a 2-message buffer
+	wantMaxSize := cfg.ContextWindowMessages
 	if chatContext.GetMaxSize() != wantMaxSize {
 		t.Fatalf("expected max size %d, got %d", wantMaxSize, chatContext.GetMaxSize())
 	}
 
 	// ChatContext doesn't expose the raw threshold value directly, so exercise it indirectly
 	// via IsAutoCompactionNeeded at the boundary.
-	wantThreshold := int(float64(wantMaxSize) * AutoCompactThresholdFrac)
+	wantThreshold := int(float64(wantMaxSize) * cfg.AutoCompactThreshold)
 	chatContext.AddMessages(modeltest.Msgs(wantThreshold - 1))
 	if chatContext.IsAutoCompactionNeeded() {
 		t.Errorf("expected auto-compaction not to be needed yet at %d messages (threshold %d)", wantThreshold-1, wantThreshold)
@@ -204,7 +205,7 @@ func Test_ContextCompaction_CompactingEmptyContextReturnsError(t *testing.T) {
 	}
 	provider := &modeltest.FakeProvider{Reply: "ok"}
 
-	_, err = CompactChatContext(context.Background(), chatContext, provider, "")
+	_, err = CompactChatContext(context.Background(), chatContext, provider, fakeSummarizerPrompt, "")
 	if err == nil {
 		t.Errorf("expected compacting an empty context to return an error")
 	}
@@ -287,7 +288,7 @@ func Test_Unit_SummarizeChatContext_InstructionsGoInTheOneSystemMessage(t *testi
 	provider := &modeltest.FakeProvider{Reply: "a summary"}
 	const instructions = "keep only the fake test discussion"
 
-	if _, err := SummarizeChatContext(context.Background(), provider, modeltest.Msgs(2), instructions); err != nil {
+	if _, err := SummarizeChatContext(context.Background(), provider, modeltest.Msgs(2), fakeSummarizerPrompt, instructions); err != nil {
 		t.Fatalf("SummarizeChatContext() returned an error: %v", err)
 	}
 
@@ -303,7 +304,7 @@ func Test_Unit_SummarizeChatContext_InstructionsGoInTheOneSystemMessage(t *testi
 			t.Errorf("expected only message 0 to be a system message, got message %d with role %q", i, m.Role)
 		}
 	}
-	if !strings.Contains(req[0].Content, SummarizeSystemPrompt) || !strings.Contains(req[0].Content, instructions) {
+	if !strings.Contains(req[0].Content, fakeSummarizerPrompt) || !strings.Contains(req[0].Content, instructions) {
 		t.Errorf("expected the system message to hold both the summarize prompt and the instructions, got %q", req[0].Content)
 	}
 	if req[1].Role != "user" || !strings.HasPrefix(req[1].Content, "<transcript>") {
@@ -321,7 +322,7 @@ func Test_ContextCompaction_ReplacesContextWithUserAssistantSummaryPair(t *testi
 	chatContext.AddMessages(modeltest.Msgs(4))
 	provider := &modeltest.FakeProvider{Reply: "a fake summary"}
 
-	returned, err := CompactChatContext(context.Background(), chatContext, provider, "")
+	returned, err := CompactChatContext(context.Background(), chatContext, provider, fakeSummarizerPrompt, "")
 	if err != nil {
 		t.Fatalf("CompactChatContext() returned an error: %v", err)
 	}
@@ -418,5 +419,196 @@ func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingAssistantSurvivor_IsDropped(
 	want := []string{"summary-request", "summary", "B-user", "B-final"}
 	if got := idsOf(clamped); !slices.Equal(got, want) {
 		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+// fakeSummarizerPrompt stands in for config's summarizerPrompt in tests that call the summarizer directly
+const fakeSummarizerPrompt = "fake test summarizer prompt"
+
+// - Verify CheckConfig accepts the defaults and each valid edge, and rejects each bad context window setting:
+// a window below 4, an unknown strategy, a threshold outside (0, 1] (even with autoCompact off), an
+// auto-compaction start of 2 messages or less (only when autoCompact is on), and an empty summarizer prompt
+func Test_Unit_CheckConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		set     func(*config.Config)
+		wantErr string // "" = valid; otherwise a part of the error naming the bad setting
+	}{
+		{"defaults", func(c *config.Config) {}, ""},
+		{"messages 3", func(c *config.Config) { c.ContextWindowMessages = 3 }, "contextWindowMessages"},
+		{"messages 4", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.75 }, ""},
+		{"unknown strategy", func(c *config.Config) { c.ContextStrategy = "fake-strategy" }, "contextStrategy"},
+		{"threshold 0", func(c *config.Config) { c.AutoCompactThreshold = 0 }, "autoCompactThreshold"},
+		{"threshold -0.1", func(c *config.Config) { c.AutoCompactThreshold = -0.1 }, "autoCompactThreshold"},
+		{"threshold 1.1", func(c *config.Config) { c.AutoCompactThreshold = 1.1 }, "autoCompactThreshold"},
+		{"threshold 1.0", func(c *config.Config) { c.AutoCompactThreshold = 1.0 }, ""},
+		{"autoCompact off, threshold 0", func(c *config.Config) { c.AutoCompact = false; c.AutoCompactThreshold = 0 }, "autoCompactThreshold"},
+		{"autoCompact on, starts at 2", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.5 }, "autoCompactThreshold"},
+		{"autoCompact on, starts at 3", func(c *config.Config) { c.ContextWindowMessages = 4; c.AutoCompactThreshold = 0.75 }, ""},
+		{"autoCompact off, would start at 2", func(c *config.Config) {
+			c.AutoCompact = false
+			c.ContextWindowMessages = 4
+			c.AutoCompactThreshold = 0.5
+		}, ""},
+		{"summarizerPrompt empty", func(c *config.Config) { c.SummarizerPrompt = "" }, "summarizerPrompt"},
+		{"summarizerPrompt whitespace", func(c *config.Config) { c.SummarizerPrompt = "  \n" }, "summarizerPrompt"},
+	}
+	for _, strategy := range WindowStrategies {
+		tests = append(tests, struct {
+			name    string
+			set     func(*config.Config)
+			wantErr string
+		}{"strategy " + strategy, func(c *config.Config) { c.ContextStrategy = strategy }, ""})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.GetDefaultConfig()
+			tt.set(&cfg)
+			err := CheckConfig(cfg)
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Errorf("expected no error, got %v", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Errorf("expected an error naming %s, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// - Verify the window SetupChatContext builds holds exactly contextWindowMessages messages (no hidden buffer)
+func Test_Unit_SetupChatContext_MaxSizeIsContextWindowMessages(t *testing.T) {
+	for _, n := range []int{50, 7} {
+		cfg := config.GetDefaultConfig()
+		cfg.ContextWindowMessages = n
+		chatContext, err := SetupChatContext(cfg)
+		if err != nil {
+			t.Fatalf("contextWindowMessages %d: SetupChatContext() returned an error: %v", n, err)
+		}
+		if got := chatContext.GetMaxSize(); got != n {
+			t.Errorf("contextWindowMessages %d: expected max size %d, got %d", n, n, got)
+		}
+		chatContext.AddMessages(modeltest.Msgs(n + 2))
+		if got := chatContext.GetSize(); got > n {
+			t.Errorf("contextWindowMessages %d: expected the window to hold at most %d messages, got %d", n, n, got)
+		}
+	}
+}
+
+// - Verify SetupChatContext builds the window type contextStrategy names
+func Test_Unit_SetupChatContext_UsesContextStrategy(t *testing.T) {
+	for _, strategy := range WindowStrategies {
+		cfg := config.GetDefaultConfig()
+		cfg.ContextStrategy = strategy
+		chatContext, err := SetupChatContext(cfg)
+		if err != nil {
+			t.Fatalf("strategy %s: SetupChatContext() returned an error: %v", strategy, err)
+		}
+		var ok bool
+		switch w := chatContext.GetWindow(); strategy {
+		case "offset":
+			_, ok = w.(*OffsetWindow)
+		case "in-place":
+			_, ok = w.(*InPlaceWindow)
+		case "ring-buffer":
+			_, ok = w.(*RingBufferWindow)
+		case "linked-list":
+			_, ok = w.(*LLWindow)
+		default:
+			t.Fatalf("strategy %s has no type check in this test; add one", strategy)
+		}
+		if !ok {
+			t.Errorf("strategy %s: got window type %T", strategy, chatContext.GetWindow())
+		}
+	}
+}
+
+// - Verify that with autoCompact off, filling the window to its max never makes auto-compaction needed
+func Test_Unit_SetupChatContext_AutoCompactOff_NeverNeeded(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContextWindowMessages = 10
+	cfg.AutoCompact = false
+	chatContext, err := SetupChatContext(cfg)
+	if err != nil {
+		t.Fatalf("SetupChatContext() returned an error: %v", err)
+	}
+	for i := 1; i <= cfg.ContextWindowMessages; i++ {
+		chatContext.AddMessages(modeltest.Msgs(1))
+		if chatContext.IsAutoCompactionNeeded() {
+			t.Fatalf("expected auto-compaction never to be needed with autoCompact off, got needed at %d messages", i)
+		}
+	}
+}
+
+// - Verify that with autoCompact on, a 10-message window at 0.9 needs compaction at 9 messages, not at 8
+func Test_Unit_SetupChatContext_AutoCompactOn_NeededAtThreshold(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContextWindowMessages = 10
+	cfg.AutoCompact = true
+	cfg.AutoCompactThreshold = 0.9
+	chatContext, err := SetupChatContext(cfg)
+	if err != nil {
+		t.Fatalf("SetupChatContext() returned an error: %v", err)
+	}
+	chatContext.AddMessages(modeltest.Msgs(8))
+	if chatContext.IsAutoCompactionNeeded() {
+		t.Errorf("expected auto-compaction not to be needed at 8 messages")
+	}
+	chatContext.AddMessages(modeltest.Msgs(1))
+	if !chatContext.IsAutoCompactionNeeded() {
+		t.Errorf("expected auto-compaction to be needed at 9 messages")
+	}
+}
+
+// - Verify SetupChatContext returns CheckConfig's error for a bad config instead of building a context
+func Test_Unit_SetupChatContext_BadConfig_ReturnsCheckConfigError(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContextWindowMessages = 2
+	chatContext, err := SetupChatContext(cfg)
+	if err == nil || err.Error() != CheckConfig(cfg).Error() {
+		t.Errorf("expected CheckConfig's error %v, got %v", CheckConfig(cfg), err)
+	}
+	if chatContext != nil {
+		t.Errorf("expected no chat context for a bad config, got %+v", chatContext)
+	}
+}
+
+// - Verify NewChatContext with threshold 0 turns auto-compaction off: never needed, even with the window full
+func Test_Unit_NewChatContext_ThresholdZero_NeverNeeded(t *testing.T) {
+	chatContext, err := NewChatContext(NewOffsetWindow(4), 0)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+	chatContext.AddMessages(modeltest.Msgs(4))
+	if chatContext.GetSize() != 4 {
+		t.Fatalf("expected a full window of 4, got %d", chatContext.GetSize())
+	}
+	if chatContext.IsAutoCompactionNeeded() {
+		t.Errorf("expected auto-compaction not to be needed with threshold 0")
+	}
+}
+
+// - Verify SummarizeChatContext sends the systemPrompt parameter as the system message: exactly that text with
+// no instructions, and starting with that text (then the instructions) when there are some
+func Test_Unit_SummarizeChatContext_UsesSystemPromptParameter(t *testing.T) {
+	for _, instructions := range []string{"", "keep only the fake test discussion"} {
+		t.Run("instructions="+instructions, func(t *testing.T) {
+			provider := &modeltest.FakeProvider{Reply: "a summary"}
+			if _, err := SummarizeChatContext(context.Background(), provider, modeltest.Msgs(2), fakeSummarizerPrompt, instructions); err != nil {
+				t.Fatalf("SummarizeChatContext() returned an error: %v", err)
+			}
+			if len(provider.Calls) != 1 || len(provider.Calls[0]) == 0 {
+				t.Fatalf("expected 1 provider call with a request, got %+v", provider.Calls)
+			}
+			got := provider.Calls[0][0]
+			if got.Role != "system" || !strings.HasPrefix(got.Content, fakeSummarizerPrompt) {
+				t.Errorf("expected a system message starting with %q, got %+v", fakeSummarizerPrompt, got)
+			}
+			if instructions == "" && got.Content != fakeSummarizerPrompt {
+				t.Errorf("expected exactly %q with no instructions, got %q", fakeSummarizerPrompt, got.Content)
+			}
+			if instructions != "" && !strings.HasSuffix(got.Content, instructions) {
+				t.Errorf("expected the instructions after the prompt, got %q", got.Content)
+			}
+		})
 	}
 }

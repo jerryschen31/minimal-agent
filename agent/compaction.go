@@ -15,7 +15,7 @@ func compactAndTrace(ctx context.Context, cs *ChatSession, scopeID, trigger, ins
 	start := time.Now()
 	before := cs.MsgContext.GetSize()
 
-	summaryMsg, err := contextwindow.CompactChatContext(ctx, cs.MsgContext, cs.getSessionProvider(scopeID), instructions)
+	summaryMsg, err := contextwindow.CompactChatContext(ctx, cs.MsgContext, cs.getSessionProvider(scopeID), cs.Config.SummarizerPrompt, instructions)
 
 	status, errText := trace.OutcomeOf(err)
 	cs.Recorder.Record(scopeID, trace.Compaction, trace.CompactionData{

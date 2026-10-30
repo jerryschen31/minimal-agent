@@ -118,3 +118,36 @@ func Test_GetRunStartData_DenyRules(t *testing.T) {
 		}
 	}
 }
+
+// - Verify run_start carries the context window settings from the config, under their JSON keys; auto_compact
+// is written even when false, so a reader can tell "off" from "not recorded"
+func Test_GetRunStartData_ContextWindowSettings(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.ContextWindowMessages = 7
+	cfg.ContextStrategy = "ring-buffer"
+	cfg.AutoCompact = false
+	cfg.AutoCompactThreshold = 0.75
+	cfg.SummarizerPrompt = "fake test summarizer prompt"
+
+	data := GetRunStartData(cfg)
+	if data.ContextWindowMessages != 7 || data.ContextStrategy != "ring-buffer" || data.AutoCompact ||
+		data.AutoCompactThreshold != 0.75 || data.SummarizerPrompt != "fake test summarizer prompt" {
+		t.Errorf("expected the context window settings copied from the config, got %+v", data)
+	}
+
+	b, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"context_window_messages":7`,
+		`"context_strategy":"ring-buffer"`,
+		`"auto_compact":false`,
+		`"auto_compact_threshold":0.75`,
+		`"summarizer_prompt":"fake test summarizer prompt"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("run_start JSON missing %s: %s", want, b)
+		}
+	}
+}

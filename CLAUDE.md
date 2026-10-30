@@ -149,7 +149,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools.Tool` lives in `tools/` (not `agent/`), because the registry, the built-ins and
   `mcpconnect` all name it; `mcpconnect` imports `tools`, never the reverse.
 - `config/` is a leaf (Config, file loading, flag parsing and overlay); the capability `Setup*`
-  functions take a `config.Config`. `main.go` imports `agent` and `config`. Setup takes a `Config`
+  functions take a `config.Config`. `config/doc.go` lists every config key with its choices and default;
+  a new `Config` field gets a line there. `main.go` imports `agent` and `config`. Setup takes a `Config`
   value — never `os.Args`, `flag.*` or `os.Exit`.
 - Config precedence is **flags > config file > defaults**; an unspecified flag is `nil`, never a
   zero value.

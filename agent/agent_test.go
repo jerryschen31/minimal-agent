@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/contextwindow"
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
@@ -60,5 +61,20 @@ func Test_SetupAgent_RejectsNonPositiveMCPResultCap(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "mcpResultMaxBytes") {
 			t.Errorf("MCPResultMaxBytes %d: err = %v, want an mcpResultMaxBytes error", n, err)
 		}
+	}
+}
+
+// - Verify checkConfig also runs contextwindow.CheckConfig, returning its error for a bad context window setting
+// (so SetupAgent and info mode both report it), and passes the defaults
+func Test_Unit_CheckConfig_ReturnsContextWindowError(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	if err := checkConfig(cfg); err != nil {
+		t.Fatalf("expected the default config to pass, got %v", err)
+	}
+	cfg.ContextWindowMessages = 2
+	err := checkConfig(cfg)
+	want := contextwindow.CheckConfig(cfg)
+	if err == nil || want == nil || err.Error() != want.Error() {
+		t.Errorf("expected contextwindow.CheckConfig's error %v, got %v", want, err)
 	}
 }

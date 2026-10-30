@@ -63,6 +63,13 @@ type RunStartData struct {
 	SystemPrompt string            `json:"system_prompt,omitempty"` // full text; goes through redaction like any other string
 	McpServers   map[string]string `json:"mcp_servers,omitempty"`   // server name -> type only; never command, args, env or headers (tokens)
 	DenyRules    []string          `json:"deny_rules,omitempty"`    // the deny rules in force, as written: the defaults, unless a config file replaced them; empty = no rules
+
+	// context window settings, so a reader can tell why messages were dropped or summarized
+	ContextWindowMessages int     `json:"context_window_messages"`
+	ContextStrategy       string  `json:"context_strategy"`
+	AutoCompact           bool    `json:"auto_compact"`
+	AutoCompactThreshold  float64 `json:"auto_compact_threshold"`
+	SummarizerPrompt      string  `json:"summarizer_prompt,omitempty"` // full text; goes through redaction like any other string
 }
 
 // GetRunStartData is a helper function that builds the run_start payload from the config and the running process.
@@ -81,6 +88,12 @@ func GetRunStartData(cfg config.Config) RunStartData {
 		MaxTokens:    cfg.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
 		DenyRules:    cfg.DenyRules,
+
+		ContextWindowMessages: cfg.ContextWindowMessages,
+		ContextStrategy:       cfg.ContextStrategy,
+		AutoCompact:           cfg.AutoCompact,
+		AutoCompactThreshold:  cfg.AutoCompactThreshold,
+		SummarizerPrompt:      cfg.SummarizerPrompt,
 	}
 
 	// tracing must not fail a run, so a hostname error just leaves the field empty

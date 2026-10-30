@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/contextwindow"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
@@ -613,5 +614,71 @@ func Test_ChatRequest_EmptySystemPrompt_NoSystemMessageSent(t *testing.T) {
 		if m.Role == "system" {
 			t.Errorf("expected no system message, found one at index %d: %+v", i, m)
 		}
+	}
+}
+
+// - Verify /summary and /compact send the config's summarizerPrompt (not a built-in one) as the summarization
+// request's system message
+func Test_ContextCompaction_SummarizerPromptFromConfig_IsSystemMessage(t *testing.T) {
+	const prompt = "fake custom summarizer prompt"
+	for _, cmd := range []string{"/summary", "/compact"} {
+		t.Run(cmd, func(t *testing.T) {
+			fx := newChatSessionFixture(t, 10, 100)
+			fx.Session.Config.SummarizerPrompt = prompt
+			ctx := context.Background()
+
+			fx.Provider.Reply = "ok"
+			handleUserInput(ctx, fx.Session, "hello")
+			callsBefore := len(fx.Provider.Calls)
+
+			fx.Provider.Reply = "a summary"
+			handleUserInput(ctx, fx.Session, cmd)
+
+			if len(fx.Provider.Calls) != callsBefore+1 {
+				t.Fatalf("expected exactly 1 new provider call (summarization), got %d", len(fx.Provider.Calls)-callsBefore)
+			}
+			req := fx.Provider.Calls[callsBefore]
+			if len(req) == 0 || req[0].Role != "system" || req[0].Content != prompt {
+				t.Errorf("expected the summarization request to start with system message %q, got %+v", prompt, req)
+			}
+		})
+	}
+}
+
+// - Verify that with autoCompact off, a session whose context reaches its max sends no auto-compaction request:
+// every provider call is a chat turn, and the window just keeps its newest messages
+func Test_ContextCompaction_AutoCompactOff_NoAutoCompactionAtMax(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	cfg := config.GetDefaultConfig()
+	cfg.ContextWindowMessages = 4
+	cfg.AutoCompact = false
+	chatContext, err := contextwindow.SetupChatContext(cfg)
+	if err != nil {
+		t.Fatalf("contextwindow.SetupChatContext() returned an error: %v", err)
+	}
+	fx.Session.MsgContext, fx.Context = chatContext, chatContext
+	fx.Provider.Reply = "ok"
+	ctx := context.Background()
+
+	// [agent] the chat loop calls maybeStartAutoCompaction after each input; the test does the same
+	for _, line := range []string{"first", "second", "third"} {
+		handleUserInput(ctx, fx.Session, line) // 2 messages a turn: full (4) after "second", trimmed after "third"
+		maybeStartAutoCompaction(ctx, fx.Session)
+		fx.Context.WaitForCompaction()
+	}
+
+	if len(fx.Provider.Calls) != 3 {
+		t.Errorf("expected only the 3 chat turns to call the provider, got %d calls", len(fx.Provider.Calls))
+	}
+	if strings.Contains(fx.Out.String(), "Auto-compaction") {
+		t.Errorf("expected no auto-compaction output, got:\n%s", fx.Out.String())
+	}
+	for _, m := range fx.Context.GetMessages() {
+		if m.Type == "summary" {
+			t.Errorf("expected no summary in the context, got %+v", fx.Context.GetMessages())
+		}
+	}
+	if fx.Context.GetSize() != 4 {
+		t.Errorf("expected the window to stay full at 4 messages, got %d", fx.Context.GetSize())
 	}
 }

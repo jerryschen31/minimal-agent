@@ -156,9 +156,8 @@ func Test_Unit_NewContextWindow_ValidStrategies_ReturnsCorrectType(t *testing.T)
 			t.Errorf("expected a valid context window for strategy %s, got nil", strategy)
 			continue
 		}
-		// NewContextWindow reserves a 2-message buffer internally (headroom for the system
-		// prompt + pending user message) — confirms that arithmetic, not just "didn't error".
-		if wantMaxSize := 10 - 2; cw.GetMaxSize() != wantMaxSize {
+		// NewContextWindow holds exactly maxMessages (no hidden buffer) — confirms the size, not just "didn't error".
+		if wantMaxSize := 10; cw.GetMaxSize() != wantMaxSize {
 			t.Errorf("strategy %s: expected max size %d, got %d", strategy, wantMaxSize, cw.GetMaxSize())
 		}
 	}

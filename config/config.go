@@ -52,6 +52,13 @@ type Config struct {
 	// memory configuration
 	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent"
 
+	// context window and compaction configuration (validated by contextwindow.CheckConfig)
+	ContextWindowMessages int     `json:"contextWindowMessages"` // most messages the context window holds; the oldest are dropped first; at least 4 (default 50)
+	ContextStrategy       string  `json:"contextStrategy"`       // how the window stores messages: "offset" | "in-place" | "ring-buffer" | "linked-list" (default "offset")
+	AutoCompact           bool    `json:"autoCompact"`           // summarize the context automatically when it gets full; false = only /compact does (default true)
+	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
+	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
+
 	// deny rules configuration
 	DenyRules []string `json:"denyRules"` // glob rules on model-facing tool names; a config file's list replaces the default, [] means no rules
 
@@ -160,6 +167,12 @@ func GetDefaultConfig() Config {
 		RedactionLevel: "standard",
 		DenyRules:      []string{"*delete*", "*remove*"},
 
+		ContextWindowMessages: 50,
+		ContextStrategy:       "offset",
+		AutoCompact:           true,
+		AutoCompactThreshold:  0.9,
+		SummarizerPrompt:      "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely.",
+
 		TraceDir:           ".agent-trace",
 		TraceMaxEventBytes: 100 << 20, // 100 MB
 		ReadFileMaxBytes:   1 << 20,   // 1 MB
@@ -258,6 +271,11 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
+	fmt.Fprintf(w, "  contextWindowMessages: %d\n", cfg.ContextWindowMessages)
+	fmt.Fprintf(w, "  contextStrategy: %s\n", cfg.ContextStrategy)
+	fmt.Fprintf(w, "  autoCompact:   %t\n", cfg.AutoCompact)
+	fmt.Fprintf(w, "  autoCompactThreshold: %g\n", cfg.AutoCompactThreshold)
+	fmt.Fprintf(w, "  summarizerPrompt: %q\n", cfg.SummarizerPrompt)
 	fmt.Fprintf(w, "  traceEnabled:  %t\n", cfg.TraceEnabled)
 	fmt.Fprintf(w, "  digestEnabled: %t\n", cfg.DigestEnabled)
 	fmt.Fprintf(w, "  redactionLevel: %s\n", cfg.RedactionLevel)

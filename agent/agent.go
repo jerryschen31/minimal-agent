@@ -175,7 +175,7 @@ func checkConfig(cfg config.Config) error {
 	if cfg.MCPResultMaxBytes <= 0 {
 		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
 	}
-	return nil
+	return contextwindow.CheckConfig(cfg) // also run by SetupChatContext; here so info mode reports it too
 }
 
 func createSystemMessage(systemPrompt string) model.ChatMessage {

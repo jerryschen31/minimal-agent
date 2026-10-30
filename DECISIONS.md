@@ -3179,7 +3179,8 @@ built in). Full write-up: `prompts/20261029-session-question-2.md`. Jerry agreed
      system message (`model/provider.go:105`).
   4. Context-window size, strategy, auto-compact threshold (with an off switch) and the summarizer prompt become
      config fields; `SetupChatContext` currently ignores its `cfg`. Document the hidden `buffer = 2`
-     (`contextwindow/window.go:27`).
+     (`contextwindow/window.go:27`). **Built 2026-10-29, see `§ Policy cleanup item 4 built`;** the buffer was dropped
+     instead of documented.
   5. Cleanups: `*read*` and the unknown keys `memory`/`contextWindow` out of `config.default.json`; the stale comment
      at `config/config.go:184` (an empty filename no longer loads that file); the dead `DenyRules` line at
      `config.go:161`; the welcome text's `v0.1.13` vs `AgentVersion`.
@@ -3335,3 +3336,47 @@ Files: `model/provider.go` (`PrepareChatRequest`). Completes item 3 of `§ Polic
 - **Downsides:** a whitespace-only prompt is dropped too, a small rule the user can't see (almost certainly what anyone
   would want). The trace's `run_start.system_prompt` is `omitempty`, so an empty prompt shows as absent, which reads
   the same as "none".
+
+### 2026-10-29 — Policy cleanup item 4 built: context window and summarizer settings live in config; `config/doc.go`
+
+Files: `config/config.go`, `config/doc.go` (new), `contextwindow/msgcontext.go`, `contextwindow/window.go`,
+`agent/agent.go`, `agent/chat.go`, `agent/compaction.go`, `trace/event.go`.
+
+- **Five new config keys**, defaults in `GetDefaultConfig()` (replacing the constants in `contextwindow`):
+  `contextWindowMessages` (50), `contextStrategy` (`"offset"`), `autoCompact` (true), `autoCompactThreshold` (0.9, a
+  fraction of the window, so it still works when the size changes), `summarizerPrompt` (the old summarizer sentence).
+  Flat keys like the trace settings, not a nested object: `config.default.json` still has a stray
+  `"contextWindow": 10`, which would fail to load into an object field. No flags for now.
+- **Turning auto-compaction off: a separate `"autoCompact": false` switch** (Jerry's choice), not a magic threshold
+  of 0 or above 1, and not a `"none"` strategy (that would mix how the window trims with whether it summarizes). It
+  matches `traceEnabled`/`digestEnabled`. Off means a plain sliding window: the oldest messages are dropped, nothing
+  is summarized behind the user's back, and `/compact` still works. Inside `contextwindow`, `SetupChatContext` turns
+  the switch into a threshold of 0, which `NewChatContext` documents as off, and `IsAutoCompactionNeeded` returns
+  false; the loop (`maybeStartAutoCompaction`) is unchanged. **Downside:** a 0 that means "off" still exists, one
+  level down, in an internal API; config never says it.
+- **`summarizerPrompt`:** what a summary should keep is user policy (a coding agent needs file paths, errors and open
+  tasks kept; a chat assistant wants the gist). `SummarizeChatContext` and `CompactChatContext` take it as a
+  parameter; the agent passes `cs.Config.SummarizerPrompt` (the session's config is never written after setup, so the
+  auto-compaction goroutine can read it). `/compact <text>` still adds `<text>` for that one call. `SummaryRequest`
+  stays in code: it's part of how the summary pair is stored, not a choice. Unlike `systemPrompt`, `""` is an error: a
+  summarizer with no instructions tends to continue the conversation instead of summarizing it.
+- **The hidden `buffer = 2` is gone** (Jerry agreed): `contextWindowMessages: 50` holds 50. Its comment claimed room
+  for the system prompt and the pending user message, but the limit is our own message count, not the provider's
+  (providers count tokens), so the 2 protected nothing. **Downside:** a window now holds 2 more messages than before,
+  and auto-compaction starts at 45 instead of 43.
+- **Validation, `contextwindow.CheckConfig`:** run by `SetupChatContext` and by the agent's `checkConfig`, so info mode
+  reports the same errors chat mode would. It rejects:
+  - `contextWindowMessages` below 4 (`MinContextWindowMessages`: the summary pair plus one turn; below 2,
+    `clampToMax` would panic);
+  - an unknown `contextStrategy` (`WindowStrategies` lists them);
+  - `autoCompactThreshold` outside (0, 1], checked even when `autoCompact` is false so a typo is caught before it is
+    turned back on;
+  - with `autoCompact` on, a threshold that starts compaction at 2 messages or fewer (compaction leaves 2, so it would
+    run again after every turn);
+  - an empty `summarizerPrompt`.
+- **Shown:** `/config` and info mode print all five; `run_start` records them (`context_window_messages`,
+  `context_strategy`, `auto_compact`, `auto_compact_threshold`, `summarizer_prompt`, the last redacted like any
+  string). Additive fields, so the trace version stays 1.
+- **`config/doc.go`** (Jerry's request, like `trace/doc.go`): every config key with its choices, what it controls and
+  its default, how the file, the flags and the defaults combine, the `mcpServers` entry fields, and the flags that
+  have no config key. **Keep it in step:** a new `Config` field gets a line there.

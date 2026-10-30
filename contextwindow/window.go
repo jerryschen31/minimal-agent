@@ -23,17 +23,20 @@ type ContextWindow interface {
 	GetMaxSize() int // gets the maximum number of messages the context window can hold
 }
 
-func NewContextWindow(maxContextWindow int, windowStrategy string) (ContextWindow, error) {
-	const buffer = 2 // leave headroom for the system prompt + pending user message added outside window
+// WindowStrategies lists the values NewContextWindow (and config's contextStrategy) accepts
+var WindowStrategies = []string{"offset", "in-place", "ring-buffer", "linked-list"}
+
+// NewContextWindow builds a window that holds at most maxMessages messages, stored the way windowStrategy says
+func NewContextWindow(maxMessages int, windowStrategy string) (ContextWindow, error) {
 	switch windowStrategy {
 	case "offset":
-		return NewOffsetWindow(maxContextWindow - buffer), nil
+		return NewOffsetWindow(maxMessages), nil
 	case "in-place":
-		return NewInPlaceWindow(maxContextWindow - buffer), nil
+		return NewInPlaceWindow(maxMessages), nil
 	case "ring-buffer":
-		return NewRingBufferWindow(maxContextWindow - buffer), nil
+		return NewRingBufferWindow(maxMessages), nil
 	case "linked-list":
-		return NewLLWindow(maxContextWindow - buffer), nil
+		return NewLLWindow(maxMessages), nil
 	default:
 		return nil, fmt.Errorf("unsupported window strategy: %s", windowStrategy)
 	}
@@ -72,8 +75,6 @@ func (w *OffsetWindow) AddMessages(msgs []model.ChatMessage) {
 		w.messages = append(w.messages, msg)
 	}
 	// After we have added the messages, we check if the total number of messages exceeds the maximum size and trim the oldest messages if necessary.
-	// In practice we want the maxSize to be a bit less than the max context window.
-	// If several messages are added, we don't want to hit the actual max context window before we trim.
 	// Also, a trim can cut a turn in half, leaving orphaned tool results or an assistant reply whose question is gone at the front.
 	// Providers reject an orphaned tool result, and some reject a context that doesn't start with a user message, so we clip up to the next user message.
 	if len(w.messages) > w.maxSize {
@@ -149,7 +150,7 @@ func (w *InPlaceWindow) AddMessages(msgs []model.ChatMessage) {
 	for _, msg := range msgs {
 		w.messages = append(w.messages, msg)
 	}
-	// similar to the offset window, we want maxSize < maxContextWindow so that there is a buffer and we never hit the actual max context window before trimming.
+	// like the offset window, trim the oldest messages once the window holds more than maxSize
 	if len(w.messages) > w.maxSize {
 		// note that a trim can cut a turn in half (see OffsetWindow), so we also drop everything up to the next user message.
 		num2drop := len(w.messages) - w.maxSize

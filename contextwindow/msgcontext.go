@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,11 +14,13 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-const WindowStrategy = "offset" // default context window strategy: "offset", "in-place", "ring-buffer", "linked-list"
-const SummarizeSystemPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
+// [agent] the window size, strategy, auto-compaction and summarizer prompt are settings in config (GetDefaultConfig holds the defaults);
+// this one stays in code because it is part of how a summary is stored, not a choice
 const SummaryRequest = "Summarize our conversation up to this point." // the user half of the summary pair that replaces compacted messages
-const MaxContextWindow = 50                                           // maximum number of messages to keep in the sliding context window
-const AutoCompactThresholdFrac = 0.9                                  // fraction threshold of the context window at which automatic compaction is triggered
+
+// MinContextWindowMessages is the smallest window allowed: the summary pair plus one user/assistant turn.
+// Below 2, the summary pair alone doesn't fit and clampToMax would panic.
+const MinContextWindowMessages = 4
 
 // Context for a chat session
 type ChatContext struct {
@@ -35,6 +38,8 @@ type ContextState struct {
 	Gen      int
 }
 
+// NewChatContext wraps w. Auto-compaction is needed once the window holds autoCompactThreshold messages; a threshold of 0
+// (or less) means auto-compaction is off. Config never says 0: it has its own autoCompact switch, which SetupChatContext turns into 0.
 func NewChatContext(w ContextWindow, autoCompactThreshold int) (*ChatContext, error) {
 	return &ChatContext{
 		window:               w,
@@ -57,7 +62,7 @@ func (c *ChatContext) EndCompaction() {
 }
 
 func (c *ChatContext) IsAutoCompactionNeeded() bool {
-	return c.window.GetSize() >= c.autoCompactThreshold
+	return c.autoCompactThreshold > 0 && c.window.GetSize() >= c.autoCompactThreshold
 }
 
 // WaitForCompaction blocks until any in-flight background compaction finishes. Safe to call
@@ -179,16 +184,22 @@ func clampToMax(msgs []model.ChatMessage, numSummary, maxSize int) []model.ChatM
 	return append(trimmed, msgs[start:]...)
 }
 
-// creates a new chat context instance
+// creates a new chat context instance from the context window settings in cfg
 func SetupChatContext(cfg config.Config) (*ChatContext, error) {
+	if err := CheckConfig(cfg); err != nil {
+		return nil, err
+	}
 	// create context window data structure
-	w, err := NewContextWindow(MaxContextWindow, WindowStrategy)
+	w, err := NewContextWindow(cfg.ContextWindowMessages, cfg.ContextStrategy)
 	if err != nil {
 		return nil, err
 	}
 
-	// create chat context using context window
-	threshold := int(float64(w.GetMaxSize()) * AutoCompactThresholdFrac)
+	// create chat context using context window; threshold 0 = auto-compaction off
+	threshold := 0
+	if cfg.AutoCompact {
+		threshold = autoCompactAt(cfg)
+	}
 	cc, err := NewChatContext(w, threshold)
 	if err != nil {
 		return nil, err
@@ -196,8 +207,37 @@ func SetupChatContext(cfg config.Config) (*ChatContext, error) {
 	return cc, nil
 }
 
-// makes a call to the provider to summarize the given chat messages
-func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.ChatMessage, addlInstructions string) (string, error) {
+// CheckConfig rejects context window settings that would fail later or quietly misbehave. Called by SetupChatContext, and by
+// the agent's own config check, so info mode reports the same errors chat mode would.
+func CheckConfig(cfg config.Config) error {
+	if cfg.ContextWindowMessages < MinContextWindowMessages {
+		return fmt.Errorf("contextWindowMessages must be at least %d (the summary pair plus one turn), got %d", MinContextWindowMessages, cfg.ContextWindowMessages)
+	}
+	if !slices.Contains(WindowStrategies, cfg.ContextStrategy) {
+		return fmt.Errorf("contextStrategy %q is not one of %s", cfg.ContextStrategy, strings.Join(WindowStrategies, ", "))
+	}
+	// checked even when autoCompact is false, so a typo is caught before auto-compaction is turned back on
+	if !(cfg.AutoCompactThreshold > 0 && cfg.AutoCompactThreshold <= 1) {
+		return fmt.Errorf("autoCompactThreshold must be above 0 and at most 1 (a fraction of the window), got %g", cfg.AutoCompactThreshold)
+	}
+	// [agent] compaction leaves 2 messages (the summary pair), so a threshold of 2 or less would compact again after every turn
+	if cfg.AutoCompact && autoCompactAt(cfg) <= 2 {
+		return fmt.Errorf("autoCompactThreshold %g of %d messages starts auto-compaction at %d messages; it must be above 2",
+			cfg.AutoCompactThreshold, cfg.ContextWindowMessages, autoCompactAt(cfg))
+	}
+	if strings.TrimSpace(cfg.SummarizerPrompt) == "" {
+		return fmt.Errorf("summarizerPrompt must not be empty")
+	}
+	return nil
+}
+
+// autoCompactAt is the message count at which auto-compaction starts
+func autoCompactAt(cfg config.Config) int {
+	return int(float64(cfg.ContextWindowMessages) * cfg.AutoCompactThreshold)
+}
+
+// makes a call to the provider to summarize the given chat messages, with systemPrompt (config's summarizerPrompt) as the instructions
+func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.ChatMessage, systemPrompt, addlInstructions string) (string, error) {
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("no messages to summarize")
 	}
@@ -215,7 +255,6 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 
 	// the user's extra instructions go in the one system message: some providers reject or ignore a system message that isn't first
 	// [agent] the system message also ranks the user's own text above anything inside the transcript (which can hold text from files or tools)
-	systemPrompt := SummarizeSystemPrompt
 	if addlInstructions != "" {
 		systemPrompt += "\n\nAdditional instructions from the user: " + addlInstructions
 	}
@@ -243,14 +282,14 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 // It returns the assistant message, which holds the summary.
 // in the future, the compaction could be more sophisticated (compacting a subset of messages, merging similar messages, having categories for messages, etc.)
 // addlInstructions provide additional information for the summarization process, guiding how the chat context should be summarized.
-func CompactChatContext(ctx context.Context, chatctx *ChatContext, p model.Provider, addlInstructions string) (model.ChatMessage, error) {
+func CompactChatContext(ctx context.Context, chatctx *ChatContext, p model.Provider, systemPrompt, addlInstructions string) (model.ChatMessage, error) {
 	defer chatctx.EndCompaction() // ensure the compaction lock is released after compaction is done
 
 	// take a snapshot of the current chat history
 	state := chatctx.Snapshot()
 
 	// summarize the chat history
-	summary, err := SummarizeChatContext(ctx, p, state.Messages, addlInstructions)
+	summary, err := SummarizeChatContext(ctx, p, state.Messages, systemPrompt, addlInstructions)
 	if err != nil {
 		return model.ChatMessage{}, err
 	}

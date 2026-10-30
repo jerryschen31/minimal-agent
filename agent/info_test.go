@@ -465,7 +465,8 @@ func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
 	}
 }
 
-// - Verify a config SetupAgent would refuse (maxSteps or mcpResultMaxBytes not positive) prints
+// - Verify a config SetupAgent would refuse (maxSteps or mcpResultMaxBytes not positive, or a context window
+// setting contextwindow.CheckConfig rejects) prints
 // "Configuration: FAILED" naming the field, still lists the built-in tools, starts no MCP server, and returns InfoFailed
 func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	tests := []struct {
@@ -475,6 +476,7 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	}{
 		{"maxSteps 0", "maxSteps", func(c *config.Config) { c.MaxSteps = 0 }},
 		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
+		{"contextWindowMessages 2", "contextWindowMessages", func(c *config.Config) { c.ContextWindowMessages = 2 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

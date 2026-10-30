@@ -966,3 +966,9 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > Fix A built (`DECISIONS.md § Policy cleanup item 3 fix A built`), so item 3 is done. Next: item 4 (configurable
 > context window size, strategy, auto-compact threshold with an off switch, summarizer prompt; validation must require
 > a window of at least 2 and a threshold above 2, see `§ Policy cleanup item 3 built (part)`).
+>
+> Item 4 built (`DECISIONS.md § Policy cleanup item 4 built`): context window size/strategy, `autoCompact` switch,
+> threshold and `summarizerPrompt` are config keys; the hidden buffer is gone; `config/doc.go` lists every key. Next:
+> item 5 (`config.default.json` cleanup: `*read*`, the unknown `memory`/`contextWindow` keys; stale comments; the
+> welcome text's version).
+

@@ -568,3 +568,100 @@ func Test_Unit_SetDefaultConfig_SystemPrompt_EmptyReplacesDefault(t *testing.T) 
 		})
 	}
 }
+
+// - Verify the built-in defaults for the context window settings: a 50-message "offset" window,
+// auto-compaction on at 0.9, and a non-empty summarizer prompt
+func Test_Unit_GetDefaultConfig_ContextWindowSettings(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if cfg.ContextWindowMessages != 50 {
+		t.Errorf("ContextWindowMessages = %d, want 50", cfg.ContextWindowMessages)
+	}
+	if cfg.ContextStrategy != "offset" {
+		t.Errorf("ContextStrategy = %q, want %q", cfg.ContextStrategy, "offset")
+	}
+	if !cfg.AutoCompact {
+		t.Errorf("expected AutoCompact to be on by default")
+	}
+	if cfg.AutoCompactThreshold != 0.9 {
+		t.Errorf("AutoCompactThreshold = %g, want 0.9", cfg.AutoCompactThreshold)
+	}
+	const wantPrompt = "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely."
+	if cfg.SummarizerPrompt != wantPrompt {
+		t.Errorf("SummarizerPrompt = %q, want %q", cfg.SummarizerPrompt, wantPrompt)
+	}
+}
+
+// - Verify a config file can set each context window setting ("autoCompact": false included) without a
+// warning, and a file that sets none of them keeps every default
+func Test_Unit_SetDefaultConfig_ContextWindowSettings(t *testing.T) {
+	t.Run("file sets each key", func(t *testing.T) {
+		path := writeTempFile(t, "config.json", []byte(`{
+			"contextWindowMessages": 7,
+			"contextStrategy": "ring-buffer",
+			"autoCompact": false,
+			"autoCompactThreshold": 0.5,
+			"summarizerPrompt": "fake test summarizer prompt"
+		}`))
+
+		var cfg Config
+		var err error
+		out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+		}
+		if cfg.ContextWindowMessages != 7 || cfg.ContextStrategy != "ring-buffer" || cfg.AutoCompact ||
+			cfg.AutoCompactThreshold != 0.5 || cfg.SummarizerPrompt != "fake test summarizer prompt" {
+			t.Errorf("expected every context window setting from the file, got messages=%d strategy=%q autoCompact=%t threshold=%g prompt=%q",
+				cfg.ContextWindowMessages, cfg.ContextStrategy, cfg.AutoCompact, cfg.AutoCompactThreshold, cfg.SummarizerPrompt)
+		}
+		if out != "" {
+			t.Errorf("expected no warnings, got %q", out)
+		}
+	})
+
+	t.Run("missing keys keep defaults", func(t *testing.T) {
+		path := writeTempFile(t, "config.json", []byte(`{"model": "fake-model"}`))
+
+		var cfg Config
+		var err error
+		captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+		}
+		def := GetDefaultConfig()
+		if cfg.ContextWindowMessages != def.ContextWindowMessages || cfg.ContextStrategy != def.ContextStrategy ||
+			cfg.AutoCompact != def.AutoCompact || cfg.AutoCompactThreshold != def.AutoCompactThreshold ||
+			cfg.SummarizerPrompt != def.SummarizerPrompt {
+			t.Errorf("expected the context window defaults kept, got messages=%d strategy=%q autoCompact=%t threshold=%g prompt=%q",
+				cfg.ContextWindowMessages, cfg.ContextStrategy, cfg.AutoCompact, cfg.AutoCompactThreshold, cfg.SummarizerPrompt)
+		}
+	})
+}
+
+// - Verify /config shows each context window setting
+func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.ContextWindowMessages = 7
+	cfg.ContextStrategy = "linked-list"
+	cfg.AutoCompact = false
+	cfg.AutoCompactThreshold = 0.75
+	cfg.SummarizerPrompt = "fake test summarizer prompt"
+
+	PrintConfig(cfg)
+
+	for _, want := range []string{
+		"contextWindowMessages: 7",
+		"contextStrategy: linked-list",
+		"autoCompact:   false",
+		"autoCompactThreshold: 0.75",
+		`summarizerPrompt: "fake test summarizer prompt"`,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("expected %q to be printed, got:\n%s", want, out.String())
+		}
+	}
+}
