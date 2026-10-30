@@ -3,6 +3,7 @@ package contextwindow
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -114,7 +115,7 @@ func Test_Unit_SetupChatContext_ComputesExpectedThreshold(t *testing.T) {
 func Test_Unit_ClampToMax_UnderCapacity_ReturnsUnchanged(t *testing.T) {
 	messages := modeltest.Msgs(3)
 	max := 5
-	clamped := clampToMax(messages, max)
+	clamped := clampToMax(messages, 1, max)
 	if len(clamped) != len(messages) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
@@ -129,7 +130,7 @@ func Test_Unit_ClampToMax_UnderCapacity_ReturnsUnchanged(t *testing.T) {
 func Test_Unit_ClampToMax_ExactlyAtCapacity_ReturnsUnchanged(t *testing.T) {
 	messages := modeltest.Msgs(5)
 	max := 5
-	clamped := clampToMax(messages, max)
+	clamped := clampToMax(messages, 1, max)
 	if len(clamped) != len(messages) {
 		t.Errorf("expected clamped slice to have length %d, got %d", len(messages), len(clamped))
 	}
@@ -144,7 +145,7 @@ func Test_Unit_ClampToMax_ExactlyAtCapacity_ReturnsUnchanged(t *testing.T) {
 func Test_Unit_ClampToMax_OverCapacity_KeepsSummaryAndNewestSurvivors(t *testing.T) {
 	messages := modeltest.Msgs(7)
 	max := 5
-	clamped := clampToMax(messages, max)
+	clamped := clampToMax(messages, 1, max)
 	if len(clamped) != max {
 		t.Errorf("expected clamped slice to have length %d, got %d", max, len(clamped))
 	}
@@ -179,7 +180,7 @@ func Test_ContextCompaction_DoesNotRemoveMessagesAddedDuringCompaction(t *testin
 	chatContext.AddMessages([]model.ChatMessage{modeltest.Msg("user", "2", "arrived during compaction")})
 
 	summaryMsg := modeltest.Msg("user", "summary", "a summary")
-	if !chatContext.Compact(state, summaryMsg) {
+	if !chatContext.Compact(state, []model.ChatMessage{summaryMsg}) {
 		t.Fatalf("expected Compact() to succeed")
 	}
 
@@ -221,7 +222,7 @@ func Test_Unit_ClampToMax_LeadingToolSurvivor_IsDropped(t *testing.T) {
 	messages := append([]model.ChatMessage{{ID: "summary", Role: "user", Type: "summary"}}, toolTurn("A", 1)[1:]...)
 	messages = append(messages, model.ChatMessage{ID: "B-user", Role: "user"})
 
-	clamped := clampToMax(messages, 4)
+	clamped := clampToMax(messages, 1, 4)
 
 	got := idsOf(clamped)
 	want := []string{"summary", "A-final", "B-user"}
@@ -240,7 +241,7 @@ func Test_Unit_ClampToMax_OnlyToolSurvivors_KeepsOnlySummary(t *testing.T) {
 		{ID: "tool1", Role: "tool", ToolCallID: "call"},
 	}
 
-	clamped := clampToMax(messages, 3)
+	clamped := clampToMax(messages, 1, 3)
 
 	if got := idsOf(clamped); !slices.Equal(got, []string{"summary"}) {
 		t.Errorf("expected only the summary, got %v", got)
@@ -261,7 +262,7 @@ func Test_ContextCompaction_ClampCutsBetweenToolCallAndResult_NoOrphan(t *testin
 	arrived := append(toolTurn("A", 1)[1:], toolTurn("B", 0)...)[:5] // call, tool, final, B-user, B-final
 	chatContext.AddMessages(arrived)
 
-	if !chatContext.Compact(state, model.ChatMessage{ID: "summary", Role: "user", Type: "summary"}) {
+	if !chatContext.Compact(state, []model.ChatMessage{{ID: "summary", Role: "user", Type: "summary"}}) {
 		t.Fatalf("expected Compact() to succeed")
 	}
 
@@ -271,4 +272,126 @@ func Test_ContextCompaction_ClampCutsBetweenToolCallAndResult_NoOrphan(t *testin
 		t.Errorf("expected %v, got %v", want, idsOf(got))
 	}
 	assertNoOrphanedToolMsgs(t, got)
+}
+
+// - Verify SummarizeChatContext puts the user's instructions in the one leading system message: the
+// request is exactly [system (prompt + instructions), user (transcript)], with no trailing system message
+func Test_Unit_SummarizeChatContext_InstructionsGoInTheOneSystemMessage(t *testing.T) {
+	provider := &modeltest.FakeProvider{Reply: "a summary"}
+	const instructions = "keep only the fake test discussion"
+
+	if _, err := SummarizeChatContext(context.Background(), provider, modeltest.Msgs(2), instructions); err != nil {
+		t.Fatalf("SummarizeChatContext() returned an error: %v", err)
+	}
+
+	if len(provider.Calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.Calls))
+	}
+	req := provider.Calls[0]
+	if len(req) != 2 {
+		t.Fatalf("expected a 2-message request, got %d: %+v", len(req), req)
+	}
+	for i, m := range req {
+		if (m.Role == "system") != (i == 0) {
+			t.Errorf("expected only message 0 to be a system message, got message %d with role %q", i, m.Role)
+		}
+	}
+	if !strings.Contains(req[0].Content, SummarizeSystemPrompt) || !strings.Contains(req[0].Content, instructions) {
+		t.Errorf("expected the system message to hold both the summarize prompt and the instructions, got %q", req[0].Content)
+	}
+	if req[1].Role != "user" || !strings.HasPrefix(req[1].Content, "<transcript>") {
+		t.Errorf("expected message 1 to be the user transcript, got %+v", req[1])
+	}
+}
+
+// - Verify CompactChatContext replaces the context with a [user summary request, assistant summary] pair,
+// both typed "summary" with distinct IDs, and returns the assistant message
+func Test_ContextCompaction_ReplacesContextWithUserAssistantSummaryPair(t *testing.T) {
+	chatContext, err := NewChatContext(NewOffsetWindow(10), 100)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+	chatContext.AddMessages(modeltest.Msgs(4))
+	provider := &modeltest.FakeProvider{Reply: "a fake summary"}
+
+	returned, err := CompactChatContext(context.Background(), chatContext, provider, "")
+	if err != nil {
+		t.Fatalf("CompactChatContext() returned an error: %v", err)
+	}
+
+	got := chatContext.GetMessages()
+	if len(got) != 2 {
+		t.Fatalf("expected the context to be exactly the summary pair, got %+v", got)
+	}
+	request, summary := got[0], got[1]
+	if request.Role != "user" || request.Content != SummaryRequest || request.Type != "summary" {
+		t.Errorf("expected message 0 to be the user summary request, got %+v", request)
+	}
+	if summary.Role != "assistant" || summary.Content != "a fake summary" || summary.Type != "summary" {
+		t.Errorf("expected message 1 to be the assistant summary, got %+v", summary)
+	}
+	if request.ID == "" || summary.ID == "" || request.ID == summary.ID {
+		t.Errorf("expected distinct non-empty IDs, got %q and %q", request.ID, summary.ID)
+	}
+	if returned.ID != summary.ID || returned.Content != summary.Content || returned.Role != "assistant" {
+		t.Errorf("expected the returned message to be the assistant summary %+v, got %+v", summary, returned)
+	}
+}
+
+// - Verify Compact with a 2-message summary keeps the messages that arrived during compaction, after the pair
+func Test_ContextCompaction_PairSummary_KeepsMessagesAddedDuringCompactionAfterThePair(t *testing.T) {
+	chatContext, err := NewChatContext(NewOffsetWindow(10), 100)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+	chatContext.AddMessages(modeltest.Msgs(2)) // IDs "0","1"
+	state := chatContext.Snapshot()
+	chatContext.AddMessages([]model.ChatMessage{modeltest.Msg("user", "2", "arrived during compaction")})
+
+	pair := []model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary"},
+		{ID: "summary", Role: "assistant", Type: "summary"},
+	}
+	if !chatContext.Compact(state, pair) {
+		t.Fatalf("expected Compact() to succeed")
+	}
+
+	want := []string{"summary-request", "summary", "2"}
+	if got := idsOf(chatContext.GetMessages()); !slices.Equal(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+// - Verify clampToMax with a 2-message summary keeps both summary messages and the newest survivors
+func Test_Unit_ClampToMax_TwoSummaryMessages_KeepsBothAndNewestSurvivors(t *testing.T) {
+	messages := append([]model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary"},
+		{ID: "summary", Role: "assistant", Type: "summary"},
+	}, modeltest.Msgs(5)...) // IDs "0".."4"
+
+	clamped := clampToMax(messages, 2, 5)
+
+	want := []string{"summary-request", "summary", "2", "3", "4"}
+	if got := idsOf(clamped); !slices.Equal(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+// - Verify clampToMax with a 2-message summary still drops a leading tool survivor
+func Test_Unit_ClampToMax_TwoSummaryMessages_LeadingToolSurvivor_IsDropped(t *testing.T) {
+	// [request, summary, call, tool, final, user] clamped to 5 keeps the pair and the last 3,
+	// which would start at the tool result
+	messages := append([]model.ChatMessage{
+		{ID: "summary-request", Role: "user", Type: "summary"},
+		{ID: "summary", Role: "assistant", Type: "summary"},
+	}, toolTurn("A", 1)[1:]...)
+	messages = append(messages, model.ChatMessage{ID: "B-user", Role: "user"})
+
+	clamped := clampToMax(messages, 2, 5)
+
+	want := []string{"summary-request", "summary", "A-final", "B-user"}
+	if got := idsOf(clamped); !slices.Equal(got, want) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+	assertNoOrphanedToolMsgs(t, clamped)
 }

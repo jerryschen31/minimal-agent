@@ -50,6 +50,7 @@ not appended. Entries without an exact recorded date are marked as approximate i
   Anthropic takes the system prompt as a separate field, not a message. Options: append the
   instructions to the first system prompt, or to the user message ("Focus on: …"). Open since
   2026-09-25; revisit when an Anthropic provider is added.
+  **Resolved 2026-10-29, superseded by `§ Policy cleanup item 3 built`:** appended to the one system message.
 
 - **`RemoveLast` (undo) — window only, or also `ChatHistory`?** Undecided; no `/undo` command
   exists yet. Leaning window-only, matching `/clear`, per the "history is truth" model.
@@ -546,11 +547,14 @@ single-flight guarantee. `Should` signals it's a question worth checking, closer
 - **`clampToMax(msgs, maxSize)`** — shared helper, keeps the summary at index `[0]` plus the
   newest `maxSize-1` survivors. Guards the overflow case: window fills with new messages while
   a slow summarization call is in flight, so summary + all survivors exceeds `maxSize`.
+  **Superseded 2026-10-29 by `§ Policy cleanup item 3 built`:** `clampToMax(msgs, numSummary, maxSize)` keeps the
+  first `numSummary` messages (the summary pair).
 - **Summary message `Role` is `"user"`, not `"system"`** — a second `system` message mid-history
   breaks Anthropic and some Ollama chat templates. Known, accepted trade-off: consecutive
   `user` turns after compaction (fine for OpenAI/Ollama, would need merging for Anthropic).
   Revisited in discussion 2026-09-22 (see "Wire format" below) but the decision didn't change —
   `Role` stays `"user"`; a separate marker field was proposed instead of changing `Role`.
+  **Superseded 2026-10-29 by `§ Policy cleanup item 3 built`:** the summary is now a user/assistant pair.
 - **Compaction writes the summary only into `ChatContext`, never into `ChatHistory`** — resolved
   2026-09-21, restated in the gen-6 refactor: "the history should only ever contain what was
   actually said, not a generated artifact." `compactChatContext`/`ChatContext.Compact` only
@@ -3257,3 +3261,37 @@ Claude wrote it (a bug fix, at Jerry's request); a sub-agent wrote the tests.
     `Test_ReadFile_DenyList_ErrorListsEveryName`, `Test_ReadFile_NewReadFileTool_TraceDirDanglingSymlink_ReturnsError`.
   - `tools/tool_test.go`: `Test_SetupBuiltinTools_ReadFile_TraceDir`.
   - `agent/info_test.go`: `Test_Unit_PrintInfo_BuiltinTools_TraceDirLine` and `_NoTraceDir_NoLine`.
+
+### 2026-10-29 — Policy cleanup item 3 built (part): one summarizer system message; the summary is a user/assistant pair
+
+Fixes B and C of item 3 in `§ Policy out of the core`. Fix A (an empty `systemPrompt` sends no system message) is not
+done yet. Files: `contextwindow/msgcontext.go`.
+
+- **Fix B, the summarizer's extra instructions** (`/summary <text>`, `/compact <text>`) are appended to the one
+  system message (`SummarizeSystemPrompt` + `"\n\nAdditional instructions from the user: …"`) instead of being sent
+  as a second `system` message after the transcript, which Anthropic rejects and some local servers ignore. Resolves
+  the open item from 2026-09-25. **Why the system message, not after the transcript:** the transcript can hold text
+  from files and tools; the system message ranks the user's own text above it. This is the summarizer's own one-off
+  request; the chat's system message (`cs.SystemMsg`) is untouched. **Downside:** the summarizer's system message
+  changes with the instructions, so it can't be cached (it runs rarely).
+- **Fix C, compaction replaces the summarized messages with a pair:** `{user: SummaryRequest}` ("Summarize our
+  conversation up to this point.") then `{assistant: <summary>}`, both `Type: "summary"` with their own IDs. Jerry's
+  proposal, chosen over prefixing a lone `user` summary. Supersedes the 2026-09-22 "summary `Role` is `user`"
+  decision. **Why:**
+  - the model sees a request it already answered, not a summary that reads like a new task;
+  - the context ends with an assistant message, so the next user turn alternates instead of making two `user`
+    messages in a row (the trade-off the old decision accepted);
+  - text injected into the summary from files or tools looks like the assistant's notes, not something the user said.
+- **Shape changes:** `Compact(state, summaryMsgs []model.ChatMessage)`; `clampToMax(msgs, numSummary, maxSize)` always
+  keeps the first `numSummary` messages (assumes `maxSize >= numSummary`). `CompactChatContext` still returns one
+  message, the assistant half, so `/compact`'s printout and the trace's `summary_id` need no change.
+- **Downsides:**
+  - the user half is made up; only the context holds it, chat history keeps what was really said;
+  - the pair takes one more slot in the window;
+  - a later window trim can drop the user half and leave the context starting with the assistant summary. Window
+    trims only skip leading `tool` messages, so this can already happen with any assistant reply; OpenAI-compatible
+    servers accept it, Anthropic's native API doesn't. Next step: windows start at a user message.
+  - compacting 2 or fewer messages no longer shrinks the context, so an auto-compact threshold of 2 or less would
+    fire after every input; and `clampToMax` panics if `maxSize < numSummary`. Neither can happen with today's fixed
+    sizes (a 50-message window, compaction at 90%), but item 4 makes them configurable, so its validation must require a window of
+    at least 2 and a threshold above 2.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/contextwindow"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/trace"
@@ -131,10 +132,15 @@ func Test_ContextCompaction_CompactWithTrailingText_PassedAsSummarizerInstructio
 	if !found {
 		t.Errorf("expected the summarization request to contain the instructions %q, got %+v", instructions, fx.Provider.Calls[callsBefore])
 	}
-	// the context is just the summary, and the instructions never became a message
+	// the context is just the summary pair, and the instructions never became a message
 	messages := fx.Context.GetMessages()
-	if len(messages) != 1 || messages[0].Type != "summary" {
-		t.Errorf("expected context to be exactly [summary] after /compact, got %+v", messages)
+	if len(messages) != 2 || messages[0].Type != "summary" || messages[1].Type != "summary" {
+		t.Errorf("expected context to be exactly the [summary request, summary] pair after /compact, got %+v", messages)
+	}
+	for _, m := range messages {
+		if strings.Contains(m.Content, instructions) {
+			t.Errorf("expected the instructions not to be stored in the context, got %+v", m)
+		}
 	}
 	if len(fx.History.GetMessages()) != historyBefore {
 		t.Errorf("expected chat history unchanged by /compact with instructions, got %+v", fx.History.GetMessages())
@@ -253,8 +259,8 @@ func Test_ContextCompaction_AutoCompactionTriggeredWhenThresholdExceeded(t *test
 
 	fx.Context.WaitForCompaction() // deterministic: blocks until the background compaction actually finishes
 
-	if fx.Context.GetSize() != 1 {
-		t.Fatalf("expected auto-compaction to have reduced context to 1 summary message, got size %d", fx.Context.GetSize())
+	if fx.Context.GetSize() != 2 {
+		t.Fatalf("expected auto-compaction to have reduced context to the 2-message summary pair, got size %d", fx.Context.GetSize())
 	}
 }
 
@@ -374,7 +380,9 @@ func Test_Compaction_RecordsAnEvent(t *testing.T) {
 	fx.Session.Recorder = spy
 	ctx := context.Background()
 
+	// two turns (4 messages), so compacting to the 2-message summary pair actually shrinks the context
 	handleUserInput(ctx, fx.Session, "hello")
+	handleUserInput(ctx, fx.Session, "hello again")
 	handleUserInput(ctx, fx.Session, "/compact")
 
 	var manual *trace.CompactionData
@@ -542,5 +550,41 @@ func Test_ModelRequest_SecondTurnRecordsOnlyItsOwnMessages(t *testing.T) {
 	}
 	if r := reqs[1]; r.ContextMessages != 3 || len(r.Messages) != 1 || r.Messages[0].Content != "second" {
 		t.Errorf("second turn request = %+v, want 3 context messages (system, first, ok) and only %q", r, "second")
+	}
+}
+
+// - Verify that after /compact the next chat request is [system, user summary request, assistant summary,
+// new user message], so the roles after the system message alternate user/assistant/user
+func Test_ContextCompaction_NextChatRequest_IsSystemThenSummaryPairThenNewUserMessage(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	ctx := context.Background()
+
+	fx.Provider.Reply = "ok"
+	handleUserInput(ctx, fx.Session, "hello")
+	fx.Provider.Reply = "a fake summary"
+	handleUserInput(ctx, fx.Session, "/compact")
+
+	callsBefore := len(fx.Provider.Calls)
+	fx.Provider.Reply = "sure"
+	handleUserInput(ctx, fx.Session, "another message")
+
+	if len(fx.Provider.Calls) != callsBefore+1 {
+		t.Fatalf("expected exactly one new provider call, got %d", len(fx.Provider.Calls)-callsBefore)
+	}
+	sent := fx.Provider.Calls[callsBefore]
+	type roleContent struct{ role, content string }
+	want := []roleContent{
+		{"system", fx.Session.SystemMsg.Content},
+		{"user", contextwindow.SummaryRequest},
+		{"assistant", "a fake summary"},
+		{"user", "another message"},
+	}
+	if len(sent) != len(want) {
+		t.Fatalf("expected %d messages in the request, got %d: %+v", len(want), len(sent), sent)
+	}
+	for i, w := range want {
+		if sent[i].Role != w.role || sent[i].Content != w.content {
+			t.Errorf("message %d: expected %s %q, got %s %q", i, w.role, w.content, sent[i].Role, sent[i].Content)
+		}
 	}
 }

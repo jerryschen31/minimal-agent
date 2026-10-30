@@ -955,3 +955,7 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > built`). `config.default.json`'s `*read*` now *replaces* the default deny rules; item 5 removes it. Item 2 also built
 > (`read_file` refuses the configured `traceDir`; `DECISIONS.md § Policy cleanup item 2 built`). Next: item 3
 > (summarizer system message, summary framing, empty system prompt).
+>
+> Item 3 fixes B and C built (`DECISIONS.md § Policy cleanup item 3 built (part)`): one summarizer system message, and
+> compaction stores a user/assistant summary pair. Next: windows always start at a user message (Jerry's next step),
+> then fix A (an empty `systemPrompt` sends no system message).
