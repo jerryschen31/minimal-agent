@@ -50,7 +50,7 @@ type Config struct {
 	SystemPrompt string `json:"systemPrompt"`
 
 	// memory configuration
-	ChatStoreType string `json:"chatStoreType"` // "in-memory" (TODO)| "persistent" (TODO)
+	ChatStoreType string `json:"chatStoreType"` // "in-memory" | "persistent" (TODO)
 
 	// context window and compaction configuration (validated by contextwindow.CheckConfig)
 	ContextWindowMessages int     `json:"contextWindowMessages"` // most messages the context window holds; the oldest are dropped first; at least 4 (default 50)
@@ -180,7 +180,7 @@ func GetDefaultConfig() Config {
 	}
 }
 
-// setDefaultConfig builds a Config from a config JSON file. An empty filename parses the default config file (config.default.json)
+// setDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in config defaults
 func SetDefaultConfig(flags Flags) (Config, error) {
 	// first get the default config, so missing keys in the file keep their defaults
 	cfg := GetDefaultConfig()
