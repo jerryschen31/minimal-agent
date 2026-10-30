@@ -2366,6 +2366,8 @@ and mvp4/ as good templates and AI as a pair programmer / thought partner / teac
 
 ### Build order: tracing core and approval before the autonomous port (decided 2026-10-18)
 
+> Partly superseded 2026-10-29 by "Command execution: contain, don't detect; file tools before `run_command`" (end of this log): step 3 becomes the policy cleanup, then pure-Go file tools, then `run_command` with an allow list.
+
 Revises the 2026-10-08 plan in `SESSION.md` ("concurrent MCP connection setup → hook interface + tracing hook →
 sandboxed shell → headless mode"). Only the **order** is decided here; the tracing design itself is still a
 draft in `PLAN-tracing.md` and gets its own entries when it is settled.
@@ -2972,6 +2974,8 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
 
 ### 2026-10-28 — `tool_vetoed`: every hook veto is traced with its outcome (supersedes the planned `tool_approved`)
 
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): `run_start.deny_rules` will record the effective rules, defaults included.
+
 - **One event, `tool_vetoed {call_id, name, reason, decision, wait_ms}`**, recorded by `checkBeforeToolHooks` for
   every veto, between the call's `tool_requested` and `tool_finished`. `decision` is `denied` (nobody asked: input is
   not a terminal), `denied_by_user` (asked; n, Enter, anything but y/yes, or Ctrl+C) or `allowed_by_user` (asked, y).
@@ -2996,6 +3000,8 @@ model-facing name with its hints, then exits. Files: `agent/info.go`, `main.go`,
 
 
 ### 2026-10-28 — Approval gate v1 built: deny rules, ask-on-deny, info section (`PLAN-approval-gates.md` steps 1–6)
+
+> Partly superseded 2026-10-29 by "Policy out of the core: deny defaults move to config" (end of this log): the built-in `*delete*`/`*remove*` move to `GetDefaultConfig`, and a config file's `denyRules` replaces them instead of adding to them.
 
 Jerry hand-coded the core (the `Hook` interface, `DenyRules`, the hook loop, the session wiring), tutored step by
 step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents wrote the tests.
@@ -3071,3 +3077,108 @@ step; Claude wrote `AskYesNo`, info mode's section and the tracing; sub-agents w
 - **Not changed:** `config.default.json`'s `*read*` rule, kept on purpose for testing (Jerry, PR #27); to be
   reverted later.
 
+
+
+### 2026-10-29 — Command execution: contain, don't detect; file tools before `run_command`
+
+Settled over several turns (2026-10-28/29) after Jerry questioned the fixed program list of the planned
+`run_command`. Full discussion, with the four sub-agent views and sources: `prompts/20261029-session-question-1.md`.
+
+- **Principle: safety comes from containment, not detection.** Once an interpreter (`python3`, `node`, `go run`,
+  `make`, `sh`) is allowed, the command line names only the launcher, not what the code does, so a detector of
+  "dangerous commands" is a contest that can't be won (Cursor's command denylist was bypassed several ways and Cursor
+  now offers a sandbox instead; LLM monitors can be fooled by the same injected text as the agent). What limits harm
+  is limiting effects: writes only inside `workDir`, no credentials reachable, network off, a throwaway worktree.
+  Detection may come later only as an optional `Hook` plug-in that cuts prompts (judging only the proposed action,
+  never tool output; every decision traced), or as a teaching exercise written up in `tradeoffs/`. Never as the
+  safety boundary.
+- **Threat model:** ordinary mistakes (wrong directory, force-push, a token in a log) and prompt injection (a file,
+  page or MCP result telling the model to run something), not a scheming model. An agent "getting around a denial"
+  is usually just trying to finish its task.
+- **Pure-Go file tools come before `run_command`:** `write_file`, `edit_file`, `list_files`/glob, `search`, create
+  directory, copy, move. All confined to `workDir` with `os.Root` and `read_file`'s deny list. **Copy and move check
+  both paths**: moving onto `.env` and copying `.env` to `notes.txt` (a way to read a secret) are both refused.
+  Why first: narrow tools can only be misused in narrow ways, and they cover most of what agents use a shell for.
+- **Approval for the file tools (chat):** read, list, search, writing a new file, mkdir, and copy/move to a new
+  destination proceed without asking. `edit_file` and **any overwrite** (write/copy/move onto an existing file) ask.
+  A config setting plus a flag (names open, e.g. `autoApprove` / `-yes`) lets the asking ones proceed. Deny rules
+  still reject.
+- **`run_command`:** mvp4's argv-only design (no shell, filtered environment, timeout, output cap, process-group
+  kill) with an **allow list in config**, using rules of the form `run_command:<program> <argument prefix>` and the
+  same matcher as deny rules. A program not on the allow list **asks in chat every time**; there is no "always"
+  answer, so a command that keeps coming up is added to the config (Jerry). Deny rules **reject without asking**.
+- **Deny rules are never asked** (Jerry). This makes three levels, deny / ask / run: the ask-on-deny path built in
+  approval gate v1 (`PromptAllowDenyCall`, `AskYesNo`, `tool_vetoed`) becomes the "ask" level, and the hook needs a
+  way to say "ask" as distinct from "deny".
+- **`/reload` is planned:** re-read the same config file (or the defaults) and apply the same flags again; build
+  everything new first and swap only if every step worked; wait for (or refuse during) auto-compaction; an MCP
+  server that fails to reconnect is warned about, as at startup; trace a `config_reloaded` event with the names of
+  changed fields, never their values. Trace settings, the context-window strategy and chat history are not reloaded.
+- **Downsides, stated plainly:**
+  - Asking every time breeds reflex approval, and "Allow `python3 solve.py`?" hides the real risk (the file the
+    model just wrote). Jerry chose no "always" anyway; revisit if prompting becomes noise.
+  - An allowed interpreter can still do anything, so the allow list states intent, it doesn't contain effects.
+  - Autonomous mode has nobody to ask. Running commands unattended needs containment first: a git worktree per run
+    and a sandbox behind `run_command` (`sandbox-exec` on macOS first, Landlock or bubblewrap on Linux later).
+    "Unattended means contained" is the one strong opinion worth building in.
+- **Still open:** what "ask" means with no terminal (proposed: deny, unless the auto-approve setting is on); one
+  switch or one per level (files vs commands); whether interpreters get their own category (always ask, never
+  unattended without a sandbox); whether `run_command` is off by default until a sandbox exists.
+- **Order:** the policy cleanup below (its items 1–7), then the file tools (the deny/ask/run levels land first, since
+  `edit_file` needs "ask"), then `run_command`, then `/reload`, then the autonomous port.
+
+
+### 2026-10-29 — Policy out of the core: deny defaults move to config; a test for where a rule belongs
+
+Jerry asked whether anything built so far puts too much policy inside the core. Four read-only sub-agents audited the
+code (approval gate + config; tools, MCP and tracing; the core loop and defaults; a counterpoint on what should stay
+built in). Full write-up: `prompts/20261029-session-question-2.md`. Jerry agreed with the list below.
+
+- **Verdict:** the ReAct loop, the model adapter, memory and the hook mechanism are close to pure mechanism. Three
+  places hold policy that can't be removed: the built-in deny rules, the fixed context-window settings, and the
+  loop printing its own output.
+- **A test for where a rule belongs**, asked in order:
+  1. Would turning it off leak a credential or harm others, with no sane reason to want that? A **protection**: in
+     code, no switch.
+  2. Does it guard against untrusted input (the model, a tool result, a remote server), where a missing config would
+     silently remove it? A **default**: built in, visible, extendable, removable only by a named opt-out (an empty
+     list never counts).
+  3. Is it a guess about intent that reasonable users would set differently? **User policy**: config or a `Hook`
+     plug-in, nothing hard-coded.
+
+  Shortcut: if a typo in the config should crash the run, it's 1 or 2; if a typo should just mean "no rule", it's 3.
+- **Protections that stay in code:** same-origin MCP redirects and headers; fail-closed redaction and the
+  unknown-level startup error; `read_file`'s `workDir` confinement (`os.Root`, regular files only, `O_NONBLOCK`);
+  a process group per stdio server; trace file `0600`/`0700` and create-only; every failure becoming an
+  observation, arguments as a JSON object, no orphaned tool results; `%q` on model and server text; "ask" defaults
+  to No and no terminal means deny; rules containing `:` rejected.
+- **Deny defaults move to config (reverses part of "Approval gate v1 built").** `*delete*`/`*remove*` guess danger
+  from a name (`fs_purge` passes, `remove_highlight` is blocked), which is user policy by the test above. They move
+  from `hooks.defaultDenyRules` into `GetDefaultConfig()`, and a config file's `denyRules` **replaces** them
+  (`[]` turns them off), the normal flags > file > defaults rule. `/config`, info mode and `run_start.deny_rules`
+  then all show the rules actually in force; `IsBuiltIn` goes. Chosen over the counterpoint's "named opt-out"
+  because a name guess is not a protection. Downside: writing `"denyRules": ["*move*"]` silently drops the delete
+  rules; info mode and `/config` showing the effective list is the mitigation.
+- **The agreed list, done before the file tools:**
+  1. Deny defaults into `GetDefaultConfig` (above), with the effective rules in `run_start`.
+  2. `read_file` protects the **configured** `traceDir`, not only the literal `.agent-trace` (a `traceDir` of
+     `logs/trace` inside `workDir` is readable today, `tools/builtin/readfile.go:23`); the "blocked" error text is
+     built from the list (it currently omits `.agent-trace`).
+  3. Summarization: the extra `/compact` instructions stop being a second `system` message after the transcript
+     (some providers reject a system message that isn't first, `contextwindow/msgcontext.go:218`); the summary that
+     replaces history gets a framing prefix instead of being a bare `user` message; an empty `systemPrompt` sends no
+     system message (`model/provider.go:105`).
+  4. Context-window size, strategy, auto-compact threshold (with an off switch) and the summarizer prompt become
+     config fields; `SetupChatContext` currently ignores its `cfg`. Document the hidden `buffer = 2`
+     (`contextwindow/window.go:27`).
+  5. Cleanups: `*read*` and the unknown keys `memory`/`contextWindow` out of `config.default.json`; the stale comment
+     at `config/config.go:184` (an empty filename no longer loads that file); the dead `DenyRules` line at
+     `config.go:161`; the welcome text's `v0.1.13` vs `AgentVersion`.
+  6. `read_file`'s secret-file list becomes a shared `DenyList` type that config can **extend** but not empty
+     (category 2), ready for the file tools to reuse.
+  7. Printing `[assistant]`/`[tool]`/errors moves out of `reActLoop` to the caller, before headless or autonomous
+     output needs it.
+- **Later, as plug-in points:** extra redaction `Detector`s (`NewRedactor` builds only the built-in one), a
+  configurable request timeout (`model.ResponseTimeout` is 5 minutes), and the error body in HTTP errors.
+- **Recorded, not changed:** a turn that hits `maxSteps` is discarded whole, tool results included, so a failed turn
+  never leaves half a turn in memory. Downside: paid-for work is lost.

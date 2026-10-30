@@ -933,3 +933,20 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >   per-turn struct (not on `ChatSession`: auto-compaction reads the session from another goroutine).
 > - Still open from 2026-10-23: `builtinTools` `"ReadFile"` vs `read_file`; chat-mode setup prints a remote MCP
 >   URL in connect errors (reuse `hideURL`); `AgentVersion` constant; `model/anthropic.tmp`.
+
+### 2026-10-29 — design detour: command execution and policy out of the core; cleanup next
+
+> **State:** `master` at `bed4ead` (PR #27 fixes). No code changed this session; design only. Two sub-agent
+> fan-outs, saved in `prompts/20261029-session-question-1.md` (guardrails vs containment) and
+> `prompts/20261029-session-question-2.md` (policy audit of the code so far).
+>
+> **Decided:** see `DECISIONS.md § Command execution: contain, don't detect; file tools before run_command` and
+> `§ Policy out of the core: deny defaults move to config`.
+>
+> **Next:** the policy cleanup, items 1–7 of `§ Policy out of the core` (deny defaults into `GetDefaultConfig`,
+> configured `traceDir` protected, summarizer system message, configurable context window, config cleanups,
+> extendable `DenyList`, printing out of `reActLoop`). Then the deny/ask/run levels, then the pure-Go file tools,
+> then `run_command` with an allow list, then `/reload`, then the autonomous port.
+>
+> **Open questions** (from `§ Command execution`): what "ask" means without a terminal; one auto-approve switch or
+> one per level; interpreters as their own category; `run_command` off by default until a sandbox exists.
