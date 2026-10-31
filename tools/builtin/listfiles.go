@@ -12,31 +12,43 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// maxListEntries caps one list_files call, so listing a huge tree can't flood the model's context.
+// maxListEntries caps the lines one list_files call returns, so listing a huge tree can't flood the model's context.
+// (maxVisits, from config maxSearchFiles, separately caps how many entries a call looks at.)
 const maxListEntries = 1000
 
 // ListFilesTool lists the files and directories in one directory of the workspace (optionally the whole tree below
 // it). Deny-listed names and the trace directory are hidden, and symlinks are listed but never followed.
 type ListFilesTool struct {
-	ws *Workspace // where it may list (shared with the other file tools)
+	ws        *Workspace // where it may list (shared with the other file tools)
+	maxVisits int        // most entries one call looks at (config maxSearchFiles), shown or not; bounds a recursive walk whose pattern rarely matches
+	ignore    IgnoreList // names left out (config ignorePaths); an ignored directory is shown but not walked
 }
 
-// NewListFilesTool creates a list_files tool that lists only inside ws (NewWorkspace).
-func NewListFilesTool(ws *Workspace) (*ListFilesTool, error) {
+// NewListFilesTool creates a list_files tool that lists only inside ws (NewWorkspace). maxVisits (config
+// maxSearchFiles) is the most entries one call looks at and must be positive. ignore (NewIgnoreList, config
+// ignorePaths) is what it leaves out; the zero value leaves out nothing.
+func NewListFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*ListFilesTool, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("list_files needs a workspace")
 	}
-	return &ListFilesTool{ws: ws}, nil
+	if maxVisits <= 0 {
+		return nil, fmt.Errorf("list_files max search files must be positive, got %d", maxVisits)
+	}
+	return &ListFilesTool{ws: ws, maxVisits: maxVisits, ignore: ignore}, nil
 }
 
 // GetToolDefinition returns the definition of the list_files tool
 func (t *ListFilesTool) GetToolDefinition() model.ToolDef {
+	ignored := ""
+	if s := t.ignore.String(); s != "" {
+		ignored = "Names matching the ignore list (" + s + "; a trailing / means a directory) are left out; an ignored directory is shown but not walked, and listing it directly shows its contents (still without ignored names). "
+	}
 	return model.NewToolDef(
 		"list_files",
 		fmt.Sprintf("Lists the files and directories in a directory inside the working directory, as paths relative to the working directory "+
 			"(directories end with /, files show their size). Set recursive to list everything below it, and pattern to keep only matching names. "+
 			"Sensitive files (such as .env and keys) and the agent's trace directory are never shown, and symlinks are listed but not followed. "+
-			"Returns at most %d entries per call.", maxListEntries),
+			"%sReturns at most %d entries per call, and looks at no more than %d.", ignored, maxListEntries, t.maxVisits),
 		json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -102,7 +114,7 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 	}
 
 	var lines []string
-	truncated := false
+	note, visits := "", 0 // note says why the walk stopped early, if it did (only one limit can stop it)
 	// fs.WalkDir visits entries in name order (so the output is the same every time) and never follows symlinks
 	err = fs.WalkDir(fsys, start, func(p string, d fs.DirEntry, err error) error {
 		if cerr := ctx.Err(); cerr != nil {
@@ -112,11 +124,21 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 			if p == start {
 				return err // the directory itself can't be read
 			}
+			// WalkDir calls again with err when a directory's contents can't be read; its line, if shown, was the last
+			// one added, so mark it rather than let it look empty
+			if d != nil && d.IsDir() && len(lines) > 0 && lines[len(lines)-1] == filepath.FromSlash(p)+"/" {
+				lines[len(lines)-1] += " (not readable)"
+			}
 			return nil // skip an entry or subdirectory that can't be read
 		}
 		if p == start {
 			return nil // don't list the directory itself
 		}
+		if visits == t.maxVisits {
+			note = fmt.Sprintf("[stopped after looking at %d entries (the maxSearchFiles limit); list a subdirectory to see the rest]", t.maxVisits)
+			return fs.SkipAll
+		}
+		visits++
 		// The walk never follows symlinks, so p joined onto rootDir is already the real path, as check expects
 		if _, err := t.ws.check(p, filepath.Join(t.ws.rootDir, filepath.FromSlash(p))); err != nil {
 			if d.IsDir() {
@@ -124,9 +146,13 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 			}
 			return nil
 		}
+		ignored := t.ignore.Ignores(d.Name(), d.IsDir())
+		if ignored && !d.IsDir() {
+			return nil // an ignored file (e.g. *.pyc) is left out
+		}
 		if params.Pattern == "" || matchName(params.Pattern, d.Name()) {
-			if len(lines) == maxListEntries {
-				truncated = true // there is at least one more entry than the cap
+			if len(lines) == maxListEntries { // there is at least one more entry than the cap
+				note = fmt.Sprintf("[truncated: showed %d entries; list a subdirectory or give a pattern]", maxListEntries)
 				return fs.SkipAll
 			}
 			shown := filepath.FromSlash(p)
@@ -147,21 +173,31 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 		if d.IsDir() && !params.Recursive {
 			return fs.SkipDir
 		}
+		if ignored { // an ignored directory (e.g. .git/) is shown but not walked; the start directory itself never is
+			if len(lines) > 0 && lines[len(lines)-1] == filepath.FromSlash(p)+"/" {
+				lines[len(lines)-1] += " (contents not listed; list it directly to see them)"
+			}
+			return fs.SkipDir
+		}
 		return nil
 	})
 	if err != nil { // fs.SkipDir and fs.SkipAll never come back from WalkDir; this is a cancel or an unreadable start
 		return "", err
 	}
 
-	if len(lines) == 0 {
-		if params.Pattern != "" {
-			return fmt.Sprintf("no names in %s match %q", params.Path, params.Pattern), nil
-		}
-		return fmt.Sprintf("no entries in %s", params.Path), nil
-	}
 	out := strings.Join(lines, "\n")
-	if truncated {
-		out += fmt.Sprintf("\n[truncated: showed %d entries; list a subdirectory or give a pattern]", maxListEntries)
+	if len(lines) == 0 {
+		// [agent] when the visit limit cut the walk short, "no match" is only true of what was looked at
+		out = fmt.Sprintf("no entries in %s", params.Path)
+		if params.Pattern != "" {
+			out = fmt.Sprintf("no names in %s match %q", params.Path, params.Pattern)
+		}
+		if note != "" {
+			out += fmt.Sprintf(" (only the first %d entries were looked at)", t.maxVisits)
+		}
+	}
+	if note != "" {
+		out += "\n" + note
 	}
 	return out, nil
 }

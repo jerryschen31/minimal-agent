@@ -3,6 +3,8 @@
 package builtin
 
 import (
+	"errors"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,4 +44,44 @@ func Test_Unit_Workspace_Resolve_SymlinkOutside_Refused(t *testing.T) {
 	if !strings.HasPrefix(err.Error(), "innocent.txt ") || strings.Contains(err.Error(), "secret.txt") {
 		t.Errorf("error should name the requested link, not its target: %q", err)
 	}
+}
+
+// - Verify a dangling symlink inside workDir gives an error naming only the requested link (not the absolute workDir
+// or the link's target path), wrapping fs.ErrNotExist, from resolve, read_file and list_files alike
+func Test_Unit_Workspace_Resolve_DanglingSymlink_ErrorHidesWorkDir(t *testing.T) {
+	work := t.TempDir()
+	symlink(t, "nowhere-target.txt", filepath.Join(work, "dangling"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	_, err := ws.resolve("dangling")
+	expectErrorHidesWorkDir(t, "resolve(dangling)", err, work, "dangling")
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("expected errors.Is(err, fs.ErrNotExist), got %v", err)
+	}
+	if strings.Contains(err.Error(), "nowhere-target") {
+		t.Errorf("error names the link's target: %q", err)
+	}
+	_, err = readPath(newTool(t, work), "dangling")
+	expectErrorHidesWorkDir(t, "read_file(dangling)", err, work, "dangling")
+	_, err = callList(newListTool(t, work, "", DenyList{}), "dangling", "", false)
+	expectErrorHidesWorkDir(t, "list_files(dangling)", err, work, "dangling")
+}
+
+// - Verify a symlink loop (loop-a -> loop-b -> loop-a), whose error from Go is not a *fs.PathError, still gives an
+// error that names the requested link and not the absolute workDir, from resolve, read_file and list_files alike
+func Test_Unit_Workspace_Resolve_SymlinkLoop_ErrorHidesWorkDir(t *testing.T) {
+	work := t.TempDir()
+	symlink(t, "loop-b", filepath.Join(work, "loop-a"))
+	symlink(t, "loop-a", filepath.Join(work, "loop-b"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	rel, err := ws.resolve("loop-a")
+	if rel != "" {
+		t.Errorf("expected no rel for a loop, got %q", rel)
+	}
+	expectErrorHidesWorkDir(t, "resolve(loop-a)", err, work, "loop-a")
+	_, err = readPath(newTool(t, work), "loop-a")
+	expectErrorHidesWorkDir(t, "read_file(loop-a)", err, work, "loop-a")
+	_, err = callList(newListTool(t, work, "", DenyList{}), "loop-a", "", false)
+	expectErrorHidesWorkDir(t, "list_files(loop-a)", err, work, "loop-a")
 }

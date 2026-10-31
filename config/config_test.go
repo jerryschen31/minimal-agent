@@ -769,3 +769,122 @@ func Test_Unit_PrintConfig_ShowsDenyFileNames(t *testing.T) {
 		}
 	}
 }
+
+// - Verify maxSearchFiles defaults to 10000
+func Test_Unit_GetDefaultConfig_MaxSearchFiles_Is10000(t *testing.T) {
+	if got := GetDefaultConfig().MaxSearchFiles; got != 10000 {
+		t.Errorf("expected MaxSearchFiles 10000, got %d", got)
+	}
+}
+
+// - Verify "maxSearchFiles" in a config file is applied without a warning, and a file without the key keeps the default
+func Test_Unit_SetDefaultConfig_MaxSearchFiles_AppliedWithoutWarning(t *testing.T) {
+	for _, c := range []struct {
+		json string
+		want int
+	}{
+		{`{"maxSearchFiles": 42}`, 42},
+		{`{"model": "fake-model"}`, 10000},
+	} {
+		path := writeTempFile(t, "config.json", []byte(c.json))
+
+		var cfg Config
+		var err error
+		out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("%s: SetDefaultConfig() returned an error: %v", c.json, err)
+		}
+		if cfg.MaxSearchFiles != c.want {
+			t.Errorf("%s: expected MaxSearchFiles %d, got %d", c.json, c.want, cfg.MaxSearchFiles)
+		}
+		if out != "" {
+			t.Errorf("%s: expected no warnings, got %q", c.json, out)
+		}
+	}
+}
+
+// - Verify /config shows maxSearchFiles, the default and a configured value
+func Test_Unit_PrintConfig_ShowsMaxSearchFiles(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{GetDefaultConfig().MaxSearchFiles, "maxSearchFiles: 10000\n"},
+		{42, "maxSearchFiles: 42\n"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.MaxSearchFiles = c.n
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}
+
+// - Verify ignorePaths defaults to .git/, node_modules/, __pycache__/, .venv/ and *.pyc
+func Test_Unit_GetDefaultConfig_IgnorePaths_Default(t *testing.T) {
+	want := []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"}
+	if got := GetDefaultConfig().IgnorePaths; !slices.Equal(got, want) {
+		t.Errorf("IgnorePaths = %q, want %q", got, want)
+	}
+}
+
+// - Verify "ignorePaths" in a config file replaces the default list without a warning ([] turns it off), and a file
+// without the key keeps the default
+func Test_Unit_SetDefaultConfig_IgnorePaths_ReplacesDefault(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"a list replaces the default", `{"ignorePaths": ["*.tmp"]}`, []string{"*.tmp"}},
+		{"[] empties it", `{"ignorePaths": []}`, []string{}},
+		{"no key keeps the default", `{"model": "fake-model"}`, GetDefaultConfig().IgnorePaths},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.IgnorePaths, c.want) {
+				t.Errorf("IgnorePaths = %q, want %q", cfg.IgnorePaths, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows ignorePaths, the default list and an empty one
+func Test_Unit_PrintConfig_ShowsIgnorePaths(t *testing.T) {
+	for _, c := range []struct {
+		paths []string
+		want  string
+	}{
+		{GetDefaultConfig().IgnorePaths, "ignorePaths:   [.git/ node_modules/ __pycache__/ .venv/ *.pyc]\n"},
+		{[]string{}, "ignorePaths:   []\n"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.IgnorePaths = c.paths
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}

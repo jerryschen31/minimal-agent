@@ -978,3 +978,34 @@ func Test_Unit_PrintInfo_BuiltinTools_BadDenyFileNames_Fails(t *testing.T) {
 		t.Errorf("expected a Built-in tools: FAILED denyFileNames row in output:\n%s", out)
 	}
 }
+
+// - Verify info mode passes maxSearchFiles to list_files: 0 with list_files enabled prints "Built-in tools: FAILED"
+// with the "must be positive" reason and returns InfoFailed
+func Test_Unit_PrintInfo_ListFiles_ZeroMaxSearchFiles_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.BuiltinTools, cfg.MaxSearchFiles = []string{"list_files"}, 0
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if !strings.Contains(lineWith(out, "Built-in tools: FAILED"), "must be positive") {
+		t.Errorf("expected a Built-in tools: FAILED line saying must be positive in output:\n%s", out)
+	}
+}
+
+// - Verify a bad ignorePaths pattern makes info mode print Built-in tools: FAILED and return InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_BadIgnorePaths_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.IgnorePaths = []string{"[abc"}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if !strings.Contains(out, "Built-in tools: FAILED: ignorePaths") {
+		t.Errorf("expected a Built-in tools: FAILED ignorePaths row in output:\n%s", out)
+	}
+}

@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -279,4 +281,65 @@ func Test_Unit_Workspace_SharedByTwoTools_SameResultsConcurrently(t *testing.T) 
 		}
 	}
 	wg.Wait()
+}
+
+//*************************************//
+// resolve error messages (no absolute workDir)
+//*************************************//
+
+// expectErrorHidesWorkDir fails the test unless err names wantName and contains neither spelling of the workDir
+// (t.TempDir's own and its resolved form: on macOS /var is a symlink to /private/var).
+func expectErrorHidesWorkDir(t *testing.T, what string, err error, work, wantName string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected an error", what)
+	}
+	if !strings.Contains(err.Error(), wantName) {
+		t.Errorf("%s: expected the error to name %q, got %q", what, wantName, err)
+	}
+	for _, abs := range []string{work, realPath(t, work)} {
+		if strings.Contains(err.Error(), abs) {
+			t.Errorf("%s: error leaks the absolute workDir %q: %q", what, abs, err)
+		}
+	}
+}
+
+// missingRelPaths are requests for paths that don't exist: a file in workDir, one in an existing subdirectory, and
+// one in a subdirectory that doesn't exist either.
+var missingRelPaths = []string{"missing.txt", filepath.Join("sub", "missing.txt"), filepath.Join("nodir", "missing.txt")}
+
+// - Verify resolve's error for a missing relative path names only the requested path, never the absolute workDir,
+// and still wraps the cause so errors.Is(err, fs.ErrNotExist) holds
+func Test_Unit_Workspace_Resolve_Missing_ErrorNamesRequestOnly(t *testing.T) {
+	work := t.TempDir()
+	mkdir(t, work, "sub")
+	ws := newWorkspace(t, work, "", DenyList{})
+	for _, p := range missingRelPaths {
+		_, err := ws.resolve(p)
+		expectErrorHidesWorkDir(t, "resolve("+p+")", err, work, p)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("resolve(%q): expected errors.Is(err, fs.ErrNotExist), got %v", p, err)
+		}
+	}
+}
+
+// - Verify read_file and list_files return the same workDir-free error for a missing path, still matching
+// fs.ErrNotExist (this text is what reaches the model, and so the provider)
+func Test_Unit_FileTools_Missing_ErrorHidesWorkDir(t *testing.T) {
+	work := t.TempDir()
+	mkdir(t, work, "sub")
+	readFile := newTool(t, work)
+	listFiles := newListTool(t, work, "", DenyList{})
+	for _, p := range missingRelPaths {
+		_, err := readPath(readFile, p)
+		expectErrorHidesWorkDir(t, "read_file("+p+")", err, work, p)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("read_file(%q): expected errors.Is(err, fs.ErrNotExist), got %v", p, err)
+		}
+		_, err = callList(listFiles, p, "", false)
+		expectErrorHidesWorkDir(t, "list_files("+p+")", err, work, p)
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("list_files(%q): expected errors.Is(err, fs.ErrNotExist), got %v", p, err)
+		}
+	}
 }

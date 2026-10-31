@@ -61,7 +61,13 @@ func (w *Workspace) resolve(requested string) (string, error) {
 	}
 	real, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
-		return "", err
+		// [agent] Go's error names the absolute path ("lstat /Users/<name>/project/x: …"), which would put the home
+		// directory into the model's context and send it to the provider. Name only what the model asked for, and keep
+		// the cause wrapped so errors.Is(err, fs.ErrNotExist) still works.
+		if pe, ok := errors.AsType[*fs.PathError](err); ok {
+			return "", fmt.Errorf("%s: %w", requested, pe.Err)
+		}
+		return "", fmt.Errorf("%s: can't be resolved", requested)
 	}
 	return w.check(requested, real)
 }

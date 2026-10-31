@@ -74,6 +74,11 @@
 //	readFileMaxBytes    most one read_file call returns; bigger files are read in pieces                  [1 MB]
 //	mcpResultMaxBytes   most of an MCP tool result passed to the model; the rest is cut with a note        [256 KB]
 //
+// Search limit (positive; bounds how long one call can take, not only what it returns):
+//
+//	maxSearchFiles      most files and directories one list_files call looks at, shown or not; a recursive
+//	                    listing that hits it ends with a note to list a subdirectory                       [10000]
+//
 // Tools:
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
@@ -83,6 +88,11 @@
 //	                .ssh, .agent-trace), which can't be removed; matched against each part of the path,
 //	                case-insensitively (path.Match syntax, no / or \); .env.example is always allowed.
 //	                A bad pattern fails startup                                                            [none]
+//	ignorePaths     name patterns list_files leaves out (noise, not secrets): "*.pyc" matches files and
+//	                directories, a trailing / ("node_modules/") directories only. An ignored directory is
+//	                shown but not walked; listing it directly still works. Same matching as denyFileNames
+//	                (one name at a time, case-insensitive, no other /). A config file's list replaces the
+//	                default; [] = ignore nothing; a bad pattern fails startup        [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
 //
 // Each mcpServers entry is either local or remote:

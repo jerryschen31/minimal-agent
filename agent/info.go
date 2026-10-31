@@ -134,7 +134,7 @@ func isDefaultDenyRule(rule string) bool {
 // printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
 // they can't be set up.
 func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
-	builtins, err := tools.SetupBuiltinTools(cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir, cfg.ReadFileMaxBytes, cfg.DenyFileNames)
+	builtins, err := tools.SetupBuiltinTools(cfg)
 	if err != nil {
 		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)
 		return nil, false

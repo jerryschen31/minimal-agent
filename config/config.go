@@ -74,10 +74,12 @@ type Config struct {
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
 	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
 	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
+	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files call looks at, shown or not; must be positive (default 10,000)
 
 	// tools and MCP servers configuration
 	BuiltinTools  []string                   `json:"builtinTools"`  // names of built-in tools to enable
 	DenyFileNames []string                   `json:"denyFileNames"` // name patterns the file tools never read, added to the built-in list (which can't be removed)
+	IgnorePaths   []string                   `json:"ignorePaths"`   // name patterns list_files leaves out ("dir/" = directories only, shown but not walked); a config file's list replaces the default, [] = none
 	McpServers    map[string]McpServerConfig `json:"mcpServers"`    // configuration for MCP servers
 }
 
@@ -182,6 +184,8 @@ func GetDefaultConfig() Config {
 		TraceMaxEventBytes: 100 << 20, // 100 MB
 		ReadFileMaxBytes:   1 << 20,   // 1 MB
 		MCPResultMaxBytes:  256 << 10, // 256 KB
+		MaxSearchFiles:     10000,
+		IgnorePaths:        []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
 	}
 }
 
@@ -273,8 +277,10 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
+	fmt.Fprintf(w, "  maxSearchFiles: %d\n", cfg.MaxSearchFiles)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
 	fmt.Fprintf(w, "  denyFileNames: %v (added to the built-in list)\n", cfg.DenyFileNames)
+	fmt.Fprintf(w, "  ignorePaths:   %v\n", cfg.IgnorePaths)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")

@@ -83,7 +83,8 @@ func Test_Unit_ListFiles_PathIsSymlinkToRefusedDir_ReturnsError(t *testing.T) {
 	}
 }
 
-// - Verify an unreadable subdirectory is listed itself but its contents are skipped, without failing the call
+// - Verify an unreadable subdirectory is listed as "(not readable)" and its contents are skipped, without failing the
+// call; a non-recursive listing doesn't open it, so it shows a plain line
 func Test_Unit_ListFiles_UnreadableSubdir_SkippedNotFailed(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root can read a chmod 000 directory")
@@ -98,7 +99,48 @@ func Test_Unit_ListFiles_UnreadableSubdir_SkippedNotFailed(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(locked, 0o755) }) // so TempDir removal works
 
 	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", true)
+	if want := lines("locked/ (not readable)", "z.txt (1 bytes)"); got != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	}
+	got = mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", false)
 	if want := lines("locked/", "z.txt (1 bytes)"); got != want {
+		t.Errorf("non-recursive: expected\n%s\ngot\n%s", want, got)
+	}
+}
+
+// - Verify an unreadable subdirectory that doesn't match the pattern is not shown at all, and the line shown before it
+// is not marked "(not readable)" (only the directory's own line may carry the mark)
+func Test_Unit_ListFiles_UnreadableSubdir_NotMatchingPattern_NothingMarked(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a chmod 000 directory")
+	}
+	dir := t.TempDir()
+	writeFile(t, dir, "a.txt", []byte("x"))
+	writeFile(t, dir, "locked/inner.txt", []byte("FAKE_SECRET_TOKEN_123"))
+	writeFile(t, dir, "z.txt", []byte("x"))
+	locked := filepath.Join(dir, "locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) }) // so TempDir removal works
+
+	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "*.txt", true)
+	if want := lines("a.txt (1 bytes)", "z.txt (1 bytes)"); got != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	}
+}
+
+// - Verify a symlink is matched against the ignore list as a non-directory: a link named x.pyc is left out by "*.pyc",
+// and a link to a directory named .git is listed as a link (".git/" matches directories only)
+func Test_Unit_ListFiles_SymlinkIgnoredAsNonDir(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "real/HEAD", []byte("x"))
+	symlink(t, filepath.Join("real", "HEAD"), filepath.Join(dir, "x.pyc"))
+	symlink(t, "real", filepath.Join(dir, ".git"))
+	tool := newListToolIgnore(t, dir, 10000, DenyList{}, ".git/", "*.pyc")
+
+	got := mustList(t, tool, ".", "", true)
+	if want := lines(".git -> (symlink)", "real/", filepath.Join("real", "HEAD")+" (1 bytes)"); got != want {
 		t.Errorf("expected\n%s\ngot\n%s", want, got)
 	}
 }

@@ -198,3 +198,63 @@ func Test_Unit_SetupAgent_DenyFileNames_AppliedToReadFile(t *testing.T) {
 		t.Errorf("expected SetupAgent to fail on a bad denyFileNames pattern, got err %v, session %v", err, b.session != nil)
 	}
 }
+
+// - Verify SetupAgent passes the config's maxSearchFiles to list_files: with a limit of 2 the registered list_files
+// stops after two of three files, and a limit of 0 fails SetupAgent before any session is built
+func Test_Unit_SetupAgent_MaxSearchFiles_AppliedToListFiles(t *testing.T) {
+	cfg := denyWiringConfig(t)
+	cfg.BuiltinTools, cfg.MaxSearchFiles = []string{"list_files"}, 2
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(cfg.WorkDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := setupDenyWiringAgent(t, cfg)
+	listFiles, ok := a.session.Tools.Lookup("list_files")
+	if !ok {
+		t.Fatal("expected list_files to be registered")
+	}
+	got, err := listFiles.CallTool(context.Background(), []byte(`{}`))
+	if err != nil || strings.Contains(got, "c.txt") || !strings.Contains(got, "[stopped after looking at 2 entries") {
+		t.Errorf("expected a listing stopped after 2 entries without c.txt, got (%q, %v)", got, err)
+	}
+
+	bad := denyWiringConfig(t)
+	bad.BuiltinTools, bad.MaxSearchFiles = []string{"list_files"}, 0
+	b := &Agent{}
+	err = b.SetupAgent(context.Background(), bad, nil)
+	defer b.ShutdownAgent(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "must be positive") || b.session != nil {
+		t.Errorf("expected SetupAgent to fail on maxSearchFiles 0, got err %v, session %v", err, b.session != nil)
+	}
+}
+
+// - Verify SetupAgent passes the config's ignorePaths to list_files: the default list leaves out a .pyc file, and a
+// bad pattern fails SetupAgent before any session is built
+func Test_Unit_SetupAgent_IgnorePaths_AppliedToListFiles(t *testing.T) {
+	cfg := denyWiringConfig(t)
+	cfg.BuiltinTools = []string{"list_files"}
+	for _, name := range []string{"cache.pyc", "main.py"} {
+		if err := os.WriteFile(filepath.Join(cfg.WorkDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, _ := setupDenyWiringAgent(t, cfg)
+	listFiles, ok := a.session.Tools.Lookup("list_files")
+	if !ok {
+		t.Fatal("expected list_files to be registered")
+	}
+	got, err := listFiles.CallTool(context.Background(), []byte(`{}`))
+	if err != nil || strings.Contains(got, "cache.pyc") || !strings.Contains(got, "main.py") {
+		t.Errorf("expected main.py without cache.pyc, got (%q, %v)", got, err)
+	}
+
+	bad := denyWiringConfig(t)
+	bad.IgnorePaths = []string{"a/b"}
+	b := &Agent{}
+	err = b.SetupAgent(context.Background(), bad, nil)
+	defer b.ShutdownAgent(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ignorePaths") || b.session != nil {
+		t.Errorf("expected SetupAgent to fail on a bad ignorePaths pattern, got err %v, session %v", err, b.session != nil)
+	}
+}

@@ -3471,3 +3471,76 @@ Files: `tools/builtin/listfiles.go` (new), `tools/tool.go`, `config/doc.go`. Opt
 - **Open:** `.git/` is listed and walked, so a recursive listing from the root spends most of the cap on it. Options:
   skip `.git` contents by default (a *default* by the three-question test, with an opt-out), or leave it to the
   model to list subdirectories.
+
+### 2026-10-31 — `list_files` follow-ups: no absolute paths in path errors, `maxSearchFiles`, "(not readable)"
+
+From the slice 1 test sub-agent's findings; Jerry chose 1–3 and left the rest as is. Files:
+`tools/builtin/workspace.go`, `tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`,
+`config/config.go`, `config/doc.go`.
+
+1. **Path errors name only the requested path.** `Workspace.resolve` used to return `EvalSymlinks`'s raw error
+   (`lstat /Users/<name>/…/x: no such file or directory`), which put the home directory into the model's context and
+   sent it to the provider, for `read_file` and `list_files` alike. Now: `x: no such file or directory`, the cause
+   still wrapped (`errors.Is(err, fs.ErrNotExist)` works); a non-`PathError` failure says only "can't be resolved".
+   Downside: a rare odd failure loses detail the model never needed.
+2. **`maxSearchFiles`** (config, default 10,000, positive): the most entries one `list_files` call *looks at*,
+   shown or not (hidden ones count: they cost work). Separate from the 1000-line output cap, which only bounds what
+   is returned; this bounds how long a recursive walk with a rarely matching pattern can run. Hitting it ends the
+   output with a "stopped after looking at N entries" note. Named for search because `search_files` (slice 2) will
+   reuse it. Checked by the tool that uses it (as `readFileMaxBytes` is), so `0` fails setup only when `list_files`
+   is enabled. Downside: one more config key; counting directories as well as files makes the name slightly loose.
+3. **An unreadable subdirectory is shown as `locked/ (not readable)`** in a recursive listing, so it isn't mistaken
+   for an empty one. A non-recursive listing never opens it, so it shows a plain `locked/`.
+
+Left as is (Jerry): listing through a symlinked path shows the target's paths; "1 bytes".
+
+### 2026-10-31 — `list_files`: `.git` contents not walked; one stop note; honest "no match"
+
+Files: `tools/builtin/listfiles.go`.
+
+- **A recursive listing shows `.git/` but doesn't go into it** (Jerry): `.git/ (contents not listed; list it directly
+  to see them)`. Its contents are git's data, not the project, and they would use up both caps (1000 lines, 10,000
+  `maxSearchFiles` visits). Matched case-insensitively, any depth; listing `.git` directly still works; a *file*
+  named `.git` (worktrees, submodules) is listed normally. A package variable `notWalked`, built in for now.
+  **Open (asked Jerry):** whether to skip every dot-directory, and whether the list should become a config default
+  (category 2: visible, extendable, named opt-out) and include `node_modules`-style directories.
+- **One `note` instead of `truncated`/`stopped` flags:** each is set just before the walk stops, so only one can ever
+  apply; the old `switch` that "chose" between them was dead logic.
+- **"No match" says when it is partial:** if the visit limit stopped the walk and nothing was listed, the message adds
+  `(only the first N entries were looked at)`, so the model doesn't read it as "there is no such file".
+
+### 2026-10-31 — `ignorePaths`: what `list_files` leaves out is config, not code
+
+Supersedes the built-in `notWalked = [".git"]` from the entry above. Files: `tools/builtin/ignorelist.go` (new),
+`tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `config/config.go`, `config/doc.go`.
+
+- **Jerry asked for a config field** listing paths `list_files` (and later `search_files`) ignore, e.g.
+  `[".git/", "*.pyc", "__pycache__/"]`. Default: `[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]`.
+- **Category 3 (user policy), not 2:** this filters noise, it protects nothing, so a config file's list *replaces*
+  the default (like `denyRules`) and `[]` turns it off. Contrast `denyFileNames`, which can only extend.
+- **Matching, same as `denyFileNames`:** `path.Match` on one name at a time, case-insensitive; a trailing `/` means
+  directories only. A `/` anywhere else, a `\`, an empty or malformed pattern fails setup (checked in
+  `SetupBuiltinTools` even when `list_files` is off). **Downside:** names, not paths: `build/output/` or `docs/*.tmp`
+  can't be said, and `"build/"` skips every directory of that name. Path patterns can be added later if needed.
+- **Behaviour:** an ignored *file* is left out (recursive or not); an ignored *directory* is shown, marked
+  `(contents not listed; list it directly to see them)` in a recursive listing, and not walked; listing it directly
+  works (the start directory is never ignored). Ignored entries count as one visit each against `maxSearchFiles`;
+  an ignored directory's contents cost nothing. The tool description lists the patterns, so a pattern search that
+  finds nothing inside `.git` is explained.
+- **Not part of `Workspace`:** the workspace holds safety rules ("may a tool touch this?"); ignoring is a per-tool
+  view, so `IgnoreList` is passed to the walking tools. `read_file` reads an ignored file normally.
+- **Downside:** `SetupBuiltinTools` now takes seven positional arguments, two of them `[]string` side by side
+  (`denyFileNames, ignorePaths`), which the compiler can't tell apart if swapped. An options struct would fix it;
+  not done yet.
+
+### 2026-10-31 — `SetupBuiltinTools(cfg config.Config)`
+
+Fixes the downside noted under `ignorePaths` (seven positional arguments, two `[]string` side by side). Jerry chose
+this over an options struct. Files: `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `tools/tool_test.go`.
+
+- **Same shape as the other capabilities** (`SetupChatContext`, `SetupMemoryStore`, `SetupProvider`,
+  `SetupMCPConns`, `SetupRecorder` all take `cfg`), as CLAUDE.md already said they should. A new setting is a new
+  `Config` field read inside; no signature change, no caller to fix.
+- **Downside:** `tools` now imports `config` (allowed: `config` is a leaf), and setup could read any setting, not
+  only the seven it uses. An options struct would have kept `tools` independent of `config` at the cost of copying
+  those fields. Tests use a small `builtinCfg(...)` helper over `GetDefaultConfig()`.
