@@ -392,6 +392,30 @@ func Test_SetupBuiltinTools_NoTools_BadWorkspace_Fails(t *testing.T) {
 	}
 }
 
+// - Verify SetupBuiltinTools builds list_files: ["list_files"] gives one tool named list_files, and
+// ["read_file","list_files"] gives both, in that order
+func Test_SetupBuiltinTools_ListFiles(t *testing.T) {
+	built, err := SetupBuiltinTools([]string{"list_files"}, t.TempDir(), "", 4096, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(built) != 1 || built[0].GetToolDefinition().Function.Name != "list_files" {
+		t.Fatalf("expected one list_files tool, got %d tools", len(built))
+	}
+
+	built, err = SetupBuiltinTools([]string{"read_file", "list_files"}, t.TempDir(), "", 4096, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]model.ToolDef, len(built))
+	for i, b := range built {
+		names[i] = b.GetToolDefinition()
+	}
+	if got, want := strings.Join(defNames(names), ","), "read_file,list_files"; got != want {
+		t.Errorf("expected tools %q, got %q", want, got)
+	}
+}
+
 // - Verify SetupBuiltinTools with a valid workDir and an empty tool list succeeds with zero tools
 func Test_SetupBuiltinTools_NoTools_ValidWorkDir_NoTools(t *testing.T) {
 	for _, toolList := range [][]string{nil, {}} {

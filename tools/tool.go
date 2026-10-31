@@ -40,6 +40,12 @@ func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxB
 				return nil, err
 			}
 			tools = append(tools, readFile)
+		case "list_files":
+			listFiles, err := builtin.NewListFilesTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, listFiles)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)

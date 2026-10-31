@@ -77,8 +77,8 @@
 // Tools:
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
-//	                the old spelling, still works)                                                         [["read_file"]]
-//	denyFileNames   extra file or directory name patterns read_file never reads, e.g. "*.secret",
+//	                the old spelling, still works), "list_files"                                           [["read_file"]]
+//	denyFileNames   extra file or directory name patterns the file tools never read or list, e.g. "*.secret",
 //	                "credentials.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
 //	                .ssh, .agent-trace), which can't be removed; matched against each part of the path,
 //	                case-insensitively (path.Match syntax, no / or \); .env.example is always allowed.

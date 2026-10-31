@@ -3450,3 +3450,24 @@ No change in what `read_file` allows. Files: `tools/builtin/workspace.go` (new),
   doesn't ask it. "Workspace" is the usual agent-tool word (Codex's `workspace-write`). `Jail` was the runner-up;
   like `Namespace`, it sounds stronger than a path check.
 
+
+### 2026-10-31 — File tools slice 1 built: `list_files`
+
+Files: `tools/builtin/listfiles.go` (new), `tools/tool.go`, `config/doc.go`. Opt-in (`builtinTools: ["list_files"]`).
+
+- **Arguments:** `path` (default the workDir), `pattern` (`path.Match` on each entry's *name*, case-sensitive),
+  `recursive`. **No `**` glob** (Jerry agreed): the standard library has no matcher for it, and `path` + `recursive` +
+  `pattern` covers nearly every use; only wildcards in the *middle* of a path (`src/*/internal/*.go`) need two calls.
+- **Same rules as reading:** the directory goes through `ws.resolve`; each walked entry goes through `ws.check` and
+  is **hidden silently** if refused (a hidden directory is not looked into). The tool description says sensitive
+  files and the trace directory are never shown. Downside: the model can't tell "no `.env`" from "hidden `.env`".
+- **Symlinks are listed (`name -> (symlink)`) but never followed or resolved** (Jerry agreed). The walk never
+  follows links, so an entry's path joined onto `rootDir` is already its real path, which is what `check` expects.
+  Downside: files under a symlinked directory don't appear.
+- **Walk through `fs.WalkDir(root.FS(), …)`:** `root.FS()` can't leave `rootDir` (second line of defence); entries
+  come in name order, so the output is stable. Unreadable subdirectories are skipped, not errors.
+- **Output:** one line per entry, relative to workDir (`sub/`, `a.txt (120 bytes)`), so a path can go straight to
+  `read_file`. **Cap: 1000 entries** (a constant); the truncation note appears only when more entries exist.
+- **Open:** `.git/` is listed and walked, so a recursive listing from the root spends most of the cap on it. Options:
+  skip `.git` contents by default (a *default* by the three-question test, with an opt-out), or leave it to the
+  model to list subdirectories.
