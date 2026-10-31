@@ -101,7 +101,8 @@
 //	"secrets"           a file or directory named secrets at any depth, and everything under that directory
 //	"secrets/"          trailing "/": directories only (still at any depth), and everything under them
 //	"secrets/*.env"     a "/" at the start or in the middle anchors the pattern at workDir: secrets/a.env, but not
-//	"/build"            secrets/old/a.env ("*" never crosses a "/") or app/secrets/a.env
+//	                    secrets/old/a.env ("*" never crosses a "/") or app/secrets/a.env
+//	"/build"            a leading "/" also anchors at workDir, so it matches only the top-level build path
 //
 // A matched directory covers everything under it, so the way to protect a whole tree is to deny the directory itself
 // ("secrets" or "secrets/"), not "secrets/*.env". Not supported: "**", "!" negation. A pattern with spaces at either
