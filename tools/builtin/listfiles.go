@@ -21,7 +21,7 @@ const maxListEntries = 1000
 type ListFilesTool struct {
 	ws        *Workspace // where it may list (shared with the other file tools)
 	maxVisits int        // most entries one call looks at (config maxSearchFiles), shown or not; bounds a recursive walk whose pattern rarely matches
-	ignore    IgnoreList // names left out (config ignorePaths); an ignored directory is shown but not walked
+	ignore    IgnoreList // paths left out (config ignorePaths); an ignored directory is shown, marked, but not walked or listed
 }
 
 // NewListFilesTool creates a list_files tool that lists only inside ws (NewWorkspace). maxVisits (config
@@ -41,7 +41,7 @@ func NewListFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*ListFil
 func (t *ListFilesTool) GetToolDefinition() model.ToolDef {
 	ignored := ""
 	if s := t.ignore.String(); s != "" {
-		ignored = "Names matching the ignore list (" + s + "; a trailing / means a directory) are left out; an ignored directory is shown but not walked, and listing it directly shows its contents (still without ignored names). "
+		ignored = "Paths matching the ignore list (" + s + "; .gitignore-style, relative to the working directory) are off limits: ignored files are left out, and an ignored directory is shown as \"dir/ (ignored)\" but its contents can't be listed. "
 	}
 	return model.NewToolDef(
 		"list_files",
@@ -112,6 +112,9 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is a file, not a directory", params.Path)
 	}
+	if t.ignore.Ignores(rel, true) {
+		return "", fmt.Errorf("cannot list %s (ignored path: it matches ignorePaths)", params.Path)
+	}
 
 	var lines []string
 	note, visits := "", 0 // note says why the walk stopped early, if it did (only one limit can stop it)
@@ -146,7 +149,7 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 			}
 			return nil
 		}
-		ignored := t.ignore.Ignores(d.Name(), d.IsDir())
+		ignored := t.ignore.Ignores(p, d.IsDir()) // p is relative to workDir, as ignore patterns are
 		if ignored && !d.IsDir() {
 			return nil // an ignored file (e.g. *.pyc) is left out
 		}
@@ -169,14 +172,14 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 				lines = append(lines, fmt.Sprintf("%s (%d bytes)", shown, fi.Size()))
 			}
 		}
-		// A directory that doesn't match the pattern is still walked when recursive ("*.go" finds cmd/main.go)
-		if d.IsDir() && !params.Recursive {
+		if ignored { // an ignored directory (e.g. .git/) is shown, marked, but never walked
+			if len(lines) > 0 && lines[len(lines)-1] == filepath.FromSlash(p)+"/" {
+				lines[len(lines)-1] += " (ignored)"
+			}
 			return fs.SkipDir
 		}
-		if ignored { // an ignored directory (e.g. .git/) is shown but not walked; the start directory itself never is
-			if len(lines) > 0 && lines[len(lines)-1] == filepath.FromSlash(p)+"/" {
-				lines[len(lines)-1] += " (contents not listed; list it directly to see them)"
-			}
+		// A directory that doesn't match the pattern is still walked when recursive ("*.go" finds cmd/main.go)
+		if d.IsDir() && !params.Recursive {
 			return fs.SkipDir
 		}
 		return nil

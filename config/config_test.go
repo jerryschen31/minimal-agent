@@ -710,21 +710,21 @@ func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
 	}
 }
 
-// - Verify denyFileNames is empty by default, so only the built-in file deny list applies
-func Test_Unit_GetDefaultConfig_DenyFileNames_Empty(t *testing.T) {
-	if got := GetDefaultConfig().DenyFileNames; len(got) != 0 {
-		t.Errorf("expected no default DenyFileNames, got %q", got)
+// - Verify denyPaths is empty by default, so only the built-in file deny list applies
+func Test_Unit_GetDefaultConfig_DenyPaths_Empty(t *testing.T) {
+	if got := GetDefaultConfig().DenyPaths; len(got) != 0 {
+		t.Errorf("expected no default DenyPaths, got %q", got)
 	}
 }
 
-// - Verify "denyFileNames" in a config file is applied as given, without a warning, and a file without the key leaves it empty
-func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T) {
+// - Verify "denyPaths" in a config file is applied as given, without a warning, and a file without the key leaves it empty
+func Test_Unit_SetDefaultConfig_DenyPaths_AppliedWithoutWarning(t *testing.T) {
 	cases := []struct {
 		desc string
 		json string
 		want []string
 	}{
-		{"a list is applied", `{"denyFileNames": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
+		{"a list is applied", `{"denyPaths": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
 		{"no key leaves it empty", `{"model": "fake-model"}`, nil},
 	}
 	for _, c := range cases {
@@ -738,8 +738,8 @@ func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T
 			if err != nil {
 				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
 			}
-			if !slices.Equal(cfg.DenyFileNames, c.want) {
-				t.Errorf("DenyFileNames = %q, want %q", cfg.DenyFileNames, c.want)
+			if !slices.Equal(cfg.DenyPaths, c.want) {
+				t.Errorf("DenyPaths = %q, want %q", cfg.DenyPaths, c.want)
 			}
 			if out != "" {
 				t.Errorf("expected no warnings, got %q", out)
@@ -748,19 +748,39 @@ func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T
 	}
 }
 
-// - Verify /config shows denyFileNames, both when set and when empty
-func Test_Unit_PrintConfig_ShowsDenyFileNames(t *testing.T) {
+// - Verify the old key "denyFileNames" is no longer recognized (renamed to denyPaths, no fallback): a config file that
+// still uses it gets an unrecognized-field warning and its patterns are NOT applied (the documented downside)
+func Test_Unit_SetDefaultConfig_OldDenyFileNamesKey_WarnsAndNotApplied(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"denyFileNames": ["*.secret"]}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if len(cfg.DenyPaths) != 0 {
+		t.Errorf("expected the old key's patterns not to be applied, got DenyPaths = %q", cfg.DenyPaths)
+	}
+	if !strings.HasPrefix(out, "[warning]") || !strings.Contains(out, `unrecognized field "denyFileNames"`) {
+		t.Errorf("expected an unrecognized-field warning naming denyFileNames, got %q", out)
+	}
+}
+
+// - Verify /config shows denyPaths on its own aligned line, both when set and when empty
+func Test_Unit_PrintConfig_ShowsDenyPaths(t *testing.T) {
 	for _, c := range []struct {
 		names []string
 		want  string
 	}{
-		{[]string{"*.secret", "creds.json"}, "denyFileNames: [*.secret creds.json] (added to the built-in list)"},
-		{nil, "denyFileNames: [] (added to the built-in list)"},
+		{[]string{"*.secret", "creds.json"}, "  denyPaths:     [*.secret creds.json] (added to the built-in list)\n"},
+		{nil, "  denyPaths:     [] (added to the built-in list)\n"},
 	} {
 		var out bytes.Buffer
 		cfg := GetDefaultConfig()
 		cfg.OutBuffer = &out
-		cfg.DenyFileNames = c.names
+		cfg.DenyPaths = c.names
 
 		PrintConfig(cfg)
 

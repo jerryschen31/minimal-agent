@@ -324,22 +324,22 @@ func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *tes
 	}
 }
 
-// - Verify a bad denyFileNames pattern fails SetupBuiltinTools, with no tools enabled as well as with read_file,
+// - Verify a bad denyPaths pattern fails SetupBuiltinTools, with no tools enabled as well as with read_file,
 // so a typo in the config stops startup instead of silently protecting nothing
-func Test_SetupBuiltinTools_DenyFileNames_BadPattern_Fails(t *testing.T) {
-	for _, bad := range []string{"[abc", "sub/creds.json", ""} {
+func Test_SetupBuiltinTools_DenyPaths_BadPattern_Fails(t *testing.T) {
+	for _, bad := range []string{"[abc", "sub//creds.json", "../creds.json", " creds.json", ""} {
 		for _, toolList := range [][]string{nil, {}, {"read_file"}} {
 			built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, []string{"*.secret", bad}, nil))
-			if err == nil || !strings.Contains(err.Error(), "denyFileNames") {
-				t.Errorf("pattern %q, tools %v: expected a denyFileNames error, got (%d tools, %v)", bad, toolList, len(built), err)
+			if err == nil || !strings.Contains(err.Error(), "denyPaths") {
+				t.Errorf("pattern %q, tools %v: expected a denyPaths error, got (%d tools, %v)", bad, toolList, len(built), err)
 			}
 		}
 	}
 }
 
-// - Verify SetupBuiltinTools passes denyFileNames through to read_file: a matching file is refused (the error names the
+// - Verify SetupBuiltinTools passes denyPaths through to read_file: a matching file is refused (the error names the
 // pattern), a non-matching one still reads, and the built-ins stay denied
-func Test_SetupBuiltinTools_DenyFileNames_Enforced(t *testing.T) {
+func Test_SetupBuiltinTools_DenyPaths_Enforced(t *testing.T) {
 	work := t.TempDir()
 	for name, body := range map[string]string{"creds.json": "FAKE_SECRET_TOKEN_123", "notes.txt": "ALLOWED-NOTES", ".env": "FAKE_SECRET_TOKEN_123"} {
 		if err := os.WriteFile(filepath.Join(work, name), []byte(body), 0o644); err != nil {
@@ -461,7 +461,7 @@ func Test_SetupBuiltinTools_ReadFileOnly_MaxSearchFilesNotChecked(t *testing.T) 
 
 // - Verify a bad ignorePaths pattern fails SetupBuiltinTools with an ignorePaths error, even with no tools enabled
 func Test_SetupBuiltinTools_IgnorePaths_BadPattern_Fails(t *testing.T) {
-	for _, bad := range []string{"[abc", "sub/x", ""} {
+	for _, bad := range []string{"[abc", "sub//x", "./x", "x ", ""} {
 		for _, toolList := range [][]string{nil, {}, {"list_files"}} {
 			built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, nil, []string{"*.tmp", bad}))
 			if err == nil || !strings.Contains(err.Error(), "ignorePaths") || len(built) != 0 {
@@ -505,10 +505,10 @@ func Test_SetupBuiltinTools_ListFiles_IgnorePaths(t *testing.T) {
 }
 
 // builtinCfg builds the config SetupBuiltinTools reads, from the settings these tests vary.
-func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, maxSearchFiles int, denyFileNames, ignorePaths []string) config.Config {
+func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, maxSearchFiles int, denyPaths, ignorePaths []string) config.Config {
 	cfg := config.GetDefaultConfig()
 	cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir = toolList, workDir, traceDir
 	cfg.ReadFileMaxBytes, cfg.MaxSearchFiles = readFileMaxBytes, maxSearchFiles
-	cfg.DenyFileNames, cfg.IgnorePaths = denyFileNames, ignorePaths
+	cfg.DenyPaths, cfg.IgnorePaths = denyPaths, ignorePaths
 	return cfg
 }

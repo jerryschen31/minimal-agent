@@ -511,8 +511,8 @@ func Test_Unit_IsDenied(t *testing.T) {
 		"a.txt": false, "sub/b.txt": false, "ssh/config": false, "src/id_ed25519_notes.txt": false,
 	}
 	for rel, want := range cases {
-		if got := (DenyList{}).IsDenied(rel); got != want {
-			t.Errorf("DenyList{}.IsDenied(%q) = %v, want %v", rel, got, want)
+		if got := (DenyList{}).IsDenied(rel, false); got != want {
+			t.Errorf("DenyList{}.IsDenied(%q, false) = %v, want %v", rel, got, want)
 		}
 	}
 }

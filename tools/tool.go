@@ -20,11 +20,11 @@ type Tool interface {
 }
 
 // SetupBuiltinTools builds the built-in tools named in cfg.BuiltinTools. cfg.WorkDir, cfg.TraceDir and
-// cfg.DenyFileNames make the workspace the file tools share (workDir and below, minus the trace files and deny-listed
+// cfg.DenyPaths make the workspace the file tools share (workDir and below, minus the trace files and deny-listed
 // names). The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
 // pattern always fails setup.
 func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
-	deny, err := builtin.NewDenyList(cfg.DenyFileNames)
+	deny, err := builtin.NewDenyList(cfg.DenyPaths)
 	if err != nil {
 		return nil, err
 	}

@@ -649,19 +649,19 @@ func makeGitTree(t *testing.T, dir string) {
 	writeFile(t, dir, "z.txt", []byte("x"))
 }
 
-// gitSkipped is the line a recursive listing shows for a .git directory at rel.
-func gitSkipped(rel string) string {
-	return filepath.FromSlash(rel) + "/ (contents not listed; list it directly to see them)"
+// ignoredDir is the line a listing shows for an ignored directory (such as .git) at rel.
+func ignoredDir(rel string) string {
+	return filepath.FromSlash(rel) + "/ (ignored)"
 }
 
-// - Verify a recursive listing shows .git with a "contents not listed" mark but doesn't walk it, while the entries
-// around it are listed as usual
+// - Verify a recursive listing shows .git with the "(ignored)" mark but doesn't walk it, while the entries around it
+// are listed as usual
 func Test_Unit_ListFiles_Recursive_GitDirShownNotWalked(t *testing.T) {
 	dir := t.TempDir()
 	makeGitTree(t, dir)
 
 	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", true)
-	if want := lines(gitSkipped(".git"), "a.txt (1 bytes)", "z.txt (1 bytes)"); got != want {
+	if want := lines(ignoredDir(".git"), "a.txt (1 bytes)", "z.txt (1 bytes)"); got != want {
 		t.Errorf("expected\n%s\ngot\n%s", want, got)
 	}
 }
@@ -672,46 +672,45 @@ func Test_Unit_ListFiles_Recursive_GitDirCaseInsensitive(t *testing.T) {
 	writeFile(t, dir, ".Git/HEAD", []byte("ref: refs/heads/fake"))
 
 	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", true)
-	if want := gitSkipped(".Git"); got != want {
+	if want := ignoredDir(".Git"); got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
-// - Verify a non-recursive listing shows .git as a plain "name/" line, with no mark (it is never walked anyway)
-func Test_Unit_ListFiles_NonRecursive_GitDirPlainLine(t *testing.T) {
+// - Verify a non-recursive listing also shows .git with the "(ignored)" mark, so the model knows not to list it
+func Test_Unit_ListFiles_NonRecursive_GitDirMarkedIgnored(t *testing.T) {
 	dir := t.TempDir()
 	makeGitTree(t, dir)
 
 	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", false)
-	if want := lines(".git/", "a.txt (1 bytes)", "z.txt (1 bytes)"); got != want {
+	if want := lines(ignoredDir(".git"), "a.txt (1 bytes)", "z.txt (1 bytes)"); got != want {
 		t.Errorf("expected\n%s\ngot\n%s", want, got)
 	}
 }
 
-// - Verify listing .git directly lists its contents, recursive or not (the start directory is not subject to
-// the ignore list); a .git nested below the start directory is still not walked
-func Test_Unit_ListFiles_GitDirAsPath_ListsContents(t *testing.T) {
+// expectCannotList fails the test unless listing path (recursive or not) is refused as an ignored path, with no output
+// and an error that names the requested path.
+func expectCannotList(t *testing.T, tool *ListFilesTool, path string) {
+	t.Helper()
+	for _, recursive := range []bool{false, true} {
+		got, err := callList(tool, path, "", recursive)
+		want := "cannot list " + path + " (ignored path: it matches ignorePaths)"
+		if err == nil || got != "" || err.Error() != want {
+			t.Errorf("list_files(path=%q, recursive=%v) = (%q, %v), want the error %q", path, recursive, got, err, want)
+		}
+	}
+}
+
+// - Verify listing .git directly, or a directory inside it, is refused (an ignored directory covers everything under
+// it), recursive or not
+func Test_Unit_ListFiles_GitDirAsPath_Refused(t *testing.T) {
 	dir := t.TempDir()
 	makeGitTree(t, dir)
-	writeFile(t, dir, ".git/modules/.git/inner", []byte("x"))
 	tool := newListTool(t, dir, "", DenyList{})
 
-	got := mustList(t, tool, ".git", "", false)
-	want := lines(filepath.Join(".git", "HEAD")+" (20 bytes)", filepath.Join(".git", "hooks")+"/", filepath.Join(".git", "modules")+"/")
-	if got != want {
-		t.Errorf("non-recursive: expected\n%s\ngot\n%s", want, got)
-	}
-	got = mustList(t, tool, ".git", "", true)
-	want = lines(
-		filepath.Join(".git", "HEAD")+" (20 bytes)",
-		filepath.Join(".git", "hooks")+"/",
-		filepath.Join(".git", "hooks", "x.go")+" (1 bytes)",
-		filepath.Join(".git", "modules")+"/",
-		gitSkipped(".git/modules/.git"),
-	)
-	if got != want {
-		t.Errorf("recursive: expected\n%s\ngot\n%s", want, got)
-	}
+	expectCannotList(t, tool, ".git")
+	expectCannotList(t, tool, filepath.Join(".git", "hooks"))
+	expectCannotList(t, tool, ".GIT") // case-insensitive
 }
 
 // - Verify a nested sub/.git is also not walked in a recursive listing
@@ -721,7 +720,7 @@ func Test_Unit_ListFiles_Recursive_NestedGitDirNotWalked(t *testing.T) {
 	writeFile(t, dir, "sub/main.go", []byte("x"))
 
 	got := mustList(t, newListTool(t, dir, "", DenyList{}), ".", "", true)
-	if want := lines("sub/", gitSkipped("sub/.git"), filepath.Join("sub", "main.go")+" (1 bytes)"); got != want {
+	if want := lines("sub/", ignoredDir("sub/.git"), filepath.Join("sub", "main.go")+" (1 bytes)"); got != want {
 		t.Errorf("expected\n%s\ngot\n%s", want, got)
 	}
 }
@@ -763,7 +762,7 @@ func Test_Unit_ListFiles_Recursive_GitContentsNotVisits(t *testing.T) {
 	writeFile(t, dir, "b.txt", []byte("x"))
 
 	got := mustList(t, newListToolMax(t, dir, 3), ".", "", true)
-	if want := lines(gitSkipped(".git"), "a.txt (1 bytes)", "b.txt (1 bytes)"); got != want {
+	if want := lines(ignoredDir(".git"), "a.txt (1 bytes)", "b.txt (1 bytes)"); got != want {
 		t.Errorf("expected\n%s\ngot\n%s", want, got)
 	}
 }
@@ -802,8 +801,8 @@ func Test_Unit_ListFiles_IgnoredFile_LeftOut(t *testing.T) {
 	}
 }
 
-// - Verify an ignored directory is shown as a plain "name/" line when not recursive, and with the "contents not
-// listed" mark and not walked when recursive; a file with the same name as a directory-only pattern is still listed
+// - Verify an ignored directory is shown with the "(ignored)" mark and not walked, recursive or not; a file with the
+// same name as a directory-only pattern is still listed
 func Test_Unit_ListFiles_IgnoredDir_ShownNotWalked(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "node_modules/pkg/index.js", []byte("x"))
@@ -811,11 +810,11 @@ func Test_Unit_ListFiles_IgnoredDir_ShownNotWalked(t *testing.T) {
 	writeFile(t, dir, "z.js", []byte("x"))
 	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "node_modules/")
 
-	if got, want := mustList(t, tool, ".", "", false), lines("node_modules/", "sub/", "z.js (1 bytes)"); got != want {
+	if got, want := mustList(t, tool, ".", "", false), lines(ignoredDir("node_modules"), "sub/", "z.js (1 bytes)"); got != want {
 		t.Errorf("non-recursive: expected\n%s\ngot\n%s", want, got)
 	}
 	got := mustList(t, tool, ".", "", true)
-	want := lines(gitSkipped("node_modules"), "sub/", filepath.Join("sub", "node_modules")+" (1 bytes)", "z.js (1 bytes)")
+	want := lines(ignoredDir("node_modules"), "sub/", filepath.Join("sub", "node_modules")+" (1 bytes)", "z.js (1 bytes)")
 	if got != want {
 		t.Errorf("recursive: expected\n%s\ngot\n%s", want, got)
 	}
@@ -830,7 +829,7 @@ func Test_Unit_ListFiles_IgnoredDir_WithPattern(t *testing.T) {
 	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "node_modules/")
 
 	got := mustList(t, tool, ".", "node_*", true)
-	if want := lines(gitSkipped("node_modules"), filepath.Join("src", "node_main.js")+" (1 bytes)"); got != want {
+	if want := lines(ignoredDir("node_modules"), filepath.Join("src", "node_main.js")+" (1 bytes)"); got != want {
 		t.Errorf("matching pattern: expected\n%s\ngot\n%s", want, got)
 	}
 	got = mustList(t, tool, ".", "*.js", true)
@@ -839,23 +838,18 @@ func Test_Unit_ListFiles_IgnoredDir_WithPattern(t *testing.T) {
 	}
 }
 
-// - Verify listing an ignored directory directly lists its contents (the start directory is never ignored), while
-// ignored files inside it are still left out and an ignored directory nested in it is still not walked
-func Test_Unit_ListFiles_IgnoredDirAsPath_ListsContentsMinusIgnored(t *testing.T) {
+// - Verify listing an ignored directory directly, or any directory inside it, is an error that names the requested
+// path (models must not reach ignored paths), while workDir itself (".") is never ignored
+func Test_Unit_ListFiles_IgnoredDirAsPath_Refused(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "node_modules/index.js", []byte("x"))
-	writeFile(t, dir, "node_modules/cache.pyc", []byte("x"))
-	writeFile(t, dir, "node_modules/dep/node_modules/inner.js", []byte("x"))
-	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "node_modules/", "*.pyc")
+	writeFile(t, dir, "node_modules/pkg/index.js", []byte("x"))
+	writeFile(t, dir, "a.js", []byte("x"))
+	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "node_modules/")
 
-	got := mustList(t, tool, "node_modules", "", true)
-	want := lines(
-		filepath.Join("node_modules", "dep")+"/",
-		gitSkipped("node_modules/dep/node_modules"),
-		filepath.Join("node_modules", "index.js")+" (1 bytes)",
-	)
-	if got != want {
-		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	expectCannotList(t, tool, "node_modules")
+	expectCannotList(t, tool, filepath.Join("node_modules", "pkg"))
+	if got, want := mustList(t, tool, ".", "", false), lines("a.js (1 bytes)", ignoredDir("node_modules")); got != want {
+		t.Errorf("listing .: expected\n%s\ngot\n%s", want, got)
 	}
 }
 
@@ -875,7 +869,7 @@ func Test_Unit_ListFiles_IgnoredEntriesCountAsVisits(t *testing.T) {
 }
 
 // - Verify the deny list wins over the ignore list: a directory that is both deny-listed and ignored is hidden
-// entirely, not shown with the "contents not listed" mark
+// entirely, not shown with the "(ignored)" mark
 func Test_Unit_ListFiles_IgnoredAndDenied_Hidden(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, ".ssh/id_ed25519", []byte("FAKE_SECRET_TOKEN_123"))
@@ -907,11 +901,89 @@ func Test_Unit_ListFiles_EmptyIgnoreList_WalksEverything(t *testing.T) {
 // an ignore list when it is empty
 func Test_Unit_ListFiles_GetToolDefinition_MentionsIgnoreListOnlyWhenSet(t *testing.T) {
 	desc := newListToolIgnore(t, t.TempDir(), 10000, DenyList{}, ".Git/", "*.pyc").GetToolDefinition().Function.Desc
-	if !strings.Contains(desc, "Names matching the ignore list (.git/, *.pyc;") {
+	if !strings.Contains(desc, "Paths matching the ignore list (.git/, *.pyc; .gitignore-style, relative to the working directory) are off limits") {
 		t.Errorf("expected the description to name the ignore list, got %q", desc)
 	}
 	desc = newListToolIgnore(t, t.TempDir(), 10000, DenyList{}).GetToolDefinition().Function.Desc
 	if strings.Contains(desc, "ignore list") || strings.Contains(desc, "ignored") {
 		t.Errorf("expected no ignore list in the description, got %q", desc)
+	}
+}
+
+//*************************************//
+// Path patterns (denyPaths, ignorePaths)
+//*************************************//
+
+// - Verify list_files hides what denyPaths path patterns match ("secrets/" and everything in it, the anchored
+// config/creds.json), shows the look-alikes, and refuses to list the denied directory directly
+func Test_Unit_ListFiles_DenyPaths_PathPatterns(t *testing.T) {
+	dir := t.TempDir()
+	makeDenyPathsTree(t, dir)
+	tool := newListTool(t, dir, "", newDenyList(t, "secrets/", "config/creds.json"))
+
+	got := mustList(t, tool, ".", "", true)
+	want := lines(
+		"config/",
+		filepath.Join("config", "other.json")+" (13 bytes)",
+		"notes/",
+		filepath.Join("notes", "secrets")+" (26 bytes)",
+		"other/",
+		filepath.Join("other", "config")+"/",
+		filepath.Join("other", "config", "creds.json")+" (14 bytes)",
+	)
+	if got != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	}
+	for _, p := range []string{"secrets", filepath.Join("secrets", "old")} {
+		if got, err := callList(tool, p, "", false); err == nil || !strings.Contains(err.Error(), "deny list") {
+			t.Errorf("listing %q: expected a deny-list error, got (%q, %v)", p, got, err)
+		}
+	}
+}
+
+// - Verify an anchored ignore pattern ("docs/*.tmp") leaves out docs/a.tmp only: docs/sub/a.tmp and other/docs/a.tmp
+// are listed
+func Test_Unit_ListFiles_IgnorePaths_AnchoredFilePattern(t *testing.T) {
+	dir := t.TempDir()
+	for _, rel := range []string{"docs/a.tmp", "docs/a.md", "docs/sub/a.tmp", "other/docs/a.tmp"} {
+		writeFile(t, dir, rel, []byte("x"))
+	}
+	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "docs/*.tmp")
+
+	got := mustList(t, tool, ".", "", true)
+	want := lines(
+		"docs/",
+		filepath.Join("docs", "a.md")+" (1 bytes)",
+		filepath.Join("docs", "sub")+"/",
+		filepath.Join("docs", "sub", "a.tmp")+" (1 bytes)",
+		"other/",
+		filepath.Join("other", "docs")+"/",
+		filepath.Join("other", "docs", "a.tmp")+" (1 bytes)",
+	)
+	if got != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	}
+	// listing docs directly matches the pattern on the path from workDir, not from the listed directory
+	if got, want := mustList(t, tool, "docs", "", false), lines(filepath.Join("docs", "a.md")+" (1 bytes)", filepath.Join("docs", "sub")+"/"); got != want {
+		t.Errorf("listing docs: expected\n%s\ngot\n%s", want, got)
+	}
+}
+
+// - Verify an anchored directory pattern ("/build") marks the top-level build/ as ignored and doesn't walk it, while
+// src/build is listed and walked; listing build directly is refused, src/build is not
+func Test_Unit_ListFiles_IgnorePaths_AnchoredDirPattern(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "build/out.o", []byte("x"))
+	writeFile(t, dir, "src/build/x.o", []byte("x"))
+	tool := newListToolIgnore(t, dir, 10000, DenyList{}, "/build")
+
+	got := mustList(t, tool, ".", "", true)
+	want := lines(ignoredDir("build"), "src/", filepath.Join("src", "build")+"/", filepath.Join("src", "build", "x.o")+" (1 bytes)")
+	if got != want {
+		t.Errorf("expected\n%s\ngot\n%s", want, got)
+	}
+	expectCannotList(t, tool, "build")
+	if got, want := mustList(t, tool, filepath.Join("src", "build"), "", false), filepath.Join("src", "build", "x.o")+" (1 bytes)"; got != want {
+		t.Errorf("listing src/build: expected %q, got %q", want, got)
 	}
 }

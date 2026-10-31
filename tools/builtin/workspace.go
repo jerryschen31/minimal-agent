@@ -17,7 +17,7 @@ import (
 type Workspace struct {
 	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
 	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	deny     DenyList // names never touched (the built-ins plus config denyFileNames)
+	deny     DenyList // names never touched (the built-ins plus config denyPaths)
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not be workDir or a parent of it).
@@ -79,7 +79,12 @@ func (w *Workspace) check(requested, real string) (rel string, err error) {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s is outside the allowed directory", requested)
 	}
-	if w.deny.IsDenied(rel) {
+	// A pattern ending in "/" matches directories only. A path that can't be stat'ed (most often one that doesn't exist
+	// yet, a file about to be written) counts as a directory here, so such a pattern refuses it too: refusing too much
+	// is the safe way to be wrong.
+	info, statErr := os.Stat(real)
+	isDir := statErr != nil || info.IsDir()
+	if w.deny.IsDenied(rel, isDir) {
 		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(w.deny.Patterns(), ", "))
 	}
 	if w.traceDir != "" && isWithin(w.traceDir, real) {

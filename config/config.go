@@ -77,10 +77,10 @@ type Config struct {
 	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files call looks at, shown or not; must be positive (default 10,000)
 
 	// tools and MCP servers configuration
-	BuiltinTools  []string                   `json:"builtinTools"`  // names of built-in tools to enable
-	DenyFileNames []string                   `json:"denyFileNames"` // name patterns the file tools never read, added to the built-in list (which can't be removed)
-	IgnorePaths   []string                   `json:"ignorePaths"`   // name patterns list_files leaves out ("dir/" = directories only, shown but not walked); a config file's list replaces the default, [] = none
-	McpServers    map[string]McpServerConfig `json:"mcpServers"`    // configuration for MCP servers
+	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
+	DenyPaths    []string                   `json:"denyPaths"`    // .gitignore-style path patterns the file tools never touch, added to the built-in list (which can't be removed)
+	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files leaves out (an ignored directory can't be listed); a config file's list replaces the default, [] = none
+	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
 }
 
 type McpServerConfig struct {
@@ -279,7 +279,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  maxSearchFiles: %d\n", cfg.MaxSearchFiles)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
-	fmt.Fprintf(w, "  denyFileNames: %v (added to the built-in list)\n", cfg.DenyFileNames)
+	fmt.Fprintf(w, "  denyPaths:     %v (added to the built-in list)\n", cfg.DenyPaths)
 	fmt.Fprintf(w, "  ignorePaths:   %v\n", cfg.IgnorePaths)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
 	if len(cfg.McpServers) == 0 {

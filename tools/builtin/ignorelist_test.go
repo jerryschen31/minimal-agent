@@ -15,10 +15,10 @@ func newIgnoreList(t *testing.T, patterns ...string) IgnoreList {
 	return l
 }
 
-// - Verify NewIgnoreList refuses an empty or whitespace-only name, a "/" anywhere but the end, a "\" and a malformed
-// pattern, each with an error that starts with "ignorePaths:" and names the pattern
+// - Verify NewIgnoreList refuses an empty or whitespace-only pattern, spaces at an end, an empty, "." or ".." part, a
+// "\" and a malformed pattern, each with an error that starts with "ignorePaths:" and names the pattern
 func Test_Unit_NewIgnoreList_BadPattern_ReturnsError(t *testing.T) {
-	for _, bad := range []string{"", " ", "/", "  /", "//", "a/b", "/x", "a/b/", `a\b`, `\`, "[x", "[x/"} {
+	for _, bad := range []string{"", " ", "/", "  /", "//", "a//b", "./x", "a/..", " *.pyc", "*.pyc ", `a\b`, `\`, "[x", "[x/"} {
 		l, err := NewIgnoreList([]string{"*.log", bad})
 		if err == nil || !strings.HasPrefix(err.Error(), "ignorePaths:") {
 			t.Errorf("pattern %q: expected an error starting with ignorePaths:, got %v", bad, err)
@@ -33,10 +33,10 @@ func Test_Unit_NewIgnoreList_BadPattern_ReturnsError(t *testing.T) {
 	}
 }
 
-// - Verify NewIgnoreList accepts plain names, wildcards and a trailing "/", and nil or empty input gives a list that
-// ignores nothing
+// - Verify NewIgnoreList accepts plain names, wildcards, a trailing "/" and anchored paths ("/build", "docs/*.tmp"), and
+// nil or empty input gives a list that ignores nothing
 func Test_Unit_NewIgnoreList_ValidPatterns_Accepted(t *testing.T) {
-	for _, ok := range [][]string{nil, {}, {".git/"}, {"*.pyc", "node_modules/", "build?", "[abc]*", ".env*"}} {
+	for _, ok := range [][]string{nil, {}, {".git/"}, {"*.pyc", "node_modules/", "build?", "[abc]*", ".env*"}, {"/build", "docs/*.tmp", "a/b/", "my file.txt"}} {
 		if _, err := NewIgnoreList(ok); err != nil {
 			t.Errorf("patterns %q: unexpected error %v", ok, err)
 		}

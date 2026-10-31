@@ -146,8 +146,8 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 		fmt.Fprintf(w, "  %-28s %s\n", def.Name, firstLine(def.Desc))
 		if def.Name == "read_file" {
 			fmt.Fprintf(w, "  %-28s never reads: %s (.env.example is allowed)\n", "", strings.Join(builtin.DeniedNames(), ", "))
-			if len(cfg.DenyFileNames) > 0 {
-				fmt.Fprintf(w, "  %-28s also never reads (denyFileNames): %s\n", "", safeText(strings.Join(cfg.DenyFileNames, ", ")))
+			if len(cfg.DenyPaths) > 0 {
+				fmt.Fprintf(w, "  %-28s also never reads (denyPaths): %s\n", "", safeText(strings.Join(cfg.DenyPaths, ", ")))
 			}
 			if cfg.TraceDir != "" {
 				fmt.Fprintf(w, "  %-28s never reads: anything in the trace directory (%s)\n", "", safeText(cfg.TraceDir))

@@ -3544,3 +3544,47 @@ this over an options struct. Files: `tools/tool.go`, `agent/agent.go`, `agent/in
 - **Downside:** `tools` now imports `config` (allowed: `config` is a leaf), and setup could read any setting, not
   only the seven it uses. An options struct would have kept `tools` independent of `config` at the cost of copying
   those fields. Tests use a small `builtinCfg(...)` helper over `GetDefaultConfig()`.
+
+### 2026-10-31 — `denyPaths` and `ignorePaths` share .gitignore-style path patterns
+
+Supersedes the names-only matching of `denyFileNames` (item 6) and `ignorePaths` (earlier today), and the rule that
+listing an ignored directory directly still works. Files: `tools/builtin/pathpattern.go` (new),
+`tools/builtin/denylist.go`, `tools/builtin/ignorelist.go`, `tools/builtin/workspace.go`,
+`tools/builtin/listfiles.go`, `config/config.go`, `config/doc.go`, `agent/info.go`, `CLAUDE.md`.
+
+- **Jerry's rules, which are .gitignore's** (paths relative to workDir, case-insensitive): no `/` = a name at any depth
+  (`.env`; `*.env` is broader, it also matches `prod.env`); a `/` at the start or middle anchors at workDir
+  (`secrets/*.env` = secrets/a.env only, not secrets/old/a.env or app/secrets/a.env, since `*` never crosses `/`); a
+  trailing `/` = directories only; **a matched directory covers everything under it**. No `**`, no `!`.
+- **One matcher, `matchPath`, for both lists:** it tests rel and every directory above it, so deny and ignore behave
+  the same. Consequence (Jerry: "models should not be able to access paths that are in ignorePaths"): `list_files`
+  shows an ignored directory as `dir/ (ignored)` and refuses to list it directly (`cannot list <dir> (ignored path:
+  …)`). `read_file` is not yet affected (open question below).
+- **`denyFileNames` renamed `denyPaths`**, no fallback for the old key (Jerry: no users yet). Downside: an old config
+  with `denyFileNames` only gets the unknown-key warning, and its extra patterns are not applied.
+- **The doc says how to protect a tree:** deny the directory (`secrets` or `secrets/`), not `secrets/*.env`.
+- **Validation (both lists):** spaces at either end (closes the whitespace gap from item 6), `\`, an empty, `.` or `..`
+  part, or a malformed pattern fail setup.
+- **`check` needs to know whether the path is a directory** (for `dir/` patterns): it `Stat`s the resolved path; a
+  path that doesn't exist counts as a directory, so a `dir/` deny pattern also refuses a not-yet-written file of that
+  name (refusing too much is the safe way to be wrong). Downside: one extra `stat` per checked path, including per
+  listed entry.
+- **`.env.example` stays exempt** from every deny pattern, built-in or configured, even an anchored one.
+- **Open:** should `read_file` (and later tools) also refuse ignored paths? Jerry's principle suggests yes; it would
+  make `ignorePaths` a second, replaceable deny list.
+
+### 2026-10-31 — `ignorePaths` is for listing and searching only
+
+Resolves the open question in the entry above. **Jerry:** `read_file` still reads ignored paths but never `denyPaths`
+ones; `ignorePaths` applies only to `list_files` and `search_files`. This is how the code already behaves (only
+`list_files` reads the ignore list; `config/doc.go` says "read_file still reads them"), so nothing changed. Why: ignored
+paths are noise, not secrets, and the model sometimes needs a file inside one (a library source in `node_modules` to
+understand an error). The write tools (slices 4–6) follow `denyPaths` only, unless decided otherwise then.
+
+### 2026-10-31 — `.env.example` is exempt only as the last part of a path
+
+Found by the path-pattern test sub-agent: with `config/*` denied, `config/.env.example/creds.json` could be read,
+because `matchPath` skipped the `.env.example` directory and `*` can't reach the file below it. Now the exemption
+applies only to the last part of the path (`tools/builtin/pathpattern.go`): `config/.env.example` is still allowed,
+anything inside a directory of that name is checked as usual (built-in `.env.*` also denies such a directory).
+Downside: none known; it only refuses more.

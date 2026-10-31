@@ -927,35 +927,35 @@ func Test_Unit_SafeMCPError_StdioServers_Unchanged(t *testing.T) {
 	}
 }
 
-// - Verify read_file gets an "also never reads (denyFileNames): ..." line listing the config's extra patterns
-func Test_Unit_PrintInfo_BuiltinTools_DenyFileNamesLine(t *testing.T) {
+// - Verify read_file gets an "also never reads (denyPaths): ..." line listing the config's extra patterns
+func Test_Unit_PrintInfo_BuiltinTools_DenyPathsLine(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.DenyFileNames = []string{"*.secret", "creds.json"}
+	cfg.DenyPaths = []string{"*.secret", "creds.json"}
 
 	code, out := runInfo(t, cfg, "")
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if want := "also never reads (denyFileNames): *.secret, creds.json\n"; !strings.Contains(out, want) {
+	if want := "also never reads (denyPaths): *.secret, creds.json\n"; !strings.Contains(out, want) {
 		t.Errorf("expected %q in output:\n%s", want, out)
 	}
 }
 
-// - Verify no denyFileNames (nil or empty) prints no extra deny-list line, while the built-in line is still shown
-func Test_Unit_PrintInfo_BuiltinTools_NoDenyFileNames_NoLine(t *testing.T) {
+// - Verify no denyPaths (nil or empty) prints no extra deny-list line, while the built-in line is still shown
+func Test_Unit_PrintInfo_BuiltinTools_NoDenyPaths_NoLine(t *testing.T) {
 	for name, names := range map[string][]string{"nil": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
 			cfg := config.GetDefaultConfig()
 			cfg.WorkDir = t.TempDir()
-			cfg.DenyFileNames = names
+			cfg.DenyPaths = names
 
 			code, out := runInfo(t, cfg, "")
 			if code != InfoOK {
 				t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 			}
 			if strings.Contains(out, "also never reads") {
-				t.Errorf("expected no also never reads (denyFileNames) line in output:\n%s", out)
+				t.Errorf("expected no also never reads (denyPaths) line in output:\n%s", out)
 			}
 			if !strings.Contains(out, "never reads: .env") {
 				t.Errorf("expected the built-in never reads: line in output:\n%s", out)
@@ -964,18 +964,18 @@ func Test_Unit_PrintInfo_BuiltinTools_NoDenyFileNames_NoLine(t *testing.T) {
 	}
 }
 
-// - Verify a bad denyFileNames pattern makes info mode print Built-in tools: FAILED and return InfoFailed
-func Test_Unit_PrintInfo_BuiltinTools_BadDenyFileNames_Fails(t *testing.T) {
+// - Verify a bad denyPaths pattern makes info mode print Built-in tools: FAILED and return InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_BadDenyPaths_Fails(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.DenyFileNames = []string{"[abc"}
+	cfg.DenyPaths = []string{"[abc"}
 
 	code, out := runInfo(t, cfg, "")
 	if code != InfoFailed {
 		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
 	}
-	if !strings.Contains(out, "Built-in tools: FAILED: denyFileNames") {
-		t.Errorf("expected a Built-in tools: FAILED denyFileNames row in output:\n%s", out)
+	if !strings.Contains(out, "Built-in tools: FAILED: denyPaths") {
+		t.Errorf("expected a Built-in tools: FAILED denyPaths row in output:\n%s", out)
 	}
 }
 

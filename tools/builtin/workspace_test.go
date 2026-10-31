@@ -343,3 +343,23 @@ func Test_Unit_FileTools_Missing_ErrorHidesWorkDir(t *testing.T) {
 		}
 	}
 }
+
+// - Verify check treats a path that doesn't exist as a directory, so a directory-only deny pattern ("secrets/") refuses
+// it (for future write tools: refusing too much is the safe way to be wrong), while an existing FILE named secrets is
+// allowed and an existing directory named secrets is refused
+func Test_Unit_Workspace_Check_DirOnlyDeny_NonexistentCountsAsDir(t *testing.T) {
+	ws := newWorkspace(t, t.TempDir(), "", newDenyList(t, "secrets/"))
+	for _, rel := range []string{"secrets", filepath.Join("new", "secrets")} {
+		if got, err := ws.check("REQUESTED-NAME", filepath.Join(ws.rootDir, rel)); err == nil || !strings.Contains(err.Error(), "deny list") {
+			t.Errorf("check(nonexistent %q) = (%q, %v), want a deny-list error", rel, got, err)
+		}
+	}
+	writeFile(t, ws.rootDir, "notes/secrets", []byte("x"))
+	if rel, err := ws.check("x", filepath.Join(ws.rootDir, "notes", "secrets")); err != nil || rel != filepath.Join("notes", "secrets") {
+		t.Errorf("check(file notes/secrets) = (%q, %v), want it allowed", rel, err)
+	}
+	mkdir(t, ws.rootDir, "app/secrets")
+	if got, err := ws.check("x", filepath.Join(ws.rootDir, "app", "secrets")); err == nil || !strings.Contains(err.Error(), "deny list") {
+		t.Errorf("check(directory app/secrets) = (%q, %v), want a deny-list error", got, err)
+	}
+}

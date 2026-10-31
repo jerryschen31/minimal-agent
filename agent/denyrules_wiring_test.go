@@ -166,11 +166,11 @@ func Test_Unit_SetupAgent_ReActLoop_DeleteToolCallVetoed(t *testing.T) {
 	}
 }
 
-// - Verify SetupAgent passes the config's denyFileNames to read_file: the read_file it registers refuses a matching file
+// - Verify SetupAgent passes the config's denyPaths to read_file: the read_file it registers refuses a matching file
 // and still reads others, and a bad pattern fails SetupAgent before any session is built
-func Test_Unit_SetupAgent_DenyFileNames_AppliedToReadFile(t *testing.T) {
+func Test_Unit_SetupAgent_DenyPaths_AppliedToReadFile(t *testing.T) {
 	cfg := denyWiringConfig(t)
-	cfg.DenyFileNames = []string{"*.secret"}
+	cfg.DenyPaths = []string{"*.secret"}
 	for name, body := range map[string]string{"db.secret": "FAKE_SECRET_TOKEN_123", "notes.txt": "ALLOWED-NOTES"} {
 		if err := os.WriteFile(filepath.Join(cfg.WorkDir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -190,12 +190,12 @@ func Test_Unit_SetupAgent_DenyFileNames_AppliedToReadFile(t *testing.T) {
 	}
 
 	bad := denyWiringConfig(t)
-	bad.DenyFileNames = []string{"[abc"}
+	bad.DenyPaths = []string{"[abc"}
 	b := &Agent{}
 	err := b.SetupAgent(context.Background(), bad, nil)
 	defer b.ShutdownAgent(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "denyFileNames") || b.session != nil {
-		t.Errorf("expected SetupAgent to fail on a bad denyFileNames pattern, got err %v, session %v", err, b.session != nil)
+	if err == nil || !strings.Contains(err.Error(), "denyPaths") || b.session != nil {
+		t.Errorf("expected SetupAgent to fail on a bad denyPaths pattern, got err %v, session %v", err, b.session != nil)
 	}
 }
 
@@ -250,7 +250,7 @@ func Test_Unit_SetupAgent_IgnorePaths_AppliedToListFiles(t *testing.T) {
 	}
 
 	bad := denyWiringConfig(t)
-	bad.IgnorePaths = []string{"a/b"}
+	bad.IgnorePaths = []string{"a//b"}
 	b := &Agent{}
 	err = b.SetupAgent(context.Background(), bad, nil)
 	defer b.ShutdownAgent(context.Background())

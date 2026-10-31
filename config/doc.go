@@ -83,17 +83,29 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files"                                           [["read_file"]]
-//	denyFileNames   extra file or directory name patterns the file tools never read or list, e.g. "*.secret",
-//	                "credentials.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
-//	                .ssh, .agent-trace), which can't be removed; matched against each part of the path,
-//	                case-insensitively (path.Match syntax, no / or \); .env.example is always allowed.
-//	                A bad pattern fails startup                                                            [none]
-//	ignorePaths     name patterns list_files leaves out (noise, not secrets): "*.pyc" matches files and
-//	                directories, a trailing / ("node_modules/") directories only. An ignored directory is
-//	                shown but not walked; listing it directly still works. Same matching as denyFileNames
-//	                (one name at a time, case-insensitive, no other /). A config file's list replaces the
-//	                default; [] = ignore nothing; a bad pattern fails startup        [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
+//	denyPaths       extra path patterns the file tools never read or list, e.g. "*.secret", "secrets/",
+//	                "config/creds.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
+//	                .ssh, .agent-trace), which can't be removed; .env.example is always allowed. Path
+//	                pattern rules below. A bad pattern fails startup                                       [none]
+//	ignorePaths     path patterns list_files leaves out (noise, not secrets). An ignored file isn't shown;
+//	                an ignored directory is shown as "dir/ (ignored)" and its contents can't be listed,
+//	                even by asking for it directly (read_file still reads them). Path pattern rules below.
+//	                A config file's list replaces the default; [] = ignore nothing; a bad pattern fails
+//	                startup                                       [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
+//
+// Path patterns (denyPaths, ignorePaths), .gitignore-style; paths are relative to workDir and matched ignoring case:
+//
+//	".env", "*.pyc"     no "/": a file or directory with a matching name, at any depth (".env" is exactly that
+//	                    name; "*.env" also matches prod.env)
+//	"secrets"           a file or directory named secrets at any depth, and everything under that directory
+//	"secrets/"          trailing "/": directories only (still at any depth), and everything under them
+//	"secrets/*.env"     a "/" at the start or in the middle anchors the pattern at workDir: secrets/a.env, but not
+//	"/build"            secrets/old/a.env ("*" never crosses a "/") or app/secrets/a.env
+//
+// A matched directory covers everything under it, so the way to protect a whole tree is to deny the directory itself
+// ("secrets" or "secrets/"), not "secrets/*.env". Not supported: "**", "!" negation. A pattern with spaces at either
+// end, a "\", or an empty, "." or ".." part is an error.
 //
 // Each mcpServers entry is either local or remote:
 //
