@@ -4,95 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// ReadFileTool reads text files, but only inside rootDir (the configured workDir and its subdirectories) and never a file on the deny list.
-// Absolute paths, "..", and symlinks are all resolved first, so none of them can reach outside rootDir
+// ReadFileTool reads text files only within the workspace (i.e., within rootDir, excluding deny-listed files and the trace directory if it's within rootDir's path)
 type ReadFileTool struct {
-	rootDir  string   // absolute path of the allowed directory, with symlinks resolved
-	traceDir string   // read file tool needs the trace (audit log) directory, if it exists, to explicitly avoid reading it
-	deny     DenyList // list of file name patterns that can never be read (e.g., *.pem) = built-in + those added within config
-	maxBytes int      // max bytes one tool call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
+	ws       *Workspace // where it may read (shared with the other file tools)
+	maxBytes int        // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
-// NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
-func NewReadFileTool(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
+// NewReadFileTool creates a read_file tool that reads only inside ws (NewWorkspace).
+// maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
+func NewReadFileTool(ws *Workspace, maxBytes int) (*ReadFileTool, error) {
+	if ws == nil {
+		return nil, fmt.Errorf("read_file needs a workspace")
+	}
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
 	}
-	abs, err := filepath.Abs(workDir)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	root, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
-	}
-	t := &ReadFileTool{rootDir: root, maxBytes: maxBytes, deny: deny}
-	if traceDir != "" {
-		// relative to the process's directory, like the trace recorder that creates it (not to workDir)
-		if t.traceDir, err = resolvePath(traceDir); err != nil {
-			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
-		}
-		if isWithin(t.traceDir, t.rootDir) {
-			return nil, fmt.Errorf("traceDir %q is workDir or contains it, so read_file could read nothing", traceDir)
-		}
-	}
-	return t, nil
-}
-
-// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.
-// p need not exist yet (the recorder creates the trace directory when a run starts):
-// the longest existing part is resolved and the rest is added back unchanged.
-func resolvePath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	rest := ""
-	for {
-		real, err := filepath.EvalSymlinks(abs)
-		if err == nil {
-			return filepath.Join(real, rest), nil
-		}
-		parent := filepath.Dir(abs)
-		if !errors.Is(err, fs.ErrNotExist) || parent == abs {
-			return "", err
-		}
-		if _, lerr := os.Lstat(abs); lerr == nil {
-			// [agent] abs exists but EvalSymlinks says "not found": a symlink to a missing target. Protecting the
-			// link's own path would miss where the recorder actually writes, so refuse it.
-			return "", fmt.Errorf("%s is a symlink to a path that doesn't exist", abs)
-		}
-		rest = filepath.Join(filepath.Base(abs), rest)
-		abs = parent
-	}
-}
-
-// isWithin reports whether path p is dir or inside it. Both are absolute and symlink-resolved. The comparison ignores
-// case, because macOS and Windows filesystems do (".AGENT-TRACE" is the same directory there); on Linux that can
-// refuse a path that differs only in case, which errs on the safe side.
-func isWithin(dir, p string) bool {
-	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(p))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return &ReadFileTool{ws: ws, maxBytes: maxBytes}, nil
 }
 
 // fileKind names a non-regular file type for the error shown to the model.
@@ -109,31 +45,6 @@ func fileKind(mode os.FileMode) string {
 	default:
 		return "special file"
 	}
-}
-
-// resolve turns the model's path (relative to rootDir, or absolute) into a path relative to rootDir with every
-// symlink followed, or returns an error if it ends up outside rootDir or on the deny list. The deny list is
-// checked on the resolved path, so a symlink named notes.txt that points at .env is refused too.
-func (t *ReadFileTool) resolve(requested string) (string, error) {
-	candidate := requested
-	if !filepath.IsAbs(requested) {
-		candidate = filepath.Join(t.rootDir, requested)
-	}
-	real, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(t.rootDir, real)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%s is outside the allowed directory", requested)
-	}
-	if t.deny.IsDenied(rel) {
-		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(t.deny.Patterns(), ", "))
-	}
-	if t.traceDir != "" && isWithin(t.traceDir, real) {
-		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)
-	}
-	return rel, nil
 }
 
 // GetToolDefinition returns the definition of the read_file tool
@@ -194,13 +105,13 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
 		return "", err
 	}
-	rel, err := t.resolve(params.Path)
+	rel, err := t.ws.resolve(params.Path)
 	if err != nil {
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
 	}
 	// os.Root is a second line of defence: it refuses ".." and symlink escapes at open time, so a
-	// symlink swapped in after resolve() still cannot leave rootDir
-	root, err := os.OpenRoot(t.rootDir)
+	// symlink swapped in after resolve() still cannot leave the workspace's rootDir
+	root, err := t.ws.openRoot()
 	if err != nil {
 		return "", err
 	}

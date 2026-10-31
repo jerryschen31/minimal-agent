@@ -19,9 +19,9 @@ func newDenyList(t *testing.T, extra ...string) DenyList {
 // newToolWithDeny creates a read_file tool confined to dir that uses deny, failing the test on error.
 func newToolWithDeny(t *testing.T, dir string, deny DenyList) *ReadFileTool {
 	t.Helper()
-	tool, err := NewReadFileTool(dir, "", testMaxBytes, deny)
+	tool, err := newReadFile(dir, "", testMaxBytes, deny)
 	if err != nil {
-		t.Fatalf("NewReadFileTool(%q, %v): %v", dir, deny.Patterns(), err)
+		t.Fatalf("newReadFile(%q, %v): %v", dir, deny.Patterns(), err)
 	}
 	return tool
 }

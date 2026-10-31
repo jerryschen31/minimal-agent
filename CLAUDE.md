@@ -168,9 +168,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), plus any config `denyFileNames` patterns (`builtin.DenyList`:
   config extends the list, never shrinks it), nor anything inside the configured
   `traceDir` (matched by resolved path, whatever its name). It resolves symlinks first, checks the *resolved*
-  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
-  file-reading tool must reuse this, not call `os.Open` on a model-supplied path
-  (`DECISIONS.md § read_file is confined to workDir`). It also opens with `O_NONBLOCK` and accepts only regular
+  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. These rules live
+  in `builtin.Workspace` (`tools/builtin/workspace.go`), built once in `SetupBuiltinTools` (even with no file tool
+  enabled) and shared by the file tools. A new file tool must take the `*Workspace` and go through its `resolve` /
+  `check` / `openRoot`, not call `os.Open` on a model-supplied path
+  (`DECISIONS.md § read_file is confined to workDir`, `§ File tools slice 0`). It also opens with `O_NONBLOCK` and accepts only regular
   files (checked with `Stat` on the opened descriptor), because opening a named pipe blocks forever.
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an

@@ -3423,3 +3423,30 @@ Files: `tools/builtin/denylist.go` (new), `tools/builtin/readfile.go`, `tools/to
 - **Downsides / limits:** names only, no path patterns (`"secrets/*.json"` can't be said; `"secrets"` blocks every
   directory of that name); the `.env.example` exception applies to extras too, so an extra like `"*.example"` won't
   block that one file; no way to *remove* a built-in even when a user has a real reason (by design).
+
+
+### 2026-10-30 — File tools slice 0 built: `builtin.Workspace` holds the path rules every file tool shares
+
+First slice of the pure-Go file tools (order agreed 2026-10-30: shared checks, `list_files`, `search_files`, the
+deny/ask/run levels with policy item 7, then `write_file` + `create_directory`, `edit_file`, `copy_file`/`move_file`).
+No change in what `read_file` allows. Files: `tools/builtin/workspace.go` (new), `tools/builtin/readfile.go`,
+`tools/tool.go`, `config/doc.go`.
+
+- **`Workspace`** (`rootDir`, `traceDir`, `deny`) answers "may a file tool touch this path?". `NewWorkspace` holds
+  the old `NewReadFileTool` checks on `workDir` and `traceDir`; methods `resolve` (path must exist: follow symlinks,
+  then `check`), `check` (outside `rootDir` / deny-listed / inside `traceDir`; split out so slice 4's `resolveNew`
+  for not-yet-existing paths gets the same rules), `openRoot`. `resolvePath` and `isWithin` moved with it;
+  `fileKind` stays in `readfile.go` until `edit_file` needs the same open-and-check code.
+- **`NewReadFileTool(ws *Workspace, maxBytes int)`**; a nil workspace is an error. The tool holds a named `ws` field,
+  not an embedded one, so calls read `t.ws.resolve(...)` and show where the rule lives (downside: a larger diff).
+- **Only `Workspace` and `NewWorkspace` are exported:** `tools.SetupBuiltinTools` must build one; nothing outside
+  `builtin` needs the methods (downside: other packages can test the rules only through a tool).
+- **Built once, up front, even with no file tool enabled** (Jerry). A missing or non-directory `workDir`, or a
+  `traceDir` that contains it, is a config error whether or not a tool uses it, as a bad `denyFileNames` pattern
+  already was. **Downside / behaviour change:** `builtinTools: []` with a nonexistent `workDir` used to start; it now
+  fails setup (chat and info mode).
+- **Name:** `Workspace`, not `Namespace` (Jerry asked). A Linux mount namespace gives a process its own view of the
+  filesystem; this is a check the tools run on each path, and everything outside stays reachable to code that
+  doesn't ask it. "Workspace" is the usual agent-tool word (Codex's `workspace-write`). `Jail` was the runner-up;
+  like `Namespace`, it sounds stronger than a path check.
+

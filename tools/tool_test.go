@@ -366,3 +366,38 @@ func Test_SetupBuiltinTools_DenyFileNames_Enforced(t *testing.T) {
 		t.Errorf("notes.txt: expected ALLOWED-NOTES, got (%q, %v)", got, err)
 	}
 }
+
+// - Verify SetupBuiltinTools builds the workspace even when no file tool is enabled: with an empty (or nil) tool list,
+// a missing workDir, a workDir that is a file, or a traceDir equal to workDir still fails setup, with no tools
+func Test_SetupBuiltinTools_NoTools_BadWorkspace_Fails(t *testing.T) {
+	work := t.TempDir()
+	file := filepath.Join(work, "plain.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, workDir, traceDir, want string
+	}{
+		{"missing workDir", filepath.Join(work, "missing"), "", "workDir"},
+		{"workDir is a file", file, "", "not a directory"},
+		{"traceDir is workDir", work, work, "is workDir or contains it"},
+	}
+	for _, tc := range cases {
+		for _, toolList := range [][]string{nil, {}} {
+			built, err := SetupBuiltinTools(toolList, tc.workDir, tc.traceDir, 4096, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(built) != 0 {
+				t.Errorf("%s, tools %v: expected an error containing %q and no tools, got (%d tools, %v)", tc.name, toolList, tc.want, len(built), err)
+			}
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools with a valid workDir and an empty tool list succeeds with zero tools
+func Test_SetupBuiltinTools_NoTools_ValidWorkDir_NoTools(t *testing.T) {
+	for _, toolList := range [][]string{nil, {}} {
+		built, err := SetupBuiltinTools(toolList, t.TempDir(), "", 4096, nil)
+		if err != nil || len(built) != 0 {
+			t.Errorf("tools %v: expected (0 tools, nil), got (%d tools, %v)", toolList, len(built), err)
+		}
+	}
+}

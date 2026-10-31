@@ -192,6 +192,22 @@ func Test_Unit_PrintInfo_BuiltinTools_None(t *testing.T) {
 	}
 }
 
+// - Verify a workDir that does not exist fails info mode even with no built-in tools enabled (the file tools'
+// workspace is checked regardless), printing "Built-in tools: FAILED" and returning InfoFailed
+func Test_Unit_PrintInfo_BuiltinTools_None_BadWorkDir_Fails(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = filepath.Join(t.TempDir(), "missing")
+	cfg.BuiltinTools = []string{}
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoFailed {
+		t.Errorf("expected exit code %d, got %d", InfoFailed, code)
+	}
+	if !strings.Contains(out, "Built-in tools: FAILED") || !strings.Contains(out, "workDir") {
+		t.Errorf("expected a Built-in tools: FAILED line naming workDir in output:\n%s", out)
+	}
+}
+
 // - Verify an unknown built-in tool prints a FAILED row after the config section and returns InfoFailed
 func Test_Unit_PrintInfo_BuiltinTools_Unknown_Fails(t *testing.T) {
 	cfg := config.GetDefaultConfig()

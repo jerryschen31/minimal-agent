@@ -31,7 +31,8 @@
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
 //	agentMode       "chat" | "info" | "autonomous" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
-//	workDir         the only directory (and below) read_file may read; -workdir                            ["."]
+//	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
+//	                with no file tool enabled; -workdir                                                    ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it

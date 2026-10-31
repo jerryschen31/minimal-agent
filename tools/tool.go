@@ -18,10 +18,15 @@ type Tool interface {
 	CallTool(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// setup built-in tools; traceDir is passed so read_file can refuse to read the trace files, and denyFileNames adds
-// name patterns to the built-in file deny list (checked even when no file tool is enabled, so a bad pattern fails setup)
+// setup built-in tools; workDir, traceDir and denyFileNames make the workspace the file tools share (workDir and below,
+// minus the trace files and deny-listed names). The workspace is built even when no file tool is enabled, so a bad
+// workDir, traceDir or pattern always fails setup.
 func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxBytes int, denyFileNames []string) ([]Tool, error) {
 	deny, err := builtin.NewDenyList(denyFileNames)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := builtin.NewWorkspace(workDir, traceDir, deny)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +35,7 @@ func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxB
 	for _, t := range toolList {
 		switch t {
 		case "read_file", "ReadFile": // the model-facing name, as in deny rules; "ReadFile" is the old spelling, still accepted
-			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes, deny)
+			readFile, err := builtin.NewReadFileTool(ws, readFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}
