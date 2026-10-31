@@ -17,21 +17,16 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// ReadFileTool reads text files, but only inside root (the configured workDir and its subdirectories)
-// and never a file on the deny list. Absolute paths, "..", and symlinks are all resolved first, so none of
-// them can reach outside root.
+// ReadFileTool reads text files, but only inside rootDir (the configured workDir and its subdirectories) and never a file on the deny list.
+// Absolute paths, "..", and symlinks are all resolved first, so none of them can reach outside rootDir
 type ReadFileTool struct {
-	root     string   // absolute path of the allowed directory, with symlinks resolved
-	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	deny     DenyList // names never read (the built-ins plus config denyFileNames)
-	maxBytes int      // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
+	rootDir  string   // absolute path of the allowed directory, with symlinks resolved
+	traceDir string   // read file tool needs the trace (audit log) directory, if it exists, to explicitly avoid reading it
+	deny     DenyList // list of file name patterns that can never be read (e.g., *.pem) = built-in + those added within config
+	maxBytes int      // max bytes one tool call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
 // NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
-// traceDir (config traceDir, "" = none) is never read from, so the agent can't read its own audit log; it need not
-// exist yet, and it must not be workDir or a parent of it (read_file could then read nothing).
-// maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
-// deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
 func NewReadFileTool(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
@@ -51,22 +46,22 @@ func NewReadFileTool(workDir, traceDir string, maxBytes int, deny DenyList) (*Re
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	t := &ReadFileTool{root: root, maxBytes: maxBytes, deny: deny}
+	t := &ReadFileTool{rootDir: root, maxBytes: maxBytes, deny: deny}
 	if traceDir != "" {
-		// [agent] relative to the process's directory, like the trace recorder that creates it (not to workDir)
+		// relative to the process's directory, like the trace recorder that creates it (not to workDir)
 		if t.traceDir, err = resolvePath(traceDir); err != nil {
 			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
 		}
-		if isWithin(t.traceDir, root) {
+		if isWithin(t.traceDir, t.rootDir) {
 			return nil, fmt.Errorf("traceDir %q is workDir or contains it, so read_file could read nothing", traceDir)
 		}
 	}
 	return t, nil
 }
 
-// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with. p need not
-// exist yet (the recorder creates the trace directory when a run starts): the longest existing part is resolved and
-// the rest is added back unchanged.
+// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.
+// p need not exist yet (the recorder creates the trace directory when a run starts):
+// the longest existing part is resolved and the rest is added back unchanged.
 func resolvePath(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
@@ -116,19 +111,19 @@ func fileKind(mode os.FileMode) string {
 	}
 }
 
-// resolve turns the model's path (relative to root, or absolute) into a path relative to root with every
-// symlink followed, or returns an error if it ends up outside root or on the deny list. The deny list is
+// resolve turns the model's path (relative to rootDir, or absolute) into a path relative to rootDir with every
+// symlink followed, or returns an error if it ends up outside rootDir or on the deny list. The deny list is
 // checked on the resolved path, so a symlink named notes.txt that points at .env is refused too.
 func (t *ReadFileTool) resolve(requested string) (string, error) {
 	candidate := requested
 	if !filepath.IsAbs(requested) {
-		candidate = filepath.Join(t.root, requested)
+		candidate = filepath.Join(t.rootDir, requested)
 	}
 	real, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
 		return "", err
 	}
-	rel, err := filepath.Rel(t.root, real)
+	rel, err := filepath.Rel(t.rootDir, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s is outside the allowed directory", requested)
 	}
@@ -141,6 +136,7 @@ func (t *ReadFileTool) resolve(requested string) (string, error) {
 	return rel, nil
 }
 
+// GetToolDefinition returns the definition of the read_file tool
 func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"read_file",
@@ -169,6 +165,7 @@ func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	)
 }
 
+// CallTool executes the read_file tool with the given arguments and context. It returns the file contents, or an error.
 func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
 	var params struct {
@@ -202,8 +199,8 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
 	}
 	// os.Root is a second line of defence: it refuses ".." and symlink escapes at open time, so a
-	// symlink swapped in after resolve() still cannot leave root
-	root, err := os.OpenRoot(t.root)
+	// symlink swapped in after resolve() still cannot leave rootDir
+	root, err := os.OpenRoot(t.rootDir)
 	if err != nil {
 		return "", err
 	}
@@ -211,8 +208,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	// Open with O_NONBLOCK: opening a named pipe (FIFO) normally waits for a writer, which would hang the whole
 	// agent turn (this call is synchronous and cannot be cancelled once inside open). With O_NONBLOCK the open
 	// returns at once, and the file type is checked on the opened descriptor below, not on the path, so a
-	// regular file swapped for a pipe after resolve() cannot be raced in. O_NONBLOCK does not change reads of
-	// regular files.
+	// regular file swapped for a pipe after resolve() cannot be raced in. O_NONBLOCK does not change reads of regular files.
 	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", err
