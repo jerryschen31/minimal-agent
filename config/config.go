@@ -79,7 +79,7 @@ type Config struct {
 	// tools and MCP servers configuration
 	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
 	DenyPaths    []string                   `json:"denyPaths"`    // .gitignore-style path patterns the file tools never touch, added to the built-in list (which can't be removed)
-	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files leaves out (an ignored directory can't be listed); a config file's list replaces the default, [] = none
+	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files leaves out (an ignored directory can't be listed); a config file's list replaces the default, [] = no paths ignored
 	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
 }
 

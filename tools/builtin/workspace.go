@@ -12,8 +12,8 @@ import (
 // Workspace is the part of the filesystem the file tools may touch: rootDir and everything below it, except
 // deny-listed names and the trace directory. File tools in a given session share one workspace; it is not changed
 // after NewWorkspace, so sharing is safe.
-// [agent] It is a check the tools run on every path, not an OS sandbox: code that doesn't ask it (a future
-// run_command, an MCP server) can still reach everything.
+// Note this is a check the built-in file tools run on every path, and not a true OS sandbox:
+// code that doesn't use this workspace (a future run_command, an MCP server) can still reach everything.
 type Workspace struct {
 	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
 	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
