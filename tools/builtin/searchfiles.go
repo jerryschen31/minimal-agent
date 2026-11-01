@@ -224,7 +224,7 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 	out := strings.Join(r.lines, "\n")
 	if len(r.lines) == 0 {
 		out = fmt.Sprintf("no matches for %q in %s", params.Query, params.Path)
-		if r.found > 0 { // all on earlier pages
+		if r.found > 0 && note == "" && r.binary == 0 && r.longLine == 0 && r.unreadable == 0 { // all matches were counted
 			out = fmt.Sprintf("only %d match(es) for %q in %s; skip=%d is past the end", r.found, params.Query, params.Path, params.Skip)
 		}
 		if note != "" {
