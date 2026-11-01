@@ -3663,3 +3663,22 @@ Copilot comment on `search_files`; `read_file` had the same gap. Files: `tools/b
   both then follow the new directory and match. Microseconds wide, but not zero. Closing it needs the OS to report the
   opened file's real path (`F_GETPATH` on macOS, `/proc/self/fd` on Linux) and checking that; per-OS code, deferred.
   Hard links to a denied file remain out of reach of any path check (known before).
+
+### 2026-11-01 — Approval levels: deny / ask / run, and what autonomous mode does with `ask`
+
+Decided with Jerry before slice 3 (shape: this session). Not built yet.
+
+- **Three levels on model-facing tool names:** `denyRules` (refused, never asked, in every mode), `askRules` (the
+  user decides: `Allow once? [y/N]`), anything else runs. Deny wins over ask whatever the order. Today every hook veto
+  is ask-on-deny on a terminal; slice 3 makes only `askRules` (a hook error wrapping `hooks.ErrNeedsApproval`)
+  overridable, and any other hook error final.
+- **No built-in deny rules.** Defaults move to `askRules` (`*delete*`, `*remove*`, the write tools); `denyRules`
+  defaults to empty. A name guess is user policy (`§ Policy out of the core`). Containment stays in code regardless of
+  rules: the `Workspace` checks on built-in file tools, MCP same-origin, and the rest of that section's protections.
+- **With nobody to ask, `ask` is `deny`:** chat over a pipe, tests, and autonomous/worker modes. Fail closed.
+- **`"approval": "allow-all"` (with the autonomous port) turns `ask` into `run` and nothing else.** It never touches
+  `denyRules`; docs must say so plainly. Recorded in `run_start`.
+- **Downside, accepted:** with `allow-all` and `denyRules: []`, an unattended run executes every tool call the model
+  makes. The limit is then which tools are enabled (built-in file tools stay contained; an MCP server is only as
+  contained as the server itself; `run_command` would be unlimited). Proposed mitigation (not decided): a warning at
+  startup and a `run_start` field when `allow-all` is set and `denyRules` is empty.
