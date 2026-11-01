@@ -28,9 +28,10 @@ type ChatSession struct {
 	OutBuffer           io.Writer
 	Recorder            trace.Recorder
 	PromptAllowDenyCall func(ctx context.Context, call model.ToolCall, reason error) bool
-	// ShowProgress prints "thinking" dots while waiting for the model (see chatWithProgress).
-	// Set by SetupAgent only for chat mode on a terminal; tests leave it off.
-	ShowProgress bool
+	// Output reports to the user (a turn's progress, notices, errors); reActLoop and chat mode never print directly,
+	// except what Output's doc comment lists. NewChatSession sets chat mode's chatOutput on OutBuffer; code that swaps
+	// OutBuffer must set Output too.
+	Output Output
 }
 
 func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error) {
@@ -48,6 +49,7 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 		InBuffer:   cfg.InBuffer,
 		OutBuffer:  cfg.OutBuffer,
 		Recorder:   recorder,
+		Output:     chatOutput{w: cfg.OutBuffer, showProgress: shouldShowProgress(cfg)},
 	}, nil
 }
 

@@ -258,6 +258,7 @@ func startChatLoop(fx *chatSessionFixture, input string, interrupts <-chan os.Si
 	out := &syncBuffer{}
 	fx.Session.InBuffer = strings.NewReader(input)
 	fx.Session.OutBuffer = out
+	fx.Session.Output = chatOutput{w: out}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -373,7 +374,12 @@ func Test_ChatLoop_Interrupt_DoesNotCancelAutoCompaction(t *testing.T) {
 	if !strings.Contains(out.String(), "[interrupted]") {
 		t.Errorf("expected the turn to be interrupted; output:\n%s", out.String())
 	}
-	if strings.Contains(out.String(), "Auto-compaction error") {
+	// a cancelled compaction now prints "[interrupted]" too (not "[error] Auto-compaction error"), so count it: exactly one
+	// [interrupted], for the turn, and the compaction reports it completed
+	if got := strings.Count(out.String(), "[interrupted]"); got != 1 {
+		t.Errorf("expected exactly one [interrupted] (the turn's), got %d; output:\n%s", got, out.String())
+	}
+	if strings.Contains(out.String(), "Auto-compaction error") || !strings.Contains(out.String(), "[system] Auto-compaction complete.") {
 		t.Errorf("the interrupt must not reach background compaction; output:\n%s", out.String())
 	}
 	if fx.Context.GetSize() != 2 {
@@ -512,7 +518,7 @@ func Test_ChatWithProgress_ShowProgress_PrintsDotsWhileWaiting(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
 	out := &syncBuffer{}
 	fx.Session.OutBuffer = out
-	fx.Session.ShowProgress = true
+	fx.Session.Output = chatOutput{w: out, showProgress: true}
 	fx.Provider.Reply = "ok"
 	fx.Provider.Gate = make(chan struct{})
 	fx.Provider.Waiting = make(chan struct{})
@@ -547,7 +553,7 @@ func Test_ChatWithProgress_Cancelled_EndsDotLine(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
 	out := &syncBuffer{}
 	fx.Session.OutBuffer = out
-	fx.Session.ShowProgress = true
+	fx.Session.Output = chatOutput{w: out, showProgress: true}
 	fx.Provider.Gate = make(chan struct{})
 	fx.Provider.Waiting = make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -570,7 +576,7 @@ func Test_ChatWithProgress_Cancelled_EndsDotLine(t *testing.T) {
 	}
 }
 
-// - Verify no dots are printed when ShowProgress is off (tests, pipes, headless/oneshot)
+// - Verify no dots are printed when showProgress is off (tests, pipes, headless/oneshot)
 func Test_ChatWithProgress_NoShowProgress_PrintsNothing(t *testing.T) {
 	shortDotInterval(t)
 	fx := newChatSessionFixture(t, 10, 100)
@@ -589,7 +595,7 @@ func Test_ChatWithProgress_NoShowProgress_PrintsNothing(t *testing.T) {
 	receiveOrFail(t, done, "the model call to return")
 
 	if fx.Out.String() != "" {
-		t.Errorf("expected no output with ShowProgress off, got %q", fx.Out.String())
+		t.Errorf("expected no output with showProgress off, got %q", fx.Out.String())
 	}
 }
 

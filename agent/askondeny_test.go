@@ -296,6 +296,7 @@ func Test_ChatLoop_TTY_AskOnDeny(t *testing.T) {
 			}
 			out := &syncBuffer{}
 			fx.Session.OutBuffer = out
+			fx.Session.Output = chatOutput{w: out}
 			keyin := keystrokes(typed("delete a.txt"), []string{keys.CtrlM}, c.answer, []string{keys.CtrlD})
 			reader := newTTYReaderWith(&auto.Pilot{Text: keyin}, out)
 

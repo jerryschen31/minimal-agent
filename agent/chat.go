@@ -39,46 +39,38 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			defer taskTrace.End()
 			taskTrace.Record(trace.ContextCleared, trace.GetContextClearedData(len(msgContext))) // msgContext was read at the top of this function, before Clear
 			cs.MsgContext.Clear()
-			fmt.Fprintln(cs.OutBuffer, "[system] Chat context cleared")
+			cs.Output.System("Chat context cleared")
 		case "/summary", "/summarize":
 			taskTrace := trace.StartTask(cs.Recorder, line)
 			defer taskTrace.End()
 			summaryString, err := contextwindow.SummarizeChatContext(ctx, cs.getSessionProvider(taskTrace.ID()), msgContext, cs.Config.SummarizerPrompt, strings.TrimSpace(lineRest))
 			if err != nil {
 				taskTrace.Fail(err)
-				if errors.Is(err, context.Canceled) {
-					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
-					return false
-				}
-				fmt.Fprintln(cs.OutBuffer, "[error] Summarization error:", err)
+				cs.Output.Error("Summarization error", err) // a Ctrl+C cancel shows as [interrupted]
 				return false
 			}
-			fmt.Fprintln(cs.OutBuffer, "[system] Chat summary:", summaryString)
+			cs.Output.System("Chat summary: " + summaryString)
 		case "/compact":
 			// we need to check if a compaction is already happening so we don't trigger a second compaction concurrently
 			if !cs.MsgContext.ShouldStartCompaction() {
-				fmt.Fprintln(cs.OutBuffer, "[system] Compaction already in progress. Skipping this compaction request.")
+				cs.Output.System("Compaction already in progress. Skipping this compaction request.")
 				return false
 			}
 			taskTrace := trace.StartTask(cs.Recorder, line)
 			defer taskTrace.End()
-			fmt.Fprintln(cs.OutBuffer, "[system] Compaction triggered...")
+			cs.Output.System("Compaction triggered...")
 			summaryMsg, err := compactAndTrace(ctx, cs, taskTrace.ID(), "manual", strings.TrimSpace(lineRest))
 			if err != nil {
 				taskTrace.Fail(err)
-				if errors.Is(err, context.Canceled) {
-					fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C cancelled the turn's context
-					return false
-				}
-				fmt.Fprintln(cs.OutBuffer, "[error] Compaction error:", err)
+				cs.Output.Error("Compaction error", err) // a Ctrl+C cancel shows as [interrupted]
 				return false
 			}
-			fmt.Fprintln(cs.OutBuffer, "[system] Compaction complete. Chat summary:", summaryMsg.Content)
+			cs.Output.System("Compaction complete. Chat summary: " + summaryMsg.Content)
 		case "/config":
 			config.PrintConfig(cs.Config)
 		default:
 			// if the command is not recognized, print an error message
-			fmt.Fprintln(cs.OutBuffer, "[system] Unrecognized command:", lineFirst)
+			cs.Output.System("Unrecognized command: " + lineFirst)
 		}
 		return false
 	}
@@ -98,12 +90,8 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// ReAct turn loop - maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
 	turnMsgs, err := reActLoop(ctx, cs, taskTrace, msgContext, userMsg)
 	if err != nil {
-		taskTrace.Fail(err) // "canceled" for Ctrl+C, otherwise "error"; the message is recorded either way
-		if errors.Is(err, context.Canceled) {
-			fmt.Fprintln(cs.OutBuffer, "[interrupted]") // Ctrl+C canceled the turn; nothing is added to memory
-			return false
-		}
-		fmt.Fprintln(cs.OutBuffer, "[error] ReAct loop error:", err)
+		taskTrace.Fail(err)                      // "canceled" for Ctrl+C, otherwise "error"; the message is recorded either way
+		cs.Output.Error("ReAct loop error", err) // a Ctrl+C cancel shows as [interrupted]; nothing is added to memory
 		return false
 	}
 
@@ -120,13 +108,13 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 		cs.MsgContext.CompactWG.Add(1) // must be here synchronously BEFORE we enter the goroutine
 		go func() {
 			defer cs.MsgContext.CompactWG.Done() // ensure the WaitGroup counter is decremented when the goroutine finishes
-			fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction triggered...")
+			cs.Output.System("Auto-compaction triggered...")
 			_, err := compactAndTrace(ctx, cs, cs.Recorder.RunID(), "auto", "")
 			if err != nil {
-				fmt.Fprintln(cs.OutBuffer, "[error] Auto-compaction error:", err)
+				cs.Output.Error("Auto-compaction error", err)
 				return // don't also claim it completed
 			}
-			fmt.Fprintln(cs.OutBuffer, "[system] Auto-compaction complete.")
+			cs.Output.System("Auto-compaction complete.")
 		}()
 	}
 }
@@ -222,17 +210,15 @@ func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (c
 // progressDotInterval is how often a "thinking" dot is printed while waiting for the model. A variable rather than a constant so tests can shorten it.
 var progressDotInterval = 2 * time.Second
 
-// chatWithProgress wraps a call to the model provider's Chat request/response method, and outputs thinking dots to the output buffer when cs.ShowProgress is set (e.g., chat mode on a terminal).
+// chatWithProgress wraps a call to the model provider's Chat request/response method, and tells cs.Output it is waiting (chat mode on a terminal prints thinking dots).
 // Example:
 //
 //	> What are best practices for writing Go code?
 //	....
 //	[assistant] ...
 func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
-	if cs.ShowProgress {
-		stop := startProgressDots(cs.OutBuffer, progressDotInterval)
-		defer stop()
-	}
+	stop := cs.Output.Thinking()
+	defer stop()
 	return provider.Chat(ctx, msgs, toolDefs)
 }
 

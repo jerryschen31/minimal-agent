@@ -3682,3 +3682,31 @@ Decided with Jerry before slice 3 (shape: this session). Not built yet.
   makes. The limit is then which tools are enabled (built-in file tools stay contained; an MCP server is only as
   contained as the server itself; `run_command` would be unlimited). Proposed mitigation (not decided): a warning at
   startup and a `run_start` field when `allow-all` is set and `denyRules` is empty.
+
+### 2026-11-01 — Policy item 7 built: the agent reports through `Output`, `reActLoop` never prints
+
+Item 7 of `§ Policy out of the core`, widened at Jerry's request to chat mode's own messages. Claude wrote it.
+Files: `agent/output.go` (new), `agent/react.go`, `agent/chat.go`, `agent/session.go`, `agent/agent.go`.
+
+- **`Output` interface:** `Assistant`, `ToolCalled`, `Thinking() (stop func())` for a turn in progress; `System(text)`,
+  `Error(what, err)`, `Interrupted()` for everything else. The caller knows *what* happened; the `Output` decides
+  *how it looks*. `chatOutput{w, showProgress}` prints the same `[assistant]`/`[tool]`/`[system]`/`[error]`/
+  `[interrupted]` lines as before. `ChatSession.ShowProgress` is gone; `NewChatSession` sets
+  `Output: chatOutput{w: cfg.OutBuffer, showProgress: shouldShowProgress(cfg)}`.
+- **Output is not logging** (Jerry): the trace is the record of what happened; `Output` is what the user needs to
+  see during a session. Rule against growth: a method per *kind* of message, never one per message.
+- **What goes through it:** anything that can happen in more than one mode (a turn, errors, Ctrl+C, auto-compaction)
+  plus chat's one-line slash-command replies, so every prefix lives in one file. **What stays on `OutBuffer`:** the
+  `-debug` context dump, the ask prompt (interactive, tied to the line editor), `/config` and info mode (reports, not
+  status), and `agent.go`'s MCP setup messages (printed before the session exists; revisit at the autonomous port).
+- **Errors are reported once, by the caller.** `reActLoop` returns its error without printing, so chat no longer
+  shows a model error twice (`error: …` then `[error] ReAct loop error: …`). `Error` turns a `context.Canceled` into
+  `Interrupted`, replacing four copies of that check. Side effect: an auto-compaction cancelled at quit prints
+  `[interrupted]` instead of `[error] Auto-compaction error: context canceled`.
+- *Rejected:* func fields per event, or one `func(kind, text)`. An interface keeps the methods together, so a new
+  mode implements all of them or doesn't compile. Also rejected: one method per message (`ContextCleared()`, …),
+  which every mode would have to implement for chat-only messages.
+- **Downsides:** `Output` captures the writer at construction, so code that swaps `cs.OutBuffer` must also set
+  `Output` (three tests do), and `OutBuffer` remains for the direct writes above, so there are still two paths. A nil
+  `Output` panics on the first model call (only `NewChatSession` builds sessions today). The tool name in
+  `[tool] Tool called:` is model-supplied and still printed unquoted (CLAUDE.md asks for `%q`); not changed here.

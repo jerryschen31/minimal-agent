@@ -112,7 +112,6 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	if err != nil {
 		return err
 	}
-	chatSession.ShowProgress = shouldShowProgress(cfg)
 	chatSession.Hooks = []hooks.Hook{denyRules}
 	agent.session = chatSession
 
