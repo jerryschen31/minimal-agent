@@ -285,7 +285,7 @@ func (t *SearchFilesTool) searchFile(ctx context.Context, root *os.Root, p strin
 	// [agent] A Scanner holds one line at a time, so memory is bounded by the longest line, not the file size.
 	// It drops the "\n" (and a "\r" before it) from each line.
 	sc := bufio.NewScanner(br)
-	sc.Buffer(make([]byte, scanStartBytes), maxSearchLineBytes)
+	sc.Buffer(make([]byte, scanStartBytes), maxSearchLineBytes+1)
 	for n := 1; sc.Scan(); n++ {
 		if err := ctx.Err(); err != nil {
 			return err // Ctrl+C stops even inside one huge file
