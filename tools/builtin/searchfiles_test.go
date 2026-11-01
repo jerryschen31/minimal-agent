@@ -743,7 +743,7 @@ func Test_Unit_SearchFiles_SearchFile_MissingFile_CountedUnreadable(t *testing.T
 	defer root.Close()
 
 	var r searchResult
-	if err := tool.searchFile(context.Background(), root, "gone.txt", nil, 0, &r); err != nil || r.unreadable != 1 {
+	if err := tool.searchFile(context.Background(), root, "gone.txt", nil, nil, 0, &r); err != nil || r.unreadable != 1 {
 		t.Errorf("expected (nil, unreadable 1), got (%v, unreadable %d)", err, r.unreadable)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "gone.txt")); !errors.Is(err, os.ErrNotExist) {

@@ -4,6 +4,7 @@ package builtin
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -273,5 +274,118 @@ func Test_Unit_Workspace_OpenRoot_SwapAfterResolve_Refused(t *testing.T) {
 	}
 	if root != nil || !strings.Contains(err.Error(), "moved or replaced") {
 		t.Errorf("openRoot() = (%v, %v), want (nil, a moved-or-replaced error)", root, err)
+	}
+}
+
+// swapForSymlink replaces the file at path with a symlink to target (simulating another program swapping it in
+// between the workspace check and the open).
+func swapForSymlink(t *testing.T, path, target string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing %s: %v", path, err)
+	}
+	symlink(t, target, path)
+}
+
+// - Verify the race openFile closes: want is a.txt's lstat (what resolveInfo approved), a.txt is then swapped for a
+// symlink to .env, and openFile refuses instead of returning .env's contents (os.Root alone would follow the link,
+// since .env is inside workDir)
+func Test_Unit_Workspace_OpenFile_SwappedForSymlinkToDenyListed_Refused(t *testing.T) {
+	work := t.TempDir()
+	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
+	ws := newWorkspace(t, work, "", DenyList{})
+	rel, want, err := ws.resolveInfo("a.txt")
+	if err != nil {
+		t.Fatalf("resolveInfo(a.txt) before the swap: %v", err)
+	}
+	swapForSymlink(t, path, ".env")
+
+	f, info, err := ws.openFile(openRootT(t, ws), "a.txt", rel, want)
+	expectOpenRefused(t, "openFile(a.txt -> .env)", f, info, err, work, "a.txt", "a.txt was replaced while it was being opened; try again")
+	if err != nil && strings.Contains(err.Error(), "FAKE_SECRET") {
+		t.Errorf("error leaks the secret: %q", err)
+	}
+}
+
+// - Verify the same race into the trace directory: a.txt swapped for a symlink to a trace file after the check is
+// refused at open
+func Test_Unit_Workspace_OpenFile_SwappedForSymlinkIntoTraceDir_Refused(t *testing.T) {
+	work := t.TempDir()
+	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	writeFile(t, work, "traces/run.jsonl", []byte("FAKE_SECRET_TOKEN_123"))
+	ws := newWorkspace(t, work, filepath.Join(work, "traces"), DenyList{})
+	rel, want, err := ws.resolveInfo("a.txt")
+	if err != nil {
+		t.Fatalf("resolveInfo(a.txt) before the swap: %v", err)
+	}
+	swapForSymlink(t, path, filepath.Join("traces", "run.jsonl"))
+
+	f, info, err := ws.openFile(openRootT(t, ws), "a.txt", rel, want)
+	expectOpenRefused(t, "openFile(a.txt -> traces/run.jsonl)", f, info, err, work, "a.txt", "was replaced while it was being opened")
+}
+
+// - Verify resolveInfo on a symlink (notes.txt -> real.txt) returns the resolved rel and real.txt's info, not the
+// link's, so openFile (which follows the link) accepts it
+func Test_Unit_Workspace_ResolveInfo_Symlink_ReturnsTargetInfo(t *testing.T) {
+	work := t.TempDir()
+	target := writeFile(t, work, "real.txt", []byte("ALLOWED-REAL"))
+	symlink(t, "real.txt", filepath.Join(work, "notes.txt"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	rel, info, err := ws.resolveInfo("notes.txt")
+	if err != nil || rel != "real.txt" {
+		t.Fatalf("resolveInfo(notes.txt) = (%q, %v), want (\"real.txt\", nil)", rel, err)
+	}
+	if info == nil || info.Mode()&fs.ModeSymlink != 0 || !os.SameFile(info, lstatInfo(t, target)) {
+		t.Fatalf("expected real.txt's info, got %v", info)
+	}
+	f, _, err := ws.openFile(openRootT(t, ws), "notes.txt", rel, info)
+	if err != nil {
+		t.Fatalf("openFile(notes.txt) with resolveInfo's info: %v", err)
+	}
+	f.Close()
+}
+
+// - Verify resolveInfo refuses a symlink to a deny-listed file with a nil info and an error naming only the link
+func Test_Unit_Workspace_ResolveInfo_SymlinkToDenyListed_Refused(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
+	symlink(t, ".env", filepath.Join(work, "notes.txt"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	rel, info, err := ws.resolveInfo("notes.txt")
+	if rel != "" || info != nil || err == nil || !strings.Contains(err.Error(), "deny list") {
+		t.Fatalf("resolveInfo(notes.txt -> .env) = (%q, %v, %v), want a deny-list error", rel, info, err)
+	}
+	expectErrorHidesWorkDir(t, "resolveInfo(notes.txt)", err, work, "notes.txt")
+}
+
+// - Verify a KNOWN LIMIT (documented on openFile, not a bug this test asks to fix): if a directory above the file is
+// swapped in the moment between resolving the name and taking want, want and the open both follow the new directory,
+// so they match and openFile opens the swapped-in file. Simulated by taking want after the swap (d -> .ssh). If the
+// gap is ever closed, this test should be changed to expect a refusal.
+func Test_Unit_Workspace_OpenFile_KnownLimit_DirSwappedBeforeWantTaken_NotDetected(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "d/a.txt", []byte("ALLOWED-A"))
+	writeFile(t, work, ".ssh/a.txt", []byte("FAKE_SECRET_TOKEN_123"))
+	ws := newWorkspace(t, work, "", DenyList{})
+	rel, err := ws.resolve(filepath.Join("d", "a.txt")) // the name is approved
+	if err != nil {
+		t.Fatalf("resolve(d/a.txt): %v", err)
+	}
+	if err := os.Rename(filepath.Join(work, "d"), filepath.Join(work, "d-old")); err != nil {
+		t.Fatal(err)
+	}
+	symlink(t, ".ssh", filepath.Join(work, "d"))
+	want := lstatInfo(t, filepath.Join(work, "d", "a.txt")) // the Lstat follows the swapped-in directory too
+
+	f, _, err := ws.openFile(openRootT(t, ws), rel, rel, want)
+	if err != nil {
+		t.Fatalf("expected the known gap (the swap goes undetected), but openFile refused: %v; update this test", err)
+	}
+	defer f.Close()
+	if b, _ := io.ReadAll(f); string(b) != "FAKE_SECRET_TOKEN_123" {
+		t.Errorf("expected the swapped-in file to be opened (the known gap), read %q", b)
 	}
 }

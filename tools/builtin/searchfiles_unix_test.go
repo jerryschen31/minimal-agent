@@ -140,7 +140,7 @@ func Test_Unit_SearchFiles_SearchFile_Fifo_NotBlockedCountedUnreadable(t *testin
 	done := make(chan searchResult, 1)
 	go func() {
 		var r searchResult
-		tool.searchFile(context.Background(), root, "pipe", regexp.MustCompile("hit"), 0, &r)
+		tool.searchFile(context.Background(), root, "pipe", nil, regexp.MustCompile("hit"), 0, &r)
 		done <- r
 	}()
 	select {
@@ -150,5 +150,40 @@ func Test_Unit_SearchFiles_SearchFile_Fifo_NotBlockedCountedUnreadable(t *testin
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("searchFile blocked opening a named pipe")
+	}
+}
+
+// - Verify searchFile with want taken before a.txt was swapped for a symlink to .env (the walk's d.Info, then the
+// swap) does not read .env: no match lines, and the file counted as unreadable
+func Test_Unit_SearchFiles_SearchFile_SwappedForSymlink_NotReadCountedUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a.txt", []byte("ALLOWED-A"))
+	writeFile(t, dir, ".env", []byte("FAKE_SECRET_TOKEN_123"))
+	tool := newSearchTool(t, dir, "", DenyList{})
+	want := lstatInfo(t, path)
+	swapForSymlink(t, path, ".env")
+
+	var r searchResult
+	err := tool.searchFile(context.Background(), openRootT(t, tool.ws), "a.txt", want, regexp.MustCompile("."), 0, &r)
+	if err != nil || r.unreadable != 1 || r.found != 0 || len(r.lines) != 0 {
+		t.Errorf("expected (nil, unreadable 1, no matches), got (%v, %+v)", err, r)
+	}
+	for _, l := range r.lines {
+		if strings.Contains(l, "FAKE_SECRET") {
+			t.Errorf("searchFile returned the secret: %q", l)
+		}
+	}
+}
+
+// - Verify searchFile still searches an untouched file when want is its lstat (the d.Info the walk passes)
+func Test_Unit_SearchFiles_SearchFile_Unswapped_Searched(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a.txt", []byte("hit"))
+	tool := newSearchTool(t, dir, "", DenyList{})
+
+	var r searchResult
+	err := tool.searchFile(context.Background(), openRootT(t, tool.ws), "a.txt", lstatInfo(t, path), regexp.MustCompile("hit"), 0, &r)
+	if err != nil || r.unreadable != 0 || len(r.lines) != 1 || r.lines[0] != match("a.txt", 1, "hit") {
+		t.Errorf("expected one match in a.txt, got (%v, %+v)", err, r)
 	}
 }

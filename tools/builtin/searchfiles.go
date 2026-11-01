@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
@@ -153,7 +152,7 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start searching
 		return "", err
 	}
-	rel, err := t.ws.resolve(params.Path) // refuses outside workDir, a deny-listed path, the trace directory
+	rel, startInfo, err := t.ws.resolveInfo(params.Path) // refuses outside workDir, a deny-listed path, the trace directory
 	if err != nil {
 		return "", err
 	}
@@ -215,7 +214,16 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 		if params.Pattern != "" && !matchName(params.Pattern, d.Name()) {
 			return nil
 		}
-		return t.searchFile(ctx, root, p, re, params.Skip, &r)
+		// want is the file the check approved; searchFile refuses a file swapped in since. d.Info is an Lstat of the
+		// entry (a symlink swapped in shows up as a symlink); the start path was taken by resolveInfo instead
+		want := startInfo
+		if p != start {
+			if want, err = d.Info(); err != nil {
+				r.unreadable++
+				return nil
+			}
+		}
+		return t.searchFile(ctx, root, p, want, re, params.Skip, &r)
 	})
 	if err != nil && !errors.Is(err, errPageFull) { // a cancel or an unreadable start
 		return "", err
@@ -256,20 +264,16 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 }
 
 // searchFile reads one file line by line and adds its matches to r. It returns errPageFull when the page is full,
-// ctx.Err() if cancelled, and nil otherwise; problems with the file itself are counted in r, never returned.
-func (t *SearchFilesTool) searchFile(ctx context.Context, root *os.Root, p string, re *regexp.Regexp, skip int, r *searchResult) error {
-	// O_NONBLOCK and the Stat on the opened file, as in read_file: the walk saw a regular file, but it may have been
-	// swapped for a named pipe since, and opening a pipe would otherwise block forever
-	f, err := root.OpenFile(filepath.FromSlash(p), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+// ctx.Err() if cancelled, and nil otherwise; problems with the file itself are counted in r, never returned. want is
+// the file the workspace check approved (see openFile).
+func (t *SearchFilesTool) searchFile(ctx context.Context, root *os.Root, p string, want os.FileInfo, re *regexp.Regexp, skip int, r *searchResult) error {
+	// openFile refuses a named pipe (without blocking on it) and a file swapped in after the check, e.g. a symlink to .env
+	f, _, err := t.ws.openFile(root, p, filepath.FromSlash(p), want)
 	if err != nil {
 		r.unreadable++
 		return nil
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
-		r.unreadable++
-		return nil
-	}
 
 	br := bufio.NewReaderSize(f, binarySniffBytes)
 	head, err := br.Peek(binarySniffBytes)

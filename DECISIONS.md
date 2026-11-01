@@ -3641,3 +3641,25 @@ Files: `tools/builtin/searchfiles.go` (new), `tools/tool.go`, `trace/digest_acti
   with `O_NONBLOCK` and re-checked as regular. The walk's guards are copied from `list_files`, not shared: the
   callbacks differ (list marks "(not readable)" / "(ignored)"). Downside: a fix to the guards must be made twice.
 - `maxSearchFiles` and `ignorePaths` now apply to both tools; no new config key.
+
+### 2026-11-01 — PR #31 review: file tools check that the opened file is the one they checked
+
+Copilot comment on `search_files`; `read_file` had the same gap. Files: `tools/builtin/workspace.go`,
+`tools/builtin/readfile.go`, `tools/builtin/searchfiles.go`.
+
+- **The race (TOCTOU):** the workspace check approves a *name*; the open looks the name up again, and `os.Root`
+  follows symlinks that stay inside rootDir. If something swaps `a.txt` for a symlink to `.env` in between (another
+  program, an MCP filesystem server, later `run_command`; a prompt-injected model can run two tool calls at once), the
+  open returns `.env`, labelled `a.txt`. The post-open `f.Stat()` only proved the file was regular.
+- **Fix:** `Workspace.openFile(root, requested, rel, want)`, shared by both tools: open (`O_NONBLOCK`), fstat, refuse a
+  directory or special file, and refuse unless the opened file is `want` (`os.SameFile`: same device and inode, as
+  `openRoot` does for rootDir). `want` is taken by name *before* the check: `resolveInfo` (resolve plus an `Lstat` right
+  after `EvalSymlinks`) for `read_file` and a search start path, the walk entry's `d.Info()` (an `Lstat`) for files
+  found by the walk. A swap after `want` was taken gives a different inode and is refused ("was replaced while it was
+  being opened; try again"; search counts it as unreadable). Cost: one fstat per file.
+- *Rejected:* a mutex. It only orders goroutines in this process that take it; the swapper is another process. OS
+  file locks are advisory and lock contents, not directory entries.
+- **Remaining gap:** a *directory* above the file swapped in the moment between resolving the name and taking `want`;
+  both then follow the new directory and match. Microseconds wide, but not zero. Closing it needs the OS to report the
+  opened file's real path (`F_GETPATH` on macOS, `/proc/self/fd` on Linux) and checking that; per-OS code, deferred.
+  Hard links to a denied file remain out of reach of any path check (known before).
