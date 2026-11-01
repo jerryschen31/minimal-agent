@@ -187,3 +187,34 @@ func Test_Unit_PathPatterns_RawKeptForDisplay(t *testing.T) {
 		t.Errorf("String() = %q, want %q", got, want)
 	}
 }
+
+// - Verify both keys refuse any pattern containing "**", wherever it is, with an error that starts with
+// `<key>: "<pattern>": ` and says "**" is not supported (path.Match would read it as two "*" that never cross "/", so
+// "**/*.secret" would look recursive but miss a/b/x.secret)
+func Test_Unit_PathPatterns_DoubleStar_Refused(t *testing.T) {
+	bad := []string{"**", "**/*.secret", "secrets/**", "a/**/b", "x**y", "/**", "secrets/**/", "***"}
+	newers := map[string]func([]string) error{
+		"denyPaths":   func(p []string) error { _, err := NewDenyList(p); return err },
+		"ignorePaths": func(p []string) error { _, err := NewIgnoreList(p); return err },
+	}
+	for key, newList := range newers {
+		for _, raw := range bad {
+			err := newList([]string{"*.ok", raw})
+			want := fmt.Sprintf("%s: %q: ", key, raw)
+			if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), `"**" is not supported`) {
+				t.Errorf("%s %q: expected an error starting with %q and saying \"**\" is not supported, got %v", key, raw, want, err)
+			}
+		}
+	}
+}
+
+// - Verify a single "*" in any position is still accepted, so the "**" refusal doesn't catch ordinary wildcards
+func Test_Unit_PathPatterns_SingleStar_StillAccepted(t *testing.T) {
+	good := []string{"*", "*/x", "a/*/b", "*.secret", "x*y*z", "secrets/*"}
+	if _, err := NewDenyList(good); err != nil {
+		t.Errorf("NewDenyList(%q): unexpected error %v", good, err)
+	}
+	if _, err := NewIgnoreList(good); err != nil {
+		t.Errorf("NewIgnoreList(%q): unexpected error %v", good, err)
+	}
+}

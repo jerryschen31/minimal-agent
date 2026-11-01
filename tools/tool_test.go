@@ -337,6 +337,21 @@ func Test_SetupBuiltinTools_DenyPaths_BadPattern_Fails(t *testing.T) {
 	}
 }
 
+// - Verify a denyPaths or ignorePaths pattern with "**" fails SetupBuiltinTools, whichever tools are enabled, so a rule
+// that looks recursive but would miss nested files stops startup instead of protecting less than it appears to
+func Test_SetupBuiltinTools_DoubleStarPattern_Fails(t *testing.T) {
+	for _, toolList := range [][]string{nil, {"read_file"}, {"read_file", "list_files"}} {
+		built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, []string{"**/*.secret"}, nil))
+		if err == nil || !strings.Contains(err.Error(), "denyPaths") || !strings.Contains(err.Error(), `"**" is not supported`) {
+			t.Errorf("denyPaths, tools %v: expected a denyPaths \"**\" error, got (%d tools, %v)", toolList, len(built), err)
+		}
+		built, err = SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, nil, []string{"build/**"}))
+		if err == nil || !strings.Contains(err.Error(), "ignorePaths") || !strings.Contains(err.Error(), `"**" is not supported`) {
+			t.Errorf("ignorePaths, tools %v: expected an ignorePaths \"**\" error, got (%d tools, %v)", toolList, len(built), err)
+		}
+	}
+}
+
 // - Verify SetupBuiltinTools passes denyPaths through to read_file: a matching file is refused (the error names the
 // pattern), a non-matching one still reads, and the built-ins stay denied
 func Test_SetupBuiltinTools_DenyPaths_Enforced(t *testing.T) {

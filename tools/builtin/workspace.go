@@ -15,9 +15,10 @@ import (
 // Note this is a check the built-in file tools run on every path, and not a true OS sandbox:
 // code that doesn't use this workspace (a future run_command, an MCP server) can still reach everything.
 type Workspace struct {
-	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
-	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	deny     DenyList // names never touched (the built-ins plus config denyPaths)
+	rootDir  string      // absolute path of the allowed directory (config workDir), with symlinks resolved
+	traceDir string      // absolute path of the trace directory, with symlinks resolved; "" = none configured
+	deny     DenyList    // names never touched (the built-ins plus config denyPaths)
+	rootInfo os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not be workDir or a parent of it).
@@ -39,7 +40,7 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	w := &Workspace{rootDir: rootDir, deny: deny}
+	w := &Workspace{rootDir: rootDir, deny: deny, rootInfo: info}
 	if traceDir != "" {
 		if w.traceDir, err = resolvePath(traceDir); err != nil {
 			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
@@ -94,8 +95,25 @@ func (w *Workspace) check(requested, real string) (rel string, err error) {
 }
 
 // openRoot opens rootDir as an *os.Root, the second line of defence: it refuses ".." and symlink escapes when the file is opened. The caller closes it.
+// It also checks that the directory it opened is the one NewWorkspace checked.
+// [agent] os.OpenRoot finds rootDir by its path, and a path can be made to point elsewhere after startup: another
+// program (or an MCP filesystem server's move_file, or a future run_command) renames workDir and puts a symlink to /
+// in its place. Without this check, os.Root would then contain the tool to the wrong tree. Once opened, the root is
+// tied to the directory itself, not its path, so comparing them (os.SameFile: same device and inode) closes the gap.
 func (w *Workspace) openRoot() (*os.Root, error) {
-	return os.OpenRoot(w.rootDir)
+	root, err := os.OpenRoot(w.rootDir)
+	if err != nil {
+		return nil, err
+	}
+	info, err := root.Stat(".")
+	if err == nil && !os.SameFile(info, w.rootInfo) {
+		err = fmt.Errorf("the working directory was moved or replaced after the agent started; restart the agent")
+	}
+	if err != nil {
+		root.Close()
+		return nil, err
+	}
+	return root, nil
 }
 
 // resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.

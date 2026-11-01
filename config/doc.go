@@ -105,8 +105,8 @@
 //	"/build"            a leading "/" also anchors at workDir, so it matches only the top-level build path
 //
 // A matched directory covers everything under it, so the way to protect a whole tree is to deny the directory itself
-// ("secrets" or "secrets/"), not "secrets/*.env". Not supported: "**", "!" negation. A pattern with spaces at either
-// end, a "\", or an empty, "." or ".." part is an error.
+// ("secrets" or "secrets/"), not "secrets/*.env". Not supported: "!" negation; "**" is an error. A pattern with spaces
+// at either end, a "\", or an empty, "." or ".." part is an error.
 //
 // Each mcpServers entry is either local or remote:
 //

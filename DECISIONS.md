@@ -3588,3 +3588,24 @@ because `matchPath` skipped the `.env.example` directory and `*` can't reach the
 applies only to the last part of the path (`tools/builtin/pathpattern.go`): `config/.env.example` is still allowed,
 anything inside a directory of that name is checked as usual (built-in `.env.*` also denies such a directory).
 Downside: none known; it only refuses more.
+
+### 2026-10-31 — PR #30 review: `openRoot` checks it opened the original workDir; `**` refused
+
+Two Copilot comments plus a doc fix. Files: `tools/builtin/workspace.go`, `tools/builtin/pathpattern.go`,
+`config/doc.go`.
+
+- **A path can be repointed after startup.** `NewWorkspace` resolves workDir once, but `os.OpenRoot(rootDir)` looks
+  the path up again on every call. If something renames workDir and puts a symlink (or a new directory) at its path
+  (another program; an MCP filesystem server's `move_file`; later `run_command`, possibly prompt-injected), the
+  second line of defence would contain the tool to the wrong tree, and a swap between `resolve` and `openRoot`
+  slips past the first. **Fix:** `NewWorkspace` keeps the directory's `FileInfo`; `openRoot` compares the opened
+  directory with it (`os.SameFile`: same device and inode) and refuses otherwise ("restart the agent"). An open root
+  is tied to the directory, not its path, so later swaps can't move it.
+  - *Rejected:* keep one `os.Root` open for the whole run (Copilot's first suggestion). Same protection, but it needs
+    a close step through `SetupBuiltinTools` → `ShutdownAgent` and every test. Downside of the chosen fix: one extra
+    `fstat` per call, and a workDir that is legitimately deleted and recreated (re-clone) needs a restart.
+- **`**` is refused** in `denyPaths` / `ignorePaths`. `path.Match` reads it as two `*`, so `**/*.secret` looked
+  recursive but missed `a/b/x.secret`: a deny rule that protects less than it appears to. The error says to name the
+  directory instead.
+- **`config/doc.go`:** the `secrets/*.env` row's continuation was labelled `"/build"`; split it and gave `/build` its
+  own row (a leading `/` anchors a name at workDir).

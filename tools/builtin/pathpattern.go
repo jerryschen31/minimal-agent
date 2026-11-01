@@ -17,7 +17,7 @@ import (
 //   - a trailing "/" ("node_modules/"): directories only (still at any depth unless there is another "/").
 //
 // A matched directory covers everything under it, so the way to cover a whole tree is to name the directory. Matching
-// ignores case, because macOS and Windows filesystems do. Not supported: "**" and "!" negation.
+// ignores case, because macOS and Windows filesystems do. Not supported: "!" negation, and "**", which is refused.
 type pathPattern struct {
 	raw      string // as configured, lowercased; shown in errors and tool descriptions
 	glob     string // path.Match pattern, lowercased, without the leading or trailing "/"
@@ -52,6 +52,11 @@ func parsePathPattern(r string) (pathPattern, error) {
 	glob, p.anchored = strings.CutPrefix(glob, "/")
 	if strings.Contains(glob, "/") {
 		p.anchored = true
+	}
+	if strings.Contains(glob, "**") {
+		// [agent] path.Match would read "**" as two "*", which never cross "/": "**/*.secret" would look recursive but
+		// miss a/b/x.secret. Refused so a rule never protects less than it appears to.
+		return pathPattern{}, fmt.Errorf(`"**" is not supported; to cover a whole tree, name the directory (e.g. "secrets/")`)
 	}
 	for _, part := range strings.Split(glob, "/") {
 		if part == "" || part == "." || part == ".." {

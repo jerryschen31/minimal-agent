@@ -5,6 +5,7 @@ package builtin
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -84,4 +85,193 @@ func Test_Unit_Workspace_Resolve_SymlinkLoop_ErrorHidesWorkDir(t *testing.T) {
 	expectErrorHidesWorkDir(t, "read_file(loop-a)", err, work, "loop-a")
 	_, err = callList(newListTool(t, work, "", DenyList{}), "loop-a", "", false)
 	expectErrorHidesWorkDir(t, "list_files(loop-a)", err, work, "loop-a")
+}
+
+//*************************************//
+// workDir moved or replaced after NewWorkspace
+
+// movedWorkDirFixture is a workspace on parent/work (containing a.txt) with read_file and list_files sharing it, plus a
+// directory outside it holding a secret and a different a.txt, so a test can swap work for something else.
+type movedWorkDirFixture struct {
+	work, out string // resolved paths
+	ws        *Workspace
+	read      *ReadFileTool
+	list      *ListFilesTool
+}
+
+func newMovedWorkDirFixture(t *testing.T) movedWorkDirFixture {
+	t.Helper()
+	parent := realPath(t, t.TempDir())
+	f := movedWorkDirFixture{work: filepath.Join(parent, "work"), out: filepath.Join(parent, "out")}
+	writeFile(t, f.work, "a.txt", []byte("ALLOWED-A"))
+	writeFile(t, f.out, "secret.txt", []byte("FAKE_SECRET_TOKEN_123"))
+	writeFile(t, f.out, "a.txt", []byte("OUTSIDE-A"))
+	f.ws = newWorkspace(t, f.work, "", DenyList{})
+	var err error
+	if f.read, err = NewReadFileTool(f.ws, testMaxBytes); err != nil {
+		t.Fatalf("NewReadFileTool: %v", err)
+	}
+	if f.list, err = NewListFilesTool(f.ws, 10000, testIgnore(t)); err != nil {
+		t.Fatalf("NewListFilesTool: %v", err)
+	}
+	return f
+}
+
+// moveAway renames work to work.old, so something else can be put at its path.
+func (f movedWorkDirFixture) moveAway(t *testing.T) {
+	t.Helper()
+	if err := os.Rename(f.work, f.work+".old"); err != nil {
+		t.Fatalf("renaming workDir away: %v", err)
+	}
+}
+
+// moveBack removes whatever is at work's path and renames work.old back.
+func (f movedWorkDirFixture) moveBack(t *testing.T) {
+	t.Helper()
+	if err := os.RemoveAll(f.work); err != nil {
+		t.Fatalf("removing the replacement: %v", err)
+	}
+	if err := os.Rename(f.work+".old", f.work); err != nil {
+		t.Fatalf("renaming workDir back: %v", err)
+	}
+}
+
+// assertRefused checks a tool call failed, returned no output and leaked nothing from out; if wantMsg is set, the
+// error must contain it.
+func assertRefused(t *testing.T, what, got string, err error, wantMsg ...string) {
+	t.Helper()
+	if err == nil || got != "" {
+		t.Errorf("%s: expected an error and no output, got (%q, %v)", what, got, err)
+		return
+	}
+	// [agent] The error may name the requested path (secret.txt), but never the other directory's file contents.
+	for _, leak := range []string{"OUTSIDE-A", "FAKE_SECRET"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("%s: leaked %q from outside workDir: (%q, %v)", what, leak, got, err)
+		}
+	}
+	if len(wantMsg) > 0 && !strings.Contains(err.Error(), wantMsg[0]) {
+		t.Errorf("%s: expected the error to contain %q, got %v", what, wantMsg[0], err)
+	}
+}
+
+// - Verify the control case: with workDir untouched, read_file and list_files work on the fixture
+func Test_Unit_Workspace_WorkDirUntouched_ToolsWork(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	if got, err := readPath(f.read, "a.txt"); err != nil || got != "ALLOWED-A" {
+		t.Errorf("read_file(a.txt) = (%q, %v), want (\"ALLOWED-A\", nil)", got, err)
+	}
+	if got := mustList(t, f.list, ".", "", false); !strings.Contains(got, "a.txt") {
+		t.Errorf("list_files(.) = %q, want it to list a.txt", got)
+	}
+}
+
+// - Verify that after workDir is renamed and a symlink to another directory put at its path, read_file and list_files
+// refuse every path (by resolve's outside check or openRoot's same-directory check) and nothing from the other
+// directory reaches the output
+func Test_Unit_Workspace_WorkDirSwappedForSymlink_ToolsRefuse(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	f.moveAway(t)
+	symlink(t, f.out, f.work)
+
+	for _, p := range []string{"a.txt", "secret.txt"} {
+		got, err := readPath(f.read, p)
+		assertRefused(t, "read_file("+p+")", got, err)
+	}
+	got, err := callList(f.list, ".", "", true)
+	assertRefused(t, "list_files(.)", got, err)
+}
+
+// - Verify that after workDir is renamed and a new directory created at its path (so every path still resolves inside
+// rootDir), read_file and list_files are refused by openRoot with the "moved or replaced" error, which names no path
+func Test_Unit_Workspace_WorkDirReplacedByNewDir_ToolsRefuse(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	f.moveAway(t)
+	if err := os.Mkdir(f.work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, f.work, "a.txt", []byte("OUTSIDE-A"))
+	writeFile(t, f.work, "secret.txt", []byte("FAKE_SECRET_TOKEN_123"))
+
+	for _, p := range []string{"a.txt", "secret.txt"} {
+		got, err := readPath(f.read, p)
+		assertRefused(t, "read_file("+p+")", got, err, "moved or replaced")
+		if err != nil && strings.Contains(err.Error(), f.work) {
+			t.Errorf("read_file(%s): error names the absolute workDir: %v", p, err)
+		}
+	}
+	got, err := callList(f.list, ".", "", true)
+	assertRefused(t, "list_files(.)", got, err, "moved or replaced")
+}
+
+// - Verify moving the original workDir back (same directory, same inode) makes read_file and list_files work again,
+// after both a symlink swap and a new-directory swap
+func Test_Unit_Workspace_WorkDirMovedBack_ToolsWorkAgain(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	for name, replace := range map[string]func(){
+		"symlink": func() { symlink(t, f.out, f.work) },
+		"new dir": func() { writeFile(t, f.work, "a.txt", []byte("OUTSIDE-A")) },
+	} {
+		f.moveAway(t)
+		replace()
+		if _, err := readPath(f.read, "a.txt"); err == nil {
+			t.Fatalf("%s: expected read_file to fail while workDir is replaced", name)
+		}
+		f.moveBack(t)
+		if got, err := readPath(f.read, "a.txt"); err != nil || got != "ALLOWED-A" {
+			t.Errorf("%s, moved back: read_file(a.txt) = (%q, %v), want (\"ALLOWED-A\", nil)", name, got, err)
+		}
+		if got, err := callList(f.list, ".", "", false); err != nil || !strings.Contains(got, "a.txt") {
+			t.Errorf("%s, moved back: list_files(.) = (%q, %v), want a.txt listed", name, got, err)
+		}
+	}
+}
+
+// - Verify openRoot itself returns the "moved or replaced" error and a nil root after workDir is swapped for a symlink
+// or a new directory, and opens normally once the original is moved back
+func Test_Unit_Workspace_OpenRoot_WorkDirSwapped_ReturnsError(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	for name, replace := range map[string]func(){
+		"symlink": func() { symlink(t, f.out, f.work) },
+		"new dir": func() { writeFile(t, f.work, "a.txt", []byte("OUTSIDE-A")) },
+	} {
+		f.moveAway(t)
+		replace()
+		root, err := f.ws.openRoot()
+		if err == nil || root != nil || !strings.Contains(err.Error(), "moved or replaced") {
+			t.Errorf("%s: openRoot() = (%v, %v), want (nil, a moved-or-replaced error)", name, root, err)
+		}
+		if root != nil {
+			root.Close()
+		}
+		f.moveBack(t)
+		root, err = f.ws.openRoot()
+		if err != nil {
+			t.Fatalf("%s, moved back: openRoot: %v", name, err)
+		}
+		root.Close()
+	}
+}
+
+// - Verify the gap openRoot closes: resolve accepts a.txt, workDir is then swapped for a symlink to another directory
+// before the file is opened, and openRoot refuses (without the check, the root would open the other directory and
+// read its a.txt)
+func Test_Unit_Workspace_OpenRoot_SwapAfterResolve_Refused(t *testing.T) {
+	f := newMovedWorkDirFixture(t)
+	rel, err := f.ws.resolve("a.txt")
+	if err != nil || rel != "a.txt" {
+		t.Fatalf("resolve(a.txt) before the swap = (%q, %v), want (\"a.txt\", nil)", rel, err)
+	}
+	f.moveAway(t)
+	symlink(t, f.out, f.work)
+
+	root, err := f.ws.openRoot()
+	if err == nil {
+		b, _ := root.ReadFile(rel)
+		root.Close()
+		t.Fatalf("openRoot after the swap succeeded; reading %s through it gave %q", rel, b)
+	}
+	if root != nil || !strings.Contains(err.Error(), "moved or replaced") {
+		t.Errorf("openRoot() = (%v, %v), want (nil, a moved-or-replaced error)", root, err)
+	}
 }
