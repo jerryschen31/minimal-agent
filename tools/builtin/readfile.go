@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"syscall"
 	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
@@ -105,7 +104,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
 		return "", err
 	}
-	rel, err := t.ws.resolve(params.Path)
+	rel, want, err := t.ws.resolveInfo(params.Path)
 	if err != nil {
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
 	}
@@ -116,25 +115,12 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", err
 	}
 	defer root.Close()
-	// Open with O_NONBLOCK: opening a named pipe (FIFO) normally waits for a writer, which would hang the whole
-	// agent turn (this call is synchronous and cannot be cancelled once inside open). With O_NONBLOCK the open
-	// returns at once, and the file type is checked on the opened descriptor below, not on the path, so a
-	// regular file swapped for a pipe after resolve() cannot be raced in. O_NONBLOCK does not change reads of regular files.
-	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// openFile refuses a directory, a named pipe (without blocking on it) and a file swapped in after the check
+	f, info, err := t.ws.openFile(root, params.Path, rel, want)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	info, err := f.Stat() // fstat on the descriptor we actually opened
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file", params.Path)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file (it is a %s)", params.Path, fileKind(info.Mode()))
-	}
 
 	if params.Offset > info.Size() {
 		return "", fmt.Errorf("offset %d is past the end of the file (%d bytes)", params.Offset, info.Size())

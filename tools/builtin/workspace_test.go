@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -362,4 +363,167 @@ func Test_Unit_Workspace_Check_DirOnlyDeny_NonexistentCountsAsDir(t *testing.T) 
 	if got, err := ws.check("x", filepath.Join(ws.rootDir, "app", "secrets")); err == nil || !strings.Contains(err.Error(), "deny list") {
 		t.Errorf("check(directory app/secrets) = (%q, %v), want a deny-list error", got, err)
 	}
+}
+
+//*************************************//
+// resolveInfo and openFile (the check-then-open race)
+//*************************************//
+
+// lstatInfo returns os.Lstat(path), failing the test on error. Tests use it to take want the way resolveInfo does,
+// before a simulated swap.
+func lstatInfo(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat(%q): %v", path, err)
+	}
+	return info
+}
+
+// openRootT opens ws's root, failing the test on error, and closes it when the test ends.
+func openRootT(t *testing.T, ws *Workspace) *os.Root {
+	t.Helper()
+	root, err := ws.openRoot()
+	if err != nil {
+		t.Fatalf("openRoot: %v", err)
+	}
+	t.Cleanup(func() { root.Close() })
+	return root
+}
+
+// expectOpenRefused fails the test unless openFile returned (nil, nil, an error containing wantMsg that names
+// requested and hides workDir).
+func expectOpenRefused(t *testing.T, what string, f *os.File, info os.FileInfo, err error, work, requested, wantMsg string) {
+	t.Helper()
+	if f != nil {
+		b, _ := io.ReadAll(f)
+		f.Close()
+		t.Fatalf("%s: openFile succeeded and the file read %q; want it refused", what, b)
+	}
+	if info != nil {
+		t.Errorf("%s: expected a nil info on error, got %v", what, info.Name())
+	}
+	expectErrorHidesWorkDir(t, what, err, work, requested)
+	if err != nil && !strings.Contains(err.Error(), wantMsg) {
+		t.Errorf("%s: expected an error containing %q, got %q", what, wantMsg, err)
+	}
+}
+
+// - Verify openFile opens an untouched file when want is that file's lstat, and returns the opened file's info
+func Test_Unit_Workspace_OpenFile_Unswapped_OpensAndReturnsInfo(t *testing.T) {
+	work := t.TempDir()
+	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	f, info, err := ws.openFile(openRootT(t, ws), "a.txt", "a.txt", lstatInfo(t, path))
+	if err != nil {
+		t.Fatalf("openFile(a.txt) = %v, want it opened", err)
+	}
+	defer f.Close()
+	if b, _ := io.ReadAll(f); string(b) != "ALLOWED-A" {
+		t.Errorf("read %q, want %q", b, "ALLOWED-A")
+	}
+	if info == nil || !os.SameFile(info, lstatInfo(t, path)) || info.Size() != int64(len("ALLOWED-A")) {
+		t.Errorf("expected the returned info to describe a.txt, got %v", info)
+	}
+}
+
+// - Verify openFile refuses when want is nil (no approved file to compare with), even for an untouched regular file
+func Test_Unit_Workspace_OpenFile_NilWant_Refused(t *testing.T) {
+	work := t.TempDir()
+	writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	f, info, err := ws.openFile(openRootT(t, ws), "a.txt", "a.txt", nil)
+	expectOpenRefused(t, "openFile(a.txt, want nil)", f, info, err, work, "a.txt", "was replaced while it was being opened")
+}
+
+// - Verify openFile refuses a directory with "is a directory, not a file", naming the requested path only
+func Test_Unit_Workspace_OpenFile_Directory_Refused(t *testing.T) {
+	work := t.TempDir()
+	mkdir(t, work, "sub")
+	ws := newWorkspace(t, work, "", DenyList{})
+
+	f, info, err := ws.openFile(openRootT(t, ws), "sub", "sub", lstatInfo(t, filepath.Join(work, "sub")))
+	expectOpenRefused(t, "openFile(sub)", f, info, err, work, "sub", "sub is a directory, not a file")
+}
+
+// - Verify openFile refuses a.txt when another regular file was renamed over it after want was taken (same name,
+// different file), and never returns the new file's contents
+func Test_Unit_Workspace_OpenFile_RenamedOver_Refused(t *testing.T) {
+	work := t.TempDir()
+	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
+	other := writeFile(t, work, "b.txt", []byte("SWAPPED-IN"))
+	ws := newWorkspace(t, work, "", DenyList{})
+	want := lstatInfo(t, path)
+	if err := os.Rename(other, path); err != nil {
+		t.Fatalf("renaming b.txt over a.txt: %v", err)
+	}
+
+	f, info, err := ws.openFile(openRootT(t, ws), "a.txt", "a.txt", want)
+	expectOpenRefused(t, "openFile(a.txt renamed over)", f, info, err, work, "a.txt", "was replaced while it was being opened; try again")
+}
+
+// - Verify resolveInfo returns the rel path and an info that is the same file as the one requested (by relative and
+// absolute path), and resolve still returns the same rel
+func Test_Unit_Workspace_ResolveInfo_RegularFile_SameFile(t *testing.T) {
+	work := t.TempDir()
+	path := writeFile(t, work, "sub/a.txt", []byte("ALLOWED-A"))
+	ws := newWorkspace(t, work, "", DenyList{})
+	wantRel := filepath.Join("sub", "a.txt")
+
+	for _, p := range []string{wantRel, path} {
+		rel, info, err := ws.resolveInfo(p)
+		if err != nil || rel != wantRel {
+			t.Fatalf("resolveInfo(%q) = (%q, %v), want (%q, nil)", p, rel, err, wantRel)
+		}
+		if info == nil || !os.SameFile(info, lstatInfo(t, path)) || !info.Mode().IsRegular() {
+			t.Errorf("resolveInfo(%q): expected the info of sub/a.txt, got %v", p, info)
+		}
+		if r, err := ws.resolve(p); err != nil || r != rel {
+			t.Errorf("resolve(%q) = (%q, %v), want the same rel as resolveInfo (%q)", p, r, err, rel)
+		}
+	}
+}
+
+// - Verify resolveInfo refuses what resolve refuses (missing, deny-listed, outside workDir, inside traceDir), with
+// the same error, a nil info, and no absolute workDir in the message
+func Test_Unit_Workspace_ResolveInfo_Refused_SameErrorsAsResolve(t *testing.T) {
+	parent := t.TempDir()
+	work := filepath.Join(parent, "work")
+	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
+	writeFile(t, work, "traces/run.jsonl", []byte("FAKE_SECRET_TOKEN_123"))
+	outside := writeFile(t, parent, "outside.txt", []byte("OUTSIDE"))
+	ws := newWorkspace(t, work, filepath.Join(work, "traces"), DenyList{})
+
+	for p, wantMsg := range map[string]string{
+		"missing.txt":                        "no such file",
+		".env":                               "deny list",
+		outside:                              "outside the allowed directory",
+		filepath.Join("..", "outside.txt"):   "outside the allowed directory",
+		filepath.Join("traces", "run.jsonl"): "inside the trace directory",
+	} {
+		rel, info, err := ws.resolveInfo(p)
+		if rel != "" || info != nil || err == nil || !strings.Contains(err.Error(), wantMsg) {
+			t.Errorf("resolveInfo(%q) = (%q, %v, %v), want (\"\", nil, an error containing %q)", p, rel, info, err, wantMsg)
+			continue
+		}
+		expectErrorHidesWorkDir(t, "resolveInfo("+p+")", err, work, p) // an absolute request is named as given; outside.txt's path doesn't contain workDir
+		if _, rerr := ws.resolve(p); rerr == nil || rerr.Error() != err.Error() {
+			t.Errorf("resolve(%q) error = %v, want the same as resolveInfo's %q", p, rerr, err)
+		}
+	}
+}
+
+// - Verify read_file on a subdirectory (relative path) still says "<path> is a directory, not a file" and does not
+// leak the absolute workDir
+func Test_ReadFile_Subdirectory_IsADirectoryError(t *testing.T) {
+	work := t.TempDir()
+	mkdir(t, work, "sub")
+
+	got, err := readPath(newTool(t, work), "sub")
+	if got != "" {
+		t.Errorf("expected no output, got %q", got)
+	}
+	expectErrorHidesWorkDir(t, "read_file(sub)", err, work, "sub is a directory, not a file")
 }

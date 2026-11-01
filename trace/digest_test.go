@@ -143,6 +143,37 @@ func Test_Digest_ListFilesDescribed(t *testing.T) {
 	})
 }
 
+func Test_Digest_SearchFilesDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"query only defaults to dot", `{"query":"TODO"}`, "", false, `search_files : search "TODO" in .`},
+		{"path", `{"query":"x","path":"cmd"}`, "", false, `search_files : search "x" in cmd`},
+		{"all options", `{"query":"a.b","path":"src","pattern":"*.go","regex":true,"ignoreCase":true,"skip":200}`, "", false,
+			`search_files : search "a.b" in src ("*.go", regex, ignoreCase, skip 200)`},
+		{"skip 0 not shown", `{"query":"x","skip":0,"regex":false}`, "", false, `search_files : search "x" in .`},
+		{"query is quoted", `{"query":"say \"hi\""}`, "", false, `search_files : search "say \"hi\"" in .`},
+		{"failed", `{"query":"x","path":"..","regex":true}`, ".. is outside the allowed directory", true,
+			`search_files : search "x" in .. (regex) (failed: .. is outside the allowed directory)`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := describe("search_files", tt.args, tt.content, tt.failed); got != tt.want {
+				t.Errorf("describe = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	for _, args := range []string{"not json", `{}`, `{"query":""}`} {
+		t.Run("generic line for "+args, func(t *testing.T) {
+			if got := describe("search_files", args, "", false); !strings.HasPrefix(got, "search_files : "+args) {
+				t.Errorf("describe = %q", got)
+			}
+		})
+	}
+}
+
 func Test_Digest_UnfinishedRun_SaysSo(t *testing.T) {
 	d := NewActivityDigest()
 	var out bytes.Buffer

@@ -76,22 +76,23 @@
 //
 // Search limit (positive; bounds how long one call can take, not only what it returns):
 //
-//	maxSearchFiles      most files and directories one list_files call looks at, shown or not; a recursive
-//	                    listing that hits it ends with a note to list a subdirectory                       [10000]
+//	maxSearchFiles      most files and directories one list_files or search_files call looks at, matching
+//	                    or not; a call that hits it ends with a note to narrow the path                    [10000]
 //
 // Tools:
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
-//	                the old spelling, still works), "list_files"                                           [["read_file"]]
-//	denyPaths       extra path patterns the file tools never read or list, e.g. "*.secret", "secrets/",
-//	                "config/creds.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
-//	                .ssh, .agent-trace), which can't be removed; .env.example is always allowed. Path
-//	                pattern rules below. A bad pattern fails startup                                       [none]
-//	ignorePaths     path patterns list_files leaves out (noise, not secrets). An ignored file isn't shown;
-//	                an ignored directory is shown as "dir/ (ignored)" and its contents can't be listed,
-//	                even by asking for it directly (read_file still reads them). Path pattern rules below.
-//	                A config file's list replaces the default; [] = ignore nothing; a bad pattern fails
-//	                startup                                       [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
+//	                the old spelling, still works), "list_files", "search_files"                           [["read_file"]]
+//	denyPaths       extra path patterns the file tools never read, list or search, e.g. "*.secret",
+//	                "secrets/", "config/creds.json". Added to the built-in list (.env, .env.*, *.pem,
+//	                *.key, id_rsa*, .ssh, .agent-trace), which can't be removed; .env.example is always
+//	                allowed. Path pattern rules below. A bad pattern fails startup                         [none]
+//	ignorePaths     path patterns list_files and search_files leave out (noise, not secrets). An ignored
+//	                file isn't shown or searched; an ignored directory is shown as "dir/ (ignored)" and its
+//	                contents can't be listed or searched, even by asking for it directly (read_file still
+//	                reads them). Path pattern rules below. A config file's list replaces the default;
+//	                [] = ignore nothing; a bad pattern fails startup
+//	                                                [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
 //
 // Path patterns (denyPaths, ignorePaths), .gitignore-style; paths are relative to workDir and matched ignoring case:

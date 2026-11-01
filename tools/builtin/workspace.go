@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Workspace is the part of the filesystem the file tools may touch: rootDir and everything below it, except
@@ -56,6 +57,15 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 // It returns an error if the path doesn't exist or check refuses it. The checks run on the resolved path, so a
 // symlink named notes.txt that points at .env is refused too.
 func (w *Workspace) resolve(requested string) (string, error) {
+	rel, _, err := w.resolveInfo(requested)
+	return rel, err
+}
+
+// resolveInfo is resolve, and also returns the resolved file's identity, taken right after its symlinks were resolved
+// and before it is checked. A file tool passes it to openFile, which refuses a file that isn't this one.
+// [agent] Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in
+// after the resolve, and the identities won't match.
+func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error) {
 	candidate := requested
 	if !filepath.IsAbs(requested) {
 		candidate = filepath.Join(w.rootDir, requested)
@@ -66,11 +76,22 @@ func (w *Workspace) resolve(requested string) (string, error) {
 		// directory into the model's context and send it to the provider. Name only what the model asked for, and keep
 		// the cause wrapped so errors.Is(err, fs.ErrNotExist) still works.
 		if pe, ok := errors.AsType[*fs.PathError](err); ok {
-			return "", fmt.Errorf("%s: %w", requested, pe.Err)
+			return "", nil, fmt.Errorf("%s: %w", requested, pe.Err)
 		}
-		return "", fmt.Errorf("%s: can't be resolved", requested)
+		return "", nil, fmt.Errorf("%s: can't be resolved", requested)
 	}
-	return w.check(requested, real)
+	info, err := os.Lstat(real)
+	if err != nil { // removed since the resolve; name only the requested path, as above
+		if pe, ok := errors.AsType[*fs.PathError](err); ok {
+			return "", nil, fmt.Errorf("%s: %w", requested, pe.Err)
+		}
+		return "", nil, fmt.Errorf("%s: can't be resolved", requested)
+	}
+	rel, err := w.check(requested, real)
+	if err != nil {
+		return "", nil, err
+	}
+	return rel, info, nil
 }
 
 // check refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir. requested is used only in error messages.
@@ -114,6 +135,38 @@ func (w *Workspace) openRoot() (*os.Root, error) {
 		return nil, err
 	}
 	return root, nil
+}
+
+// openFile opens the regular file rel (relative to rootDir) through root for reading, and refuses it unless it is
+// want: the file the workspace check approved, from resolveInfo or a walk entry's Info. requested names the file in
+// errors. The caller closes the file.
+// [agent] The check approves a name, the open follows that name again, and os.Root follows symlinks that stay inside
+// rootDir. Something else (another program, an MCP server) can swap a.txt for a symlink to .env in between, and the
+// open would then return .env. Locks can't stop another process, so instead the opened file is compared with the
+// checked one (os.SameFile: same device and inode), as openRoot does for rootDir. The opened file is checked again on
+// its descriptor too: O_NONBLOCK makes opening a named pipe return at once rather than wait for a writer forever.
+// Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want; both
+// then follow the new directory, so they match. Closing it would need the OS to report the opened file's real path.
+func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error) {
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat() // fstat on the descriptor we actually opened
+	switch {
+	case err != nil:
+	case info.IsDir():
+		err = fmt.Errorf("%s is a directory, not a file", requested)
+	case !info.Mode().IsRegular():
+		err = fmt.Errorf("%s is not a regular file (it is a %s)", requested, fileKind(info.Mode()))
+	case want == nil || !os.SameFile(info, want):
+		err = fmt.Errorf("%s was replaced while it was being opened; try again", requested)
+	}
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	return f, info, nil
 }
 
 // resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.
