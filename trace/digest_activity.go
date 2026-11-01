@@ -274,6 +274,37 @@ func describe(name, args, content string, failed bool) string {
 				line += " (" + strings.Join(extras, ", ") + ")"
 			}
 		}
+	case "search_files":
+		var in struct {
+			Query      string `json:"query"`
+			Path       string `json:"path"`
+			Pattern    string `json:"pattern"`
+			Regex      bool   `json:"regex"`
+			IgnoreCase bool   `json:"ignoreCase"`
+			Skip       int    `json:"skip"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Query != "" {
+			if in.Path == "" {
+				in.Path = "." // the tool's default: the working directory
+			}
+			var extras []string
+			if in.Pattern != "" {
+				extras = append(extras, fmt.Sprintf("%q", in.Pattern))
+			}
+			if in.Regex {
+				extras = append(extras, "regex")
+			}
+			if in.IgnoreCase {
+				extras = append(extras, "ignoreCase")
+			}
+			if in.Skip > 0 {
+				extras = append(extras, fmt.Sprintf("skip %d", in.Skip))
+			}
+			line = fmt.Sprintf("%s : search %q in %s", name, in.Query, in.Path)
+			if len(extras) > 0 {
+				line += " (" + strings.Join(extras, ", ") + ")"
+			}
+		}
 	case "shell", "run_command", "bash":
 		var in struct {
 			Command string `json:"command"`

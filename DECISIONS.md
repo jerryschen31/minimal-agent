@@ -3609,3 +3609,35 @@ Two Copilot comments plus a doc fix. Files: `tools/builtin/workspace.go`, `tools
   directory instead.
 - **`config/doc.go`:** the `secrets/*.env` row's continuation was labelled `"/build"`; split it and gave `/build` its
   own row (a leading `/` anchors a name at workDir).
+
+### 2026-10-31 — File tools slice 2: `search_files` (grep-style)
+
+Files: `tools/builtin/searchfiles.go` (new), `tools/tool.go`, `trace/digest_activity.go`, `config/config.go`,
+`config/doc.go`.
+
+- **Arguments:** `query` (required), `path` (a directory, searched with everything below it, or one file; default
+  `.`), `pattern` (file-name glob, as in `list_files`), `regex`, `ignoreCase`, `skip`. Always recursive: a one-level
+  search is rarely wanted.
+- **Plain text by default; `regex: true` for a Go regexp.** Code is full of `( . * [ $`, so treating every query as a
+  regex gives odd matches or errors (`Setup(`). Both modes compile to one RE2 regexp (`QuoteMeta` for plain text),
+  which runs in linear time, so a model's regex can't hang the turn. Downside: a model that sends a regex without the
+  flag gets no match and must retry.
+- **Whole files, streamed like grep.** First plan: load each file and skip files over 1 MiB (or over
+  `readFileMaxBytes`). Rejected because a big file was then never searched, and search has no offset to page through
+  it. Instead a `bufio.Scanner` reads line by line, so memory is bounded by the longest line, not the file. Limits:
+  a line over `maxSearchLineBytes` (10 MiB constant, not config: the buffer starts at 64 KiB and grows only when a line
+  needs it, so a big cap costs nothing for normal files) ends that file's search; a NUL byte in the first 8 KiB means
+  binary and the file is skipped. Both are counted in a `[not searched: …]` note so "no matches" stays honest.
+  Downside: no time limit; a search over a huge tree is slow (Ctrl+C is checked on every line; `maxSearchFiles` and
+  `ignorePaths` still bound it).
+- **Output paged: 200 matches per call, the next page with `skip`.** The cap protects the model's context; `skip`
+  means it never hides a match for good. Each page re-searches from the start in name order, counting the skipped
+  matches. Downsides: deep pages cost the reading of all earlier ones; a file changed between calls can shift a page;
+  no total count (the walk stops at the first match past the page).
+- **Long matching lines show 500 bytes around the match** (`maxMatchLineLen`), so a match deep in a minified line is
+  still visible. Downside: a full page of long lines is about 100 KB.
+- **Same visibility as `list_files`:** `ws.check` on every entry (deny list, trace directory), `ignorePaths` not
+  entered (no marker), a `path` that is itself ignored refused, symlinks and special files never opened, files opened
+  with `O_NONBLOCK` and re-checked as regular. The walk's guards are copied from `list_files`, not shared: the
+  callbacks differ (list marks "(not readable)" / "(ignored)"). Downside: a fix to the guards must be made twice.
+- `maxSearchFiles` and `ignorePaths` now apply to both tools; no new config key.

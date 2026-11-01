@@ -74,12 +74,12 @@ type Config struct {
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
 	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
 	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
-	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files call looks at, shown or not; must be positive (default 10,000)
+	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files or search_files call looks at, matching or not; must be positive (default 10,000)
 
 	// tools and MCP servers configuration
 	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
 	DenyPaths    []string                   `json:"denyPaths"`    // .gitignore-style path patterns the file tools never touch, added to the built-in list (which can't be removed)
-	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files leaves out (an ignored directory can't be listed); a config file's list replaces the default, [] = no paths ignored
+	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files and search_files leave out (an ignored directory can't be listed or searched); a config file's list replaces the default, [] = no paths ignored
 	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
 }
 

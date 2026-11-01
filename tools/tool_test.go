@@ -432,6 +432,59 @@ func Test_SetupBuiltinTools_ListFiles(t *testing.T) {
 	}
 }
 
+// - Verify SetupBuiltinTools builds search_files: ["search_files"] gives one tool named search_files that searches
+// workDir, and ["list_files","search_files"] gives both, in that order
+func Test_SetupBuiltinTools_SearchFiles(t *testing.T) {
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, "a.txt"), []byte("hit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, work, "", 4096, 1000, nil, nil))
+	if err != nil || len(built) != 1 || built[0].GetToolDefinition().Function.Name != "search_files" {
+		t.Fatalf("expected one search_files tool, got (%d tools, %v)", len(built), err)
+	}
+	if got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"query":"hit"}`)); err != nil || got != "a.txt:1: hit" {
+		t.Errorf(`expected "a.txt:1: hit", got (%q, %v)`, got, err)
+	}
+
+	built, err = SetupBuiltinTools(builtinCfg([]string{"list_files", "search_files"}, t.TempDir(), "", 4096, 1000, nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]model.ToolDef, len(built))
+	for i, b := range built {
+		names[i] = b.GetToolDefinition()
+	}
+	if got, want := strings.Join(defNames(names), ","), "list_files,search_files"; got != want {
+		t.Errorf("expected tools %q, got %q", want, got)
+	}
+}
+
+// - Verify SetupBuiltinTools passes maxSearchFiles and ignorePaths to search_files: maxSearchFiles 0 fails setup with
+// "must be positive", and an ignored directory's files are not searched
+func Test_SetupBuiltinTools_SearchFiles_MaxSearchFilesAndIgnore(t *testing.T) {
+	if built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, t.TempDir(), "", 4096, 0, nil, nil)); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("maxSearchFiles 0: expected a 'must be positive' error, got (%d tools, %v)", len(built), err)
+	}
+
+	work := t.TempDir()
+	for _, rel := range []string{"a.txt", filepath.Join("vendor", "b.txt")} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, rel), []byte("hit"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, work, "", 4096, 1000, nil, []string{"vendor/"}))
+	if err != nil || len(built) != 1 {
+		t.Fatalf("expected one search_files tool, got (%d tools, %v)", len(built), err)
+	}
+	if got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"query":"hit"}`)); err != nil || got != "a.txt:1: hit" {
+		t.Errorf(`expected only "a.txt:1: hit", got (%q, %v)`, got, err)
+	}
+}
+
 // - Verify SetupBuiltinTools with a valid workDir and an empty tool list succeeds with zero tools
 func Test_SetupBuiltinTools_NoTools_ValidWorkDir_NoTools(t *testing.T) {
 	for _, toolList := range [][]string{nil, {}} {

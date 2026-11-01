@@ -52,6 +52,12 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 				return nil, err
 			}
 			tools = append(tools, listFiles)
+		case "search_files":
+			searchFiles, err := builtin.NewSearchFilesTool(ws, cfg.MaxSearchFiles, ignore)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, searchFiles)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
