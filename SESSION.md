@@ -981,3 +981,15 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > Item 6 built (`DECISIONS.md § Policy cleanup item 6 built`): `builtin.DenyList` (built-ins + config
 > `denyFileNames`, extend-only). Note: `contextwindow` `Test_Unit_CheckConfig` fails since ef46747 (the new threshold
 > rule rejects 4 messages × 0.75); not from item 6. Next policy item: 7 (printing out of `reActLoop`).
+>
+> (2026-10-30) `contextwindow` `Test_Unit_CheckConfig` fixed: its cases now respect ef46747's rule (with
+> `autoCompact` on, the threshold must start above 4 messages). Item 6 committed (7dc068a).
+>
+> **File tools started** on branch `feat/built-in-write-edit-file-tools`. Order: slice 0 shared checks → 1
+> `list_files` → 2 `search_files` → 3 deny/ask/run levels + policy item 7 → 4 `write_file` + `create_directory` → 5
+> `edit_file` → 6 `copy_file`/`move_file`. Slice 0 (`builtin.Workspace`) built, not committed (`DECISIONS.md § File
+> tools slice 0 built`). Open for later slices: list/search hide deny-listed names (proposed); search skips symlinks
+> (proposed; a link inside workDir to `.env` would otherwise leak it); `O_EXCL` for "new file" writes; `move_file`
+> can't refuse to replace a file that appears after the check; write/edit size cap a constant; read-only tools stay
+> opt-in. Still open from item 6: `DenyList` accepts whitespace-padded patterns (match nothing) and `.`/`..`.
+

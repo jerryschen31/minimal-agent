@@ -31,7 +31,8 @@
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
 //	agentMode       "chat" | "info" | "autonomous" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
-//	workDir         the only directory (and below) read_file may read; -workdir                            ["."]
+//	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
+//	                with no file tool enabled; -workdir                                                    ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
@@ -73,16 +74,39 @@
 //	readFileMaxBytes    most one read_file call returns; bigger files are read in pieces                  [1 MB]
 //	mcpResultMaxBytes   most of an MCP tool result passed to the model; the rest is cut with a note        [256 KB]
 //
+// Search limit (positive; bounds how long one call can take, not only what it returns):
+//
+//	maxSearchFiles      most files and directories one list_files call looks at, shown or not; a recursive
+//	                    listing that hits it ends with a note to list a subdirectory                       [10000]
+//
 // Tools:
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
-//	                the old spelling, still works)                                                         [["read_file"]]
-//	denyFileNames   extra file or directory name patterns read_file never reads, e.g. "*.secret",
-//	                "credentials.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
-//	                .ssh, .agent-trace), which can't be removed; matched against each part of the path,
-//	                case-insensitively (path.Match syntax, no / or \); .env.example is always allowed.
-//	                A bad pattern fails startup                                                            [none]
+//	                the old spelling, still works), "list_files"                                           [["read_file"]]
+//	denyPaths       extra path patterns the file tools never read or list, e.g. "*.secret", "secrets/",
+//	                "config/creds.json". Added to the built-in list (.env, .env.*, *.pem, *.key, id_rsa*,
+//	                .ssh, .agent-trace), which can't be removed; .env.example is always allowed. Path
+//	                pattern rules below. A bad pattern fails startup                                       [none]
+//	ignorePaths     path patterns list_files leaves out (noise, not secrets). An ignored file isn't shown;
+//	                an ignored directory is shown as "dir/ (ignored)" and its contents can't be listed,
+//	                even by asking for it directly (read_file still reads them). Path pattern rules below.
+//	                A config file's list replaces the default; [] = ignore nothing; a bad pattern fails
+//	                startup                                       [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
+//
+// Path patterns (denyPaths, ignorePaths), .gitignore-style; paths are relative to workDir and matched ignoring case:
+//
+//	".env", "*.pyc"     no "/": a file or directory with a matching name, at any depth (".env" is exactly that
+//	                    name; "*.env" also matches prod.env)
+//	"secrets"           a file or directory named secrets at any depth, and everything under that directory
+//	"secrets/"          trailing "/": directories only (still at any depth), and everything under them
+//	"secrets/*.env"     a "/" at the start or in the middle anchors the pattern at workDir: secrets/a.env, but not
+//	                    secrets/old/a.env ("*" never crosses a "/") or app/secrets/a.env
+//	"/build"            a leading "/" also anchors at workDir, so it matches only the top-level build path
+//
+// A matched directory covers everything under it, so the way to protect a whole tree is to deny the directory itself
+// ("secrets" or "secrets/"), not "secrets/*.env". Not supported: "!" negation; "**" is an error. A pattern with spaces
+// at either end, a "\", or an empty, "." or ".." part is an error.
 //
 // Each mcpServers entry is either local or remote:
 //

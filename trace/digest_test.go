@@ -116,6 +116,33 @@ func Test_Digest_ShellCommandsShownVerbatim(t *testing.T) {
 	}
 }
 
+func Test_Digest_ListFilesDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"all options", `{"path":"cmd","recursive":true,"pattern":"*.go"}`, "", false, `list_files : list cmd (recursive, "*.go")`},
+		{"no args defaults to dot", `{}`, "", false, "list_files : list ."},
+		{"path only", `{"path":"sub"}`, "", false, "list_files : list sub"},
+		{"recursive only", `{"recursive":true}`, "", false, "list_files : list . (recursive)"},
+		{"pattern only", `{"pattern":"*_test.go"}`, "", false, `list_files : list . ("*_test.go")`},
+		{"failed", `{"path":"sub/x"}`, "sub/x: no such file or directory", true, "list_files : list sub/x (failed: sub/x: no such file or directory)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := describe("list_files", tt.args, tt.content, tt.failed); got != tt.want {
+				t.Errorf("describe = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	t.Run("invalid JSON falls back to the generic line", func(t *testing.T) {
+		if got := describe("list_files", "not json", "", false); !strings.HasPrefix(got, "list_files : not json") {
+			t.Errorf("describe = %q", got)
+		}
+	})
+}
+
 func Test_Digest_UnfinishedRun_SaysSo(t *testing.T) {
 	d := NewActivityDigest()
 	var out bytes.Buffer

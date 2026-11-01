@@ -3423,3 +3423,189 @@ Files: `tools/builtin/denylist.go` (new), `tools/builtin/readfile.go`, `tools/to
 - **Downsides / limits:** names only, no path patterns (`"secrets/*.json"` can't be said; `"secrets"` blocks every
   directory of that name); the `.env.example` exception applies to extras too, so an extra like `"*.example"` won't
   block that one file; no way to *remove* a built-in even when a user has a real reason (by design).
+
+
+### 2026-10-30 — File tools slice 0 built: `builtin.Workspace` holds the path rules every file tool shares
+
+First slice of the pure-Go file tools (order agreed 2026-10-30: shared checks, `list_files`, `search_files`, the
+deny/ask/run levels with policy item 7, then `write_file` + `create_directory`, `edit_file`, `copy_file`/`move_file`).
+No change in what `read_file` allows. Files: `tools/builtin/workspace.go` (new), `tools/builtin/readfile.go`,
+`tools/tool.go`, `config/doc.go`.
+
+- **`Workspace`** (`rootDir`, `traceDir`, `deny`) answers "may a file tool touch this path?". `NewWorkspace` holds
+  the old `NewReadFileTool` checks on `workDir` and `traceDir`; methods `resolve` (path must exist: follow symlinks,
+  then `check`), `check` (outside `rootDir` / deny-listed / inside `traceDir`; split out so slice 4's `resolveNew`
+  for not-yet-existing paths gets the same rules), `openRoot`. `resolvePath` and `isWithin` moved with it;
+  `fileKind` stays in `readfile.go` until `edit_file` needs the same open-and-check code.
+- **`NewReadFileTool(ws *Workspace, maxBytes int)`**; a nil workspace is an error. The tool holds a named `ws` field,
+  not an embedded one, so calls read `t.ws.resolve(...)` and show where the rule lives (downside: a larger diff).
+- **Only `Workspace` and `NewWorkspace` are exported:** `tools.SetupBuiltinTools` must build one; nothing outside
+  `builtin` needs the methods (downside: other packages can test the rules only through a tool).
+- **Built once, up front, even with no file tool enabled** (Jerry). A missing or non-directory `workDir`, or a
+  `traceDir` that contains it, is a config error whether or not a tool uses it, as a bad `denyFileNames` pattern
+  already was. **Downside / behaviour change:** `builtinTools: []` with a nonexistent `workDir` used to start; it now
+  fails setup (chat and info mode).
+- **Name:** `Workspace`, not `Namespace` (Jerry asked). A Linux mount namespace gives a process its own view of the
+  filesystem; this is a check the tools run on each path, and everything outside stays reachable to code that
+  doesn't ask it. "Workspace" is the usual agent-tool word (Codex's `workspace-write`). `Jail` was the runner-up;
+  like `Namespace`, it sounds stronger than a path check.
+
+
+### 2026-10-31 — File tools slice 1 built: `list_files`
+
+Files: `tools/builtin/listfiles.go` (new), `tools/tool.go`, `config/doc.go`. Opt-in (`builtinTools: ["list_files"]`).
+
+- **Arguments:** `path` (default the workDir), `pattern` (`path.Match` on each entry's *name*, case-sensitive),
+  `recursive`. **No `**` glob** (Jerry agreed): the standard library has no matcher for it, and `path` + `recursive` +
+  `pattern` covers nearly every use; only wildcards in the *middle* of a path (`src/*/internal/*.go`) need two calls.
+- **Same rules as reading:** the directory goes through `ws.resolve`; each walked entry goes through `ws.check` and
+  is **hidden silently** if refused (a hidden directory is not looked into). The tool description says sensitive
+  files and the trace directory are never shown. Downside: the model can't tell "no `.env`" from "hidden `.env`".
+- **Symlinks are listed (`name -> (symlink)`) but never followed or resolved** (Jerry agreed). The walk never
+  follows links, so an entry's path joined onto `rootDir` is already its real path, which is what `check` expects.
+  Downside: files under a symlinked directory don't appear.
+- **Walk through `fs.WalkDir(root.FS(), …)`:** `root.FS()` can't leave `rootDir` (second line of defence); entries
+  come in name order, so the output is stable. Unreadable subdirectories are skipped, not errors.
+- **Output:** one line per entry, relative to workDir (`sub/`, `a.txt (120 bytes)`), so a path can go straight to
+  `read_file`. **Cap: 1000 entries** (a constant); the truncation note appears only when more entries exist.
+- **Open:** `.git/` is listed and walked, so a recursive listing from the root spends most of the cap on it. Options:
+  skip `.git` contents by default (a *default* by the three-question test, with an opt-out), or leave it to the
+  model to list subdirectories.
+
+### 2026-10-31 — `list_files` follow-ups: no absolute paths in path errors, `maxSearchFiles`, "(not readable)"
+
+From the slice 1 test sub-agent's findings; Jerry chose 1–3 and left the rest as is. Files:
+`tools/builtin/workspace.go`, `tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`,
+`config/config.go`, `config/doc.go`.
+
+1. **Path errors name only the requested path.** `Workspace.resolve` used to return `EvalSymlinks`'s raw error
+   (`lstat /Users/<name>/…/x: no such file or directory`), which put the home directory into the model's context and
+   sent it to the provider, for `read_file` and `list_files` alike. Now: `x: no such file or directory`, the cause
+   still wrapped (`errors.Is(err, fs.ErrNotExist)` works); a non-`PathError` failure says only "can't be resolved".
+   Downside: a rare odd failure loses detail the model never needed.
+2. **`maxSearchFiles`** (config, default 10,000, positive): the most entries one `list_files` call *looks at*,
+   shown or not (hidden ones count: they cost work). Separate from the 1000-line output cap, which only bounds what
+   is returned; this bounds how long a recursive walk with a rarely matching pattern can run. Hitting it ends the
+   output with a "stopped after looking at N entries" note. Named for search because `search_files` (slice 2) will
+   reuse it. Checked by the tool that uses it (as `readFileMaxBytes` is), so `0` fails setup only when `list_files`
+   is enabled. Downside: one more config key; counting directories as well as files makes the name slightly loose.
+3. **An unreadable subdirectory is shown as `locked/ (not readable)`** in a recursive listing, so it isn't mistaken
+   for an empty one. A non-recursive listing never opens it, so it shows a plain `locked/`.
+
+Left as is (Jerry): listing through a symlinked path shows the target's paths; "1 bytes".
+
+### 2026-10-31 — `list_files`: `.git` contents not walked; one stop note; honest "no match"
+
+Files: `tools/builtin/listfiles.go`.
+
+- **A recursive listing shows `.git/` but doesn't go into it** (Jerry): `.git/ (contents not listed; list it directly
+  to see them)`. Its contents are git's data, not the project, and they would use up both caps (1000 lines, 10,000
+  `maxSearchFiles` visits). Matched case-insensitively, any depth; listing `.git` directly still works; a *file*
+  named `.git` (worktrees, submodules) is listed normally. A package variable `notWalked`, built in for now.
+  **Open (asked Jerry):** whether to skip every dot-directory, and whether the list should become a config default
+  (category 2: visible, extendable, named opt-out) and include `node_modules`-style directories.
+- **One `note` instead of `truncated`/`stopped` flags:** each is set just before the walk stops, so only one can ever
+  apply; the old `switch` that "chose" between them was dead logic.
+- **"No match" says when it is partial:** if the visit limit stopped the walk and nothing was listed, the message adds
+  `(only the first N entries were looked at)`, so the model doesn't read it as "there is no such file".
+
+### 2026-10-31 — `ignorePaths`: what `list_files` leaves out is config, not code
+
+Supersedes the built-in `notWalked = [".git"]` from the entry above. Files: `tools/builtin/ignorelist.go` (new),
+`tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `config/config.go`, `config/doc.go`.
+
+- **Jerry asked for a config field** listing paths `list_files` (and later `search_files`) ignore, e.g.
+  `[".git/", "*.pyc", "__pycache__/"]`. Default: `[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]`.
+- **Category 3 (user policy), not 2:** this filters noise, it protects nothing, so a config file's list *replaces*
+  the default (like `denyRules`) and `[]` turns it off. Contrast `denyFileNames`, which can only extend.
+- **Matching, same as `denyFileNames`:** `path.Match` on one name at a time, case-insensitive; a trailing `/` means
+  directories only. A `/` anywhere else, a `\`, an empty or malformed pattern fails setup (checked in
+  `SetupBuiltinTools` even when `list_files` is off). **Downside:** names, not paths: `build/output/` or `docs/*.tmp`
+  can't be said, and `"build/"` skips every directory of that name. Path patterns can be added later if needed.
+- **Behaviour:** an ignored *file* is left out (recursive or not); an ignored *directory* is shown, marked
+  `(contents not listed; list it directly to see them)` in a recursive listing, and not walked; listing it directly
+  works (the start directory is never ignored). Ignored entries count as one visit each against `maxSearchFiles`;
+  an ignored directory's contents cost nothing. The tool description lists the patterns, so a pattern search that
+  finds nothing inside `.git` is explained.
+- **Not part of `Workspace`:** the workspace holds safety rules ("may a tool touch this?"); ignoring is a per-tool
+  view, so `IgnoreList` is passed to the walking tools. `read_file` reads an ignored file normally.
+- **Downside:** `SetupBuiltinTools` now takes seven positional arguments, two of them `[]string` side by side
+  (`denyFileNames, ignorePaths`), which the compiler can't tell apart if swapped. An options struct would fix it;
+  not done yet.
+
+### 2026-10-31 — `SetupBuiltinTools(cfg config.Config)`
+
+Fixes the downside noted under `ignorePaths` (seven positional arguments, two `[]string` side by side). Jerry chose
+this over an options struct. Files: `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `tools/tool_test.go`.
+
+- **Same shape as the other capabilities** (`SetupChatContext`, `SetupMemoryStore`, `SetupProvider`,
+  `SetupMCPConns`, `SetupRecorder` all take `cfg`), as CLAUDE.md already said they should. A new setting is a new
+  `Config` field read inside; no signature change, no caller to fix.
+- **Downside:** `tools` now imports `config` (allowed: `config` is a leaf), and setup could read any setting, not
+  only the seven it uses. An options struct would have kept `tools` independent of `config` at the cost of copying
+  those fields. Tests use a small `builtinCfg(...)` helper over `GetDefaultConfig()`.
+
+### 2026-10-31 — `denyPaths` and `ignorePaths` share .gitignore-style path patterns
+
+Supersedes the names-only matching of `denyFileNames` (item 6) and `ignorePaths` (earlier today), and the rule that
+listing an ignored directory directly still works. Files: `tools/builtin/pathpattern.go` (new),
+`tools/builtin/denylist.go`, `tools/builtin/ignorelist.go`, `tools/builtin/workspace.go`,
+`tools/builtin/listfiles.go`, `config/config.go`, `config/doc.go`, `agent/info.go`, `CLAUDE.md`.
+
+- **Jerry's rules, which are .gitignore's** (paths relative to workDir, case-insensitive): no `/` = a name at any depth
+  (`.env`; `*.env` is broader, it also matches `prod.env`); a `/` at the start or middle anchors at workDir
+  (`secrets/*.env` = secrets/a.env only, not secrets/old/a.env or app/secrets/a.env, since `*` never crosses `/`); a
+  trailing `/` = directories only; **a matched directory covers everything under it**. No `**`, no `!`.
+- **One matcher, `matchPath`, for both lists:** it tests rel and every directory above it, so deny and ignore behave
+  the same. Consequence (Jerry: "models should not be able to access paths that are in ignorePaths"): `list_files`
+  shows an ignored directory as `dir/ (ignored)` and refuses to list it directly (`cannot list <dir> (ignored path:
+  …)`). `read_file` is not yet affected (open question below).
+- **`denyFileNames` renamed `denyPaths`**, no fallback for the old key (Jerry: no users yet). Downside: an old config
+  with `denyFileNames` only gets the unknown-key warning, and its extra patterns are not applied.
+- **The doc says how to protect a tree:** deny the directory (`secrets` or `secrets/`), not `secrets/*.env`.
+- **Validation (both lists):** spaces at either end (closes the whitespace gap from item 6), `\`, an empty, `.` or `..`
+  part, or a malformed pattern fail setup.
+- **`check` needs to know whether the path is a directory** (for `dir/` patterns): it `Stat`s the resolved path; a
+  path that doesn't exist counts as a directory, so a `dir/` deny pattern also refuses a not-yet-written file of that
+  name (refusing too much is the safe way to be wrong). Downside: one extra `stat` per checked path, including per
+  listed entry.
+- **`.env.example` stays exempt** from every deny pattern, built-in or configured, even an anchored one.
+- **Open:** should `read_file` (and later tools) also refuse ignored paths? Jerry's principle suggests yes; it would
+  make `ignorePaths` a second, replaceable deny list.
+
+### 2026-10-31 — `ignorePaths` is for listing and searching only
+
+Resolves the open question in the entry above. **Jerry:** `read_file` still reads ignored paths but never `denyPaths`
+ones; `ignorePaths` applies only to `list_files` and `search_files`. This is how the code already behaves (only
+`list_files` reads the ignore list; `config/doc.go` says "read_file still reads them"), so nothing changed. Why: ignored
+paths are noise, not secrets, and the model sometimes needs a file inside one (a library source in `node_modules` to
+understand an error). The write tools (slices 4–6) follow `denyPaths` only, unless decided otherwise then.
+
+### 2026-10-31 — `.env.example` is exempt only as the last part of a path
+
+Found by the path-pattern test sub-agent: with `config/*` denied, `config/.env.example/creds.json` could be read,
+because `matchPath` skipped the `.env.example` directory and `*` can't reach the file below it. Now the exemption
+applies only to the last part of the path (`tools/builtin/pathpattern.go`): `config/.env.example` is still allowed,
+anything inside a directory of that name is checked as usual (built-in `.env.*` also denies such a directory).
+Downside: none known; it only refuses more.
+
+### 2026-10-31 — PR #30 review: `openRoot` checks it opened the original workDir; `**` refused
+
+Two Copilot comments plus a doc fix. Files: `tools/builtin/workspace.go`, `tools/builtin/pathpattern.go`,
+`config/doc.go`.
+
+- **A path can be repointed after startup.** `NewWorkspace` resolves workDir once, but `os.OpenRoot(rootDir)` looks
+  the path up again on every call. If something renames workDir and puts a symlink (or a new directory) at its path
+  (another program; an MCP filesystem server's `move_file`; later `run_command`, possibly prompt-injected), the
+  second line of defence would contain the tool to the wrong tree, and a swap between `resolve` and `openRoot`
+  slips past the first. **Fix:** `NewWorkspace` keeps the directory's `FileInfo`; `openRoot` compares the opened
+  directory with it (`os.SameFile`: same device and inode) and refuses otherwise ("restart the agent"). An open root
+  is tied to the directory, not its path, so later swaps can't move it.
+  - *Rejected:* keep one `os.Root` open for the whole run (Copilot's first suggestion). Same protection, but it needs
+    a close step through `SetupBuiltinTools` → `ShutdownAgent` and every test. Downside of the chosen fix: one extra
+    `fstat` per call, and a workDir that is legitimately deleted and recreated (re-clone) needs a restart.
+- **`**` is refused** in `denyPaths` / `ignorePaths`. `path.Match` reads it as two `*`, so `**/*.secret` looked
+  recursive but missed `a/b/x.secret`: a deny rule that protects less than it appears to. The error says to name the
+  directory instead.
+- **`config/doc.go`:** the `secrets/*.env` row's continuation was labelled `"/build"`; split it and gave `/build` its
+  own row (a leading `/` anchors a name at workDir).

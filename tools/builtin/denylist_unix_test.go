@@ -10,7 +10,7 @@ import (
 
 // - Verify a symlink with an innocent name pointing at a file (or a directory) that matches an extra pattern is
 // refused, because the deny list is checked on the resolved path
-func Test_ReadFile_DenyFileNames_SymlinkInto_Blocked(t *testing.T) {
+func Test_ReadFile_DenyPaths_SymlinkInto_Blocked(t *testing.T) {
 	work := t.TempDir()
 	writeFile(t, work, "config/credentials.json", []byte("SECRET-FAKE_SECRET_TOKEN_123"))
 	writeFile(t, work, "vault.d/token.txt", []byte("SECRET-VAULT"))

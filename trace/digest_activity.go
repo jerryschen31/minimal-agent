@@ -252,6 +252,28 @@ func describe(name, args, content string, failed bool) string {
 		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
 			line = name + " : read " + in.Path
 		}
+	case "list_files":
+		var in struct {
+			Path      string `json:"path"`
+			Pattern   string `json:"pattern"`
+			Recursive bool   `json:"recursive"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil {
+			if in.Path == "" {
+				in.Path = "." // the tool's default: the working directory
+			}
+			var extras []string
+			if in.Recursive {
+				extras = append(extras, "recursive")
+			}
+			if in.Pattern != "" {
+				extras = append(extras, fmt.Sprintf("%q", in.Pattern))
+			}
+			line = name + " : list " + in.Path
+			if len(extras) > 0 {
+				line += " (" + strings.Join(extras, ", ") + ")"
+			}
+		}
 	case "shell", "run_command", "bash":
 		var in struct {
 			Command string `json:"command"`

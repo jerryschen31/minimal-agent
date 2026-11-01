@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 )
@@ -18,23 +19,39 @@ type Tool interface {
 	CallTool(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// setup built-in tools; traceDir is passed so read_file can refuse to read the trace files, and denyFileNames adds
-// name patterns to the built-in file deny list (checked even when no file tool is enabled, so a bad pattern fails setup)
-func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxBytes int, denyFileNames []string) ([]Tool, error) {
-	deny, err := builtin.NewDenyList(denyFileNames)
+// SetupBuiltinTools builds the built-in tools named in cfg.BuiltinTools. cfg.WorkDir, cfg.TraceDir and
+// cfg.DenyPaths make the workspace the file tools share (workDir and below, minus the trace files and deny-listed
+// names). The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
+// pattern always fails setup.
+func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
+	deny, err := builtin.NewDenyList(cfg.DenyPaths)
+	if err != nil {
+		return nil, err
+	}
+	ignore, err := builtin.NewIgnoreList(cfg.IgnorePaths)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, deny)
 	if err != nil {
 		return nil, err
 	}
 	tools := []Tool{}
 	// add the built-in tools specified in the config
-	for _, t := range toolList {
+	for _, t := range cfg.BuiltinTools {
 		switch t {
 		case "read_file", "ReadFile": // the model-facing name, as in deny rules; "ReadFile" is the old spelling, still accepted
-			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes, deny)
+			readFile, err := builtin.NewReadFileTool(ws, cfg.ReadFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}
 			tools = append(tools, readFile)
+		case "list_files":
+			listFiles, err := builtin.NewListFilesTool(ws, cfg.MaxSearchFiles, ignore)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, listFiles)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
