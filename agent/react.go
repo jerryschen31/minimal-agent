@@ -117,16 +117,13 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 
 		// send the chat request to the LLM provider
 		provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs                    // the trace records the turn's messages; the system prompt and prior context are only counted
-		response, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // prints thinking dots in chat mode
+		response, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // cs.Output shows thinking dots in chat mode
 		if err != nil {
-			if !errors.Is(err, context.Canceled) { // [agent] a Ctrl+C cancel is reported once, as [interrupted], by the caller
-				fmt.Fprintln(cs.OutBuffer, "error:", err)
-			}
-			return nil, err
+			return nil, err // the caller reports it (cs.Output.Error), once
 		}
 
 		// append the response as a ChatMessage to the request messages for the next iteration
-		fmt.Fprintf(cs.OutBuffer, "[assistant] %s\n", response.Content)
+		cs.Output.Assistant(response.Content)
 		responseMsg := model.CreateChatMessage("assistant", "assistant", response.Content, "", response.ToolCalls)
 		requestMsgs = append(requestMsgs, responseMsg)
 
@@ -136,7 +133,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		}
 		// otherwise there are tool calls to be made
 		for _, tc := range response.ToolCalls {
-			fmt.Fprintln(cs.OutBuffer, "[tool] Tool called:", tc.Function.Name)
+			cs.Output.ToolCalled(tc.Function.Name)
 			toolResultMsg := runToolCall(ctx, cs, taskTrace, tc)
 			requestMsgs = append(requestMsgs, toolResultMsg)
 		}

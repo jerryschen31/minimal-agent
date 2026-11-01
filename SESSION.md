@@ -993,3 +993,9 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > can't refuse to replace a file that appears after the check; write/edit size cap a constant; read-only tools stay
 > opt-in. Still open from item 6: `DenyList` accepts whitespace-padded patterns (match nothing) and `.`/`..`.
 
+>
+> (2026-11-01) Slices 1–2 merged (`list_files` PR #30, `search_files` PR #31). Slice 3 on branch
+> `feat/deny-ask-run-levels`: levels decided (`DECISIONS.md § Approval levels: deny / ask / run`); policy item 7
+> built, not committed (`§ Policy item 7 built`). Next: `hooks.ToolRules` + `askRules` (Jerry to choose who writes
+> it). Open for slice 4: write-deny list (`.git/`, the agent's own config), a short preview of `write_file` content
+> in the ask prompt.
