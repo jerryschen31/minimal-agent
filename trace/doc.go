@@ -31,7 +31,7 @@
 //	        |
 //	        v
 //	    (only if a hook vetoes the call) the user is asked, or not => record "tool_vetoed" trace
-//	        (decision: denied | denied_by_user | allowed_by_user; only allowed_by_user lets the tool run)
+//	        (decision: denied | denied_by_user | allowed_by_user | allowed_by_config; the two allowed_* let the tool run)
 //	        |
 //	        v
 //	    tool execution response (result: "Sunny in Paris") => record "tool_finished" trace

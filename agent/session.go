@@ -27,7 +27,10 @@ type ChatSession struct {
 	InBuffer            io.Reader
 	OutBuffer           io.Writer
 	Recorder            trace.Recorder
-	PromptAllowDenyCall func(ctx context.Context, call model.ToolCall, reason error) bool
+	PromptAllowDenyCall func(ctx context.Context, call model.ToolCall, reason error) bool // asks the user about an ask-rule call; nil = nobody to ask (denied)
+	// AllowAskRules runs ask-rule calls without asking: approval "allow-all", confirmed by the user at chat startup
+	// (confirmAllowAll). It never affects deny rules.
+	AllowAskRules bool
 	// Output reports to the user (a turn's progress, notices, errors); reActLoop and chat mode never print directly,
 	// except what Output's doc comment lists. NewChatSession sets chat mode's chatOutput on OutBuffer; code that swaps
 	// OutBuffer must set Output too.

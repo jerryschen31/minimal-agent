@@ -493,15 +493,18 @@ func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
 	}
 }
 
-// - Verify the default deny rules are *delete* and *remove*, and a config file's denyRules replaces them: a file
-// without the key keeps the defaults, a list replaces them, and [] or null leaves no rules
+// defaultAskRules is the expected default ask list, written out so a change to the defaults shows up here.
+var defaultAskRules = []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"}
+
+// - Verify there are no default deny rules, and a config file's denyRules replaces that (empty) default: a file
+// without the key keeps none, a list is applied, and [] or null leaves no rules
 func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
 	cases := []struct {
 		desc string
 		json string
 		want []string
 	}{
-		{"no denyRules key keeps defaults", `{"model": "fake-model"}`, []string{"*delete*", "*remove*"}},
+		{"no denyRules key keeps the empty default", `{"model": "fake-model"}`, nil},
 		{"a list replaces defaults", `{"denyRules": ["*move*"]}`, []string{"*move*"}},
 		{"empty list means no rules", `{"denyRules": []}`, []string{}},
 		{"null means no rules", `{"denyRules": null}`, nil},
@@ -527,14 +530,113 @@ func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
 	}
 }
 
-// - Verify GetDefaultConfig returns a fresh DenyRules slice each call, so changing one result can't change the defaults
-func Test_Unit_GetDefaultConfig_DenyRules_FreshSlice(t *testing.T) {
-	first := GetDefaultConfig()
-	first.DenyRules[0] = "changed"
-	first.DenyRules = append(first.DenyRules, "extra")
+// - Verify the default ask rules (*delete*, *remove* and the five file-changing tools), and a config file's askRules
+// replaces them: a file without the key keeps the defaults, a list replaces them, [] or null leaves no rules, and
+// setting only denyRules leaves the ask defaults alone
+func Test_Unit_SetDefaultConfig_AskRules_FileReplacesDefaults(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"no askRules key keeps defaults", `{"model": "fake-model"}`, defaultAskRules},
+		{"denyRules only keeps ask defaults", `{"denyRules": ["*push*"]}`, defaultAskRules},
+		{"a list replaces defaults", `{"askRules": ["*push*"]}`, []string{"*push*"}},
+		{"empty list means no rules", `{"askRules": []}`, []string{}},
+		{"null means no rules", `{"askRules": null}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
 
-	if got, want := GetDefaultConfig().DenyRules, []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
-		t.Errorf("GetDefaultConfig().DenyRules = %q after changing an earlier result, want %q", got, want)
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.AskRules, c.want) {
+				t.Errorf("AskRules = %q, want %q", cfg.AskRules, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify GetDefaultConfig returns a fresh AskRules slice each call, so changing one result can't change the defaults
+func Test_Unit_GetDefaultConfig_AskRules_FreshSlice(t *testing.T) {
+	first := GetDefaultConfig()
+	first.AskRules[0] = "changed"
+	first.AskRules = append(first.AskRules, "extra")
+
+	if got := GetDefaultConfig().AskRules; !slices.Equal(got, defaultAskRules) {
+		t.Errorf("GetDefaultConfig().AskRules = %q after changing an earlier result, want %q", got, defaultAskRules)
+	}
+}
+
+// - Verify the defaults: no deny rules and approval "ask"
+func Test_Unit_GetDefaultConfig_NoDenyRules_ApprovalAsk(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if len(cfg.DenyRules) != 0 {
+		t.Errorf("DenyRules = %q, want none by default", cfg.DenyRules)
+	}
+	if cfg.Approval != ApprovalAsk || ApprovalAsk != "ask" || ApprovalAllowAll != "allow-all" {
+		t.Errorf("Approval = %q (consts %q, %q), want \"ask\" with consts ask, allow-all", cfg.Approval, ApprovalAsk, ApprovalAllowAll)
+	}
+}
+
+// - Verify "approval" in a config file is applied as given without a warning (validation is checkConfig's job), and a
+// file without the key keeps "ask"
+func Test_Unit_SetDefaultConfig_Approval_FromFile(t *testing.T) {
+	cases := []struct {
+		desc, json, want string
+	}{
+		{"no key keeps ask", `{"model": "fake-model"}`, "ask"},
+		{"allow-all", `{"approval": "allow-all"}`, "allow-all"},
+		{"ask", `{"approval": "ask"}`, "ask"},
+		{"unknown value passes through", `{"approval": "bogus"}`, "bogus"},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if cfg.Approval != c.want {
+				t.Errorf("Approval = %q, want %q", cfg.Approval, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows denyRules, askRules and approval on their own aligned lines
+func Test_Unit_PrintConfig_ShowsToolRulesAndApproval(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.DenyRules = []string{"*push*"}
+	cfg.Approval = ApprovalAllowAll
+
+	PrintConfig(cfg)
+
+	got := out.String()
+	for _, want := range []string{
+		"  denyRules:     [*push*]\n",
+		"  askRules:      [*delete* *remove* write_file edit_file create_directory copy_file move_file]\n",
+		"  approval:      allow-all\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q to be printed, got:\n%s", want, got)
+		}
 	}
 }
 

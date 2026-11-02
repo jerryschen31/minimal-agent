@@ -52,8 +52,8 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 		return err
 	}
 
-	// 3.5 setup deny rules list / approval gates
-	denyRules, err := hooks.SetupDenyRules(cfg.DenyRules)
+	// 3.5 setup the deny and ask rules (approval gates)
+	toolRules, err := hooks.NewToolRules(cfg.DenyRules, cfg.AskRules)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	if err != nil {
 		return err
 	}
-	chatSession.Hooks = []hooks.Hook{denyRules}
+	chatSession.Hooks = []hooks.Hook{toolRules}
 	agent.session = chatSession
 
 	return nil
@@ -178,6 +178,10 @@ func checkConfig(cfg config.Config) error {
 	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
 	if cfg.MCPResultMaxBytes <= 0 {
 		return fmt.Errorf("mcpResultMaxBytes must be a positive integer, got %d", cfg.MCPResultMaxBytes)
+	}
+	// a typo in a safety setting fails setup rather than silently meaning something else
+	if cfg.Approval != config.ApprovalAsk && cfg.Approval != config.ApprovalAllowAll {
+		return fmt.Errorf("approval must be %q or %q, got %q", config.ApprovalAsk, config.ApprovalAllowAll, cfg.Approval)
 	}
 	return contextwindow.CheckConfig(cfg) // also run by SetupChatContext; here so info mode reports it too
 }

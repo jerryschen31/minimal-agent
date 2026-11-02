@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -42,7 +43,12 @@ func (c *countingTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	return "deleted", nil
 }
 
-var errDenied = errors.New(`denied by rule "*delete*"`)
+// errDenied is a final veto (like a deny rule's): it never prompts. errNeedsApproval wraps hooks.ErrNeedsApproval
+// (like an ask rule's), so the user may override it.
+var (
+	errDenied        = errors.New(`denied by rule "*delete*"`)
+	errNeedsApproval = fmt.Errorf("%w by rule %q", hooks.ErrNeedsApproval, "*delete*")
+)
 
 // newHookFixture returns a session with countingTool registered and the given hooks installed.
 func newHookFixture(t *testing.T, hs ...hooks.Hook) (*chatSessionFixture, *countingTool) {

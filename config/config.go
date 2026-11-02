@@ -19,6 +19,12 @@ const (
 	TransportSSE   = "sse"
 )
 
+// Approval values: what happens to a tool call that matches an ask rule.
+const (
+	ApprovalAsk      = "ask"       // ask the user (chat on a terminal); with nobody to ask, deny
+	ApprovalAllowAll = "allow-all" // run it without asking (chat confirms this once at startup); deny rules still apply
+)
+
 type Config struct {
 	// User configuration
 	UserID string `json:"userId"`
@@ -61,8 +67,10 @@ type Config struct {
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
 
-	// deny rules configuration
-	DenyRules []string `json:"denyRules"` // glob rules on model-facing tool names; a config file's list replaces the default, [] means no rules
+	// tool rules configuration (glob rules on model-facing tool names; a config file's list replaces that list's default, [] means no rules)
+	DenyRules []string `json:"denyRules"` // matching calls are refused, never asked, in every mode (default: none)
+	AskRules  []string `json:"askRules"`  // matching calls need the user's approval; a deny rule wins over an ask rule
+	Approval  string   `json:"approval"`  // "ask" | "allow-all": allow-all runs ask-rule calls without asking, never deny-rule calls (default "ask")
 
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
@@ -172,7 +180,8 @@ func GetDefaultConfig() Config {
 		TraceEnabled:           true,
 		DigestEnabled:          true,
 		RedactionLevel:         "standard",
-		DenyRules:              []string{"*delete*", "*remove*"},
+		AskRules:               []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"},
+		Approval:               ApprovalAsk,
 
 		ContextWindowMessages: 50,
 		ContextStrategy:       "offset",
@@ -282,6 +291,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  denyPaths:     %v (added to the built-in list)\n", cfg.DenyPaths)
 	fmt.Fprintf(w, "  ignorePaths:   %v\n", cfg.IgnorePaths)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
+	fmt.Fprintf(w, "  askRules:      %v\n", cfg.AskRules)
+	fmt.Fprintf(w, "  approval:      %s\n", cfg.Approval)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return

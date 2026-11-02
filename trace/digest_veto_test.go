@@ -51,6 +51,60 @@ func Test_Digest_VetoNotesAndFooter(t *testing.T) {
 			t.Errorf("digest is missing %q:\n%s", want, digest)
 		}
 	}
+	if strings.Contains(digest, "allow-all") || strings.Contains(digest, "unknown decision") {
+		t.Errorf("expected no allow-all or unknown-decision count when there are none:\n%s", digest)
+	}
+}
+
+// - Verify an allowed_by_config veto gets its own note on the call's line, is counted in the footer as "allowed by
+// allow-all", and is not counted as an unknown decision
+func Test_Digest_AllowedByConfig_NoteAndFooter(t *testing.T) {
+	digest, _, _ := renderDigest(t, func(rec Recorder) {
+		run := StartRun(rec, config.GetDefaultConfig())
+		defer run.End()
+		task := StartTask(rec, "tidy up")
+		defer task.End()
+
+		task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "write_file", Arguments: `{"path":"a.txt"}`})
+		task.Record(ToolVetoed, ToolVetoedData{CallID: "c1", Name: "write_file", Reason: `needs approval by rule "write_file"`, Decision: VetoAllowedByConfig})
+		task.Record(ToolFinished, ToolFinishedData{CallID: "c1", Name: "write_file", Content: "wrote"})
+		task.Record(ToolRequested, ToolRequestedData{CallID: "c2", Name: "fs_delete_file", Arguments: `{"path":"b.txt"}`})
+		task.Record(ToolVetoed, ToolVetoedData{CallID: "c2", Name: "fs_delete_file", Reason: `needs approval by rule "*delete*"`, Decision: VetoAllowedByConfig})
+		task.Record(ToolFinished, ToolFinishedData{CallID: "c2", Name: "fs_delete_file", Content: "deleted"})
+		task.Record(ToolRequested, ToolRequestedData{CallID: "c3", Name: "git_push", Arguments: `{}`})
+		task.Record(ToolVetoed, ToolVetoedData{CallID: "c3", Name: "git_push", Reason: `denied by rule "*push*"`, Decision: VetoDenied})
+		task.Record(ToolFinished, ToolFinishedData{CallID: "c3", Name: "git_push", Content: `error: denied by rule "*push*"`, Failed: true})
+	})
+
+	for _, want := range []string{
+		`- write_file : {"path":"a.txt"} [allowed without asking (allow-all) over: needs approval by rule "write_file"]` + "\n",
+		`[allowed without asking (allow-all) over: needs approval by rule "*delete*"]` + "\n",
+		`[vetoed, user not asked: denied by rule "*push*"]` + "\n",
+		"vetoes: 3 (allowed once by user: 0, denied by user: 0, denied without asking: 1, allowed by allow-all: 2)\n",
+	} {
+		if !strings.Contains(digest, want) {
+			t.Errorf("digest is missing %q:\n%s", want, digest)
+		}
+	}
+	if strings.Contains(digest, "unknown decision") {
+		t.Errorf("allowed_by_config must not count as an unknown decision:\n%s", digest)
+	}
+}
+
+// - Verify a decision the digest doesn't know is still counted as "unknown decision", after the allow-all count
+func Test_Digest_UnknownDecision_CountedSeparately(t *testing.T) {
+	digest, _, _ := renderDigest(t, func(rec Recorder) {
+		run := StartRun(rec, config.GetDefaultConfig())
+		task := StartTask(rec, "go")
+		task.Record(ToolVetoed, ToolVetoedData{CallID: "c1", Name: "write_file", Reason: "fake", Decision: VetoAllowedByConfig})
+		task.Record(ToolVetoed, ToolVetoedData{CallID: "c2", Name: "write_file", Reason: "fake", Decision: "from_the_future"})
+		task.End()
+		run.End()
+	})
+	want := "vetoes: 2 (allowed once by user: 0, denied by user: 0, denied without asking: 0, allowed by allow-all: 1, unknown decision: 1)\n"
+	if !strings.Contains(digest, want) {
+		t.Errorf("digest is missing %q:\n%s", want, digest)
+	}
 }
 
 // - Verify a run with no vetoes has no veto line in the footer
@@ -86,16 +140,16 @@ func Test_Digest_VetoWithoutRequest_CountedInFooter(t *testing.T) {
 	}
 }
 
-// - Verify run_start carries the deny rules in force: the defaults when the config leaves them alone, the config's
-// list when it replaces them, and no key at all when there are none (nil or [])
+// - Verify run_start carries the deny rules in force: no key with the defaults (there are no default deny rules), the
+// config's list when it sets one, and no key at all when there are none (nil or [])
 func Test_GetRunStartData_DenyRules(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	b, err := json.Marshal(GetRunStartData(cfg))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"deny_rules":["*delete*","*remove*"]`) {
-		t.Errorf("run_start JSON missing the default deny_rules: %s", b)
+	if strings.Contains(string(b), "deny_rules") {
+		t.Errorf("expected no deny_rules key with the defaults: %s", b)
 	}
 
 	cfg.DenyRules = []string{"*delete*", "*move*"}
@@ -148,6 +202,50 @@ func Test_GetRunStartData_ContextWindowSettings(t *testing.T) {
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("run_start JSON missing %s: %s", want, b)
+		}
+	}
+}
+
+// - Verify run_start carries the ask rules and approval in force: the defaults, a config's values, and no ask_rules key
+// when there are none (nil or [])
+func Test_GetRunStartData_AskRulesAndApproval(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	data := GetRunStartData(cfg)
+	if data.Approval != config.ApprovalAsk || len(data.AskRules) != 7 {
+		t.Errorf("expected the default ask rules and approval, got ask_rules %q, approval %q", data.AskRules, data.Approval)
+	}
+	b, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"ask_rules":["*delete*","*remove*","write_file","edit_file","create_directory","copy_file","move_file"]`,
+		`"approval":"ask"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("run_start JSON missing %s: %s", want, b)
+		}
+	}
+
+	cfg.AskRules, cfg.Approval = []string{"*push*"}, config.ApprovalAllowAll
+	b, err = json.Marshal(GetRunStartData(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"ask_rules":["*push*"]`, `"approval":"allow-all"`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("run_start JSON missing %s: %s", want, b)
+		}
+	}
+
+	for _, rules := range [][]string{nil, {}} {
+		cfg.AskRules = rules
+		b, err = json.Marshal(GetRunStartData(cfg))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "ask_rules") {
+			t.Errorf("expected no ask_rules key for %#v: %s", rules, b)
 		}
 	}
 }

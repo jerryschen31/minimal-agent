@@ -497,6 +497,7 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 		{"responseTimeoutSeconds -1", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = -1 }},
 		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
 		{"contextWindowMessages 2", "contextWindowMessages", func(c *config.Config) { c.ContextWindowMessages = 2 }},
+		{"approval unknown", `approval must be "ask" or "allow-all", got "bogus"`, func(c *config.Config) { c.Approval = "bogus" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -532,17 +533,22 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 	}
 }
 
-// - Verify printDenyRules lists each rule with its source (default or config) and every tool it matches, built-in
-// and MCP alike
-func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
+// rulesCfg is a config holding only what printToolRules reads: the two rule lists and approval "ask".
+func rulesCfg(deny, ask []string) config.Config {
+	return config.Config{DenyRules: deny, AskRules: ask, Approval: config.ApprovalAsk}
+}
+
+// - Verify printToolRules lists each rule with its source (default or config) and every tool it matches, built-in
+// and MCP alike (ask rules here, whose defaults include *delete* and *remove*)
+func Test_Unit_PrintToolRules_Matches(t *testing.T) {
 	var out bytes.Buffer
-	ok := printDenyRules(&out, []string{"*delete*", "*remove*", "*FILE*"}, []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
+	ok := printToolRules(&out, rulesCfg(nil, []string{"*delete*", "*remove*", "*FILE*"}), []string{"read_file", "docs_delete_note", "docs_remove_file"}, true)
 	if !ok {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, "Deny rules (3)\n") {
-		t.Errorf("expected Deny rules (3) in output:\n%s", got)
+	if !strings.Contains(got, "Ask rules (3): need your approval\n") {
+		t.Errorf("expected Ask rules (3) in output:\n%s", got)
 	}
 	if lineWith(got, "*delete*", "default", "matches: docs_delete_note\n") == "" {
 		t.Errorf("expected *delete* default matching docs_delete_note in output:\n%s", got)
@@ -558,10 +564,49 @@ func Test_Unit_PrintDenyRules_Matches(t *testing.T) {
 	}
 }
 
-// - Verify a default rule matching nothing prints plain "matches nothing", while a config rule gets a warning
-func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
+// - Verify both sections and the approval line, in order: deny rules (labelled config, since the deny default is
+// empty), ask rules, then "Approval: ask"
+func Test_Unit_PrintToolRules_BothSectionsAndApproval(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*"}, []string{"read_file"}, true) {
+	if !printToolRules(&out, rulesCfg([]string{"*push*"}, []string{"*delete*"}), []string{"git_push", "fs_delete_file"}, true) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	got := out.String()
+	denyAt := strings.Index(got, "Deny rules (1): refused, never asked\n")
+	askAt := strings.Index(got, "Ask rules (1): need your approval\n")
+	approvalAt := strings.Index(got, "Approval: ask\n")
+	if denyAt < 0 || askAt < denyAt || approvalAt < askAt {
+		t.Errorf("expected Deny rules, then Ask rules, then Approval: ask, in that order:\n%s", got)
+	}
+	if lineWith(got, "*push*", "config", "matches: git_push\n") == "" {
+		t.Errorf("expected *push* config matching git_push in output:\n%s", got)
+	}
+	if lineWith(got, "*delete*", "default", "matches: fs_delete_file\n") == "" {
+		t.Errorf("expected *delete* default matching fs_delete_file in output:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "Approval: ask\n") {
+		t.Errorf("expected the approval line last:\n%s", got)
+	}
+}
+
+// - Verify approval "allow-all" prints the explaining line, saying deny rules still apply
+func Test_Unit_PrintToolRules_AllowAllApprovalLine(t *testing.T) {
+	var out bytes.Buffer
+	cfg := rulesCfg(nil, nil)
+	cfg.Approval = config.ApprovalAllowAll
+	if !printToolRules(&out, cfg, []string{"read_file"}, true) {
+		t.Fatalf("expected ok, got false:\n%s", out.String())
+	}
+	want := "Approval: allow-all (ask-rule calls run without asking once you confirm at chat startup; deny rules still apply)\n"
+	if got := out.String(); !strings.HasSuffix(got, want) {
+		t.Errorf("expected the output to end with %q:\n%s", want, got)
+	}
+}
+
+// - Verify a default rule matching nothing prints plain "matches nothing", while a config rule gets a warning
+func Test_Unit_PrintToolRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
+	var out bytes.Buffer
+	if !printToolRules(&out, rulesCfg(nil, []string{"*delete*", "*remove*", "*move*"}), []string{"read_file"}, true) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
@@ -577,14 +622,14 @@ func Test_Unit_PrintDenyRules_NoMatch_WarnsOnlyForConfig(t *testing.T) {
 }
 
 // - Verify allListed=false prints the "some tools could not be listed" note, says "among the tools listed", and never warns
-func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
+func Test_Unit_PrintToolRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*delete*", "*remove*", "*move*", "read_*"}, []string{"read_file"}, false) {
+	if !printToolRules(&out, rulesCfg([]string{"*move*"}, []string{"*delete*", "*remove*", "read_*"}), []string{"read_file"}, false) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, "(some tools could not be listed above, so a rule may match a tool not shown)") {
-		t.Errorf("expected the some-tools-not-listed note in output:\n%s", got)
+	if n := strings.Count(got, "(some tools could not be listed above, so a rule may match a tool not shown)"); n != 2 {
+		t.Errorf("expected the some-tools-not-listed note once per section (2), got %d in output:\n%s", n, got)
 	}
 	for _, rule := range []string{"*delete*", "*remove*", "*move*"} {
 		if lineWith(got, rule, "matches nothing among the tools listed") == "" {
@@ -599,15 +644,15 @@ func Test_Unit_PrintDenyRules_McpNotListed_NoteNoWarning(t *testing.T) {
 	}
 }
 
-// - Verify an empty or nil rule list prints exactly the one "none" line and returns true
-func Test_Unit_PrintDenyRules_Empty_PrintsNone(t *testing.T) {
+// - Verify empty or nil rule lists print exactly the two "none" lines and the approval line, and return true
+func Test_Unit_PrintToolRules_Empty_PrintsNone(t *testing.T) {
 	for _, rulesIn := range [][]string{{}, nil} {
 		for _, allListed := range []bool{true, false} {
 			var out bytes.Buffer
-			if !printDenyRules(&out, rulesIn, []string{"read_file", "docs_delete_note"}, allListed) {
+			if !printToolRules(&out, rulesCfg(rulesIn, rulesIn), []string{"read_file", "docs_delete_note"}, allListed) {
 				t.Errorf("rules %#v, allListed %v: expected true, got false", rulesIn, allListed)
 			}
-			if got, want := out.String(), "Deny rules (0): none, every tool call is allowed\n"; got != want {
+			if got, want := out.String(), "Deny rules (0): none\nAsk rules (0): none\nApproval: ask\n"; got != want {
 				t.Errorf("rules %#v, allListed %v: output = %q, want %q", rulesIn, allListed, got, want)
 			}
 		}
@@ -615,14 +660,14 @@ func Test_Unit_PrintDenyRules_Empty_PrintsNone(t *testing.T) {
 }
 
 // - Verify a config list that replaces the defaults shows only its own rules, labelled config, and no default rule
-func Test_Unit_PrintDenyRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.T) {
+func Test_Unit_PrintToolRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.T) {
 	var out bytes.Buffer
-	if !printDenyRules(&out, []string{"*move*", "read_*"}, []string{"read_file", "docs_delete_note"}, true) {
+	if !printToolRules(&out, rulesCfg(nil, []string{"*move*", "read_*"}), []string{"read_file", "docs_delete_note"}, true) {
 		t.Fatalf("expected ok, got false:\n%s", out.String())
 	}
 	got := out.String()
-	if !strings.Contains(got, "Deny rules (2)\n") {
-		t.Errorf("expected Deny rules (2) in output:\n%s", got)
+	if !strings.Contains(got, "Ask rules (2): need your approval\n") {
+		t.Errorf("expected Ask rules (2) in output:\n%s", got)
 	}
 	if lineWith(got, "*move*", "config", "matches nothing  <- warning:") == "" {
 		t.Errorf("expected *move* config matches nothing with a warning in output:\n%s", got)
@@ -635,25 +680,33 @@ func Test_Unit_PrintDenyRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.
 	}
 }
 
-// - Verify an invalid rule (bad glob, or the tool:program form) returns false and prints one FAILED line naming it
-func Test_Unit_PrintDenyRules_InvalidRule_Fails(t *testing.T) {
-	for _, rule := range []string{"*delete[", "run_command:rm"} {
-		var out bytes.Buffer
-		if printDenyRules(&out, []string{rule}, []string{"read_file"}, true) {
-			t.Errorf("%q: expected false, got true", rule)
-		}
-		got := out.String()
-		if lineWith(got, "Deny rules: FAILED: invalid deny rule", rule) == "" {
-			t.Errorf("%q: expected a FAILED line naming the rule in output:\n%s", rule, got)
-		}
-		if strings.Contains(got, "Deny rules (") {
-			t.Errorf("%q: expected no rule list after FAILED:\n%s", rule, got)
+// - Verify an invalid deny or ask rule (bad glob, or the tool:program form) returns false and prints one FAILED line
+// naming its list and the rule, with no rule sections after it
+func Test_Unit_PrintToolRules_InvalidRule_Fails(t *testing.T) {
+	for _, list := range []string{"deny", "ask"} {
+		for _, rule := range []string{"*delete[", "run_command:rm"} {
+			cfg := rulesCfg([]string{rule}, nil)
+			if list == "ask" {
+				cfg = rulesCfg(nil, []string{rule})
+			}
+			var out bytes.Buffer
+			if printToolRules(&out, cfg, []string{"read_file"}, true) {
+				t.Errorf("%s %q: expected false, got true", list, rule)
+			}
+			got := out.String()
+			if lineWith(got, "Tool rules: FAILED: invalid "+list+" rule", rule) == "" {
+				t.Errorf("%s %q: expected a FAILED line naming the list and rule in output:\n%s", list, rule, got)
+			}
+			if strings.Contains(got, "Deny rules (") || strings.Contains(got, "Ask rules (") || strings.Contains(got, "Approval:") {
+				t.Errorf("%s %q: expected nothing after FAILED:\n%s", list, rule, got)
+			}
 		}
 	}
 }
 
-// - Verify the default config ends with both default deny rules (no warning) and returns InfoOK
-func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
+// - Verify the default config shows no deny rules and the seven default ask rules (no warning), then "Approval: ask",
+// after the MCP tools section, and returns InfoOK
+func Test_Unit_PrintInfo_ToolRules_Default(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 
@@ -661,24 +714,30 @@ func Test_Unit_PrintInfo_DenyRules_Default(t *testing.T) {
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if !strings.Contains(out, "Deny rules (2)\n") {
-		t.Errorf("expected Deny rules (2) in output:\n%s", out)
+	if !strings.Contains(out, "Deny rules (0): none\n") {
+		t.Errorf("expected Deny rules (0): none in output:\n%s", out)
 	}
-	for _, rule := range []string{"*delete*", "*remove*"} {
-		if lineWith(out, rule, "default", "matches nothing") == "" {
-			t.Errorf("expected %s default matches nothing in output:\n%s", rule, out)
+	if !strings.Contains(out, "Ask rules (7): need your approval\n") {
+		t.Errorf("expected Ask rules (7) in output:\n%s", out)
+	}
+	for _, rule := range []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"} {
+		if lineWith(out, rule, "default", "matches") == "" {
+			t.Errorf("expected %s labelled default in output:\n%s", rule, out)
 		}
 	}
 	if strings.Contains(out, "warning") {
 		t.Errorf("expected no warning in output:\n%s", out)
 	}
+	if !strings.HasSuffix(out, "Approval: ask\n") {
+		t.Errorf("expected the output to end with Approval: ask:\n%s", out)
+	}
 	if mcpAt, denyAt := strings.Index(out, "MCP tools ("), strings.Index(out, "Deny rules ("); mcpAt < 0 || denyAt < mcpAt {
-		t.Errorf("expected the deny rules section after the MCP tools section:\n%s", out)
+		t.Errorf("expected the tool rules section after the MCP tools section:\n%s", out)
 	}
 }
 
-// - Verify a config rule matching the built-in read_file shows that match, replaces the defaults, and returns InfoOK
-func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
+// - Verify a config deny rule matching the built-in read_file shows that match and returns InfoOK
+func Test_Unit_PrintInfo_ToolRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules = []string{"READ_*"}
@@ -687,7 +746,7 @@ func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if !strings.Contains(out, "Deny rules (1)\n") {
+	if !strings.Contains(out, "Deny rules (1): refused, never asked\n") {
 		t.Errorf("expected Deny rules (1) in output:\n%s", out)
 	}
 	if lineWith(out, "read_*", "config", "matches: read_file") == "" {
@@ -696,7 +755,7 @@ func Test_Unit_PrintInfo_DenyRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 }
 
 // - Verify an invalid rule returns InfoFailed with a FAILED line, and the built-in and MCP tools are still listed
-func Test_Unit_PrintInfo_DenyRules_Invalid_Fails(t *testing.T) {
+func Test_Unit_PrintInfo_ToolRules_Invalid_Fails(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules = []string{"*delete["}
@@ -706,8 +765,8 @@ func Test_Unit_PrintInfo_DenyRules_Invalid_Fails(t *testing.T) {
 	if code != InfoFailed {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoFailed, code, out)
 	}
-	if lineWith(out, "Deny rules: FAILED: invalid deny rule", "*delete[") == "" {
-		t.Errorf("expected Deny rules: FAILED naming *delete[ in output:\n%s", out)
+	if lineWith(out, "Tool rules: FAILED: invalid deny rule", "*delete[") == "" {
+		t.Errorf("expected Tool rules: FAILED naming *delete[ in output:\n%s", out)
 	}
 	if !strings.Contains(out, "Built-in tools (1)\n") || lineWith(out, "read_file") == "" {
 		t.Errorf("expected the built-in tools still listed in output:\n%s", out)
@@ -715,13 +774,13 @@ func Test_Unit_PrintInfo_DenyRules_Invalid_Fails(t *testing.T) {
 	if lineWith(out, "docs_lookup") == "" || lineWith(out, "docs_write") == "" {
 		t.Errorf("expected the MCP tools still listed in output:\n%s", out)
 	}
-	if failAt, mcpAt := strings.Index(out, "Deny rules: FAILED"), strings.Index(out, "MCP tools ("); mcpAt < 0 || failAt < mcpAt {
-		t.Errorf("expected the deny rules FAILED line after the MCP tools section:\n%s", out)
+	if failAt, mcpAt := strings.Index(out, "Tool rules: FAILED"), strings.Index(out, "MCP tools ("); mcpAt < 0 || failAt < mcpAt {
+		t.Errorf("expected the tool rules FAILED line after the MCP tools section:\n%s", out)
 	}
 }
 
-// - Verify a config error (MCP not started) shows the "some tools could not be listed" note on the deny rules and no warning
-func Test_Unit_PrintInfo_DenyRules_BadConfig_ShowsNote(t *testing.T) {
+// - Verify a config error (MCP not started) shows the "some tools could not be listed" note on the rules and no warning
+func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.MCPResultMaxBytes = -1
@@ -743,7 +802,7 @@ func Test_Unit_PrintInfo_DenyRules_BadConfig_ShowsNote(t *testing.T) {
 }
 
 // - Verify rules are matched against MCP tools by their model-facing names (server prefix included)
-func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
+func Test_Unit_PrintInfo_ToolRules_MatchesMCPTool(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules = []string{"*write*", "docs_*", "write"}
@@ -765,24 +824,43 @@ func Test_Unit_PrintInfo_DenyRules_MatchesMCPTool(t *testing.T) {
 	}
 }
 
-// - Verify an empty denyRules list in the config prints the "none" line and returns InfoOK
-func Test_Unit_PrintInfo_DenyRules_Empty(t *testing.T) {
+// - Verify empty denyRules and askRules lists in the config print the two "none" lines, then the approval line, and
+// return InfoOK
+func Test_Unit_PrintInfo_ToolRules_Empty(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
-	cfg.DenyRules = []string{}
+	cfg.DenyRules, cfg.AskRules = []string{}, []string{}
 
 	code, out := runInfo(t, cfg, "")
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
 	}
-	if !strings.HasSuffix(out, "Deny rules (0): none, every tool call is allowed\n") {
-		t.Errorf("expected the output to end with the none line:\n%s", out)
+	if !strings.HasSuffix(out, "Deny rules (0): none\nAsk rules (0): none\nApproval: ask\n") {
+		t.Errorf("expected the output to end with the none lines and the approval line:\n%s", out)
+	}
+}
+
+// - Verify approval "allow-all" in the config shows the allow-all line in info mode and is not a failure
+func Test_Unit_PrintInfo_ToolRules_AllowAll(t *testing.T) {
+	cfg := config.GetDefaultConfig()
+	cfg.WorkDir = t.TempDir()
+	cfg.Approval = config.ApprovalAllowAll
+
+	code, out := runInfo(t, cfg, "")
+	if code != InfoOK {
+		t.Errorf("expected exit code %d, got %d:\n%s", InfoOK, code, out)
+	}
+	if lineWith(out, "Approval: allow-all", "deny rules still apply") == "" {
+		t.Errorf("expected the allow-all approval line in output:\n%s", out)
+	}
+	if lineWith(out, "approval:", "allow-all") == "" {
+		t.Errorf("expected the /config-style approval line (PrintConfig) in output:\n%s", out)
 	}
 }
 
 // - Verify a server that connects but fails tools/list is shown as FAILED (not "connected, 0 tools"), info exits 1,
-// and the deny rules say the tool list is incomplete instead of warning that a config rule matches nothing
-func Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete(t *testing.T) {
+// and the tool rules say the tool list is incomplete instead of warning that a config rule matches nothing
+func Test_Unit_PrintInfo_MCP_ToolsListFails_ToolRulesNoteIncomplete(t *testing.T) {
 	sdk := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return mcp.NewServer(&mcp.Implementation{Name: "brokenlist", Version: "0.0.1"}, nil)
 	}, nil)
@@ -812,7 +890,7 @@ func Test_Unit_PrintInfo_MCP_ToolsListFails_DenyRulesNoteIncomplete(t *testing.T
 		t.Errorf("expected the server row to say FAILED listing tools:\n%s", out)
 	}
 	if !strings.Contains(out, "(some tools could not be listed above, so a rule may match a tool not shown)") {
-		t.Errorf("expected the incomplete-list note in the deny rules section:\n%s", out)
+		t.Errorf("expected the incomplete-list note in the tool rules section:\n%s", out)
 	}
 	if strings.Contains(out, "<- warning") {
 		t.Errorf("expected no matches-nothing warning when the tool list is incomplete:\n%s", out)

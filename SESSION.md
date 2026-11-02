@@ -999,3 +999,8 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > built, not committed (`§ Policy item 7 built`). Next: `hooks.ToolRules` + `askRules` (Jerry to choose who writes
 > it). Open for slice 4: write-deny list (`.git/`, the agent's own config), a short preview of `write_file` content
 > in the ask prompt.
+>
+> (2026-11-01) Item 7 merged (PR #32, `Output`). Slice 3 built on `feat/tool-deny-ask-run-rules`, not committed
+> (`DECISIONS.md § Slice 3 built`): `ToolRules`, `askRules`, `approval: allow-all` with the startup confirmation.
+> Next: slice 4 (`write_file` + `create_directory`; write-deny list for `.git/` and the agent's config; a short
+> preview of the content in the ask prompt).

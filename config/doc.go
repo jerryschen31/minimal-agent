@@ -58,7 +58,14 @@
 // Approval gate:
 //
 //	denyRules       glob rules on model-facing tool names (<server>_<tool>, case-insensitive); a matching
-//	                tool call is refused (in chat, the user is asked). [] = no rules                       [["*delete*", "*remove*"]]
+//	                tool call is always refused, in every mode, never asked. [] = no rules                 [[]]
+//	askRules        same form; a matching call needs the user's approval ("Allow once? [y/N]" in chat on a
+//	                terminal). With nobody to ask (piped input, tests, autonomous) it is refused. A deny
+//	                rule wins over an ask rule. [] = no rules        [["*delete*", "*remove*", "write_file", "edit_file",
+//	                                                                    "create_directory", "copy_file", "move_file"]]
+//	approval        "ask" | "allow-all". allow-all runs ask-rule calls without asking; it applies ONLY to
+//	                askRules, never to denyRules. Chat asks you to confirm it once at startup (no terminal
+//	                = not confirmed, so calls stay denied). Flag: -approve                                 ["ask"]
 //
 // Tracing (see package trace):
 //

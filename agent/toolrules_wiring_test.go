@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,8 +31,8 @@ func denyWiringConfig(t *testing.T) config.Config {
 	return cfg
 }
 
-// setupDenyWiringAgent runs SetupAgent and returns the agent and its single *hooks.DenyRules hook.
-func setupDenyWiringAgent(t *testing.T, cfg config.Config) (*Agent, *hooks.DenyRules) {
+// setupDenyWiringAgent runs SetupAgent and returns the agent and its single *hooks.ToolRules hook.
+func setupDenyWiringAgent(t *testing.T, cfg config.Config) (*Agent, *hooks.ToolRules) {
 	t.Helper()
 	a := &Agent{}
 	if err := a.SetupAgent(context.Background(), cfg, nil); err != nil {
@@ -40,81 +42,115 @@ func setupDenyWiringAgent(t *testing.T, cfg config.Config) (*Agent, *hooks.DenyR
 	if len(a.session.Hooks) != 1 {
 		t.Fatalf("expected exactly 1 hook on the session, got %d", len(a.session.Hooks))
 	}
-	dr, ok := a.session.Hooks[0].(*hooks.DenyRules)
+	tr, ok := a.session.Hooks[0].(*hooks.ToolRules)
 	if !ok {
-		t.Fatalf("expected the hook to be a *hooks.DenyRules, got %T", a.session.Hooks[0])
+		t.Fatalf("expected the hook to be a *hooks.ToolRules, got %T", a.session.Hooks[0])
 	}
-	return a, dr
+	return a, tr
 }
 
 func namedCall(name string) model.ToolCall {
 	return model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: name, Arguments: `{}`}}
 }
 
-// - Verify SetupAgent with the default config's denyRules installs exactly one hook, a *hooks.DenyRules with exactly
-// the defaults: a *delete* name is denied, a name matching no rule is allowed
-func Test_Unit_SetupAgent_NoConfigDenyRules_InstallsDefaultDenyRules(t *testing.T) {
-	cfg := denyWiringConfig(t) // [agent] starts from config.GetDefaultConfig, as a config file without denyRules does
-	_, dr := setupDenyWiringAgent(t, cfg)
+// defaultAskRules mirrors config.GetDefaultConfig().AskRules, written out so a change to the defaults shows up here.
+var defaultAskRules = []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"}
 
-	if got, want := dr.Rules(), []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
-		t.Errorf("Rules() = %q, want %q", got, want)
+// - Verify SetupAgent with the default config installs exactly one hook, a *hooks.ToolRules with no deny rules and
+// exactly the default ask rules: a *delete* name needs approval (wrapping hooks.ErrNeedsApproval), a name matching no
+// rule is allowed
+func Test_Unit_SetupAgent_DefaultConfig_InstallsDefaultToolRules(t *testing.T) {
+	cfg := denyWiringConfig(t) // [agent] starts from config.GetDefaultConfig, as a config file without the rule keys does
+	_, tr := setupDenyWiringAgent(t, cfg)
+
+	if got := tr.DenyRules(); len(got) != 0 {
+		t.Errorf("DenyRules() = %q, want none by default", got)
+	}
+	if got := tr.AskRules(); !slices.Equal(got, defaultAskRules) {
+		t.Errorf("AskRules() = %q, want %q", got, defaultAskRules)
 	}
 
-	err := dr.BeforeTool(context.Background(), namedCall("github_delete_file"))
-	if err == nil || !strings.Contains(err.Error(), `denied by rule "*delete*"`) {
-		t.Errorf("github_delete_file: err = %v, want one containing %q", err, `denied by rule "*delete*"`)
+	err := tr.BeforeTool(context.Background(), namedCall("github_delete_file"))
+	if err == nil || err.Error() != `needs approval by rule "*delete*"` || !errors.Is(err, hooks.ErrNeedsApproval) {
+		t.Errorf("github_delete_file: err = %v, want %q wrapping ErrNeedsApproval", err, `needs approval by rule "*delete*"`)
 	}
-	if err := dr.BeforeTool(context.Background(), namedCall("filesystem_move_file")); err != nil {
-		t.Errorf("filesystem_move_file: expected allowed, got %v", err)
+	if err := tr.BeforeTool(context.Background(), namedCall("filesystem_list_directory")); err != nil {
+		t.Errorf("filesystem_list_directory: expected allowed, got %v", err)
 	}
 }
 
-// - Verify an empty or nil denyRules list installs a DenyRules hook with no rules that vetoes nothing
-func Test_Unit_SetupAgent_EmptyDenyRules_VetoesNothing(t *testing.T) {
+// - Verify empty or nil denyRules and askRules lists install a ToolRules hook with no rules that vetoes nothing
+func Test_Unit_SetupAgent_EmptyToolRules_VetoesNothing(t *testing.T) {
 	for _, rulesIn := range [][]string{{}, nil} {
 		cfg := denyWiringConfig(t)
-		cfg.DenyRules = rulesIn
-		_, dr := setupDenyWiringAgent(t, cfg)
+		cfg.DenyRules, cfg.AskRules = rulesIn, rulesIn
+		_, tr := setupDenyWiringAgent(t, cfg)
 
-		if got := dr.Rules(); len(got) != 0 {
-			t.Errorf("DenyRules %#v: Rules() = %q, want none", rulesIn, got)
+		if got := tr.DenyRules(); len(got) != 0 {
+			t.Errorf("rules %#v: DenyRules() = %q, want none", rulesIn, got)
 		}
-		for _, name := range []string{"github_delete_file", "fs_remove_dir", "read_file"} {
-			if err := dr.BeforeTool(context.Background(), namedCall(name)); err != nil {
-				t.Errorf("DenyRules %#v: %s: expected allowed, got %v", rulesIn, name, err)
+		if got := tr.AskRules(); len(got) != 0 {
+			t.Errorf("rules %#v: AskRules() = %q, want none", rulesIn, got)
+		}
+		for _, name := range []string{"github_delete_file", "fs_remove_dir", "write_file", "read_file"} {
+			if err := tr.BeforeTool(context.Background(), namedCall(name)); err != nil {
+				t.Errorf("rules %#v: %s: expected allowed, got %v", rulesIn, name, err)
 			}
 		}
 	}
 }
 
-// - Verify a config rule is applied, lowercased and trimmed, and replaces the defaults rather than adding to them
+// - Verify a config deny rule is applied, lowercased and trimmed, and replaces the (empty) deny default without
+// touching the ask defaults: *delete* still needs approval rather than being denied
 func Test_Unit_SetupAgent_ConfigDenyRule_IsApplied(t *testing.T) {
 	cfg := denyWiringConfig(t)
 	cfg.DenyRules = []string{"  *Purge* "}
-	_, dr := setupDenyWiringAgent(t, cfg)
+	_, tr := setupDenyWiringAgent(t, cfg)
 
-	err := dr.BeforeTool(context.Background(), namedCall("db_purge_all"))
-	if err == nil || !strings.Contains(err.Error(), `denied by rule "*purge*"`) {
-		t.Errorf("db_purge_all: err = %v, want one containing %q", err, `denied by rule "*purge*"`)
+	err := tr.BeforeTool(context.Background(), namedCall("db_purge_all"))
+	if err == nil || err.Error() != `denied by rule "*purge*"` || errors.Is(err, hooks.ErrNeedsApproval) {
+		t.Errorf("db_purge_all: err = %v, want %q (final, not ErrNeedsApproval)", err, `denied by rule "*purge*"`)
 	}
-	if err := dr.BeforeTool(context.Background(), namedCall("github_delete_file")); err != nil {
-		t.Errorf("github_delete_file: expected allowed once the config list replaced the defaults, got %v", err)
+	if level, rule := tr.Level("github_delete_file"); level != hooks.LevelAsk || rule != "*delete*" {
+		t.Errorf("github_delete_file: Level = (%q, %q), want (ask, *delete*): the ask defaults still apply", level, rule)
 	}
-	if got, want := dr.Rules(), []string{"*purge*"}; !slices.Equal(got, want) {
-		t.Errorf("Rules() = %q, want %q", got, want)
+	if got, want := tr.DenyRules(), []string{"*purge*"}; !slices.Equal(got, want) {
+		t.Errorf("DenyRules() = %q, want %q", got, want)
 	}
 }
 
-// - Verify an invalid deny rule fails SetupAgent with an error naming the rule, before any MCP server is started.
-// The configured stdio server would create a marker file if it were ever launched; it must not exist afterwards.
-// (It uses sh, so on a system without sh the marker check passes vacuously; the error check still holds.)
-func Test_Unit_SetupAgent_InvalidDenyRule_ErrorsBeforeMCP(t *testing.T) {
-	for _, rule := range []string{"*delete[", "x:y"} {
-		t.Run(rule, func(t *testing.T) {
+// - Verify a config ask rule replaces the ask defaults rather than adding to them
+func Test_Unit_SetupAgent_ConfigAskRule_ReplacesDefaults(t *testing.T) {
+	cfg := denyWiringConfig(t)
+	cfg.AskRules = []string{"*Push*"}
+	_, tr := setupDenyWiringAgent(t, cfg)
+
+	if level, rule := tr.Level("git_push"); level != hooks.LevelAsk || rule != "*push*" {
+		t.Errorf("git_push: Level = (%q, %q), want (ask, *push*)", level, rule)
+	}
+	if level, _ := tr.Level("github_delete_file"); level != hooks.LevelRun {
+		t.Errorf("github_delete_file: Level = %q, want run once the config list replaced the ask defaults", level)
+	}
+}
+
+// - Verify an invalid deny or ask rule fails SetupAgent with an error naming the list and the rule, before any MCP
+// server is started. The configured stdio server would create a marker file if it were ever launched; it must not
+// exist afterwards. (It uses sh, so on a system without sh the marker check passes vacuously; the error check still holds.)
+func Test_Unit_SetupAgent_InvalidToolRule_ErrorsBeforeMCP(t *testing.T) {
+	cases := []struct {
+		list, rule string
+	}{
+		{"deny", "*delete["}, {"deny", "x:y"}, {"ask", "*delete["}, {"ask", "x:y"},
+	}
+	for _, c := range cases {
+		t.Run(c.list+" "+c.rule, func(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "mcp-started")
 			cfg := denyWiringConfig(t)
-			cfg.DenyRules = []string{rule}
+			if c.list == "deny" {
+				cfg.DenyRules = []string{c.rule}
+			} else {
+				cfg.AskRules = []string{c.rule}
+			}
 			cfg.McpServers = map[string]config.McpServerConfig{
 				"marker": {Command: "sh", Args: []string{"-c", `touch "$1"`, "sh", marker}}, // path passed as $1
 			}
@@ -122,21 +158,22 @@ func Test_Unit_SetupAgent_InvalidDenyRule_ErrorsBeforeMCP(t *testing.T) {
 			err := a.SetupAgent(context.Background(), cfg, nil)
 			defer a.ShutdownAgent(context.Background())
 
-			if err == nil || !strings.Contains(err.Error(), `"`+rule+`"`) {
-				t.Fatalf("SetupAgent err = %v, want an error naming %q", err, rule)
+			if want := "invalid " + c.list + " rule " + `"` + c.rule + `"`; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("SetupAgent err = %v, want an error containing %q", err, want)
 			}
 			if _, statErr := os.Stat(marker); statErr == nil {
-				t.Error("the MCP server was started even though the deny rules were invalid")
+				t.Error("the MCP server was started even though the tool rules were invalid")
 			}
 			if len(a.mcpConns) != 0 || a.session != nil {
-				t.Errorf("setup went on past the deny rules: %d MCP conns, session %v", len(a.mcpConns), a.session != nil)
+				t.Errorf("setup went on past the tool rules: %d MCP conns, session %v", len(a.mcpConns), a.session != nil)
 			}
 		})
 	}
 }
 
-// - Verify end to end, through the session SetupAgent built, that a model-issued call to a *delete* tool is vetoed:
-// the tool never runs and the model's next request carries the denial
+// - Verify end to end, through the session SetupAgent built, that a model-issued call to a *delete* tool with nobody to
+// ask (no prompter, allow-all not confirmed) is vetoed by the default ask rule: the tool never runs and the model's next
+// request carries the veto
 func Test_Unit_SetupAgent_ReActLoop_DeleteToolCallVetoed(t *testing.T) {
 	a, _ := setupDenyWiringAgent(t, denyWiringConfig(t))
 	fake := &modeltest.FakeProvider{Script: []model.ChatMessage{
@@ -161,8 +198,38 @@ func Test_Unit_SetupAgent_ReActLoop_DeleteToolCallVetoed(t *testing.T) {
 		t.Fatalf("expected 2 provider calls, got %d", len(fake.Calls))
 	}
 	second := fake.Calls[1]
-	if last := second[len(second)-1]; last.Role != "tool" || last.Content != `error: denied by rule "*delete*"` {
-		t.Errorf("expected the second request to end with the denial observation, got %+v", last)
+	if last := second[len(second)-1]; last.Role != "tool" || last.Content != `error: needs approval by rule "*delete*"` {
+		t.Errorf("expected the second request to end with the veto observation, got %+v", last)
+	}
+}
+
+// - Verify SetupAgent leaves AllowAskRules off even with approval "allow-all": only confirmAllowAll (chat startup, on a
+// terminal) may turn it on
+func Test_Unit_SetupAgent_AllowAll_DoesNotSetAllowAskRules(t *testing.T) {
+	cfg := denyWiringConfig(t)
+	cfg.Approval = config.ApprovalAllowAll
+	a, _ := setupDenyWiringAgent(t, cfg)
+	if a.session.AllowAskRules {
+		t.Error("expected AllowAskRules false after SetupAgent; allow-all must be confirmed at chat startup")
+	}
+}
+
+// - Verify an unknown approval value fails SetupAgent (checkConfig) with an error naming the value
+func Test_Unit_SetupAgent_UnknownApproval_Fails(t *testing.T) {
+	for _, v := range []string{"", "allow_all", "ALLOW-ALL", "yes"} {
+		t.Run(v, func(t *testing.T) {
+			cfg := denyWiringConfig(t)
+			cfg.Approval = v
+			a := &Agent{}
+			err := a.SetupAgent(context.Background(), cfg, nil)
+			defer a.ShutdownAgent(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "approval must be") || !strings.Contains(err.Error(), fmt.Sprintf("%q", v)) {
+				t.Errorf("SetupAgent err = %v, want an approval error naming %q", err, v)
+			}
+			if a.session != nil {
+				t.Error("expected no session after a bad approval value")
+			}
+		})
 	}
 }
 

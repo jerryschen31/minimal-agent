@@ -72,35 +72,51 @@ func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interr
 	}
 
 	fmt.Fprintln(w)
-	if !printDenyRules(w, cfg.DenyRules, toolNames, allListed) {
+	if !printToolRules(w, cfg, toolNames, allListed) {
 		code = InfoFailed
 	}
 	return code
 }
 
-// printDenyRules lists every deny rule in force (the defaults from config.GetDefaultConfig, or the config file's list
-// that replaced them) with the tools it matches, using the same matching as the gate itself, and reports false if
-// the rules are invalid (chat mode would refuse to start). A config rule that matches no tool gets a warning: usually
-// a typo. allListed is false when some tools could not be listed (built-ins failed, a server failed or was not
-// started), so the warning could be wrong and is left out.
-func printDenyRules(w io.Writer, rulesIn, toolNames []string, allListed bool) bool {
-	denyRules, err := hooks.NewDenyRules(rulesIn)
+// printToolRules lists the deny and ask rules in force (the defaults from config.GetDefaultConfig, or the config file's
+// lists that replaced them) with the tools each matches, using the same matching as the gate itself, then the
+// approval setting. It reports false if the rules are invalid (chat mode would refuse to start). A config rule that
+// matches no tool gets a warning: usually a typo. allListed is false when some tools could not be listed (built-ins
+// failed, a server failed or was not started), so the warning could be wrong and is left out.
+func printToolRules(w io.Writer, cfg config.Config, toolNames []string, allListed bool) bool {
+	toolRules, err := hooks.NewToolRules(cfg.DenyRules, cfg.AskRules)
 	if err != nil {
-		fmt.Fprintf(w, "Deny rules: FAILED: %v\n", err)
+		fmt.Fprintf(w, "Tool rules: FAILED: %v\n", err)
 		return false
 	}
-	rules := denyRules.Rules()
-	if len(rules) == 0 {
-		fmt.Fprintln(w, "Deny rules (0): none, every tool call is allowed")
-		return true
+	defaults := config.GetDefaultConfig()
+	printRules(w, "Deny rules", "refused, never asked", toolRules.DenyRules(), defaults.DenyRules, toolNames, allListed)
+	printRules(w, "Ask rules", "need your approval", toolRules.AskRules(), defaults.AskRules, toolNames, allListed)
+	switch cfg.Approval {
+	case config.ApprovalAllowAll:
+		fmt.Fprintln(w, "Approval: allow-all (ask-rule calls run without asking once you confirm at chat startup; deny rules still apply)")
+	default:
+		fmt.Fprintf(w, "Approval: %s\n", cfg.Approval)
 	}
-	fmt.Fprintf(w, "Deny rules (%d)\n", len(rules))
+	return true
+}
+
+// printRules lists one kind of rule (title, e.g. "Deny rules", and what a match means) with the tools each rule matches.
+// defaults are that list's default rules, to label each rule "default" or "config".
+func printRules(w io.Writer, title, meaning string, rules, defaults, toolNames []string, allListed bool) {
+	if len(rules) == 0 {
+		fmt.Fprintf(w, "%s (0): none\n", title)
+		return
+	}
+	fmt.Fprintf(w, "%s (%d): %s\n", title, len(rules), meaning)
 	if !allListed {
 		fmt.Fprintln(w, "  (some tools could not be listed above, so a rule may match a tool not shown)")
 	}
 	for _, rule := range rules {
 		source := "config"
-		if isDefaultDenyRule(rule) {
+		if slices.Contains(defaults, rule) { // the defaults are written in lowercase
+			// [agent] a config file that repeats a default rule shows it as "default" too; harmless, and telling them
+			// apart would mean recording which keys the file set
 			source = "default"
 		}
 		var matches []string
@@ -121,14 +137,6 @@ func printDenyRules(w io.Writer, rulesIn, toolNames []string, allListed bool) bo
 			fmt.Fprintf(w, "  %-20s %-9s matches nothing  <- warning: check the spelling; tool names use '_' (as listed above)\n", rule, source)
 		}
 	}
-	return true
-}
-
-// isDefaultDenyRule reports whether rule (lowercased, as Rules returns it) is one of the default rules. A config
-// file that repeats a default rule shows it as "default" too; that's harmless, and telling them apart would mean
-// recording which keys the file set.
-func isDefaultDenyRule(rule string) bool {
-	return slices.Contains(config.GetDefaultConfig().DenyRules, rule) // the defaults are written in lowercase
 }
 
 // printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
