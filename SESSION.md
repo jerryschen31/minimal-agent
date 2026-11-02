@@ -1044,3 +1044,22 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > (2026-11-02) Codemap enforcement: `.githooks/pre-commit` (check only) added and `core.hooksPath` set for this clone
 > (`DECISIONS.md § Codemap enforcement`). Agents that change a function body must update its header Notes
 > (`CLAUDE.md § Code map`); drift is otherwise tolerated.
+>
+> (2026-11-02, end of session) **Handoff for a fresh session — start slice 4 here.**
+> - **State:** branch `feat/doc-func-reference-guide` holds the codemap work, **uncommitted** (Jerry commits; base branch
+>   for PRs is `build`). Tree is green: `go test -race ./...`, `go vet ./...`, `gofmt`, `go run ./cmd/codemap -check`
+>   and `-lint`, `-code-unchanged HEAD` all pass. Slice 4 should start from a branch cut after the codemap is committed
+>   (an earlier branch `feat/built-in-write-file-tool` exists at 79f50d3 without the codemap).
+> - **Slice 4 = `write_file` + `create_directory`**, plan in the 2026-11-01 end-of-session entry above (`Workspace`
+>   `resolveNew`, write-deny list for `.git/` and the agent's own config, `O_EXCL` for create-new, size cap constant,
+>   ask-prompt preview, result text says `created`/`overwrote`). Three questions Jerry has not answered: does
+>   `write_file` auto-create parent dirs, does an overwrite need a flag or is the ask prompt enough, how strict is the
+>   write-deny list. Default to learning mode ([[feedback-learning-mode]]): `create_directory` + the `resolveNew`
+>   skeleton first, Jerry fills it in.
+> - **Codemap rules that now apply to every change** (`CLAUDE.md § Code map`): after changing a signature run
+>   `go run ./cmd/codemap`; every new function gets a header (one-liner starting with its name, then `Notes:`, no
+>   `Example:`); a new package needs a `doc.go`; the pre-commit hook (`.githooks/pre-commit`, needs
+>   `git config core.hooksPath .githooks` in a new clone) blocks a stale map; when changing a function body, update its
+>   header Notes.
+> - **Jerry still owes:** a review of the facts the doc-keeper agents added (listed in the entry above); decision on
+>   whether to add a GitHub Actions workflow later (no `.github/` yet).
