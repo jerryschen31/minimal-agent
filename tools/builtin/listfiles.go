@@ -24,9 +24,12 @@ type ListFilesTool struct {
 	ignore    IgnoreList // paths left out (config ignorePaths); an ignored directory is shown, marked, but not walked or listed
 }
 
-// NewListFilesTool creates a list_files tool that lists only inside ws (NewWorkspace). maxVisits (config
-// maxSearchFiles) is the most entries one call looks at and must be positive. ignore (NewIgnoreList, config
-// ignorePaths) is what it leaves out; the zero value leaves out nothing.
+// NewListFilesTool creates a list_files tool that lists only inside ws (NewWorkspace).
+//
+// Notes:
+//   - maxVisits (config maxSearchFiles) is the most entries one call looks at and must be positive.
+//   - ignore (NewIgnoreList, config ignorePaths) is what it leaves out; the zero value leaves out nothing.
+//   - A nil ws is an error.
 func NewListFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*ListFilesTool, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("list_files needs a workspace")
@@ -37,7 +40,10 @@ func NewListFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*ListFil
 	return &ListFilesTool{ws: ws, maxVisits: maxVisits, ignore: ignore}, nil
 }
 
-// GetToolDefinition returns the definition of the list_files tool
+// GetToolDefinition returns the definition of the list_files tool.
+//
+// Notes:
+//   - The description mentions the ignore list (when it is not empty) and the per-call caps, so the model knows them.
 func (t *ListFilesTool) GetToolDefinition() model.ToolDef {
 	ignored := ""
 	if s := t.ignore.String(); s != "" {
@@ -69,8 +75,16 @@ func (t *ListFilesTool) GetToolDefinition() model.ToolDef {
 	)
 }
 
-// CallTool lists one directory (or, with recursive, the tree below it). Every entry passes the same workspace check as
-// read_file, so what can't be read isn't listed either; a hidden directory isn't looked into.
+// CallTool lists one directory (or, with recursive, the tree below it).
+//
+// Notes:
+//   - Every entry passes the same workspace check as read_file, so what can't be read isn't listed either; a hidden
+//     directory isn't looked into.
+//   - At most maxListEntries lines are returned and at most maxVisits entries are looked at; a note says which limit
+//     stopped the walk.
+//   - An ignored directory is shown as "dir/ (ignored)" but not walked, and listing it directly is an error.
+//   - fs.WalkDir visits in name order (same output every time) and never follows symlinks.
+//   - Cancelling ctx stops the walk.
 func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Path      string `json:"path"`
@@ -206,6 +220,9 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 }
 
 // matchName reports whether name matches pattern (already checked to be valid).
+//
+// Notes:
+//   - The match is case-sensitive.
 func matchName(pattern, name string) bool {
 	ok, _ := path.Match(pattern, name)
 	return ok

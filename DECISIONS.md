@@ -3757,3 +3757,100 @@ that a denied `delete_file` would have removed, and a shell tool can do anything
   tool needs a sandbox, not rules.
 - **Not chosen now:** an allow list, declared effects per built-in tool, per-argument rules, a model judging each
   call, undo snapshots. Revisit with `run_command` and the autonomous port.
+
+### 2026-11-02 — Codemap: generated map in each package's `doc.go`, copied into `CODEMAP.md`
+
+Jerry wants a bird's-eye view of the repo that cannot drift from the code. Planned here; nothing built yet. Applies to
+the root module only (`mvp1`–`mvp4` and reference material are ignored).
+
+- **Go has no convention for a repo-wide map in `doc.go`.** A `doc.go` documents one package. The map is therefore
+  one section per package.
+- **Source of truth for the map:** each package's `doc.go` ends its package comment with a `# Codemap
+  (auto-generated)` section: every non-test function with its full signature, the one-liner from its header, and
+  its direct in-repo callees (one level; interface calls shown as `Provider.Chat (interface)`, never guessed).
+  The tool rewrites everything from that heading to the end of the comment, so no end marker is needed. Above it the
+  `doc.go` keeps a hand-written overview. Packages without a `doc.go` get one; a package comment anywhere else is a
+  checker error.
+- **`CODEMAP.md` (repo root)** is a straight copy of those sections plus a directory tree at the top. It is never
+  computed separately, so it cannot disagree with the `doc.go` files. No hyperlinks between entries (a doc comment
+  cannot link inside a preformatted block; dropped as cosmetic). Downside: a large file (about 280 functions);
+  `agent`'s `doc.go` alone will be several hundred lines.
+- **Function header format**, on every function including unexported ones: a one-liner that **starts with the
+  function's name** (matches `go doc`, gopls and staticcheck), then `Example:` (a short invocation) and `Notes:`
+  (non-obvious edge cases and implementation details, as `- ` bullets). Long explanatory comments that sit above
+  functions today move into Notes; inline `[agent]` comments inside bodies stay where they are.
+- **Tool:** `cmd/codemap`, loading types with `golang.org/x/tools/go/packages` (dev tool only; stdlib-only would match
+  callees by name and mislabel same-named methods). Output goes through `go/format`, because gofmt rewrites doc
+  comments and unstable output would make the freshness test flap.
+- **Drift guards:** (1) freshness test regenerates every `doc.go` section and `CODEMAP.md` and fails on any
+  difference; (2) header checker: every function has a header with Example and Notes; (3) staleness: each entry carries
+  a *reviewed* body hash that only an explicit `codemap -ack pkg.Func` updates (a hash rewritten on every run would
+  hide "body changed, header didn't"); the checker flags any function whose current hash differs.
+- **doc-keeper sub-agent** (`.claude/agents/doc-keeper.md`): writes or refreshes headers on flagged functions, then
+  runs `-ack`. Guard against PR #33's silent deletions: the tool compares the comment-stripped AST before and after,
+  and any non-comment change fails the run. Workflow: design → build → test sub-agent → doc-keeper → docs → Jerry
+  commits.
+- **Slices:** 1 this entry; 2 generator v1 (per-package sections, signatures, `CODEMAP.md`, freshness test); 3 callees;
+  4 header checker; 5 reviewed hash and `-ack`; 6 doc-keeper agent and a one-time backfill, package by package, Jerry
+  reviewing each; 7 wire into `CLAUDE.md`. Slices 2–5 are the `go/ast` learning exercise Jerry writes himself.
+- **Comes before slice 4 (`write_file`).**
+- **Superseded in part by `§ Codemap simplified (2026-11-02)`:** the map entry contents (one-liner, callees, `@hash`),
+  the `Example:` section, the reviewed hash and `-ack` (slice 5), and the type-checked load.
+
+### 2026-11-02 — Codemap simplified: signatures only, no Example, no reviewed hash
+
+Jerry, after the first build: "Each codemap should JUST contain the function definition" and "remove the Example
+section. It's useless for the most part." The map is meant to be completely deterministic: Go files and the function
+definitions in them.
+
+- **A map entry is the signature and nothing else.** Removed from the map: the header one-liner, the `calls:` line and
+  the `@hash`. A pure function of the code, so it cannot be wrong. The explanations live in the function headers,
+  next to the code.
+- **Header format is now one-liner + `Notes:`** (`Notes: none.` allowed). All 303 `Example:` sections were removed from
+  the existing headers by script (comments only; `-code-unchanged HEAD` confirms).
+- **Callees dropped entirely** (not just hidden): the code, its tests and the type-checked load went with them. The
+  loader now reads syntax only, which is faster and no longer fails on an unrelated type error (a syntax error still
+  fails). Downside: the call tree Jerry first asked for is gone; it can come back as its own generated section if it is
+  missed (the `go/types` code is in git history of this branch).
+- **Reviewed hash and `-ack` removed.** The hash lived in the map line; with the map signatures-only it has nowhere to
+  live, and a sidecar file was not asked for. Downside, stated plainly: nothing now detects a header whose words went
+  stale after the body changed. What remains: `-lint` checks shape (header exists, starts with the function's name, has
+  Notes), the freshness test checks the map, `-code-unchanged` guards comment-only jobs. Mitigation: `CLAUDE.md` tells
+  whoever changes a body to reread its header; a doc-keeper run can be pointed at `git diff` to refresh headers of
+  changed functions. Revisit if headers drift in practice.
+- **Tests:** `go test ./cmd/codemap` now includes `Test_Repo_CodemapIsFresh` and `Test_Repo_HeadersPassLint` on the real
+  repo, so a stale map or a function without a header fails the suite.
+- **Bugs found by the test sub-agent and fixed:** `load` panicked on a body-less (assembly) function; the comment-only
+  guard missed changes to `//go:build` and `//go:noinline` (it now compares directive comments with the code); multi-line
+  signatures printed with stray spaces; generic receivers with several type parameters broke key parsing.
+- **Wrong comments the header backfill corrected:** `OffsetWindow`/`InPlaceWindow`/`RingBufferWindow.Clear` claimed to
+  increment a generation counter; only `ChatContext.Clear` does.
+
+### 2026-11-02 — Codemap enforcement: pre-commit hook, and header Notes may drift
+
+Jerry's answers after the simplification:
+- **Pre-commit hook, no CI for now.** `.githooks/pre-commit` runs `codemap -check` and `-lint` and aborts the commit on
+  either failure. It only checks; it never regenerates or stages (a `git add` of a `doc.go` could stage a hand edit
+  Jerry left out of the commit). Shared through `core.hooksPath=.githooks` (set locally for this clone; each clone
+  runs `git config core.hooksPath .githooks` once). Downsides: `--no-verify` skips it; it checks the working tree,
+  not just the staged content; it adds a second or two per commit. A GitHub Actions workflow on `pull_request`
+  (`go test ./...` already includes the freshness and lint tests) stays available; the repo has no `.github/` yet.
+- **Header Notes drifting is accepted** as a minor defect (map signatures are generated, so they cannot drift). The
+  rule is behavioural: whoever changes a function body, Jerry or an agent, rereads its header and updates the one-liner
+  and Notes if needed (`CLAUDE.md § Code map`). A `-changed <ref>` mode that lists functions whose body changed but whose
+  header did not was offered and not built.
+
+### 2026-11-02 — PR #34 Copilot review: added files and other-OS files
+
+Copilot found two real gaps in the codemap tool (both confirmed against the code, then fixed):
+- **`-code-unchanged` ignored added files** (it skipped git status `A`, and `git diff` never lists untracked files). An
+  added or untracked `.go` file now counts as a code change unless it holds only comments and a package clause
+  (`name (added, contains code)`), so a new comment-only `doc.go` still passes. An import-only file, a file with a
+  `//go:` directive, or a file that does not parse is reported. Untracked files come from `git ls-files --others
+  --exclude-standard`, so git-ignored paths stay out. The old "added file is ignored" test was replaced on purpose.
+- **The map left out files that do not build on the host OS** (`mcpconnect/procgroup_windows.go` was missing from
+  `CODEMAP.md` and `mcpconnect/doc.go`). `load` still uses `packages.Load` only to find the package directories; `buildPkg`
+  now parses every non-test `.go` file there itself, whatever its build constraints. Skipped: files whose package name
+  differs from the package's (a `//go:build ignore` script), and names starting with `_` or `.`. The loader no longer
+  loads syntax at all, which also makes it faster. Downside: the map shows every variant of a function (the unix and
+  windows `startInOwnGroup`, each under its own file), and a package whose files are all for other OSes still fails to load.

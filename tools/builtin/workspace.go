@@ -22,9 +22,14 @@ type Workspace struct {
 	rootInfo os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
 }
 
-// NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not be workDir or a parent of it).
-// traceDir is relative to the process's directory, like the trace recorder that creates it (not to workDir); "" = none.
-// deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
+// NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not
+// be workDir or a parent of it).
+//
+// Notes:
+//   - traceDir is relative to the process's directory, like the trace recorder that creates it (not to workDir);
+//     "" = none.
+//   - deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
+//   - workDir is stored with symlinks resolved, together with its file identity, which openRoot compares later.
 func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	abs, err := filepath.Abs(workDir)
 	if err != nil {
@@ -53,18 +58,26 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	return w, nil
 }
 
-// resolve turns the model's path (relative to rootDir, or absolute) for a file that must already exist into a path relative to rootDir, with every symlink followed.
-// It returns an error if the path doesn't exist or check refuses it. The checks run on the resolved path, so a
-// symlink named notes.txt that points at .env is refused too.
+// resolve turns the model's path (relative to rootDir, or absolute) for a file that must already exist into a path
+// relative to rootDir, with every symlink followed.
+//
+// Notes:
+//   - It returns an error if the path doesn't exist or check refuses it.
+//   - The checks run on the resolved path, so a symlink named notes.txt that points at .env is refused too.
 func (w *Workspace) resolve(requested string) (string, error) {
 	rel, _, err := w.resolveInfo(requested)
 	return rel, err
 }
 
 // resolveInfo is resolve, and also returns the resolved file's identity, taken right after its symlinks were resolved
-// and before it is checked. A file tool passes it to openFile, which refuses a file that isn't this one.
-// [agent] Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in
-// after the resolve, and the identities won't match.
+// and before it is checked.
+//
+// Notes:
+//   - A file tool passes the identity to openFile, which refuses a file that isn't this one.
+//   - [agent] Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in
+//     after the resolve, and the identities won't match.
+//   - Errors name only the requested path, never the absolute one, and keep the cause wrapped so
+//     errors.Is(err, fs.ErrNotExist) still works.
 func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error) {
 	candidate := requested
 	if !filepath.IsAbs(requested) {
@@ -94,8 +107,12 @@ func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error) {
 	return rel, info, nil
 }
 
-// check refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir. requested is used only in error messages.
-// real is absolute with symlinks resolved; the result is real relative to rootDir.
+// check refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
+//
+// Notes:
+//   - requested is used only in error messages.
+//   - real is absolute with symlinks resolved; the result is real relative to rootDir.
+//   - A path that can't be stat'ed counts as a directory for patterns ending in "/" (see the comment in the body).
 func (w *Workspace) check(requested, real string) (rel string, err error) {
 	rel, err = filepath.Rel(w.rootDir, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
@@ -115,12 +132,17 @@ func (w *Workspace) check(requested, real string) (rel string, err error) {
 	return rel, nil
 }
 
-// openRoot opens rootDir as an *os.Root, the second line of defence: it refuses ".." and symlink escapes when the file is opened. The caller closes it.
-// It also checks that the directory it opened is the one NewWorkspace checked.
-// [agent] os.OpenRoot finds rootDir by its path, and a path can be made to point elsewhere after startup: another
-// program (or an MCP filesystem server's move_file, or a future run_command) renames workDir and puts a symlink to /
-// in its place. Without this check, os.Root would then contain the tool to the wrong tree. Once opened, the root is
-// tied to the directory itself, not its path, so comparing them (os.SameFile: same device and inode) closes the gap.
+// openRoot opens rootDir as an *os.Root, the second line of defence: it refuses ".." and symlink escapes when the file
+// is opened.
+//
+// Notes:
+//   - The caller closes it.
+//   - It also checks that the directory it opened is the one NewWorkspace checked.
+//   - [agent] os.OpenRoot finds rootDir by its path, and a path can be made to point elsewhere after startup: another
+//     program (or an MCP filesystem server's move_file, or a future run_command) renames workDir and puts a symlink to
+//     / in its place. Without this check, os.Root would then contain the tool to the wrong tree. Once opened, the root
+//     is tied to the directory itself, not its path, so comparing them (os.SameFile: same device and inode) closes the
+//     gap.
 func (w *Workspace) openRoot() (*os.Root, error) {
 	root, err := os.OpenRoot(w.rootDir)
 	if err != nil {
@@ -138,15 +160,19 @@ func (w *Workspace) openRoot() (*os.Root, error) {
 }
 
 // openFile opens the regular file rel (relative to rootDir) through root for reading, and refuses it unless it is
-// want: the file the workspace check approved, from resolveInfo or a walk entry's Info. requested names the file in
-// errors. The caller closes the file.
-// [agent] The check approves a name, the open follows that name again, and os.Root follows symlinks that stay inside
-// rootDir. Something else (another program, an MCP server) can swap a.txt for a symlink to .env in between, and the
-// open would then return .env. Locks can't stop another process, so instead the opened file is compared with the
-// checked one (os.SameFile: same device and inode), as openRoot does for rootDir. The opened file is checked again on
-// its descriptor too: O_NONBLOCK makes opening a named pipe return at once rather than wait for a writer forever.
-// Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want; both
-// then follow the new directory, so they match. Closing it would need the OS to report the opened file's real path.
+// want: the file the workspace check approved, from resolveInfo or a walk entry's Info.
+//
+// Notes:
+//   - requested names the file in errors. The caller closes the file.
+//   - [agent] The check approves a name, the open follows that name again, and os.Root follows symlinks that stay
+//     inside rootDir. Something else (another program, an MCP server) can swap a.txt for a symlink to .env in
+//     between, and the open would then return .env. Locks can't stop another process, so instead the opened file is
+//     compared with the checked one (os.SameFile: same device and inode), as openRoot does for rootDir. The opened
+//     file is checked again on its descriptor too: O_NONBLOCK makes opening a named pipe return at once rather than
+//     wait for a writer forever.
+//   - Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want;
+//     both then follow the new directory, so they match. Closing it would need the OS to report the opened file's
+//     real path.
 func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error) {
 	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -170,8 +196,11 @@ func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileI
 }
 
 // resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.
-// p need not exist yet (the recorder creates the trace directory when a run starts):
-// the longest existing part is resolved and the rest is added back unchanged.
+//
+// Notes:
+//   - p need not exist yet (the recorder creates the trace directory when a run starts): the longest existing part is
+//     resolved and the rest is added back unchanged.
+//   - A path that exists as a symlink to a missing target is refused (see the comment in the body).
 func resolvePath(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
@@ -197,9 +226,12 @@ func resolvePath(p string) (string, error) {
 	}
 }
 
-// isWithin reports whether path p is dir or inside it. Both are absolute and symlink-resolved. The comparison ignores
-// case, because macOS and Windows filesystems do (".AGENT-TRACE" is the same directory there); on Linux that can
-// refuse a path that differs only in case, which errs on the safe side.
+// isWithin reports whether path p is dir or inside it.
+//
+// Notes:
+//   - Both are absolute and symlink-resolved.
+//   - The comparison ignores case, because macOS and Windows filesystems do (".AGENT-TRACE" is the same directory
+//     there); on Linux that can refuse a path that differs only in case, which errs on the safe side.
 func isWithin(dir, p string) bool {
 	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(p))
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))

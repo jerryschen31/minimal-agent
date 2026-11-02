@@ -24,7 +24,11 @@ type promptReader interface {
 	ReadPrompt(ctx context.Context) (string, error)
 }
 
-// initializes a new prompt reader instance, that reads user input keystroke by keystroke from a terminal (if this input is coming from a terminal) OR per-line from a non-terminal read stream (if input is coming from a pipe or a file)
+// newPromptReader creates a prompt reader that reads user input keystroke by keystroke from a terminal, or per line from
+// a non-terminal stream (a pipe or a file).
+//
+// Notes:
+//   - A chat terminal gets the ttyReader, which supports multiline input and history; anything else gets a plainReader.
 func newPromptReader(ctx context.Context, in io.Reader, out io.Writer) promptReader {
 	// if this is a chat terminal, use the ttyReader which supports multiline input and history
 	if isTerminal(in) {
@@ -35,8 +39,10 @@ func newPromptReader(ctx context.Context, in io.Reader, out io.Writer) promptRea
 	}
 }
 
-// isTerminal reports whether v (an input or output) is an *os.File connected to a terminal, rather than a
-// pipe, a file on disk, or an in-memory buffer
+// isTerminal reports whether v (an input or output) is an *os.File connected to a terminal.
+//
+// Notes:
+//   - A pipe, a file on disk, or an in-memory buffer is not a terminal.
 func isTerminal(v any) bool {
 	f, ok := v.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
@@ -51,12 +57,23 @@ type ttyReader struct {
 	history *simplehistory.Container
 }
 
+// newTTYReader creates a terminal prompt reader on the real terminal and stdout.
+//
+// Notes:
+//   - Passing nil to newTTYReaderWith means the real terminal and stdout.
 func newTTYReader() *ttyReader {
 	return newTTYReaderWith(nil, nil) // nil = the real terminal and stdout
 }
 
-// tests pass a scripted terminal (auto.Pilot) and io.Discard; it must be set
-// before the first BindKey, because that call sets the editor up with whatever terminal it has
+// newTTYReaderWith creates a terminal prompt reader using go-multiline-ny, with its line editor and input history.
+//
+// Notes:
+//   - Tests pass a scripted terminal (auto.Pilot) and io.Discard; it must be set before the first BindKey, because that
+//     call sets the editor up with whatever terminal it has. A nil tty or out means the real terminal or stdout.
+//   - Sets the "> " prompt; Up/Down move between lines of the prompt first, then into history at the top/bottom edge.
+//   - go-multiline-ny's own default is Enter = new line, Ctrl+J = submit (SQL-style). The three key bindings flip it to
+//     chat style: Enter submits, Ctrl+J / Alt+Enter insert a new line.
+//   - BindKey's error is ignored: it only fails if the terminal can't be set up, and Read reports the same error.
 func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader {
 	r := &ttyReader{history: simplehistory.New()}
 	if tty != nil {
@@ -82,7 +99,12 @@ func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader {
 	return r
 }
 
-// reads a single- or multi-line user prompt from the terminal
+// ReadPrompt reads a single- or multi-line user prompt from the terminal.
+//
+// Notes:
+//   - Ctrl+C at the prompt discards what was typed and goes back to a fresh prompt.
+//   - Ctrl+D on an empty prompt arrives as io.EOF, which the chat loop treats as quit.
+//   - A prompt that is not blank is added to the input history.
 func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error) {
 	for {
 		lines, err := r.ed.Read(ctx)
@@ -100,7 +122,14 @@ func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error) {
 	}
 }
 
-// AskYesNo is used at the terminal whenever a yes/no response is needed from the user, such as allowing a tool call to execute.
+// AskYesNo asks the user a yes/no question at the terminal, such as allowing a tool call to execute.
+//
+// Notes:
+//   - prompt is shown to the user instead of "> ", and the normal prompt is put back afterwards.
+//   - It uses an empty history while asking, so Up can't bring back an old "y" sent as a chat message.
+//   - It calls Read, not ReadPrompt: ReadPrompt ignores Ctrl+C and saves to history.
+//   - Only "y" or "yes" (any case) is affirmative; anything else is no. That includes Ctrl+C, which here means "no",
+//     not "cancel the turn", and a multi-line answer.
 func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool {
 	// whatever was passed into prompt is shown to the user on the terminal, instead of "> "
 	r.ed.SetPrompt(func(w io.Writer, _ int) (int, error) { return io.WriteString(w, prompt) })
@@ -125,11 +154,12 @@ type plainReader struct {
 	out   io.Writer
 }
 
-// initializes a non-terminal reader (pipe or file input)
-// examples would be:
+// newPlainReader initializes a non-terminal reader (pipe or file input).
 //
-//	echo "hi" | go run .  (piped input into the Go agent)
-//	go run . < notes.txt  (file input into the Go agent)
+// Notes:
+//   - A goroutine reads lines until input ends, a read fails, or the context is cancelled while handing a line over
+//     (the ctx.Done() channel closing exits the goroutine immediately).
+//   - The read is blocking, so a goroutine stuck in a read ends only when the input does.
 func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainReader {
 	lines := make(chan string)
 
@@ -154,7 +184,11 @@ func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainRead
 	return &plainReader{lines: lines, out: out}
 }
 
-// reads a single line of input from a non-terminal source (pipe or file)
+// ReadPrompt reads a single line of input from a non-terminal source (pipe or file).
+//
+// Notes:
+//   - Prints a newline and the "> " prompt first.
+//   - io.EOF means the reader goroutine closed the channel: input ended.
 func (r *plainReader) ReadPrompt(ctx context.Context) (string, error) {
 	io.WriteString(r.out, "\n")
 	writePrompt(r.out, 0)
@@ -171,7 +205,10 @@ func (r *plainReader) ReadPrompt(ctx context.Context) (string, error) {
 
 // ---- other functions ----
 
-// "> " on the first line of a prompt, two spaces on continuation lines so the text lines up
+// writePrompt writes the prompt for line lnum: "> " on the first line of a prompt, two spaces on continuation lines
+// so the text lines up.
+//
+// Notes: none.
 func writePrompt(w io.Writer, lnum int) (int, error) {
 	if lnum == 0 {
 		return io.WriteString(w, "> ")

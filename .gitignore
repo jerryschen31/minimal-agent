@@ -16,3 +16,4 @@ mvp4/runs
 .agent-trace/
 minagent
 *tmp
+/codemap

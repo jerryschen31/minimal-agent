@@ -17,7 +17,11 @@ import (
 // A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
 var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
 
-// callToolSafely runs tool.CallTool and recovers from a panic inside a tool (since we want model execution to continue on a failed tool)
+// callToolSafely runs tool.CallTool and recovers from a panic inside a tool.
+//
+// Notes:
+//   - A panic becomes a "tool panicked" error and an empty result, since we want model execution to continue on a
+//     failed tool.
 func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -28,9 +32,14 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 	return tool.CallTool(ctx, args)
 }
 
-// runToolCall executes a single tool call and returns the result as a ChatMessage. In the next iteration of the ReAct loop, this chat message is sent back to the model.
-// This is essentially a wrapper around the actual tool call execution. This wrapper allows us to record the call before and after:
-// tool_requested before it runs, tool_finished with what the model will see after.
+// runToolCall executes a single tool call and returns the result as a tool ChatMessage, which the next iteration of the
+// ReAct loop sends back to the model.
+//
+// Notes:
+//   - It is essentially a wrapper around the actual tool call execution. This wrapper allows us to record the call
+//     before and after: tool_requested before it runs, tool_finished with what the model will see after.
+//   - Every failure becomes an observation the model can recover from: the content is "error: ..." and the message is
+//     still returned.
 func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage {
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
@@ -44,7 +53,16 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 	return model.CreateChatMessage("tool", "tool", content, call.ID, nil)
 }
 
-// executeToolCall validates and runs a single tool call. It returns the tool's result, or an error for an unknown tool, bad arguments, a tool error or a tool panic.
+// executeToolCall validates and runs a single tool call. It returns the tool's result, or an error for an unknown tool,
+// bad arguments, a hook veto, a tool error or a tool panic.
+//
+// Notes:
+//   - Order: look up the tool by call.Function.Name, check the arguments are a JSON object, run the before-tool hooks,
+//     then call the tool.
+//   - Arguments is a string holding JSON; empty "" is allowed for no-arg tools. A JSON null or other non-object is
+//     rejected.
+//   - If Arguments is empty, json.RawMessage would be an empty byte slice, so a proper empty JSON object `{}` is
+//     passed instead.
 func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error) {
 	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, that is an error.
 	tool, ok := cs.Tools.Lookup(call.Function.Name)
@@ -77,9 +95,11 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 }
 
 // checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook vetoes the call.
-// Only a veto wrapping hooks.ErrNeedsApproval (an ask rule) can be overridden: by allow-all (cs.AllowAskRules) or by
-// the user when there is someone to ask (cs.PromptAllowDenyCall). Any other veto (a deny rule) is final.
-// Every veto is recorded as a tool_vetoed event, with what happened next.
+//
+// Notes:
+//   - Only a veto wrapping hooks.ErrNeedsApproval (an ask rule) can be overridden: by allow-all (cs.AllowAskRules) or
+//     by the user when there is someone to ask (cs.PromptAllowDenyCall). Any other veto (a deny rule) is final.
+//   - Every veto is recorded as a tool_vetoed event, with what happened next and how long the user took to decide.
 func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error {
 	for _, hook := range cs.Hooks {
 		// BeforeTool returns non-nil if the tool call is denied or needs approval (e.g., matches a deny or ask rule)
@@ -109,7 +129,18 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 	return nil
 }
 
-// reActLoop loops up to MaxSteps. At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise it calls tool functions as needed.
+// reActLoop runs the ReAct loop for one user turn, up to MaxSteps steps, and returns the turn's messages.
+//
+// Notes:
+//   - At each step, the model either returns the response if the initial prompt request has been fulfilled; otherwise
+//     it calls tool functions as needed.
+//   - Exits at once if ctx is cancelled (Ctrl+C), checked at the start of every step.
+//   - The request is built with model.PrepareChatRequest from the prior context, system message and this turn's
+//     messages. The session provider wraps the underlying model.Provider and records requests and responses under the
+//     task's scope ID; the trace records the turn's messages, while the system prompt and prior context are only
+//     counted.
+//   - A model error is returned as is: the caller reports it (cs.Output.Error), once.
+//   - Returns ErrMaxSteps (wrapped with the limit) when the model is still asking for tools after cfg.MaxSteps steps.
 func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
 	requestMsgs := []model.ChatMessage{initialMsg}
 	toolDefs := cs.Tools.GetToolDefs()

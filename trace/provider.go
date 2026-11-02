@@ -21,13 +21,21 @@ type TracedProvider struct {
 	TurnMsgs []model.ChatMessage // the messages added by this turn; in the ReAct loop, only trace these messages (not the previous context)
 }
 
-// GetTracedProvider returns a TracedProvider that wraps p so its calls are recorded under scopeID: a task ID for a turn or a command,
-// the run ID for background work such as auto-compaction. Use one wrapper per scope, from one goroutine.
+// GetTracedProvider returns a TracedProvider that wraps p so its calls are recorded under scopeID.
+//
+// Notes:
+//   - scopeID is a task ID for a turn or a command, or the run ID for background work such as auto-compaction.
+//   - Use one wrapper per scope, from one goroutine.
 func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg config.Config) *TracedProvider {
 	return &TracedProvider{inner: p, rec: rec, scopeID: scopeID, cfg: cfg}
 }
 
 // Chat records the request, calls the wrapped provider, then records the response or the error.
+//
+// Notes:
+//   - When TurnMsgs is set, only those messages are recorded and the rest of msgs is counted as context messages;
+//     otherwise all of msgs is recorded.
+//   - The wrapped provider's result and error are returned unchanged.
 func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
 	recorded, contextCount := msgs, 0
 	if t.TurnMsgs != nil {

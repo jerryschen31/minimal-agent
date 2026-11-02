@@ -12,7 +12,10 @@ type IgnoreList struct {
 	patterns []pathPattern
 }
 
-// NewIgnoreList checks patterns; a malformed one is an error, since it would otherwise silently ignore nothing.
+// NewIgnoreList checks and parses the ignore patterns.
+//
+// Notes:
+//   - A malformed pattern is an error, since it would otherwise silently ignore nothing.
 func NewIgnoreList(patterns []string) (IgnoreList, error) {
 	p, err := parsePathPatterns("ignorePaths", patterns)
 	if err != nil {
@@ -21,11 +24,15 @@ func NewIgnoreList(patterns []string) (IgnoreList, error) {
 	return IgnoreList{patterns: p}, nil
 }
 
-// Ignores reports whether rel (relative to workDir) or any directory above it is on the list. isDir says whether rel
-// itself is a directory (for patterns ending in "/").
+// Ignores reports whether rel (relative to workDir) or any directory above it is on the list.
+//
+// Notes:
+//   - isDir says whether rel itself is a directory (for patterns ending in "/").
 func (l IgnoreList) Ignores(rel string, isDir bool) bool {
 	return matchPath(l.patterns, rel, isDir, nil)
 }
 
 // String lists the patterns as configured (lowercased), for the tool description; "" when the list is empty.
+//
+// Notes: none.
 func (l IgnoreList) String() string { return strings.Join(rawPatterns(l.patterns), ", ") }

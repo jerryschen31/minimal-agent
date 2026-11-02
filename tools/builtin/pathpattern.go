@@ -25,8 +25,12 @@ type pathPattern struct {
 	dirOnly  bool   // matches directories only
 }
 
-// parsePathPatterns checks and parses raw patterns; key ("denyPaths", "ignorePaths") starts each error. A pattern that
-// would silently match nothing is an error: empty, spaces at either end, "\", an empty, "." or ".." part, or malformed.
+// parsePathPatterns checks and parses raw patterns.
+//
+// Notes:
+//   - key ("denyPaths", "ignorePaths") starts each error.
+//   - A pattern that would silently match nothing is an error: empty, spaces at either end, "\", an empty, "." or ".."
+//     part, or malformed.
 func parsePathPatterns(key string, raw []string) ([]pathPattern, error) {
 	var out []pathPattern
 	for _, r := range raw {
@@ -39,6 +43,13 @@ func parsePathPatterns(key string, raw []string) ([]pathPattern, error) {
 	return out, nil
 }
 
+// parsePathPattern checks and parses one raw pattern.
+//
+// Notes:
+//   - The pattern is lowercased; a leading "/" or a "/" in the middle makes it anchored, a trailing "/" makes it
+//     directories-only.
+//   - [agent] "**" is refused: path.Match would read it as two "*", which never cross "/", so "**/*.secret" would look
+//     recursive but miss a/b/x.secret. Refused so a rule never protects less than it appears to.
 func parsePathPattern(r string) (pathPattern, error) {
 	if r != strings.TrimSpace(r) {
 		return pathPattern{}, fmt.Errorf("has spaces at the start or end")
@@ -71,6 +82,10 @@ func parsePathPattern(r string) (pathPattern, error) {
 }
 
 // match reports whether this one pattern matches rel itself (lowercased, "/"-separated, relative to workDir).
+//
+// Notes:
+//   - Only rel itself is tested, not the directories above it; matchPath walks those.
+//   - An unanchored pattern is matched against the last name only.
 func (p pathPattern) match(rel string, isDir bool) bool {
 	if p.dirOnly && !isDir {
 		return false
@@ -84,9 +99,14 @@ func (p pathPattern) match(rel string, isDir bool) bool {
 }
 
 // matchPath reports whether rel or any directory above it matches one of patterns, so a matched directory covers
-// everything under it. rel is relative to workDir, with "/" or the OS separator; isDir is about rel itself (every
-// part above it is a directory). skip, if not nil, exempts the LAST name from matching (DenyList's ".env.example");
-// a directory with that name further up is matched as usual, so it can't carry denied files out from under a pattern.
+// everything under it.
+//
+// Notes:
+//   - rel is relative to workDir, with "/" or the OS separator; isDir is about rel itself (every part above it is a
+//     directory).
+//   - skip, if not nil, exempts the LAST name from matching (DenyList's ".env.example"); a directory with that name
+//     further up is matched as usual, so it can't carry denied files out from under a pattern.
+//   - workDir itself ("." or "") is never matched.
 func matchPath(patterns []pathPattern, rel string, isDir bool, skip func(name string) bool) bool {
 	rel = strings.ToLower(filepath.ToSlash(rel))
 	if rel == "." || rel == "" {
@@ -109,6 +129,8 @@ func matchPath(patterns []pathPattern, rel string, isDir bool, skip func(name st
 }
 
 // rawPatterns returns the patterns as configured, for display.
+//
+// Notes: none.
 func rawPatterns(patterns []pathPattern) []string {
 	out := make([]string, len(patterns))
 	for i, p := range patterns {

@@ -1,5 +1,3 @@
-// Package modeltest holds test doubles and message builders shared by the tests of packages that
-// depend on model. It is a regular (non-_test) package so other packages' tests can import it.
 package modeltest
 
 import (
@@ -38,6 +36,14 @@ type FakeProvider struct {
 	Waiting  chan struct{} // if set, Chat sends on it once it starts blocking on Gate
 }
 
+// Chat records the call and returns the next scripted reply, Reply, or Err, as the FakeProvider's fields say.
+//
+// Notes:
+//   - every call appends a copy of the messages to Calls and of the tools to ToolDefs, before anything else can fail
+//   - if Gate is set it blocks until Gate is closed or ctx is cancelled (returning ctx.Err()); it first signals Waiting, if set. The
+//     mutex is not held while blocked, so a concurrent call is not blocked behind this one
+//   - precedence after the gate: a cancelled ctx, then Err, then Script (once set, running past its end is an error), then Reply
+//     as an assistant message
 func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
@@ -81,12 +87,16 @@ func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage
 }
 
 // AssistantText builds a plain assistant reply with no tool calls (the "final answer" step).
+//
+// Notes: none.
 func AssistantText(text string) model.ChatMessage {
 	return model.ChatMessage{Role: "assistant", Content: text}
 }
 
-// AssistantToolCall builds an assistant reply that asks for one tool call. args is the raw
-// JSON string the model would send, e.g. `{"path":"go.mod"}`.
+// AssistantToolCall builds an assistant reply that asks for one tool call.
+//
+// Notes:
+//   - args is the raw JSON string the model would send, e.g. `{"path":"go.mod"}`; it is not validated
 func AssistantToolCall(callID, toolName, args string) model.ChatMessage {
 	return model.ChatMessage{
 		Role: "assistant",
@@ -98,14 +108,19 @@ func AssistantToolCall(callID, toolName, args string) model.ChatMessage {
 	}
 }
 
-// Msg builds a model.ChatMessage with a distinct ID, so tests can tell messages apart after
-// eviction/compaction without depending on their Content.
+// Msg builds a model.ChatMessage with a distinct ID.
+//
+// Notes:
+//   - the ID lets tests tell messages apart after eviction/compaction without depending on their Content
 func Msg(role, id, content string) model.ChatMessage {
 	return model.ChatMessage{ID: id, Role: role, Content: content}
 }
 
-// Msgs builds n distinct ChatMessages with IDs "0".."n-1" in order, alternating user/assistant
-// roles, for tests that just need "some messages" without caring about their content.
+// Msgs builds n distinct ChatMessages with IDs "0".."n-1" in order, alternating user/assistant roles.
+//
+// Notes:
+//   - for tests that just need "some messages" without caring about their content
+//   - message 0 is a user message, so the result starts at a user message
 func Msgs(n int) []model.ChatMessage {
 	out := make([]model.ChatMessage, n)
 	for i := 0; i < n; i++ {

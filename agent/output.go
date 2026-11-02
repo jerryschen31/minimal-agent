@@ -33,10 +33,20 @@ type chatOutput struct {
 	showProgress bool
 }
 
+// Assistant prints the model's reply text for one step as an "[assistant]" line.
+//
+// Notes: none.
 func (o chatOutput) Assistant(text string) { fmt.Fprintf(o.w, "[assistant] %s\n", text) }
 
+// ToolCalled prints a "[tool] Tool called:" line with the model-facing tool name.
+//
+// Notes: none.
 func (o chatOutput) ToolCalled(name string) { fmt.Fprintln(o.w, "[tool] Tool called:", name) }
 
+// Thinking starts the thinking dots while waiting for the model and returns the function that stops them.
+//
+// Notes:
+//   - Without showProgress (not a real terminal) it prints nothing and stop is a no-op.
 func (o chatOutput) Thinking() (stop func()) {
 	if !o.showProgress {
 		return func() {}
@@ -44,8 +54,15 @@ func (o chatOutput) Thinking() (stop func()) {
 	return startProgressDots(o.w, progressDotInterval)
 }
 
+// System prints a "[system]" notice.
+//
+// Notes: none.
 func (o chatOutput) System(text string) { fmt.Fprintln(o.w, "[system]", text) }
 
+// Error prints an "[error]" line saying what failed and why.
+//
+// Notes:
+//   - A context.Canceled error (Ctrl+C) is not a failure to report, so it is printed as [interrupted] instead.
 func (o chatOutput) Error(what string, err error) {
 	if errors.Is(err, context.Canceled) { // Ctrl+C cancelled the context: not a failure to report
 		o.Interrupted()
@@ -54,4 +71,7 @@ func (o chatOutput) Error(what string, err error) {
 	fmt.Fprintf(o.w, "[error] %s: %v\n", what, err)
 }
 
+// Interrupted prints the "[interrupted]" line, for a turn or command the user cancelled.
+//
+// Notes: none.
 func (o chatOutput) Interrupted() { fmt.Fprintln(o.w, "[interrupted]") }

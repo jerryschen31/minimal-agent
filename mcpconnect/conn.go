@@ -25,9 +25,16 @@ type McpConnection struct {
 }
 
 // SetupMCPConns connects to every MCP server listed in the config, in name order, and returns one connection per server
-// that connected. A server that fails is skipped: its error (naming the server) is collected and the next server is tried,
-// so one bad server does not take the others' tools away. The returned error joins every failure (nil if all connected).
-// The connections are returned even when the error is non-nil, and the caller must close them.
+// that connected.
+//
+// Notes:
+//   - A server that fails is skipped: its error (naming the server) is collected and the next server is tried, so one
+//     bad server does not take the others' tools away. The returned error joins every failure (nil if all connected).
+//   - The connections are returned even when the error is non-nil, and the caller must close them.
+//   - Names are sorted because map order is random; sorted names make the connection order and the error order
+//     repeatable.
+//   - Setup stops once ctx is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
+//     context (exec.Command ignores it), so trying the rest would launch processes only to tear them down.
 func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
 	var mcpConns []*McpConnection
 	var errs []error
@@ -50,7 +57,11 @@ func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, er
 }
 
 // ConnectMCPServer connects to the one MCP server named in cfg.McpServers, choosing the transport from its config.
-// Every error names the server.
+//
+// Notes:
+//   - Every error names the server.
+//   - stdio goes to connectLocalMCPServer and http to connectRemoteMCPServer; sse is skipped with an error because the
+//     transport is deprecated and not supported.
 func ConnectMCPServer(ctx context.Context, sname string, cfg config.Config) (*McpConnection, error) {
 	sconfig, ok := cfg.McpServers[sname] // already of type McpServerConfig (we unmarshaled it earlier from the config JSON)
 	if !ok {
@@ -72,7 +83,15 @@ func ConnectMCPServer(ctx context.Context, sname string, cfg config.Config) (*Mc
 	}
 }
 
-// connects to a local MCP server
+// connectLocalMCPServer connects to a local MCP server by starting it as a child process and talking over stdio.
+//
+// Notes:
+//   - The server runs in its own process group (startInOwnGroup), so a Ctrl+C that cancels a chat turn does not also
+//     kill it; Close kills the group.
+//   - Its stderr goes to cfg.McpServerStderr, or os.Stderr when that is nil.
+//   - The configured "env" is added after our own environment (npx/node need PATH, HOME, ...); os/exec uses the last
+//     value of a duplicate key, so config wins. Keys are sorted so the child's environment is repeatable.
+//   - On a failed handshake the SDK stops the server; killGroup also stops anything it started.
 func connectLocalMCPServer(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*McpConnection, error) {
 	command := config.Command
 	args := config.Args
@@ -108,6 +127,9 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 }
 
 // withDebugLogging wraps the transport so every JSON-RPC message is written to stderr, but only in debug mode.
+//
+// Notes:
+//   - With debug false the transport is returned unchanged.
 func withDebugLogging(t mcp.Transport, debug bool) mcp.Transport {
 	if !debug {
 		return t
@@ -115,7 +137,12 @@ func withDebugLogging(t mcp.Transport, debug bool) mcp.Transport {
 	return &mcp.LoggingTransport{Transport: t, Writer: os.Stderr}
 }
 
-// connects to a remote MCP server
+// connectRemoteMCPServer connects to a remote MCP server over streamable HTTP.
+//
+// Notes:
+//   - The HTTP client comes from newRemoteHTTPClient, so the configured headers only ever go to the configured origin.
+//   - The standalone SSE GET request is disabled, since it has been deprecated.
+//   - There is no process to kill, so the returned connection has no cmd.
 func connectRemoteMCPServer(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*McpConnection, error) {
 	// Implementation for connecting to a remote MCP server
 	client := mcp.NewClient(&mcp.Implementation{Name: cfg.AgentName, Version: cfg.AgentVersion}, nil)
@@ -143,6 +170,10 @@ func connectRemoteMCPServer(ctx context.Context, name string, config config.McpS
 // rule, where same host name but different port or scheme (https<->http) is considered same origin)
 type origin struct{ scheme, host, port string }
 
+// originOf returns the origin (scheme, lower-cased host, port) of u.
+//
+// Notes:
+//   - A missing port is filled in for https (443) and http (80); other schemes keep an empty port.
 func originOf(u *url.URL) origin {
 	port := u.Port()
 	if port == "" {
@@ -156,17 +187,24 @@ func originOf(u *url.URL) origin {
 	return origin{scheme: u.Scheme, host: strings.ToLower(u.Hostname()), port: port}
 }
 
+// String formats the origin as scheme://host:port, for error messages.
+//
+// Notes:
+//   - IPv6 hosts are bracketed (net.JoinHostPort).
 func (o origin) String() string {
 	return o.scheme + "://" + net.JoinHostPort(o.host, o.port)
 }
 
 const maxRedirects = 10 // net/http's default limit; a custom CheckRedirect replaces that default, so it is restated here
 
-// newRemoteHTTPClient builds the HTTP client for a remote MCP server. Every request gets the configured
-// headers (e.g. a Bearer token), and only the configured origin (scheme + host + port) may ever receive them:
-// redirects within that origin are followed (up to maxRedirects, keeping headers and, for 307/308, the
-// body); a redirect to any other origin, including http -> https, is refused. headerTransport enforces the
-// same origin as a second layer.
+// newRemoteHTTPClient builds the HTTP client for a remote MCP server.
+//
+// Notes:
+//   - Every request gets the configured headers (e.g. a Bearer token), and only the configured origin (scheme + host +
+//     port) may ever receive them: redirects within that origin are followed (up to maxRedirects, keeping headers
+//     and, for 307/308, the body); a redirect to any other origin, including http -> https, is refused.
+//   - headerTransport enforces the same origin as a second layer.
+//   - A URL that does not parse, or is not absolute, is an error.
 func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
@@ -199,7 +237,11 @@ type headerTransport struct {
 	origin  origin // the only origin these headers may be sent to
 }
 
-// adds headers to a request before sending it off, or refuses a request that is not for h.origin
+// RoundTrip adds headers to a request before sending it off, or refuses a request that is not for h.origin.
+//
+// Notes:
+//   - The request is cloned first, because RoundTrippers must not mutate the caller's request.
+//   - It runs on every redirect hop too, which is why the origin check lives here as well as in CheckRedirect.
 func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if got := originOf(req.URL); got != h.origin {
 		return nil, errors.New("refusing to send configured headers to " + got.String() + ": it is not the MCP server's origin " + h.origin.String())
@@ -211,9 +253,12 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return h.base.RoundTrip(req)
 }
 
-// closes an MCP server connection
-// Close ends the session (for a local server, the SDK closes its stdin, waits, then signals it) and then kills
-// whatever is left in a local server's process group, so a grandchild such as node under npx cannot outlive it.
+// Close closes an MCP server connection.
+//
+// Notes:
+//   - Close ends the session (for a local server, the SDK closes its stdin, waits, then signals it) and then kills
+//     whatever is left in a local server's process group, so a grandchild such as node under npx cannot outlive it.
+//   - The returned error is the session's; the group kill's result is ignored.
 func (s *McpConnection) Close() error {
 	err := s.Session.Close()
 	if s.cmd != nil {

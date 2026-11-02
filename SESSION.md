@@ -1023,3 +1023,48 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > normalized rules in the allow-all notice; `%q` on the `[tool] Tool called:` name. Still open from earlier: welcome
 > banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused, `maxSteps` discarding a turn,
 > the autonomous-port warning for `allow-all` with empty `denyRules`.
+>
+> (2026-11-02) **Codemap planned before slice 4** (`DECISIONS.md § Codemap: generated map in each package's doc.go`).
+> Each package's `doc.go` gets a generated `# Codemap (auto-generated)` section; `CODEMAP.md` copies them; headers
+> follow One-liner / Example / Notes; a `doc-keeper` sub-agent maintains them. **Next:** slice 2, the generator
+> (`cmd/codemap`), Jerry writes it from a skeleton. Slice 4 `write_file` + `create_directory` waits (plan above;
+> branch `feat/built-in-write-file-tool`, clean).
+>
+> (2026-11-02) **Codemap built** on branch `feat/doc-func-reference-guide`, not committed (`DECISIONS.md § Codemap` and
+> `§ Codemap simplified`). `cmd/codemap` generates a signatures-only `# Codemap (auto-generated)` section in every
+> package's `doc.go` plus `CODEMAP.md`; every function has a header (one-liner + Notes) written by four doc-keeper
+> sub-agents (comments only, verified with `-code-unchanged HEAD`); the test sub-agent wrote the tests and found four
+> bugs. `go.mod` gained `golang.org/x/tools v0.42.0` (+ `x/mod` indirect). Jerry to review: the headers (esp. facts the
+> agents added from the code, e.g. `GetWindow` bypassing the context lock, `NewChatContext`'s error always nil, the
+> `FakeProvider.Chat` precedence order, `newPlainReader`'s "stuck read ends only when input does", `ShutdownAgent` safe
+> after a failed setup). **Known gap:** nothing detects a header gone stale after a body change.
+> **Next:** slice 4 `write_file` + `create_directory` (plan above), now with the rule "run `go run ./cmd/codemap` after
+> changing a signature".
+>
+> (2026-11-02) Codemap enforcement: `.githooks/pre-commit` (check only) added and `core.hooksPath` set for this clone
+> (`DECISIONS.md § Codemap enforcement`). Agents that change a function body must update its header Notes
+> (`CLAUDE.md § Code map`); drift is otherwise tolerated.
+>
+> (2026-11-02, end of session) **Handoff for a fresh session — start slice 4 here.**
+> - **State:** branch `feat/doc-func-reference-guide` holds the codemap work, **uncommitted** (Jerry commits; base branch
+>   for PRs is `build`). Tree is green: `go test -race ./...`, `go vet ./...`, `gofmt`, `go run ./cmd/codemap -check`
+>   and `-lint`, `-code-unchanged HEAD` all pass. Slice 4 should start from a branch cut after the codemap is committed
+>   (an earlier branch `feat/built-in-write-file-tool` exists at 79f50d3 without the codemap).
+> - **Slice 4 = `write_file` + `create_directory`**, plan in the 2026-11-01 end-of-session entry above (`Workspace`
+>   `resolveNew`, write-deny list for `.git/` and the agent's own config, `O_EXCL` for create-new, size cap constant,
+>   ask-prompt preview, result text says `created`/`overwrote`). Three questions Jerry has not answered: does
+>   `write_file` auto-create parent dirs, does an overwrite need a flag or is the ask prompt enough, how strict is the
+>   write-deny list. Default to learning mode ([[feedback-learning-mode]]): `create_directory` + the `resolveNew`
+>   skeleton first, Jerry fills it in.
+> - **Codemap rules that now apply to every change** (`CLAUDE.md § Code map`): after changing a signature run
+>   `go run ./cmd/codemap`; every new function gets a header (one-liner starting with its name, then `Notes:`, no
+>   `Example:`); a new package needs a `doc.go`; the pre-commit hook (`.githooks/pre-commit`, needs
+>   `git config core.hooksPath .githooks` in a new clone) blocks a stale map; when changing a function body, update its
+>   header Notes.
+> - **Jerry still owes:** a review of the facts the doc-keeper agents added (listed in the entry above); decision on
+>   whether to add a GitHub Actions workflow later (no `.github/` yet).
+>
+> (2026-11-02) PR #34 Copilot comments addressed on `feat/doc-func-ref-guide-codemap`, not committed
+> (`DECISIONS.md § PR #34 Copilot review`): `-code-unchanged` now catches added/untracked files with code; the map now
+> includes other-OS files (`procgroup_windows.go` is in `CODEMAP.md`). Tests updated/added in `guard_test.go` and
+> `load_test.go`; the fixture gained `util/util_windows.go` and `util/gen.go`.

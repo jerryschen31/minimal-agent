@@ -35,9 +35,12 @@ type SearchFilesTool struct {
 	ignore    IgnoreList // paths not entered or searched (config ignorePaths)
 }
 
-// NewSearchFilesTool creates a search_files tool that searches only inside ws (NewWorkspace). maxVisits (config
-// maxSearchFiles) is the most entries one call looks at and must be positive. ignore (NewIgnoreList, config
-// ignorePaths) is what it leaves out; the zero value leaves out nothing.
+// NewSearchFilesTool creates a search_files tool that searches only inside ws (NewWorkspace).
+//
+// Notes:
+//   - maxVisits (config maxSearchFiles) is the most entries one call looks at and must be positive.
+//   - ignore (NewIgnoreList, config ignorePaths) is what it leaves out; the zero value leaves out nothing.
+//   - A nil ws is an error.
 func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*SearchFilesTool, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("search_files needs a workspace")
@@ -48,7 +51,10 @@ func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*Searc
 	return &SearchFilesTool{ws: ws, maxVisits: maxVisits, ignore: ignore}, nil
 }
 
-// GetToolDefinition returns the definition of the search_files tool
+// GetToolDefinition returns the definition of the search_files tool.
+//
+// Notes:
+//   - The description mentions the ignore list (when it is not empty) and the per-call caps, so the model knows them.
 func (t *SearchFilesTool) GetToolDefinition() model.ToolDef {
 	ignored := ""
 	if s := t.ignore.String(); s != "" {
@@ -107,8 +113,18 @@ type searchResult struct {
 // errPageFull stops the walk once one match more than the page holds has been found.
 var errPageFull = errors.New("page full")
 
-// CallTool searches the tree below path (or the one file at path). Every entry passes the same workspace check as
-// read_file, so what can't be read isn't searched either; a hidden or ignored directory isn't looked into.
+// CallTool searches the tree below path (or the one file at path).
+//
+// Notes:
+//   - Every entry passes the same workspace check as read_file, so what can't be read isn't searched either; a hidden
+//     or ignored directory isn't looked into.
+//   - Results come in pages of maxSearchMatches; the output says which skip value gets the next page.
+//   - The output says what was not searched (binary files, files with an over-long line, unreadable entries), so "no
+//     matches" is only claimed for what was actually read; a visit-limit note says if the walk stopped early.
+//   - [agent] One matcher for both modes: plain text is a regexp with every special character escaped. Go's regexp is
+//     RE2, which runs in time linear in the input, so a regex from the model can't hang the search.
+//   - fs.WalkDir visits in name order (same pages every time) and never follows symlinks; cancelling ctx stops the
+//     walk.
 func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Query      string `json:"query"`
@@ -263,9 +279,15 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 	return out, nil
 }
 
-// searchFile reads one file line by line and adds its matches to r. It returns errPageFull when the page is full,
-// ctx.Err() if cancelled, and nil otherwise; problems with the file itself are counted in r, never returned. want is
-// the file the workspace check approved (see openFile).
+// searchFile reads one file line by line and adds its matches to r.
+//
+// Notes:
+//   - It returns errPageFull when the page is full, ctx.Err() if cancelled, and nil otherwise; problems with the file
+//     itself are counted in r, never returned.
+//   - want is the file the workspace check approved (see openFile).
+//   - A NUL byte in the first binarySniffBytes marks the file as binary and it is skipped.
+//   - [agent] A Scanner holds one line at a time, so memory is bounded by the longest line, not the file size.
+//     It drops the "\n" (and a "\r" before it) from each line.
 func (t *SearchFilesTool) searchFile(ctx context.Context, root *os.Root, p string, want os.FileInfo, re *regexp.Regexp, skip int, r *searchResult) error {
 	// openFile refuses a named pipe (without blocking on it) and a file swapped in after the check, e.g. a symlink to .env
 	f, _, err := t.ws.openFile(root, p, filepath.FromSlash(p), want)
@@ -320,8 +342,11 @@ func (t *SearchFilesTool) searchFile(ctx context.Context, root *os.Root, p strin
 }
 
 // cutLine returns line, or for a line longer than maxMatchLineLen bytes, the part around the match that begins at
-// line[start] (a little before it, the rest after), with "…" where it was cut. Invalid UTF-8 is dropped, which also
-// drops a character cut in half at either end.
+// line[start] (a little before it, the rest after), with "…" where it was cut.
+//
+// Notes:
+//   - Invalid UTF-8 is dropped, which also drops a character cut in half at either end.
+//   - [agent] Show the match even when it is deep inside a long (e.g. minified) line, with some text before it.
 func cutLine(line []byte, start int) string {
 	from, to := 0, len(line)
 	if len(line) > maxMatchLineLen {

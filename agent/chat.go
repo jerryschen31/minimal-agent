@@ -20,6 +20,22 @@ import (
 // Parse and handle user input
 //***********************************************************//
 
+// handleUserInput handles one line the user entered: a slash command, or a prompt that runs one ReAct turn. It reports
+// whether the user asked to quit.
+//
+// Notes:
+//   - Slash commands are /exit and /quit (return true), /clear, /summary (or /summarize), /compact and /config. An
+//     unrecognized command prints a notice. Empty or all-space lines are skipped.
+//   - msgContext is read once at the top, before /clear runs, and the context-cleared event records its size.
+//   - /compact first checks ShouldStartCompaction, so a second compaction is never triggered while one is in progress.
+//   - A prompt is traced as a task: task_start now, task_end (with status and duration) when this function returns. A
+//     failed turn is traced with taskTrace.Fail ("canceled" for Ctrl+C, otherwise "error"; the message is recorded
+//     either way) and reported through cs.Output.Error (a Ctrl+C cancel shows as [interrupted]); nothing from it is
+//     added to history or context.
+//   - Only after the ReAct loop succeeds are the turn's messages appended to history and context.
+//   - [agent] With cs.Config.Debug the current chat context is dumped before the prompt is sent.
+//   - [agent] Maybe consider passing a pointer to msgContext in future, to save a full copy of the context into
+//     reActLoop().
 func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// Implementation for handling user input goes here
 	msgContext := cs.MsgContext.GetMessages()
@@ -102,7 +118,13 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	return false
 }
 
-// check if the context has reached the auto-compaction threshold and a compaction is not already in progress - if so, trigger auto-compaction in a separate goroutine
+// maybeStartAutoCompaction starts auto-compaction in a separate goroutine when the context has reached the
+// auto-compaction threshold and a compaction is not already in progress.
+//
+// Notes:
+//   - CompactWG.Add(1) must happen synchronously BEFORE the goroutine starts, so ShutdownAgent's wait cannot miss it.
+//   - Must get the root context (see chatLoop): a turn's Ctrl+C must not cancel background compaction.
+//   - On failure it reports "Auto-compaction error" and does not also claim it completed.
 func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 	if cs.MsgContext.IsAutoCompactionNeeded() && cs.MsgContext.ShouldStartCompaction() {
 		cs.MsgContext.CompactWG.Add(1) // must be here synchronously BEFORE we enter the goroutine
@@ -119,11 +141,15 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 	}
 }
 
-// confirmAllowAll decides whether ask-rule calls run without asking this session (cs.AllowAskRules). Only with approval
-// "allow-all", and only once the user confirms it on the terminal; anything else (No, Enter, Ctrl+C, no terminal)
-// keeps asking. Deny rules apply either way.
-// [agent] Asked at startup rather than trusted from the config alone: a forgotten "approval": "allow-all" in a config
-// file would otherwise silently drop every approval prompt, and the prompt is what catches a prompt-injected call.
+// confirmAllowAll decides whether ask-rule calls run without asking this session (cs.AllowAskRules).
+//
+// Notes:
+//   - Only with approval "allow-all", and only once the user confirms it on the terminal; anything else (No, Enter,
+//     Ctrl+C, no terminal) keeps asking. Deny rules apply either way.
+//   - With no terminal (tty nil) it prints that ask-rule calls will be denied.
+//   - [agent] Asked at startup rather than trusted from the config alone: a forgotten "approval": "allow-all" in a
+//     config file would otherwise silently drop every approval prompt, and the prompt is what catches a
+//     prompt-injected call.
 func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader) {
 	if cs.Config.Approval != config.ApprovalAllowAll {
 		return
@@ -145,12 +171,28 @@ func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader) {
 // Run loop for handling chat session
 // ***********************************************************//
 
+// runChatLoop runs the chat loop with the prompt reader newPromptReader picks for cs.InBuffer.
+//
+// Notes:
+//   - Thin wrapper over chatLoop; the reader is a ttyReader only for a real terminal.
 func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error {
 	return chatLoop(ctx, intsigChRecv, cs, newPromptReader(ctx, cs.InBuffer, cs.OutBuffer))
 }
 
-// chatLoop is runChatLoop with the prompt reader passed in. newPromptReader only builds a ttyReader for a real
-// terminal, so tests pass a scripted one (newTTYReaderWith + auto.Pilot) to reach the ask paths below.
+// chatLoop is runChatLoop with the prompt reader passed in: read a prompt, handle it, maybe start auto-compaction, repeat.
+//
+// Notes:
+//   - newPromptReader only builds a ttyReader for a real terminal, so tests pass a scripted one (newTTYReaderWith +
+//     auto.Pilot) to reach the ask paths.
+//   - tty is nil when stdin is not a terminal: nobody to ask, so ask-rule calls are denied. Otherwise it sets
+//     cs.PromptAllowDenyCall; tool name and arguments are printed with %q because a name from an MCP server could hold
+//     terminal escape codes.
+//   - io.EOF from the reader (Ctrl+D or end of piped input) is a normal quit, not a failure.
+//   - Each turn runs under createInterruptWatcher, after discardStrayInterrupts. stop is called when the turn is done;
+//     it releases the watcher so it can't take a later interrupt.
+//   - If the root context was cancelled (SIGTERM) the loop returns its error.
+//   - Auto-compaction gets the non-interruptible root context; this way, interrupting a turn with Ctrl+C doesn't
+//     affect background compaction.
 func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error {
 	tty, _ := reader.(*ttyReader) // nil when stdin is not a terminal: nobody to ask, so ask-rule calls are denied
 	if tty != nil {
@@ -193,8 +235,13 @@ func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSessio
 	}
 }
 
-// drops stray Ctrl+C key presses left over from before this turn (e.g. a second press
-// after the previous turn was already cancelled), so it can't cancel the turn about to start
+// discardStrayInterrupts drops a stray Ctrl+C key press left over from before this turn.
+//
+// Notes:
+//   - E.g. a second press after the previous turn was already cancelled (the user gets impatient and presses Ctrl+C a
+//     bunch of times; the 1-buffer channel absorbs the second press and ignores the rest), so it can't cancel the turn
+//     about to start.
+//   - Non-blocking: drains at most one signal.
 func discardStrayInterrupts(interrupts <-chan os.Signal) {
 	select {
 	case <-interrupts:
@@ -202,8 +249,14 @@ func discardStrayInterrupts(interrupts <-chan os.Signal) {
 	}
 }
 
-// createInterruptWatcher starts a watcher goroutine and returns a child of the root agent context (cancelled by SIGTERM or on quit) that can be cancelled when an interrupt (Ctrl+C) arrives.
-// Used for one chat turn, and for setup. stop() cancels the returned context too, so nothing that outlives the turn or setup may keep it.
+// createInterruptWatcher starts a watcher goroutine and returns a child of ctx that is cancelled when an interrupt
+// (Ctrl+C) arrives, plus a stop function.
+//
+// Notes:
+//   - ctx is the root agent context (cancelled by SIGTERM or on quit). Used for one chat turn, and for setup.
+//   - stop() cancels the returned context too, so nothing that outlives the turn or setup may keep it. It also waits
+//     until the watcher goroutine has exited, so the watcher cannot take a later interrupt.
+//   - The done channel is closed when the turn (or setup) is done (i.e., stop() is called). stop must be called once.
 func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{}) // this channel is closed when the turn (or setup) is done (i.e., stop() is called)
@@ -234,12 +287,11 @@ func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (c
 // progressDotInterval is how often a "thinking" dot is printed while waiting for the model. A variable rather than a constant so tests can shorten it.
 var progressDotInterval = 2 * time.Second
 
-// chatWithProgress wraps a call to the model provider's Chat request/response method, and tells cs.Output it is waiting (chat mode on a terminal prints thinking dots).
-// Example:
+// chatWithProgress wraps a call to the model provider's Chat request/response method, and tells cs.Output it is waiting.
 //
-//	> What are best practices for writing Go code?
-//	....
-//	[assistant] ...
+// Notes:
+//   - Chat mode on a terminal prints thinking dots while waiting (see Output.Thinking); the dots stop when the reply or
+//     an error arrives.
 func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
 	stop := cs.Output.Thinking()
 	defer stop()
@@ -247,6 +299,10 @@ func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provi
 }
 
 // startProgressDots prints a "." to out every interval until stop is called.
+//
+// Notes:
+//   - If at least one dot was printed, stop ends the line with a newline.
+//   - stop waits for the printing goroutine to exit.
 func startProgressDots(out io.Writer, interval time.Duration) (stop func()) {
 	done := make(chan struct{})
 	exited := make(chan struct{})
@@ -274,8 +330,12 @@ func startProgressDots(out io.Writer, interval time.Duration) (stop func()) {
 	}
 }
 
-// shouldShowProgress reports whether thinking dots belong in this run's output: e.g., chat mode, writing to a real terminal.
-// Not for headless/oneshot (their output may be JSON or read by a program), and not for when output is redirected or captured (pipes, files, tests).
+// shouldShowProgress reports whether thinking dots belong in this run's output: e.g., chat mode, writing to a real
+// terminal.
+//
+// Notes:
+//   - Not for headless/oneshot (their output may be JSON or read by a program), and not for when output is redirected
+//     or captured (pipes, files, tests).
 func shouldShowProgress(cfg config.Config) bool {
 	return cfg.AgentMode == config.ModeChat && isTerminal(cfg.OutBuffer)
 }

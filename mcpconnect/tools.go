@@ -38,6 +38,9 @@ type ToolHints struct {
 }
 
 // HintsOf returns an MCP tool's hints; ok is false when t is not an MCP tool.
+//
+// Notes:
+//   - The hints are the server's own claims, not guarantees; never use them to skip approval.
 func HintsOf(t tools.Tool) (hints ToolHints, ok bool) {
 	mt, ok := t.(*mcpTool)
 	if !ok {
@@ -46,6 +49,11 @@ func HintsOf(t tools.Tool) (hints ToolHints, ok bool) {
 	return mt.hints, true
 }
 
+// hintsFrom converts a server's tool annotations into ToolHints.
+//
+// Notes:
+//   - nil annotations give the zero value (Known false).
+//   - Destructive follows the MCP default: true unless the tool is read-only or the server said otherwise.
 func hintsFrom(a *mcp.ToolAnnotations) ToolHints {
 	if a == nil {
 		return ToolHints{}
@@ -58,10 +66,19 @@ func hintsFrom(a *mcp.ToolAnnotations) ToolHints {
 	}
 }
 
+// GetToolDefinition returns the definition of the MCP tool as the model sees it.
+//
+// Notes:
+//   - The name is prefixed with the server label ("<server>_<tool>"), see newMCPTool.
 func (t *mcpTool) GetToolDefinition() model.ToolDef {
 	return t.toolDef
 }
 
+// CallTool calls the tool on its MCP server and returns the result flattened to text.
+//
+// Notes:
+//   - Sends the tool's name on the server (toolName), not the prefixed name the model sees.
+//   - A protocol error and a tool-reported failure both come back as an error (see flattenMCPResult).
 func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	toolParams := mcp.CallToolParams{Name: t.toolName, Arguments: args}
 	res, err := t.mcpConn.Session.CallTool(ctx, &toolParams)
@@ -73,7 +90,13 @@ func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, e
 }
 
 // flattenMCPResult turns an MCP tool result into plain text for the model, or an error if the tool reported failure.
-// The text is cut to maxBytes (which must be positive) with a truncation note.
+//
+// Notes:
+//   - The text is cut to maxBytes (which must be positive) with a truncation note.
+//   - Images and other non-text content are replaced by a placeholder; with no content blocks at all it falls back to
+//     the structured output, if the server sent one.
+//   - The byte cut can split a multi-byte character; the broken character is dropped.
+//   - When the tool reported failure (IsError), the text is the error message (runToolCall prefixes "error: ").
 func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error) {
 	if res == nil {
 		return "", fmt.Errorf("mcp server returned no result")
@@ -118,7 +141,13 @@ func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error) {
 }
 
 // newMCPTool wraps one tool listed by an MCP server as a Tool the agent can register and call.
-// maxBytes is the most of a result that is passed to the model; it must be positive.
+//
+// Notes:
+//   - maxBytes is the most of a result that is passed to the model; it must be positive.
+//   - InputSchema is an `any` (a map[string]any when it comes from a server), but ToolDef wants raw JSON. A nil schema
+//     is left empty so NewToolDef fills in its "no parameters" default; marshalling nil would send "null".
+//   - The model sees the name "<server label>_<tool name>", which avoids tool name conflicts across multiple servers.
+//   - Annotations are optional (nil) and only hints; no annotations means "not known to be safe to retry".
 func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("mcp result max bytes must be positive, got %d", maxBytes)
@@ -151,9 +180,13 @@ func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, er
 	}, nil
 }
 
-// The list may be incomplete: a failed tools/list request or a tool that can't be wrapped is skipped, and the
-// returned error (all such failures, joined) says so. The tools that did load are returned either way, so the caller
-// decides whether a partial list is usable (chat setup: yes, with a warning; info mode: shows the server as failed).
+// GetMCPTools lists the tools of one MCP server, each wrapped as a tools.Tool.
+//
+// Notes:
+//   - The list may be incomplete: a failed tools/list request or a tool that can't be wrapped is skipped, and the
+//     returned error (all such failures, joined) says so.
+//   - The tools that did load are returned either way, so the caller decides whether a partial list is usable (chat
+//     setup: yes, with a warning; info mode: shows the server as failed).
 func GetMCPTools(ctx context.Context, mcpConn *McpConnection, maxResultBytes int) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
 	var errs []error
@@ -174,6 +207,12 @@ func GetMCPTools(ctx context.Context, mcpConn *McpConnection, maxResultBytes int
 	return mcpTools, errors.Join(errs...) // nil when errs is empty
 }
 
+// SetupMCPTools lists the tools of every connected MCP server and returns them all in one slice.
+//
+// Notes:
+//   - A partial list is still usable: a server whose tools could not all be loaded gets a warning on stderr and
+//     contributes the tools that did load, as one failing server doesn't stop the others.
+//   - The returned error is always nil; with no connections the result is nil.
 func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error) {
 	mcpTools := []tools.Tool{}
 	if len(mcpConns) == 0 {

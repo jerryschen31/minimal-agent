@@ -10,7 +10,12 @@ import (
 )
 
 // compactAndTrace runs one context compaction and records a compaction event with what it did, whether it worked or not.
-// trigger is "manual" (/compact, scopeID is that command's scope) or "auto" (scopeID is the run ID: no user task owns it).
+//
+// Notes:
+//   - trigger is "manual" (/compact, scopeID is that command's scope) or "auto" (scopeID is the run ID: no user task
+//     owns it).
+//   - The event records message counts before and after, the duration, and the summary ID (empty when compaction
+//     failed).
 func compactAndTrace(ctx context.Context, cs *ChatSession, scopeID, trigger, instructions string) (model.ChatMessage, error) {
 	start := time.Now()
 	before := cs.MsgContext.GetSize()
