@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
@@ -75,27 +76,33 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 	return callToolSafely(ctx, tool, args)
 }
 
-// checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook returns a failure (e.g., a tool call deny).
+// checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook vetoes the call.
+// Only a veto wrapping hooks.ErrNeedsApproval (an ask rule) can be overridden: by allow-all (cs.AllowAskRules) or by
+// the user when there is someone to ask (cs.PromptAllowDenyCall). Any other veto (a deny rule) is final.
 // Every veto is recorded as a tool_vetoed event, with what happened next.
 func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error {
 	for _, hook := range cs.Hooks {
-		// BeforeTool returns non-nil if the tool call is denied or vetoed by the hook (e.g., matches a deny rule)
+		// BeforeTool returns non-nil if the tool call is denied or needs approval (e.g., matches a deny or ask rule)
 		err := hook.BeforeTool(ctx, call)
 		if err == nil {
 			continue
 		}
-		// We give the user on a terminal (or a test) a chance to override the denial if desired
 		decision, wait := trace.VetoDenied, time.Duration(0)
-		if cs.PromptAllowDenyCall != nil {
-			start := time.Now()
-			decision = trace.VetoDeniedByUser
-			if cs.PromptAllowDenyCall(ctx, call, err) {
-				decision = trace.VetoAllowedByUser
+		if errors.Is(err, hooks.ErrNeedsApproval) {
+			switch {
+			case cs.AllowAskRules:
+				decision = trace.VetoAllowedByConfig
+			case cs.PromptAllowDenyCall != nil: // the user on a terminal (or a test) decides
+				start := time.Now()
+				decision = trace.VetoDeniedByUser
+				if cs.PromptAllowDenyCall(ctx, call, err) {
+					decision = trace.VetoAllowedByUser
+				}
+				wait = time.Since(start)
 			}
-			wait = time.Since(start)
 		}
 		taskTrace.Record(trace.ToolVetoed, trace.GetToolVetoedData(call, err, decision, wait))
-		if decision != trace.VetoAllowedByUser {
+		if decision != trace.VetoAllowedByUser && decision != trace.VetoAllowedByConfig {
 			return err
 		}
 	}

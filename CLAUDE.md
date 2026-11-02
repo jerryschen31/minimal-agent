@@ -203,15 +203,20 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `newTTYReaderWith(&auto.Pilot{...}, io.Discard)`; the terminal must be set before the first `BindKey`.
 - **Every tool call passes `checkBeforeToolHooks` (`agent/react.go`) before it runs**, after the unknown-tool and
   argument checks. A veto is returned as the tool result (`error: denied by rule "…"`), never by skipping the call,
-  because every tool call needs a result. Each veto is traced as `tool_vetoed` (`denied` | `denied_by_user` |
-  `allowed_by_user`). The user is asked only through `cs.PromptAllowDenyCall`, which `runChatLoop` sets for a
-  `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second reader would
-  steal the next prompt line); `nil` means deny without asking. Model text shown in the question is printed with
-  `%q`. A new path that runs tools must go through this check. Deny rules match model-facing names
-  (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule fails setup.
-  `hooks` holds no rules of its own: the defaults (`*delete*`, `*remove*`) are `GetDefaultConfig().DenyRules`, and a
-  config file's `denyRules` replaces them (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built` and
-  `§ Policy out of the core`.
+  because every tool call needs a result. **Three levels** (`hooks.ToolRules`): a `denyRules` match is refused in every
+  mode and never asked; an `askRules` match returns an error wrapping `hooks.ErrNeedsApproval`; no match runs. Deny
+  wins over ask. **Only an `ErrNeedsApproval` veto can be overridden**: by `cs.AllowAskRules` (approval `allow-all`,
+  which chat sets only after the user confirms it at startup in `confirmAllowAll`; it never touches deny rules), or by
+  the user. Any other hook error is final. Each veto is traced as `tool_vetoed` (`denied` | `denied_by_user` |
+  `allowed_by_user` | `allowed_by_config`). The user is asked only through `cs.PromptAllowDenyCall`, which `chatLoop`
+  sets for a `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second
+  reader would steal the next prompt line); `nil` means nobody to ask, so an ask is denied. Model text shown in the
+  question is printed with `%q`. A new path that runs tools must go through this check. Rules match model-facing
+  names (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule or an
+  unknown `approval` value fails setup. `hooks` holds no rules of its own: the defaults are `GetDefaultConfig()`
+  (`denyRules` empty; `askRules` `*delete*`, `*remove*` and the write tools), and a config file's list replaces that
+  list's default (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built`, `§ Policy out of the core` and
+  `§ Approval levels: deny / ask / run`.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

@@ -7,7 +7,7 @@
   "systemPrompt": "You are a helpful assistant. Keep your responses concise and relevant. Use tools when they help; when finished, answer in plain text.",
   "maxSteps": 10,
   "workDir": ".",
-  "denyRules": ["*delete*", "*remove*"],
+  "askRules": ["*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"],
   "mcpServers": {
     "fs": {
       "command": "npx",

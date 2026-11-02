@@ -63,6 +63,8 @@ type RunStartData struct {
 	SystemPrompt string            `json:"system_prompt,omitempty"` // full text; goes through redaction like any other string
 	McpServers   map[string]string `json:"mcp_servers,omitempty"`   // server name -> type only; never command, args, env or headers (tokens)
 	DenyRules    []string          `json:"deny_rules,omitempty"`    // the deny rules in force, as written: the defaults, unless a config file replaced them; empty = no rules
+	AskRules     []string          `json:"ask_rules,omitempty"`     // the ask rules in force, as written (same rules as deny_rules)
+	Approval     string            `json:"approval,omitempty"`      // "ask" | "allow-all" as configured; in chat, allow-all applies only if the user confirmed it at startup (see allowed_by_config vetoes)
 
 	// context window settings, so a reader can tell why messages were dropped or summarized
 	ContextWindowMessages int     `json:"context_window_messages"`
@@ -88,6 +90,8 @@ func GetRunStartData(cfg config.Config) RunStartData {
 		MaxTokens:    cfg.MaxTokens,
 		SystemPrompt: cfg.SystemPrompt,
 		DenyRules:    cfg.DenyRules,
+		AskRules:     cfg.AskRules,
+		Approval:     cfg.Approval,
 
 		ContextWindowMessages: cfg.ContextWindowMessages,
 		ContextStrategy:       cfg.ContextStrategy,
@@ -286,9 +290,10 @@ func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
 
 // Decisions recorded in a tool_vetoed event: what happened after a hook vetoed a call.
 const (
-	VetoDenied        = "denied"          // not asked (input is not a terminal): the veto stands
-	VetoDeniedByUser  = "denied_by_user"  // asked, and the user said no (n, Enter, anything but y/yes, or Ctrl+C)
-	VetoAllowedByUser = "allowed_by_user" // asked, and the user allowed it once: the tool may run despite the veto
+	VetoDenied          = "denied"            // not asked (a deny rule, or an ask rule with nobody to ask): the veto stands; the reason says which
+	VetoDeniedByUser    = "denied_by_user"    // asked, and the user said no (n, Enter, anything but y/yes, or Ctrl+C)
+	VetoAllowedByUser   = "allowed_by_user"   // asked, and the user allowed it once: the tool may run despite the veto
+	VetoAllowedByConfig = "allowed_by_config" // an ask rule matched and approval is allow-all: the tool runs without asking
 )
 
 // ToolVetoedData is the EventData for a ToolVetoed event: a BeforeTool hook vetoed this call, and what happened next.
@@ -298,8 +303,8 @@ const (
 type ToolVetoedData struct {
 	CallID   string `json:"call_id"`
 	Name     string `json:"name"`
-	Reason   string `json:"reason"`            // the hook's veto text, e.g. `denied by rule "*delete*"`
-	Decision string `json:"decision"`          // VetoDenied | VetoDeniedByUser | VetoAllowedByUser
+	Reason   string `json:"reason"`            // the hook's veto text, e.g. `denied by rule "*push*"` or `needs approval by rule "*delete*"`
+	Decision string `json:"decision"`          // VetoDenied | VetoDeniedByUser | VetoAllowedByUser | VetoAllowedByConfig
 	WaitMS   int64  `json:"wait_ms,omitempty"` // time spent waiting for the user's answer; 0 when not asked
 }
 

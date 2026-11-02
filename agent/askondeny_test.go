@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/trace"
@@ -36,7 +38,7 @@ func fakeAsker(asked *[]askRecord, answers ...bool) func(context.Context, model.
 
 // - Verify the user approving a vetoed call lets the tool run, and the result is the tool's output
 func Test_RunToolCall_AskOnDeny_ApprovedRuns(t *testing.T) {
-	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, true)
 
@@ -52,7 +54,7 @@ func Test_RunToolCall_AskOnDeny_ApprovedRuns(t *testing.T) {
 
 // - Verify the user declining keeps the denial: the tool does not run and the veto becomes the observation
 func Test_RunToolCall_AskOnDeny_DeclinedDenied(t *testing.T) {
-	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, false)
 
@@ -61,7 +63,7 @@ func Test_RunToolCall_AskOnDeny_DeclinedDenied(t *testing.T) {
 	if tool.calls != 0 {
 		t.Errorf("expected the tool not to run, ran %d time(s)", tool.calls)
 	}
-	if want := `error: denied by rule "*delete*"`; got.Content != want {
+	if want := `error: needs approval by rule "*delete*"`; got.Content != want {
 		t.Errorf("expected content %q, got %q", want, got.Content)
 	}
 	if len(asked) != 1 {
@@ -71,12 +73,12 @@ func Test_RunToolCall_AskOnDeny_DeclinedDenied(t *testing.T) {
 
 // - Verify a nil PromptAllowDenyCall (non-terminal input) denies without asking
 func Test_CheckBeforeToolHooks_AskOnDeny_NilDeniesWithoutAsking(t *testing.T) {
-	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	fx.Session.PromptAllowDenyCall = nil
 
 	err := checkBeforeToolHooks(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
-	if !errors.Is(err, errDenied) {
+	if !errors.Is(err, errNeedsApproval) {
 		t.Errorf("expected the hook's veto error, got %v", err)
 	}
 	if tool.calls != 0 {
@@ -86,7 +88,7 @@ func Test_CheckBeforeToolHooks_AskOnDeny_NilDeniesWithoutAsking(t *testing.T) {
 
 // - Verify the prompt is given the exact call the model made and the hook's veto error as the reason
 func Test_CheckBeforeToolHooks_AskOnDeny_ReceivesCallAndReason(t *testing.T) {
-	fx, _ := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, _ := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, false)
 	call := deleteCall()
@@ -99,8 +101,8 @@ func Test_CheckBeforeToolHooks_AskOnDeny_ReceivesCallAndReason(t *testing.T) {
 	if asked[0].call != call {
 		t.Errorf("prompt got call %+v, want %+v", asked[0].call, call)
 	}
-	if asked[0].reason != errDenied {
-		t.Errorf("prompt got reason %v, want the hook's error %v", asked[0].reason, errDenied)
+	if asked[0].reason != errNeedsApproval {
+		t.Errorf("prompt got reason %v, want the hook's error %v", asked[0].reason, errNeedsApproval)
 	}
 }
 
@@ -130,19 +132,19 @@ func Test_RunToolCall_AskOnDeny_NotAskedWhenAllowed(t *testing.T) {
 // - Verify each vetoing hook asks separately: approving only the first still leaves the second's denial;
 // approving both runs the tool
 func Test_RunToolCall_AskOnDeny_TwoVetoingHooks(t *testing.T) {
-	errSecond := errors.New(`denied by rule "*file*"`)
+	errSecond := fmt.Errorf("%w by rule %q", hooks.ErrNeedsApproval, "*file*")
 	tests := []struct {
 		name        string
 		answers     []bool
 		wantCalls   int
 		wantContent string
 	}{
-		{"approve first only", []bool{true, false}, 0, `error: denied by rule "*file*"`},
+		{"approve first only", []bool{true, false}, 0, `error: needs approval by rule "*file*"`},
 		{"approve both", []bool{true, true}, 1, "deleted"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			first := &fakeHook{name: "first", err: errDenied}
+			first := &fakeHook{name: "first", err: errNeedsApproval}
 			second := &fakeHook{name: "second", err: errSecond}
 			fx, tool := newHookFixture(t, first, second)
 			var asked []askRecord
@@ -153,8 +155,8 @@ func Test_RunToolCall_AskOnDeny_TwoVetoingHooks(t *testing.T) {
 			if len(asked) != 2 {
 				t.Fatalf("expected the user to be asked twice, got %d", len(asked))
 			}
-			if asked[0].reason != errDenied || asked[1].reason != errSecond {
-				t.Errorf("questions had reasons %v, %v; want %v, %v", asked[0].reason, asked[1].reason, errDenied, errSecond)
+			if asked[0].reason != errNeedsApproval || asked[1].reason != errSecond {
+				t.Errorf("questions had reasons %v, %v; want %v, %v", asked[0].reason, asked[1].reason, errNeedsApproval, errSecond)
 			}
 			if tool.calls != tt.wantCalls || got.Content != tt.wantContent {
 				t.Errorf("tool ran %d time(s), content %q; want %d, %q", tool.calls, got.Content, tt.wantCalls, tt.wantContent)
@@ -250,7 +252,7 @@ func Test_TTYReader_AskYesNo_UpArrowDoesNotRecallHistory(t *testing.T) {
 // - Verify that with non-terminal input (plainReader) no ask-on-deny prompt is installed:
 // a vetoed call is denied, the tool does not run, and no question is printed
 func Test_RunChatLoop_PlainReader_DeniesWithoutAsking(t *testing.T) {
-	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	fx.Provider.Script = []model.ChatMessage{
 		modeltest.AssistantToolCall("call_1", "delete_file", `{"path":"a.txt"}`),
 		modeltest.AssistantText("I was not allowed to delete it."),
@@ -266,7 +268,7 @@ func Test_RunChatLoop_PlainReader_DeniesWithoutAsking(t *testing.T) {
 		t.Errorf("expected the tool not to run, ran %d time(s)", tool.calls)
 	}
 	text := out.String()
-	if strings.Contains(text, "Allow once?") || strings.Contains(text, "denied by hook") {
+	if strings.Contains(text, "Allow once?") || strings.Contains(text, "needs approval:") {
 		t.Errorf("expected no question in the output, got:\n%s", text)
 	}
 	if !strings.Contains(text, "I was not allowed to delete it.") {
@@ -289,7 +291,7 @@ func Test_ChatLoop_TTY_AskOnDeny(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+			fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 			fx.Provider.Script = []model.ChatMessage{
 				modeltest.AssistantToolCall("call_1", "delete_file", `{"path":"a.txt"}`),
 				modeltest.AssistantText("done"),
@@ -311,7 +313,7 @@ func Test_ChatLoop_TTY_AskOnDeny(t *testing.T) {
 				t.Fatal("expected chatLoop to install PromptAllowDenyCall for a ttyReader")
 			}
 			got := out.String()
-			for _, want := range []string{`Tool: "delete_file"`, `Arguments: "{\"path\":\"a.txt\"}"`, "Allow once? [y/N] ", "done"} {
+			for _, want := range []string{"[system] Tool call needs approval:\n", `Tool: "delete_file"`, `Arguments: "{\"path\":\"a.txt\"}"`, "Allow once? [y/N] ", "done"} {
 				if !strings.Contains(got, want) {
 					t.Errorf("expected %q in the output:\n%s", want, got)
 				}

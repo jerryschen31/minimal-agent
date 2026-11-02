@@ -119,6 +119,28 @@ func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession) {
 	}
 }
 
+// confirmAllowAll decides whether ask-rule calls run without asking this session (cs.AllowAskRules). Only with approval
+// "allow-all", and only once the user confirms it on the terminal; anything else (No, Enter, Ctrl+C, no terminal)
+// keeps asking. Deny rules apply either way.
+// [agent] Asked at startup rather than trusted from the config alone: a forgotten "approval": "allow-all" in a config
+// file would otherwise silently drop every approval prompt, and the prompt is what catches a prompt-injected call.
+func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader) {
+	if cs.Config.Approval != config.ApprovalAllowAll {
+		return
+	}
+	if tty == nil {
+		cs.Output.System("approval is allow-all, but there is no terminal to confirm it: tool calls that match ask rules will be denied")
+		return
+	}
+	cs.Output.System(fmt.Sprintf("approval is allow-all: tool calls that match ask rules %v will run without asking; deny rules %v still apply", cs.Config.AskRules, cs.Config.DenyRules))
+	if tty.AskYesNo(ctx, "Run ask-rule tool calls without asking for this session? [y/N] ") {
+		cs.AllowAskRules = true
+		cs.Output.System("allow-all on: ask-rule tool calls run without asking (deny rules still apply)")
+		return
+	}
+	cs.Output.System("allow-all declined: you will be asked before each tool call that matches an ask rule")
+}
+
 // ***********************************************************//
 // Run loop for handling chat session
 // ***********************************************************//
@@ -128,17 +150,19 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 }
 
 // chatLoop is runChatLoop with the prompt reader passed in. newPromptReader only builds a ttyReader for a real
-// terminal, so tests pass a scripted one (newTTYReaderWith + auto.Pilot) to reach the ask-on-deny path below.
+// terminal, so tests pass a scripted one (newTTYReaderWith + auto.Pilot) to reach the ask paths below.
 func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error {
-	if tty, ok := reader.(*ttyReader); ok {
+	tty, _ := reader.(*ttyReader) // nil when stdin is not a terminal: nobody to ask, so ask-rule calls are denied
+	if tty != nil {
 		cs.PromptAllowDenyCall = func(ctx context.Context, call model.ToolCall, reason error) bool {
-			fmt.Fprintln(cs.OutBuffer, "[system] Tool call denied by hook:")
+			fmt.Fprintln(cs.OutBuffer, "[system] Tool call needs approval:")
 			fmt.Fprintf(cs.OutBuffer, "Tool: %q\n", call.Function.Name) // %q: a name from an MCP server could hold terminal escape codes
 			fmt.Fprintf(cs.OutBuffer, "Arguments: %q\n", call.Function.Arguments)
 			fmt.Fprintln(cs.OutBuffer, "Reason:", reason)
 			return tty.AskYesNo(ctx, "Allow once? [y/N] ")
 		}
 	}
+	confirmAllowAll(ctx, cs, tty)
 
 	for {
 		line, err := reader.ReadPrompt(ctx)

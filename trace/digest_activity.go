@@ -19,7 +19,7 @@ type ActivityDigest struct {
 	modelErrs     int
 	runIncomplete int // same, for run-level events (their scope is the run ID, which is not a task)
 	compacts      int
-	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser)
+	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser, VetoAllowedByConfig)
 }
 
 type runSummary struct {
@@ -231,7 +231,10 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	if total > 0 {
 		fmt.Fprintf(&b, "vetoes: %d (allowed once by user: %d, denied by user: %d, denied without asking: %d",
 			total, a.vetoes[VetoAllowedByUser], a.vetoes[VetoDeniedByUser], a.vetoes[VetoDenied])
-		if other := total - a.vetoes[VetoAllowedByUser] - a.vetoes[VetoDeniedByUser] - a.vetoes[VetoDenied]; other > 0 {
+		if n := a.vetoes[VetoAllowedByConfig]; n > 0 { // only shown when allow-all was in use, so older digests read the same
+			fmt.Fprintf(&b, ", allowed by allow-all: %d", n)
+		}
+		if other := total - a.vetoes[VetoAllowedByUser] - a.vetoes[VetoDeniedByUser] - a.vetoes[VetoDenied] - a.vetoes[VetoAllowedByConfig]; other > 0 {
 			fmt.Fprintf(&b, ", unknown decision: %d", other) // a trace from a newer or hand-edited version
 		}
 		b.WriteString(")\n")
@@ -331,6 +334,8 @@ func vetoNote(d ToolVetoedData) string {
 		return "allowed once by user over: " + reason
 	case VetoDeniedByUser:
 		return "user said no to: " + reason
+	case VetoAllowedByConfig:
+		return "allowed without asking (allow-all) over: " + reason
 	case VetoDenied:
 		return "vetoed, user not asked: " + reason
 	default:

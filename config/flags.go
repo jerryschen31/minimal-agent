@@ -27,6 +27,7 @@ type Flags struct {
 	MaxSteps  *int
 	MaxTokens *int
 	Debug     *bool
+	Approve   *string
 }
 
 // ParseFlags parses args (os.Args[1:]) into Flags and validates each value that was given.
@@ -41,9 +42,9 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.Usage = func() { printUsage(out) }
 
 	var (
-		configPath, mode, query, queryShort, model, mission, workDir string
-		asJSON, debug                                                bool
-		maxSteps, maxTokens                                          int
+		configPath, mode, query, queryShort, model, mission, workDir, approve string
+		asJSON, debug                                                         bool
+		maxSteps, maxTokens                                                   int
 	)
 	fs.StringVar(&configPath, "config", "", "")
 	fs.StringVar(&mode, "mode", "", "")
@@ -56,6 +57,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.IntVar(&maxSteps, "maxsteps", 0, "")
 	fs.IntVar(&maxTokens, "maxtokens", 0, "")
 	fs.BoolVar(&debug, "debug", false, "")
+	fs.StringVar(&approve, "approve", "", "")
 
 	if err := fs.Parse(args); err != nil {
 		return Flags{}, err
@@ -80,6 +82,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"model", model, &f.Model},
 		{"mission", mission, &f.Mission},
 		{"workdir", workDir, &f.WorkDir},
+		{"approve", approve, &f.Approve},
 	} {
 		if !set[s.name] {
 			continue
@@ -129,6 +132,11 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 			return Flags{}, fmt.Errorf("-maxtokens must be a positive integer, got %d", maxTokens)
 		}
 		f.MaxTokens = new(maxTokens)
+	}
+
+	// -approve
+	if f.Approve != nil && *f.Approve != ApprovalAsk && *f.Approve != ApprovalAllowAll {
+		return Flags{}, fmt.Errorf("-approve must be %s or %s, got %q", ApprovalAsk, ApprovalAllowAll, *f.Approve)
 	}
 
 	// check that files exist
@@ -230,6 +238,8 @@ func printUsage(w io.Writer) {
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
   -debug                 Print the context window each turn and log MCP protocol messages to stderr
+  -approve <value>       ask | allow-all: allow-all runs tool calls that match ask rules without asking
+                         (chat asks you to confirm at startup); deny rules always apply
 `)
 }
 
@@ -256,6 +266,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.Debug != nil {
 		cfg.Debug = *f.Debug
+	}
+	if f.Approve != nil {
+		cfg.Approval = *f.Approve
 	}
 	return cfg
 }

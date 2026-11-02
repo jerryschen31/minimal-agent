@@ -3710,3 +3710,31 @@ Files: `agent/output.go` (new), `agent/react.go`, `agent/chat.go`, `agent/sessio
   `Output` (three tests do), and `OutBuffer` remains for the direct writes above, so there are still two paths. A nil
   `Output` panics on the first model call (only `NewChatSession` builds sessions today). The tool name in
   `[tool] Tool called:` is model-supplied and still printed unquoted (CLAUDE.md asks for `%q`); not changed here.
+
+### 2026-11-01 — Slice 3 built: deny / ask / run levels and `approval: allow-all`
+
+Built per `§ Approval levels: deny / ask / run` above, with three changes agreed with Jerry since. Claude wrote it.
+Files: `hooks/toolrules.go` (was `denyrules.go`), `agent/react.go`, `agent/chat.go`, `agent/session.go`,
+`agent/agent.go`, `agent/info.go`, `config/config.go`, `config/flags.go`, `config/doc.go`, `config.default.json`,
+`trace/event.go`, `trace/digest_activity.go`, `trace/doc.go`.
+
+- **`hooks.ToolRules`** replaces `DenyRules`: `Level(name)` (deny wins, then ask, else run), `BeforeTool` returns
+  `denied by rule "…"` or an error wrapping `ErrNeedsApproval` (`needs approval by rule "…"`). Only the latter can be
+  overridden in `checkBeforeToolHooks`; a plain hook error is now final (before, any veto could be overridden).
+- **Defaults:** `denyRules` empty; `askRules` `*delete*`, `*remove*` (chat behaves as before) plus the write tools'
+  names, reserved now so slice 4 doesn't touch defaults. `config.default.json` moved its two rules to `askRules`.
+- **No `level` field in the trace** (Jerry): the three decisions stay, and the `reason` text already tells a deny rule
+  (`denied by rule`) from an ask with nobody to ask (`needs approval by rule`); the digest prints it.
+- **`approval: ask | allow-all` in chat too** (Jerry), flag `-approve`. A string, not a bool, so a typo fails setup.
+  It applies only to `askRules`. **Chat must confirm it at startup** (Jerry): `confirmAllowAll` asks once
+  `Run ask-rule tool calls without asking for this session? [y/N]`; No, Enter or Ctrl+C keep asking per call, and
+  without a terminal it is not confirmed (asks are denied). Chosen over exiting on No: the session is still usable.
+  Downside: `run_start.approval` records what was configured, not whether it was confirmed; the per-call
+  `allowed_by_config` decisions show whether it took effect.
+- **New decision `allowed_by_config`** (an ask-rule call run because of allow-all), so the trace shows exactly the
+  calls that ran unasked. Downside: recorded as `tool_vetoed` though nothing was vetoed. The digest footer shows
+  `allowed by allow-all: N` only when N > 0.
+- **Info mode** lists deny and ask rules as two sections plus an `Approval:` line, instead of the per-tool level
+  column floated earlier: less churn in a format the tests pin, same information.
+- Still for the autonomous port: `allow-all` without a confirmation prompt (the config is the consent), and the
+  proposed startup warning when `allow-all` meets an empty `denyRules`.
