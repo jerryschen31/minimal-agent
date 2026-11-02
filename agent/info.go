@@ -26,10 +26,20 @@ const (
 	InfoInterrupted = 130 // Ctrl+C or SIGTERM (130 = 128 + SIGINT, the shell's convention)
 )
 
-// PrintInfo prints what the agent would have if it started (config, working dir, tools, MCP servers) and returns
-// the exit code. It skips SetupAgent on purpose: no provider, memory or trace recorder, so it makes no model call,
-// needs no API key and writes no files. configFile is the -config path, "" when none was given.
-// [agent] It reuses the same setup functions chat mode calls, so the names it prints are the names the model gets.
+// PrintInfo prints what the agent would have if it started (config, working dir, tools, MCP servers) and returns the
+// exit code.
+//
+// Notes:
+//   - It skips SetupAgent on purpose: no provider, memory or trace recorder, so it makes no model call, needs no API
+//     key and writes no files. configFile is the -config path, "" when none was given.
+//   - [agent] It reuses the same setup functions chat mode calls, so the names it prints are the names the model gets.
+//   - A stdio server can print its environment (tokens) on stderr; info's output is meant to be safe to paste, so
+//     McpServerStderr is discarded.
+//   - It runs the same checkConfig as SetupAgent, so info never passes a config that chat mode refuses. A bad
+//     mcpResultMaxBytes makes every MCP tool fail to load, so the servers would look connected with no tools; with a
+//     configuration error the MCP servers are not started.
+//   - Ctrl+C while the MCP servers start aborts info, as it aborts setup (exit code InfoInterrupted).
+//   - Exit codes are InfoOK, InfoFailed and InfoInterrupted, so a script can use `-mode info` as a preflight check.
 func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interrupts <-chan os.Signal) int {
 	w := cfg.OutBuffer
 	// a stdio server can print its environment (tokens) on stderr; info's output is meant to be safe to paste
@@ -78,11 +88,15 @@ func PrintInfo(ctx context.Context, cfg config.Config, configFile string, interr
 	return code
 }
 
-// printToolRules lists the deny and ask rules in force (the defaults from config.GetDefaultConfig, or the config file's
-// lists that replaced them) with the tools each matches, using the same matching as the gate itself, then the
-// approval setting. It reports false if the rules are invalid (chat mode would refuse to start). A config rule that
-// matches no tool gets a warning: usually a typo. allListed is false when some tools could not be listed (built-ins
-// failed, a server failed or was not started), so the warning could be wrong and is left out.
+// printToolRules lists the deny and ask rules in force with the tools each matches, then the approval setting. It
+// reports false if the rules are invalid.
+//
+// Notes:
+//   - The rules are the defaults from config.GetDefaultConfig, or the config file's lists that replaced them. Matching
+//     is the same as the gate itself.
+//   - Invalid rules mean chat mode would refuse to start.
+//   - A config rule that matches no tool gets a warning: usually a typo. allListed is false when some tools could not
+//     be listed (built-ins failed, a server failed or was not started), so the warning could be wrong and is left out.
 func printToolRules(w io.Writer, cfg config.Config, toolNames []string, allListed bool) bool {
 	toolRules, err := hooks.NewToolRules(cfg.DenyRules, cfg.AskRules)
 	if err != nil {
@@ -101,8 +115,16 @@ func printToolRules(w io.Writer, cfg config.Config, toolNames []string, allListe
 	return true
 }
 
-// printRules lists one kind of rule (title, e.g. "Deny rules", and what a match means) with the tools each rule matches.
-// defaults are that list's default rules, to label each rule "default" or "config".
+// printRules lists one kind of rule with the tools each rule matches.
+//
+// Notes:
+//   - title is e.g. "Deny rules"; meaning says what a match means. defaults are that list's default rules, to label
+//     each rule "default" or "config" (the defaults are written in lowercase).
+//   - [agent] A config file that repeats a default rule shows it as "default" too; harmless, and telling them apart
+//     would mean recording which keys the file set.
+//   - [agent] The defaults are a safety net for tools that may appear later, so matching nothing today is normal; a
+//     config rule that matches nothing gets a spelling warning (tool names use '_').
+//   - When allListed is false, a rule may match a tool not shown, so it says "matches nothing among the tools listed".
 func printRules(w io.Writer, title, meaning string, rules, defaults, toolNames []string, allListed bool) {
 	if len(rules) == 0 {
 		fmt.Fprintf(w, "%s (0): none\n", title)
@@ -139,8 +161,12 @@ func printRules(w io.Writer, title, meaning string, rules, defaults, toolNames [
 	}
 }
 
-// printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if
-// they can't be set up.
+// printBuiltinTools lists the built-in tools by the names the model sees and returns those names. ok is false if they
+// can't be set up.
+//
+// Notes:
+//   - Under read_file it also prints what that tool never reads: the built-in deny list, any denyPaths, and the trace
+//     directory.
 func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
 	builtins, err := tools.SetupBuiltinTools(cfg)
 	if err != nil {
@@ -165,9 +191,13 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 	return names, true
 }
 
-// printMCP connects to each MCP server in name order, lists its tools and closes it, then prints a row per server
-// and a row per tool, and returns the tool names. ok is false if any server failed. A failed server does not stop
-// the others.
+// printMCP connects to each MCP server in name order, lists its tools and closes it, then prints a row per server and
+// a row per tool, and returns the tool names. ok is false if any server failed.
+//
+// Notes:
+//   - A failed server does not stop the others.
+//   - After an interrupt the remaining servers are listed as "not started (interrupted)".
+//   - Tool names and descriptions go through safeText before printing.
 func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []string, ok bool) {
 	servers := slices.Sorted(maps.Keys(cfg.McpServers))
 	var rows []string
@@ -204,8 +234,12 @@ func printMCP(ctx context.Context, w io.Writer, cfg config.Config) (names []stri
 	return names, allOK
 }
 
-// inspectServer connects to one server, lists its tools and closes it again. serverTools is nil when it failed
-// (an empty, non-nil slice when it connected and has no tools); status says which.
+// inspectServer connects to one server, lists its tools and closes it again.
+//
+// Notes:
+//   - serverTools is nil when it failed (an empty, non-nil slice when it connected and has no tools); status says which.
+//   - The deferred Close stops the server (and, for stdio, its process group) before info moves on.
+//   - Error text goes through hideURL and safeText before it is shown.
 func inspectServer(ctx context.Context, cfg config.Config, name string) (status string, serverTools []tools.Tool) {
 	conn, err := mcpconnect.ConnectMCPServer(ctx, name, cfg)
 	if err != nil {
@@ -223,6 +257,10 @@ func inspectServer(ctx context.Context, cfg config.Config, name string) (status 
 	return status + fmt.Sprintf("  %d tools", len(serverTools)), serverTools
 }
 
+// transportOf returns the server config's transport type, or "?" when it cannot be determined.
+//
+// Notes:
+//   - Swallows the TransportType error so one bad entry still gets a row in the report.
 func transportOf(sc config.McpServerConfig) string {
 	transport, err := sc.TransportType()
 	if err != nil {
@@ -231,9 +269,11 @@ func transportOf(sc config.McpServerConfig) string {
 	return transport
 }
 
-// runsWhat shows what a stdio server will run: the program and how many arguments, never the arguments or env,
-// which can hold tokens. Enough to notice a server suddenly running curl or sh. Remote servers show nothing (their
-// URL can hold a token too).
+// runsWhat shows what a stdio server will run: the program and how many arguments.
+//
+// Notes:
+//   - Never the arguments or env, which can hold tokens. Enough to notice a server suddenly running curl or sh.
+//   - Remote servers show nothing (their URL can hold a token too).
 func runsWhat(sc config.McpServerConfig) string {
 	if sc.Command == "" {
 		return ""
@@ -244,8 +284,11 @@ func runsWhat(sc config.McpServerConfig) string {
 	return fmt.Sprintf("%s (%d args)", sc.Command, len(sc.Args))
 }
 
-// hideURL replaces the configured URL in an error message with its scheme and host: connection errors quote the
-// URL, and a URL can carry a token in its path or query.
+// hideURL replaces the configured URL in an error message with its scheme and host.
+//
+// Notes:
+//   - Connection errors quote the URL, and a URL can carry a token in its path or query.
+//   - An empty rawURL leaves msg unchanged; an unparseable one is replaced by "[url hidden]".
 func hideURL(msg, rawURL string) string {
 	if rawURL == "" {
 		return msg
@@ -257,8 +300,13 @@ func hideURL(msg, rawURL string) string {
 	return strings.ReplaceAll(msg, rawURL, shown)
 }
 
-// safeMCPError prepares an MCP setup error (possibly several servers' errors, one per line) for the terminal: every
-// configured server URL is hidden with hideURL, then each line goes through safeText.
+// safeMCPError prepares an MCP setup error for the terminal.
+//
+// Notes:
+//   - The error may hold several servers' errors, one per line. Every configured server URL is hidden with hideURL,
+//     then each line goes through safeText.
+//   - Longest URL first: if one URL starts with another (.../mcp and .../mcp?token=...), hiding the short one first
+//     would leave the rest of the long one, its token included, showing.
 func safeMCPError(err error, servers map[string]config.McpServerConfig) string {
 	msg := err.Error()
 	// longest URL first: if one URL starts with another (…/mcp and …/mcp?token=…), hiding the short one first would
@@ -280,7 +328,10 @@ func safeMCPError(err error, servers map[string]config.McpServerConfig) string {
 	return strings.Join(lines, "\n")
 }
 
-// hintLabel shows a tool's annotations. They are the server's claims, so they help spot tools to deny but prove nothing.
+// hintLabel shows a tool's annotations as a short label.
+//
+// Notes:
+//   - They are the server's claims, so they help spot tools to deny but prove nothing.
 func hintLabel(h mcpconnect.ToolHints) string {
 	switch {
 	case !h.Known:
@@ -301,10 +352,12 @@ func hintLabel(h mcpconnect.ToolHints) string {
 	return strings.Join(labels, ", ")
 }
 
-// safeText returns s unchanged if every character is printable, otherwise Go-quoted ("\x1b[2J", "a\rb"). Names,
-// descriptions, versions and error text from an MCP server go straight to the terminal here, and a carriage return
-// or an escape sequence in them could redraw or hide part of the report. Quoting only the odd value keeps the
-// normal report readable and makes a strange one stand out.
+// safeText returns s unchanged if every character is printable, otherwise Go-quoted ("\x1b[2J", "a\rb").
+//
+// Notes:
+//   - Names, descriptions, versions and error text from an MCP server go straight to the terminal here, and a carriage
+//     return or an escape sequence in them could redraw or hide part of the report.
+//   - Quoting only the odd value keeps the normal report readable and makes a strange one stand out.
 func safeText(s string) string {
 	for _, r := range s {
 		if !strconv.IsPrint(r) {
@@ -315,6 +368,9 @@ func safeText(s string) string {
 }
 
 // firstLine returns the first sentence of a tool description's first line: enough to tell what the tool does.
+//
+// Notes:
+//   - If the first line has no ". " it is returned whole.
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
 	if sentence, _, found := strings.Cut(line, ". "); found {
@@ -323,6 +379,12 @@ func firstLine(s string) string {
 	return line
 }
 
+// printInfoHeader prints the first lines of the info report: agent name and version, config file, working dir and
+// API key status.
+//
+// Notes:
+//   - Only whether the API key variable is set, never its value.
+//   - An empty configFile prints "none, defaults only".
 func printInfoHeader(w io.Writer, cfg config.Config, configFile string) {
 	fmt.Fprintf(w, "%s %s — info\n", cfg.AgentName, cfg.AgentVersion)
 	if configFile == "" {
@@ -339,6 +401,10 @@ func printInfoHeader(w io.Writer, cfg config.Config, configFile string) {
 }
 
 // resolveDir returns dir as an absolute path with symlinks resolved, the directory read_file is confined to.
+//
+// Notes:
+//   - If making it absolute or resolving symlinks fails, the best path so far is returned with the error in
+//     parentheses.
 func resolveDir(dir string) string {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -351,6 +417,9 @@ func resolveDir(dir string) string {
 	return resolved
 }
 
+// yesNo returns "yes" or "no" for b.
+//
+// Notes: none.
 func yesNo(b bool) string {
 	if b {
 		return "yes"

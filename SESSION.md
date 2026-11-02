@@ -1023,3 +1023,24 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > normalized rules in the allow-all notice; `%q` on the `[tool] Tool called:` name. Still open from earlier: welcome
 > banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused, `maxSteps` discarding a turn,
 > the autonomous-port warning for `allow-all` with empty `denyRules`.
+>
+> (2026-11-02) **Codemap planned before slice 4** (`DECISIONS.md § Codemap: generated map in each package's doc.go`).
+> Each package's `doc.go` gets a generated `# Codemap (auto-generated)` section; `CODEMAP.md` copies them; headers
+> follow One-liner / Example / Notes; a `doc-keeper` sub-agent maintains them. **Next:** slice 2, the generator
+> (`cmd/codemap`), Jerry writes it from a skeleton. Slice 4 `write_file` + `create_directory` waits (plan above;
+> branch `feat/built-in-write-file-tool`, clean).
+>
+> (2026-11-02) **Codemap built** on branch `feat/doc-func-reference-guide`, not committed (`DECISIONS.md § Codemap` and
+> `§ Codemap simplified`). `cmd/codemap` generates a signatures-only `# Codemap (auto-generated)` section in every
+> package's `doc.go` plus `CODEMAP.md`; every function has a header (one-liner + Notes) written by four doc-keeper
+> sub-agents (comments only, verified with `-code-unchanged HEAD`); the test sub-agent wrote the tests and found four
+> bugs. `go.mod` gained `golang.org/x/tools v0.42.0` (+ `x/mod` indirect). Jerry to review: the headers (esp. facts the
+> agents added from the code, e.g. `GetWindow` bypassing the context lock, `NewChatContext`'s error always nil, the
+> `FakeProvider.Chat` precedence order, `newPlainReader`'s "stuck read ends only when input does", `ShutdownAgent` safe
+> after a failed setup). **Known gap:** nothing detects a header gone stale after a body change.
+> **Next:** slice 4 `write_file` + `create_directory` (plan above), now with the rule "run `go run ./cmd/codemap` after
+> changing a signature".
+>
+> (2026-11-02) Codemap enforcement: `.githooks/pre-commit` (check only) added and `core.hooksPath` set for this clone
+> (`DECISIONS.md § Codemap enforcement`). Agents that change a function body must update its header Notes
+> (`CLAUDE.md § Code map`); drift is otherwise tolerated.

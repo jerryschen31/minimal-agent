@@ -33,15 +33,29 @@ type Subscriber interface {
 	Close() error
 }
 
-// Nop returns a Recorder that does nothing. It is what the loop gets when tracing is off, so the loop
-// never has to check "is tracing enabled?".
+// Nop returns a Recorder that does nothing.
+//
+// Notes:
+//   - It is what the loop gets when tracing is off, so the loop never has to check "is tracing enabled?".
+//   - Its RunID is empty.
 func Nop() Recorder { return nopRecorder{} }
 
 type nopRecorder struct{}
 
+// Record discards the event.
+//
+// Notes: none.
 func (nopRecorder) Record(string, EventType, any) {}
-func (nopRecorder) RunID() string                 { return "" }
-func (nopRecorder) Close() error                  { return nil }
+
+// RunID returns "", which is how a caller can tell tracing is off.
+//
+// Notes: none.
+func (nopRecorder) RunID() string { return "" }
+
+// Close does nothing and returns nil.
+//
+// Notes: none.
+func (nopRecorder) Close() error { return nil }
 
 // queueSize is how many events can wait for the tracewriter goroutine before Record blocks (backpressure).
 const queueSize = 256
@@ -66,10 +80,16 @@ type recorder struct {
 	err error  // for subscriber errors; written by the tracewriter goroutine, read after <-done
 }
 
-// SetupRecorder returns the Recorder for this run: a no-op when tracing is disabled in the config,
-// otherwise a real one that writes <traceDir>/<run_id>.jsonl with the configured redaction level,
-// and, when cfg.DigestEnabled, the L1 digest <traceDir>/<run_id>.digest.md.
-// An unknown redaction level, or a trace file that can't be created, is an error.
+// SetupRecorder returns the Recorder for this run.
+//
+// Notes:
+//   - It is a no-op Recorder when tracing is disabled in the config; otherwise a real one that writes
+//     <traceDir>/<run_id>.jsonl with the configured redaction level and, when cfg.DigestEnabled, the L1 digest
+//     <traceDir>/<run_id>.digest.md.
+//   - An unknown redaction level, a non-positive traceMaxEventBytes, an empty traceDir, or a trace file that can't be
+//     created is an error: fail at startup rather than run without an audit trail.
+//   - The run ID is made once: it names the trace file and stamps every event in it.
+//   - If the digest file can't be created, the already-open JSONL file is closed before returning the error.
 func SetupRecorder(ctx context.Context, cfg config.Config) (Recorder, error) {
 	if !cfg.TraceEnabled {
 		return Nop(), nil
@@ -102,9 +122,13 @@ func SetupRecorder(ctx context.Context, cfg config.Config) (Recorder, error) {
 	return NewRecorder(runID, redactor, cfg.TraceMaxEventBytes, subs...), nil
 }
 
-// NewRecorder builds a recorder from explicit pieces (no config) and starts its tracewriter goroutine, which takes
-// events off the channel, redacts them, and writes them to subscribers (e.g. the JSONL log file).
-// maxEventBytes caps the JSON size of one event data payload.
+// NewRecorder builds a recorder from explicit pieces (no config) and starts its tracewriter goroutine.
+//
+// Notes:
+//   - The goroutine takes events off the channel, redacts them, and writes them to subscribers (e.g. the JSONL log
+//     file).
+//   - maxEventBytes caps the JSON size of one event data payload.
+//   - Call Close to stop the goroutine and flush the queue.
 func NewRecorder(runID string, redactor *Redactor, maxEventBytes int, subs ...Subscriber) Recorder {
 	rec := &recorder{
 		runID:         runID,
@@ -118,10 +142,26 @@ func NewRecorder(runID string, redactor *Redactor, maxEventBytes int, subs ...Su
 	return rec
 }
 
+// RunID returns the ID stamped on every event of this run.
+//
+// Notes: none.
 func (r *recorder) RunID() string { return r.runID }
 
-// Record is how the agent loop records (snapshots) an event. The event is queued into a channel for the tracewriter goroutine to process asynchronously.
-// The tracewriter goroutine does the heavy lifting of processing the trace events
+// Record snapshots an event and queues it for the tracewriter goroutine to process asynchronously.
+//
+// Notes:
+//   - The tracewriter goroutine does the heavy lifting of processing the trace events.
+//   - json.Marshal creates a bytes copy of the payload. When the payload is a reference to a slice or map, copying it
+//     allows the agent loop to continue to modify it without affecting the trace.
+//   - A payload that can't be encoded is replaced by {"marshal_error": ...}: tracing never fails the run, so the
+//     event is kept.
+//   - Size cap: the whole payload is swapped for {"truncated": true, "original_bytes": N} when its JSON exceeds
+//     maxEventBytes.
+//   - The timestamp records when the agent event actually happened; the tracewriter logs it separately in its own
+//     goroutine.
+//   - A channel send on a closed channel panics, so the closed flag is checked under the mutex first; an event
+//     recorded after Close is silently dropped.
+//   - The send blocks when the queue (queueSize) is full: that is the backpressure.
 func (r *recorder) Record(scopeID string, eventType EventType, data any) {
 	ev := Event{
 		TimeStamp: time.Now().UTC(), // timestamp records when this agent event actually happened; tracewriter will log it separately in its own goroutine
@@ -154,7 +194,12 @@ func (r *recorder) Record(scopeID string, eventType EventType, data any) {
 }
 
 // runTraceWriter is the tracewriter goroutine that essentially writes event traces.
-// A queued channel handles backpressure, and the tracewriter processes queued events one at a time, in the order they were recorded.
+//
+// Notes:
+//   - A queued channel handles backpressure, and the tracewriter processes queued events one at a time, in the order
+//     they were recorded.
+//   - The range over the channel waits for the next event and leaves the loop only when the channel is empty AND
+//     closed; it then closes r.done.
 func (r *recorder) runTraceWriter() {
 	defer close(r.done)
 	for ev := range r.ch { // range over the values (i.e. trace events) in the channel: waits for the next event; leaves the loop only when ch is empty AND closed
@@ -162,7 +207,10 @@ func (r *recorder) runTraceWriter() {
 	}
 }
 
-// safeTraceWrite is write with a safety net: we recover gracefully from panics inside the trace writer.
+// safeTraceWrite is traceWrite with a safety net: we recover gracefully from panics inside the trace writer.
+//
+// Notes:
+//   - A panic is registered as the recorder's error (with the stack) via fail instead of crashing the agent.
 func (r *recorder) safeTraceWrite(ev Event) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -173,6 +221,14 @@ func (r *recorder) safeTraceWrite(ev Event) {
 }
 
 // traceWrite finishes one event (redact secrets, assign trace number, marshal) and hands it to every subscriber.
+//
+// Notes:
+//   - Redaction failure: the payload is dropped, never written raw, and the gap shows in the trace as
+//     {"dropped":"redaction failed"}.
+//   - The counter (r.seq) only advances once the line is built, so a skipped event leaves no hole.
+//   - A marshal failure skips the event; a subscriber write error is registered with fail and the other subscribers
+//     still get the line.
+//   - Subscribers include e.g. a log file, a network endpoint or a stdout stream.
 func (r *recorder) traceWrite(ev Event) {
 	// 1. redact secrets. On failure the payload is dropped, never written raw, and the gap shows in the trace.
 	tree, fired, err := r.redactor.Redact(ev.EventData)
@@ -207,15 +263,23 @@ func (r *recorder) traceWrite(ev Event) {
 	}
 }
 
-// fail registers the first error encountered into the recorder. Only the single tracewriter goroutine calls this, so no lock is needed.
+// fail registers the first error encountered into the recorder.
+//
+// Notes:
+//   - Only the single tracewriter goroutine calls this, so no lock is needed (Close reads the error after <-done).
+//   - Later errors are discarded.
 func (r *recorder) fail(err error) {
 	if r.err == nil {
 		r.err = err
 	}
 }
 
-// Close stops accepting events, waits until every queued event has been written, closes the subscribers, and returns the first error the tracewriter or a subscriber hit.
-// This is safe to call more than once (idempotent).
+// Close stops accepting events, waits until every queued event has been written, closes the subscribers, and returns
+// the first error the tracewriter or a subscriber hit.
+//
+// Notes:
+//   - It is safe to call more than once (idempotent); the subscribers are closed exactly once.
+//   - It blocks on <-r.done until the tracewriter goroutine has processed all events.
 func (r *recorder) Close() error {
 	r.mu.Lock()
 	if !r.closed {
@@ -236,14 +300,22 @@ func (r *recorder) Close() error {
 }
 
 // NewRunID returns a unique, time-sortable run ID, e.g. "r20261020T101500Z-9f3a41c7".
+//
+// Notes: none.
 func NewRunID() string { return newID("r") }
 
 // NewTaskID returns a unique, time-sortable task ID, e.g. "t20261020T101530Z-5be0d2a1".
-// A chat message and a traced slash command each get one; every event inside shares it.
+//
+// Notes:
+//   - A chat message and a traced slash command each get one; every event inside shares it.
 func NewTaskID() string { return newID("t") }
 
-// newID is the prefix plus a UTC timestamp plus a random suffix. The time part makes IDs (and trace file names)
-// sort by start time; the random suffix keeps two IDs created in the same second apart (parallel tasks).
+// newID returns the prefix plus a UTC timestamp plus a random suffix.
+//
+// Notes:
+//   - The time part makes IDs (and trace file names) sort by start time; the random suffix keeps two IDs created in
+//     the same second apart (parallel tasks).
+//   - The suffix is 4 bytes from crypto/rand, which never returns an error since Go 1.24.
 func newID(prefix string) string {
 	b := make([]byte, 4)
 	rand.Read(b) // crypto/rand; never returns an error since Go 1.24

@@ -26,7 +26,12 @@ type ContextWindow interface {
 // WindowStrategies lists the values NewContextWindow (and config's contextStrategy) accepts
 var WindowStrategies = []string{"offset", "in-place", "ring-buffer", "linked-list"}
 
-// NewContextWindow builds a window that holds at most maxMessages messages, stored the way windowStrategy says
+// NewContextWindow builds a window that holds at most maxMessages messages, stored the way windowStrategy says.
+//
+// Notes:
+//   - windowStrategy must be one of WindowStrategies ("offset", "in-place", "ring-buffer", "linked-list"); anything else is an
+//     "unsupported window strategy" error
+//   - all four strategies obey the same rule: after a trim the window starts at a user message
 func NewContextWindow(maxMessages int, windowStrategy string) (ContextWindow, error) {
 	switch windowStrategy {
 	case "offset":
@@ -58,6 +63,10 @@ type OffsetWindow struct {
 	maxSize  int // maximum number of messages to retain in the context window
 }
 
+// NewOffsetWindow returns an empty OffsetWindow that holds at most contextWindowSize messages.
+//
+// Notes:
+//   - the slice is allocated with capacity contextWindowSize up front
 func NewOffsetWindow(contextWindowSize int) *OffsetWindow {
 	return &OffsetWindow{
 		messages: make([]model.ChatMessage, 0, contextWindowSize),
@@ -65,7 +74,15 @@ func NewOffsetWindow(contextWindowSize int) *OffsetWindow {
 	}
 }
 
-// adds one or more messages to the context window
+// AddMessages adds one or more messages to the context window, trimming the oldest when it is over maxSize.
+//
+// Notes:
+//   - takes the mutex, so access to the messages slice is thread-safe
+//   - after adding, if the total exceeds the maximum size, the oldest messages are dropped by re-slicing (they become unreachable)
+//   - a trim can cut a turn in half, leaving orphaned tool results or an assistant reply whose question is gone at the front.
+//     Providers reject an orphaned tool result, and some reject a context that doesn't start with a user message, so it also
+//     clips up to the next user message; this can leave the window empty or under maxSize
+//   - no trim, and so no clipping, happens while the window is within maxSize
 func (w *OffsetWindow) AddMessages(msgs []model.ChatMessage) {
 	// We need to lock the mutex to ensure thread-safe access to the messages slice.
 	w.mu.Lock()
@@ -85,7 +102,14 @@ func (w *OffsetWindow) AddMessages(msgs []model.ChatMessage) {
 	}
 }
 
-// gets a copy of the chat history within the current context window
+// GetMessages gets a copy of the chat history within the current context window.
+//
+// Notes:
+//   - appending to a nil slice allocates a new slice (a copy), which is what we want: otherwise the caller would share the underlying
+//     array, which may get modified after GetMessages() returns, resulting in unexpected behavior
+//   - [agent] since Go 1.21 the standard library has slices.Clone(w.messages), which does the same thing and says what it does.
+//     It's what I'd reach for if your go.mod allows it. slices.Clone also keeps a nil input as nil
+//   - note that returning w.messages directly would share the underlying array, so we make a copy to avoid external modifications
 func (w *OffsetWindow) GetMessages() []model.ChatMessage {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -96,7 +120,10 @@ func (w *OffsetWindow) GetMessages() []model.ChatMessage {
 	return newMessages
 }
 
-// removes the last n messages from the context window - like an 'undo'
+// RemoveLast removes the last n messages from the context window - like an 'undo'.
+//
+// Notes:
+//   - does nothing when n is larger than the number of messages held
 func (w *OffsetWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -105,19 +132,29 @@ func (w *OffsetWindow) RemoveLast(n int) {
 	}
 }
 
-// clears the context window, removing all messages and incrementing the generation counter.
+// Clear clears the context window, removing all messages.
+//
+// Notes:
+//   - only the window is emptied; the generation counter lives in ChatContext, whose Clear increments it
+//   - keeps the backing array (re-slices to length 0)
 func (w *OffsetWindow) Clear() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.messages = w.messages[:0]
 }
 
+// GetSize returns the number of messages currently in the window.
+//
+// Notes: none.
 func (w *OffsetWindow) GetSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.messages)
 }
 
+// GetMaxSize returns the maximum number of messages the window can hold.
+//
+// Notes: none.
 func (w *OffsetWindow) GetMaxSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -135,6 +172,10 @@ type InPlaceWindow struct {
 	maxSize  int
 }
 
+// NewInPlaceWindow returns an empty InPlaceWindow that holds at most contextWindowSize messages.
+//
+// Notes:
+//   - the slice is allocated with capacity contextWindowSize up front
 func NewInPlaceWindow(contextWindowSize int) *InPlaceWindow {
 	return &InPlaceWindow{
 		messages: make([]model.ChatMessage, 0, contextWindowSize),
@@ -142,6 +183,13 @@ func NewInPlaceWindow(contextWindowSize int) *InPlaceWindow {
 	}
 }
 
+// AddMessages adds messages to the window, shifting the survivors down in place when it is over maxSize.
+//
+// Notes:
+//   - like the offset window, it trims the oldest messages once the window holds more than maxSize
+//   - a trim can cut a turn in half (see OffsetWindow), so it also drops everything up to the next user message; the survivors are
+//     copied to the front of the same backing array
+//   - no trim, and so no clipping, happens while the window is within maxSize
 func (w *InPlaceWindow) AddMessages(msgs []model.ChatMessage) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -163,6 +211,10 @@ func (w *InPlaceWindow) AddMessages(msgs []model.ChatMessage) {
 
 }
 
+// GetMessages returns a copy of the messages in the window.
+//
+// Notes:
+//   - the copy means the caller never shares the window's backing array, which later calls overwrite in place
 func (w *InPlaceWindow) GetMessages() []model.ChatMessage {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -170,6 +222,10 @@ func (w *InPlaceWindow) GetMessages() []model.ChatMessage {
 	return newMessages
 }
 
+// RemoveLast removes the last n messages from the window.
+//
+// Notes:
+//   - does nothing when n is larger than the number of messages held
 func (w *InPlaceWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -178,19 +234,28 @@ func (w *InPlaceWindow) RemoveLast(n int) {
 	}
 }
 
-// clears the context window, removing all messages and incrementing the generation counter.
+// Clear clears the context window, removing all messages.
+//
+// Notes:
+//   - only the window is emptied; the generation counter lives in ChatContext, whose Clear increments it
 func (w *InPlaceWindow) Clear() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.messages = w.messages[:0]
 }
 
+// GetSize returns the number of messages currently in the window.
+//
+// Notes: none.
 func (w *InPlaceWindow) GetSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return len(w.messages)
 }
 
+// GetMaxSize returns the maximum number of messages the window can hold.
+//
+// Notes: none.
 func (w *InPlaceWindow) GetMaxSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -210,6 +275,10 @@ type RingBufferWindow struct {
 	count    int // number of messages currently in the buffer
 }
 
+// NewRingBufferWindow returns an empty RingBufferWindow that holds at most contextWindowSize messages.
+//
+// Notes:
+//   - the backing array is allocated at its full fixed size (contextWindowSize) up front
 func NewRingBufferWindow(contextWindowSize int) *RingBufferWindow {
 	return &RingBufferWindow{
 		messages: make([]model.ChatMessage, contextWindowSize, contextWindowSize),
@@ -219,6 +288,13 @@ func NewRingBufferWindow(contextWindowSize int) *RingBufferWindow {
 	}
 }
 
+// AddMessages adds messages to the ring buffer, overwriting the oldest ones when it is full.
+//
+// Notes:
+//   - head wraps around to index 0 when it reaches maxSize, so the oldest message is overwritten
+//   - a trim can cut a turn in half (see OffsetWindow), so after adding it removes everything from the oldest end up to the next
+//     user message; each removed slot is zeroed to release the references
+//   - this clipping runs on every call, not only after an overflow, so the window never starts at a non-user message
 func (w *RingBufferWindow) AddMessages(msgs []model.ChatMessage) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -239,6 +315,11 @@ func (w *RingBufferWindow) AddMessages(msgs []model.ChatMessage) {
 	}
 }
 
+// GetMessages returns the messages in order, oldest first, as a new slice.
+//
+// Notes:
+//   - with a ring buffer it must explicitly create a new slice and copy the messages in the correct order, because the underlying
+//     array may wrap around
 func (w *RingBufferWindow) GetMessages() []model.ChatMessage {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -250,6 +331,11 @@ func (w *RingBufferWindow) GetMessages() []model.ChatMessage {
 	return newMessages
 }
 
+// RemoveLast removes the last n messages by moving head back n slots.
+//
+// Notes:
+//   - does nothing when n is larger than the number of messages held
+//   - the removed slots are not zeroed, so they keep holding references until overwritten
 func (w *RingBufferWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -259,7 +345,15 @@ func (w *RingBufferWindow) RemoveLast(n int) {
 	}
 }
 
-// clears the context window, removing all messages and incrementing the generation counter.
+// Clear clears the context window, removing all messages.
+//
+// Notes:
+//   - only the window is emptied; the generation counter lives in ChatContext, whose Clear increments it
+//   - resets the fixed size backing array without changing its capacity (initializes all elements to their zero value): an
+//     O(num messages) operation
+//   - if we ever want the O(1) version, delete the loop and add a comment saying the stale slots are unreachable, but still hold
+//     references
+//   - either way, clear(w.messages) does the same job in one line, if we're on Go 1.21 or later - still an O(num messages) operation
 func (w *RingBufferWindow) Clear() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -273,12 +367,18 @@ func (w *RingBufferWindow) Clear() {
 	w.count = 0
 }
 
+// GetSize returns the number of messages currently in the window.
+//
+// Notes: none.
 func (w *RingBufferWindow) GetSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.count
 }
 
+// GetMaxSize returns the maximum number of messages the window can hold.
+//
+// Notes: none.
 func (w *RingBufferWindow) GetMaxSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -298,7 +398,9 @@ type LLWindow struct {
 	maxSize  int
 }
 
-// initialize an empty linked list
+// NewLLWindow initializes an empty linked list window that holds at most contextWindowSize messages.
+//
+// Notes: none.
 func NewLLWindow(contextWindowSize int) *LLWindow {
 	return &LLWindow{
 		messages: list.New(),
@@ -306,6 +408,12 @@ func NewLLWindow(contextWindowSize int) *LLWindow {
 	}
 }
 
+// AddMessages adds the messages as nodes at the back of the list, removing from the front when it is full.
+//
+// Notes:
+//   - when the list is at maxSize, the front node is removed before each new message is pushed
+//   - a trim can cut a turn in half (see OffsetWindow), so afterwards it removes everything at the front up to the next user
+//     message; this runs on every call, not only after an overflow
 func (w *LLWindow) AddMessages(msgs []model.ChatMessage) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -323,6 +431,12 @@ func (w *LLWindow) AddMessages(msgs []model.ChatMessage) {
 	}
 }
 
+// GetMessages returns the messages in order, oldest first, as a new slice.
+//
+// Notes:
+//   - traverses the linked list from front to back and copies the messages into the slice
+//   - LL node values are type Any (i.e., interface{}) and this instance holds ChatMessage values, so each is type-asserted to
+//     ChatMessage before being copied
 func (w *LLWindow) GetMessages() []model.ChatMessage {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -337,6 +451,10 @@ func (w *LLWindow) GetMessages() []model.ChatMessage {
 	return messages
 }
 
+// RemoveLast removes up to the last n messages from the back of the list.
+//
+// Notes:
+//   - unlike the slice-based windows, when n is larger than the number of messages held it removes all of them rather than doing nothing
 func (w *LLWindow) RemoveLast(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -345,18 +463,28 @@ func (w *LLWindow) RemoveLast(n int) {
 	}
 }
 
+// Clear clears the context window, removing all messages.
+//
+// Notes:
+//   - only the window is emptied; the generation counter lives in ChatContext, whose Clear increments it
 func (w *LLWindow) Clear() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.messages.Init()
 }
 
+// GetSize returns the number of messages currently in the window.
+//
+// Notes: none.
 func (w *LLWindow) GetSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.messages.Len()
 }
 
+// GetMaxSize returns the maximum number of messages the window can hold.
+//
+// Notes: none.
 func (w *LLWindow) GetMaxSize() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()

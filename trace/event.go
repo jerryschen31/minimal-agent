@@ -74,7 +74,14 @@ type RunStartData struct {
 	SummarizerPrompt      string  `json:"summarizer_prompt,omitempty"` // full text; goes through redaction like any other string
 }
 
-// GetRunStartData is a helper function that builds the run_start payload from the config and the running process.
+// GetRunStartData builds the run_start payload from the config and the running process.
+//
+// Notes:
+//   - A hostname error just leaves the field empty: tracing must not fail a run.
+//   - GitCommit comes from the build info (vcs.revision, with "+dirty" appended when vcs.modified is true); the Go
+//     toolchain records it for `go build` but not for `go run`, so it is empty then.
+//   - McpServers records name and transport type only (an unparsable one is "invalid"): a server's command, args,
+//     env, url and headers commonly hold tokens.
 func GetRunStartData(cfg config.Config) RunStartData {
 	d := RunStartData{
 		TraceVersion: Version,
@@ -140,6 +147,9 @@ type RunEndData struct {
 	DurationMS int64  `json:"duration_ms"`     // wall-clock time from run_start to run_end
 }
 
+// GetRunEndData builds the run_end payload.
+//
+// Notes: none.
 func GetRunEndData(status, err string, durationMS int64) RunEndData {
 	return RunEndData{
 		Status:     status,
@@ -153,6 +163,9 @@ type TaskStartData struct {
 	Input string `json:"input"` // the user's message; goes through redaction like any other string
 }
 
+// GetTaskStartData builds the task_start payload from the user's input.
+//
+// Notes: none.
 func GetTaskStartData(input string) TaskStartData {
 	return TaskStartData{
 		Input: input,
@@ -166,6 +179,9 @@ type TaskEndData struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// GetTaskEndData builds the task_end payload.
+//
+// Notes: none.
 func GetTaskEndData(status, err string, durationMS int64) TaskEndData {
 	return TaskEndData{
 		Status:     status,
@@ -192,6 +208,9 @@ type ContextClearedData struct {
 	MessagesDropped int `json:"messages_dropped"` // how many messages the context held before it was cleared
 }
 
+// GetContextClearedData builds the context_cleared payload from the number of messages dropped.
+//
+// Notes: none.
 func GetContextClearedData(dropped int) ContextClearedData {
 	return ContextClearedData{MessagesDropped: dropped}
 }
@@ -221,8 +240,12 @@ type ModelRequestData struct {
 	ToolNames       []string        `json:"tool_names,omitempty"`
 }
 
-// GetModelRequestData builds the model_request payload. msgs are the messages to record; contextMessages is how many
-// more were sent in front of them and are only counted.
+// GetModelRequestData builds the model_request payload.
+//
+// Notes:
+//   - msgs are the messages to record; contextMessages is how many more were sent in front of them and are only
+//     counted.
+//   - ToolNames lists the names of the tool definitions sent.
 func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
 	d := ModelRequestData{
 		Provider:        cfg.Provider,
@@ -240,6 +263,10 @@ func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []mo
 	return d
 }
 
+// messageRecord converts a chat message into the record stored in a trace event.
+//
+// Notes:
+//   - Tool calls become ToolCallRecords with the call ID, name and arguments string.
 func messageRecord(m model.ChatMessage) MessageRecord {
 	r := MessageRecord{ID: m.ID, Role: m.Role, Type: m.Type, Content: m.Content, ToolCallID: m.ToolCallID}
 	for _, tc := range m.ToolCalls {
@@ -271,7 +298,10 @@ type ModelResponseData struct {
 	DurationMS int64         `json:"duration_ms"`
 }
 
-// GetModelResponseData builds the model_response payload. StopReason and Usage stay empty until model.Provider reports them.
+// GetModelResponseData builds the model_response payload.
+//
+// Notes:
+//   - StopReason and Usage stay empty until model.Provider reports them.
 func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData {
 	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
 }
@@ -284,6 +314,9 @@ type ToolRequestedData struct {
 	Arguments string `json:"arguments"` // a string, not json.RawMessage: models sometimes emit invalid JSON
 }
 
+// GetToolRequestedData builds the tool_requested payload from the model's tool call.
+//
+// Notes: none.
 func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
 	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}
 }
@@ -308,6 +341,11 @@ type ToolVetoedData struct {
 	WaitMS   int64  `json:"wait_ms,omitempty"` // time spent waiting for the user's answer; 0 when not asked
 }
 
+// GetToolVetoedData builds the tool_vetoed payload from the call, the hook's veto error, the decision and the time
+// spent waiting for the user.
+//
+// Notes:
+//   - decision is one of the Veto* constants; wait is 0 when the user was not asked.
 func GetToolVetoedData(call model.ToolCall, reason error, decision string, wait time.Duration) ToolVetoedData {
 	return ToolVetoedData{CallID: call.ID, Name: call.Function.Name, Reason: reason.Error(), Decision: decision, WaitMS: wait.Milliseconds()}
 }
@@ -321,6 +359,10 @@ type ToolFinishedData struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// GetToolFinishedData builds the tool_finished payload from the call, the content sent back to the model, whether it
+// failed and how long it took.
+//
+// Notes: none.
 func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData {
 	return ToolFinishedData{CallID: call.ID, Name: call.Function.Name, Content: content, Failed: failed, DurationMS: elapsed.Milliseconds()}
 }
@@ -333,7 +375,12 @@ type ModelErrorData struct {
 	DurationMS int64  `json:"duration_ms"`           // time spent before the call failed
 }
 
-// GetModelErrorData builds the model_error payload. HTTPStatus stays 0 until model.Provider returns a typed error that carries it.
+// GetModelErrorData builds the model_error payload.
+//
+// Notes:
+//   - HTTPStatus stays 0 until model.Provider returns a typed error that carries it.
+//   - Canceled is set when err wraps context.Canceled (Ctrl+C), so a cancellation is told apart from a provider
+//     failure.
 func GetModelErrorData(err error, elapsed time.Duration) ModelErrorData {
 	return ModelErrorData{
 		Error:      err.Error(),

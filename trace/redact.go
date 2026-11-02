@@ -30,6 +30,9 @@ type Finding struct {
 }
 
 // String keeps the secret out of accidental %v / %+v printing.
+//
+// Notes:
+//   - It prints only the rule name.
 func (f Finding) String() string {
 	return fmt.Sprintf("finding(%s)", f.Rule)
 }
@@ -67,8 +70,18 @@ type builtinDetector struct {
 	rules []rule
 }
 
+// Name returns "builtin", the detector engine's name.
+//
+// Notes: none.
 func (d builtinDetector) Name() string { return "builtin" }
 
+// Find returns the secrets in s found by the detector's rules, each with the name of the rule that matched.
+//
+// Notes:
+//   - key is the JSON field name s sits under ("" at the root or in a slice).
+//   - A valueRe rule finds a secret by shape inside s; with capture groups, the first non-empty group is the secret
+//     and an empty one is skipped (nothing to mask).
+//   - A keyRe rule matches the key name and takes the whole non-empty string as the secret.
 func (d builtinDetector) Find(key, s string) []Finding {
 	var found []Finding
 	for _, r := range d.rules {
@@ -91,6 +104,10 @@ func (d builtinDetector) Find(key, s string) []Finding {
 	return found
 }
 
+// firstNonEmpty returns the first non-empty string in groups, or "" if there is none.
+//
+// Notes:
+//   - Used to pick the capture group that matched when a pattern has alternatives.
 func firstNonEmpty(groups []string) string {
 	for _, g := range groups {
 		if g != "" {
@@ -144,6 +161,9 @@ var levelRules = map[Level][]string{
 	LevelStandard: ruleNames(),
 }
 
+// ruleNames returns the names of every built-in rule, in catalogue order.
+//
+// Notes: none.
 func ruleNames() []string {
 	names := make([]string, len(builtinRules))
 	for i, r := range builtinRules {
@@ -159,8 +179,13 @@ type Redactor struct {
 	key       []byte // random per-run HMAC key for placeholder tags
 }
 
-// NewRedactor builds a Redactor for a level. Unknown levels fail loudly since user should know if redaction is misconfigured.
-// Later: extra detectors (add) and an allow list (remove rules) are plain slice edits.
+// NewRedactor builds a Redactor for a level.
+//
+// Notes:
+//   - Unknown levels fail loudly since user should know if redaction is misconfigured.
+//   - A level naming a rule that is not in the catalogue is also an error.
+//   - It makes a random 32-byte HMAC key for this run's placeholder tags.
+//   - Later: extra detectors (add) and an allow list (remove rules) are plain slice edits.
 func NewRedactor(level Level) (*Redactor, error) {
 	names, ok := levelRules[level]
 	if !ok {
@@ -186,8 +211,10 @@ func NewRedactor(level Level) (*Redactor, error) {
 }
 
 // Redact returns a redacted copy of data and the sorted, de-duplicated rule names that fired.
-// Steps: json.Marshal(data) -> json.Unmarshal into `any` -> walk -> return the walked value.
-// On any error it returns the error and NO data: the caller must drop the payload, never write it raw.
+//
+// Notes:
+//   - Steps: json.Marshal(data) -> json.Unmarshal into `any` -> walk -> return the walked value.
+//   - On any error it returns the error and NO data: the caller must drop the payload, never write it raw.
 func (r *Redactor) Redact(data any) (any, []string, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {
@@ -202,8 +229,12 @@ func (r *Redactor) Redact(data any) (any, []string, error) {
 	return tree, slices.Sorted(maps.Keys(fired)), nil
 }
 
-// walk returns v (event data) with every detected secret string redacted. key is the JSON field name v sits under ("" at the root).
-// fired collects rule names as a set.
+// walk returns v (event data) with every detected secret string redacted.
+//
+// Notes:
+//   - key is the JSON field name v sits under ("" at the root); array elements keep their array's key.
+//   - fired collects rule names as a set.
+//   - Maps and slices are changed in place; only strings are rewritten.
 func (r *Redactor) walk(v any, key string, fired map[string]bool) any {
 	switch v := v.(type) {
 	case map[string]any:
@@ -223,7 +254,13 @@ func (r *Redactor) walk(v any, key string, fired map[string]bool) any {
 	}
 }
 
-// redactString uses the detectors to find any secrets, then replaces those secrets with placeholders and records the rules that fired.
+// redactString uses the detectors to find any secrets, then replaces those secrets with placeholders and records the
+// rules that fired.
+//
+// Notes:
+//   - Findings are handled longest secret first, so a secret that contains a shorter one is replaced whole.
+//   - A finding that is empty, already a complete placeholder, or no longer in the text (an earlier replacement
+//     removed it) is skipped.
 func (r *Redactor) redactString(s, key string, fired map[string]bool) string {
 	var found []Finding
 	for _, d := range r.detectors {
@@ -241,7 +278,9 @@ func (r *Redactor) redactString(s, key string, fired map[string]bool) string {
 }
 
 // placeholder builds "[REDACTED:rule#tag]". tag = first 4 bytes of HMAC-SHA256(r.key, secret), hex.
-// The same secret gets the same tag within a run, so repeats can be matched without revealing them.
+//
+// Notes:
+//   - The same secret gets the same tag within a run, so repeats can be matched without revealing them.
 func (r *Redactor) placeholder(rule, secret string) string {
 	mac := hmac.New(sha256.New, r.key)
 	mac.Write([]byte(secret))

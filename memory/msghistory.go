@@ -19,13 +19,20 @@ type InMemoryChatHistory struct {
 	messages []model.ChatMessage
 }
 
+// NewInMemoryChatHistory returns an empty InMemoryChatHistory.
+//
+// Notes:
+//   - the error result is always nil today
 func NewInMemoryChatHistory() (*InMemoryChatHistory, error) {
 	return &InMemoryChatHistory{
 		messages: make([]model.ChatMessage, 0),
 	}, nil
 }
 
-// SetupMemoryStore creates and returns a new chat history instance
+// SetupMemoryStore creates and returns a new chat history instance.
+//
+// Notes:
+//   - only cfg.ChatStoreType "in-memory" is supported; any other value is an "unsupported chat store type" error
 func SetupMemoryStore(cfg config.Config) (ChatHistory, error) {
 	if cfg.ChatStoreType == "in-memory" {
 		c, err := NewInMemoryChatHistory()
@@ -37,14 +44,21 @@ func SetupMemoryStore(cfg config.Config) (ChatHistory, error) {
 	return nil, fmt.Errorf("unsupported chat store type: %s", cfg.ChatStoreType)
 }
 
-// gets a full copy of the chat history
+// GetMessages gets a full copy of the chat history.
+//
+// Notes:
+//   - the copy means the caller may keep or modify the result without affecting the history
 func (h *InMemoryChatHistory) GetMessages() []model.ChatMessage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]model.ChatMessage(nil), h.messages...)
 }
 
-// appends new messages to the chat history
+// Append appends new messages to the chat history.
+//
+// Notes:
+//   - the ... appends all of the messages one at a time preserving order (equivalent to a for loop but cleaner syntax)
+//   - never trims or evicts: the full history is kept
 func (h *InMemoryChatHistory) Append(msgs []model.ChatMessage) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

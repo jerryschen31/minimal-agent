@@ -222,6 +222,32 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
   **`MaxTokens` is parsed and merged but not yet read**; don't assume `-maxtokens` takes effect.
 
+## Code map (root module only)
+
+`CODEMAP.md` is a generated map of every package: a directory tree, then each Go file's function and method
+signatures. It is copied from the `# Codemap (auto-generated)` section at the end of each package's `doc.go`, which
+`cmd/codemap` writes from the code. **Never edit those sections or `CODEMAP.md` by hand.**
+
+```sh
+go run ./cmd/codemap                         # regenerate every doc.go section and CODEMAP.md
+go run ./cmd/codemap -check                  # fail if anything is stale (go test ./cmd/codemap runs this too)
+go run ./cmd/codemap -lint                   # list functions with a missing or malformed header
+go run ./cmd/codemap -code-unchanged HEAD    # fail if anything but comments changed since a git ref
+```
+
+- **After adding, removing or changing a function signature, run `go run ./cmd/codemap`** and commit the result.
+- **Every function (exported or not) has a header**: a one-liner starting with the function's name, then `Notes:`
+  (bullets for what the code does not make obvious; `Notes: none.` if nothing). No `Example:` sections. The format is in
+  `cmd/codemap/doc.go`. Long explanations above a function belong in its Notes.
+- **Package comments live only in `doc.go`.** A new package needs a `doc.go` with a hand-written overview.
+- **Whoever changes a function body (you or an agent) rereads that function's header and updates its one-liner and Notes
+  if they no longer match.** Nothing enforces this; Notes drifting is accepted as a minor defect, but do not leave a
+  header you know is wrong. Signatures in the map cannot drift: they are generated.
+- The `doc-keeper` agent (`.claude/agents/doc-keeper.md`) writes headers and edits comments only. After it runs,
+  `-code-unchanged HEAD` must pass. See `DECISIONS.md § Codemap`.
+- **Pre-commit hook** (`.githooks/pre-commit`): blocks a commit when the map is stale or a function lacks a header. It
+  only checks, never stages. Enable once per clone: `git config core.hooksPath .githooks`. Skip with `--no-verify`.
+
 ## Conventions
 
 - Keep explanations clear, concise, accurate but avoid unnecessary technical jargon when possible. Explain things as if I am a generalist mid-level software engineer.

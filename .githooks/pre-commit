@@ -1,0 +1,14 @@
+#!/bin/sh
+# Blocks a commit when the generated codemap is stale or a function lacks a proper header.
+# It only checks; it never changes or stages files. Fix with: go run ./cmd/codemap
+# Enable once per clone: git config core.hooksPath .githooks   (skip a single commit with --no-verify)
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+if ! go run ./cmd/codemap -check; then
+	echo "pre-commit: the codemap is out of date. Run: go run ./cmd/codemap   then git add the changed files." >&2
+	exit 1
+fi
+if ! go run ./cmd/codemap -lint; then
+	echo "pre-commit: the functions above need a header (one-liner starting with the function's name, then Notes:)." >&2
+	exit 1
+fi
