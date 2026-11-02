@@ -24,9 +24,18 @@ type Agent struct {
 	runTrace     *trace.Scope // the run's trace scope: started by RunAgent, ended by ShutdownAgent
 }
 
-// SetupAgent builds the agent from cfg. A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent
-// then returns context.Canceled, and the MCP servers that had already connected are kept in agent.mcpConns, so
-// ShutdownAgent closes them. A nil interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
+// SetupAgent builds the agent from cfg: provider, memory, context window, tool rules, built-in and MCP tools, tool
+// registry, trace recorder and chat session, in that order.
+//
+// Notes:
+//   - A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent then returns context.Canceled, and
+//     the MCP servers that had already connected are kept in agent.mcpConns, so ShutdownAgent closes them. A nil
+//     interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
+//   - Only the MCP steps get the interruptible setupCtx; stop() cancels it when setup returns, so nothing that lives on
+//     may keep it (MCP sessions detach from it; see DECISIONS.md § Deferred for Later, item 15).
+//   - A server that fails to connect is skipped and the others still connect; the failures are printed to
+//     cfg.OutBuffer with their URLs hidden (safeMCPError), since a connect error can quote a URL that holds a token.
+//   - mcpConns is kept on agent even on error: ShutdownAgent closes it, also when a later setup step fails.
 func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupts <-chan os.Signal) error {
 	if err := checkConfig(cfg); err != nil {
 		return err
@@ -118,8 +127,15 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	return nil
 }
 
-// need to update this function to handle headless and oneshot modes, not just chat mode
-// `intsigChRecv` of type `<-chan os.Signal` only receives OS interrupt signals (e.g., Ctrl+C)
+// RunAgent runs the agent in its configured mode and returns when the run ends.
+//
+// Notes:
+//   - intsigChRecv of type <-chan os.Signal only receives OS interrupt signals (e.g., Ctrl+C).
+//   - Only "chat" mode is supported; any other agent mode returns an "unsupported agent mode" error. This function
+//     needs to be updated to handle headless and oneshot modes, not just chat mode.
+//   - Records run_start now. run_end is recorded by ShutdownAgent, not here: background work such as auto-compaction
+//     can still be running when this function returns, and its events must land before run_end.
+//   - Returns ctx's error at once if ctx is already cancelled.
 func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -138,7 +154,14 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 	return err
 }
 
-// gracefully shuts down the agent, ensuring any in-flight agent processes are completed and MCP servers are closed
+// ShutdownAgent gracefully shuts down the agent, ensuring any in-flight agent processes are completed and MCP servers
+// are closed.
+//
+// Notes:
+//   - Order matters: wait for any in-flight background compaction, close the MCP servers, record run_end, then close
+//     (flush) the trace recorder, so run_end lands after background work and before the recorder stops accepting events.
+//   - A second ShutdownAgent must not write a second run_end, so runTrace is set to nil after it ends.
+//   - Safe to call when setup failed part way: it checks that the session and connections exist first.
 func (agent *Agent) ShutdownAgent(ctx context.Context) {
 	if agent.session != nil {
 		// wait for any in-flight background compaction to finish
@@ -165,8 +188,15 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 	}
 }
 
-// checkConfig rejects config values that would make the agent fail later, quietly or on every turn. Shared by
-// SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
+// checkConfig rejects config values that would make the agent fail later, quietly or on every turn.
+//
+// Notes:
+//   - Shared by SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
+//   - ResponseTimeoutSeconds of 0 would time out every model call at once.
+//   - mcpResultMaxBytes is checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad
+//     cap would silently drop every MCP tool.
+//   - A typo in a safety setting (approval) fails setup rather than silently meaning something else.
+//   - Also runs contextwindow.CheckConfig (SetupChatContext runs it too); here so info mode reports it too.
 func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
@@ -186,6 +216,10 @@ func checkConfig(cfg config.Config) error {
 	return contextwindow.CheckConfig(cfg) // also run by SetupChatContext; here so info mode reports it too
 }
 
+// createSystemMessage builds the system-role chat message that carries the system prompt.
+//
+// Notes:
+//   - Gets a fresh ID and a UTC timestamp on every call.
 func createSystemMessage(systemPrompt string) model.ChatMessage {
 	return model.ChatMessage{
 		Role:      "system",

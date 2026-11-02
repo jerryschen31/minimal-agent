@@ -26,9 +26,14 @@ type digestSubscriber struct {
 	f *os.File
 }
 
-// NewDigestSubscriber creates <dir>/<runID>.digest.md (owner-only, 0600; create-only, like the JSONL file) and returns a
-// Subscriber that feeds d. The digest is written when the recorder closes.
-// [agent] Downside: a crash before Close leaves no digest; run Replay on the .jsonl file to rebuild it.
+// NewDigestSubscriber creates <dir>/<runID>.digest.md and returns a Subscriber that feeds d.
+//
+// Notes:
+//   - The file is owner-only (0600) and create-only (O_EXCL), like the JSONL file; the directory is created with 0700
+//     if needed.
+//   - The run ID becomes a file name, so an empty ID or one carrying a path is an error.
+//   - The digest is written when the recorder closes.
+//   - [agent] Downside: a crash before Close leaves no digest; run Replay on the .jsonl file to rebuild it.
 func NewDigestSubscriber(dir, runID string, d Digester) (Subscriber, error) {
 	if runID == "" || filepath.Base(runID) != runID {
 		return nil, fmt.Errorf("trace: invalid run ID %q", runID)
@@ -43,7 +48,10 @@ func NewDigestSubscriber(dir, runID string, d Digester) (Subscriber, error) {
 	return &digestSubscriber{d: d, f: f}, nil
 }
 
-// Write decodes one L0 line and hands the event to the Digester. A line that does not decode is an error (the recorder keeps the first one).
+// Write decodes one L0 line and hands the event to the Digester.
+//
+// Notes:
+//   - A line that does not decode is an error (the recorder keeps the first one).
 func (s *digestSubscriber) Write(line []byte) error {
 	var ev Event
 	if err := json.Unmarshal(line, &ev); err != nil {
@@ -54,13 +62,22 @@ func (s *digestSubscriber) Write(line []byte) error {
 }
 
 // Close renders the digest into the file, then closes it.
+//
+// Notes:
+//   - The file is closed even if rendering failed; both errors are returned joined.
 func (s *digestSubscriber) Close() error {
 	renderErr := s.d.Render(s.f)
 	return errors.Join(renderErr, s.f.Close())
 }
 
-// Replay feeds every event of a finished L0 .jsonl file to d, so a digest can be (re)built offline, e.g. after a crash or with a newer Digester.
-// [agent] It reads with ReadBytes, not bufio.Scanner: Scanner stops at a fixed line size, and one event can be as large as traceMaxEventBytes.
+// Replay feeds every event of a finished L0 .jsonl file to d, so a digest can be (re)built offline.
+//
+// Notes:
+//   - Use it e.g. after a crash or with a newer Digester.
+//   - [agent] It reads with ReadBytes, not bufio.Scanner: Scanner stops at a fixed line size, and one event can be as
+//     large as traceMaxEventBytes.
+//   - A last line without a trailing newline is still processed; a line that does not decode stops the replay with an
+//     error.
 func Replay(r io.Reader, d Digester) error {
 	br := bufio.NewReader(r)
 	for {

@@ -33,8 +33,11 @@ type ToolRules struct {
 	deny, ask []string // lowercased, checked at construction
 }
 
-// NewToolRules builds the rules from cfg.DenyRules and cfg.AskRules (the defaults from config.GetDefaultConfig, or a
-// config file's lists that replaced them). Each rule is lowercased and validated; an invalid rule is an error naming it.
+// NewToolRules builds the rules from cfg.DenyRules and cfg.AskRules.
+//
+// Notes:
+//   - The lists are the defaults from config.GetDefaultConfig, or a config file's lists that replaced them.
+//   - Each rule is lowercased and validated; an invalid rule is an error naming it.
 func NewToolRules(denyRules, askRules []string) (*ToolRules, error) {
 	deny, err := checkRules("deny", denyRules)
 	if err != nil {
@@ -47,8 +50,15 @@ func NewToolRules(denyRules, askRules []string) (*ToolRules, error) {
 	return &ToolRules{deny: deny, ask: ask}, nil
 }
 
-// checkRules lowercases and validates one list of rules, dropping duplicates. kind ("deny" or "ask") names the list
-// in errors.
+// checkRules lowercases and validates one list of rules, dropping duplicates.
+//
+// Notes:
+//   - kind ("deny" or "ask") names the list in errors.
+//   - Errors quote the rule as the user wrote it; matching uses the trimmed, lowercased form (a stray space would
+//     match nothing).
+//   - A rule containing ":" is rejected: the tool:program form needs run_command, which does not exist yet.
+//   - A malformed glob (an invalid wildcard, an open bracket with no closing bracket) is caught by path.Match.
+//   - A duplicate (e.g. the same rule in two cases, *Delete* and *delete*) adds nothing and is skipped.
 func checkRules(kind string, rulesIn []string) ([]string, error) {
 	var rules []string
 	for _, raw := range rulesIn {
@@ -68,8 +78,12 @@ func checkRules(kind string, rulesIn []string) ([]string, error) {
 	return rules, nil
 }
 
-// BeforeTool checks the tool call against the rules: a deny match returns `denied by rule "…"`, an ask match returns
-// an error wrapping ErrNeedsApproval (`needs approval by rule "…"`), and no match returns nil.
+// BeforeTool checks the tool call against the rules.
+//
+// Notes:
+//   - A deny match returns `denied by rule "…"`, an ask match returns an error wrapping ErrNeedsApproval (`needs
+//     approval by rule "…"`), and no match returns nil.
+//   - Only the ErrNeedsApproval veto can be overridden by the user or by approval allow-all; a deny error is final.
 func (t *ToolRules) BeforeTool(ctx context.Context, call model.ToolCall) error {
 	switch level, rule := t.Level(call.Function.Name); level {
 	case LevelDeny:
@@ -80,9 +94,12 @@ func (t *ToolRules) BeforeTool(ctx context.Context, call model.ToolCall) error {
 	return nil
 }
 
-// Level returns the level a tool name gets and the rule that set it ("" for LevelRun). The first matching deny rule
-// wins, then the first matching ask rule. BeforeTool and info mode both use it, so what info mode shows is what the
-// gate does.
+// Level returns the level a tool name gets and the rule that set it.
+//
+// Notes:
+//   - The rule is "" for LevelRun.
+//   - The first matching deny rule wins, then the first matching ask rule, so deny beats ask.
+//   - BeforeTool and info mode both use it, so what info mode shows is what the gate does.
 func (t *ToolRules) Level(toolName string) (level, rule string) {
 	for _, r := range t.deny {
 		if RuleMatches(r, toolName) {
@@ -98,19 +115,30 @@ func (t *ToolRules) Level(toolName string) (level, rule string) {
 }
 
 // DenyRules returns the deny rules in the order Level checks them.
+//
+// Notes:
+//   - It returns a copy, so a caller can't change the rules in use.
 func (t *ToolRules) DenyRules() []string {
 	return slices.Clone(t.deny) // a copy, so a caller can't change the rules in use
 }
 
 // AskRules returns the ask rules in the order Level checks them.
+//
+// Notes:
+//   - It returns a copy, so a caller can't change the rules in use.
 func (t *ToolRules) AskRules() []string {
 	return slices.Clone(t.ask)
 }
 
-// RuleMatches reports whether a rule (as returned by DenyRules or AskRules) matches a model-facing tool name, ignoring
-// case. A tool name is an opaque string, not a path: path.Match's * and ? stop at '/', so "*delete*" would miss a name
-// like "team/fs_delete_file" (an MCP server label can contain '/'). '/' is mapped to a byte that has no special
-// meaning in a pattern, on both sides, so * and ? match across it and a literal '/' in a rule still matches '/'.
+// RuleMatches reports whether a rule (as returned by DenyRules or AskRules) matches a model-facing tool name,
+// ignoring case.
+//
+// Notes:
+//   - A tool name is an opaque string, not a path: path.Match's * and ? stop at '/', so "*delete*" would miss a name
+//     like "team/fs_delete_file" (an MCP server label can contain '/').
+//   - '/' is mapped to a byte that has no special meaning in a pattern, on both sides, so * and ? match across it and
+//     a literal '/' in a rule still matches '/'.
+//   - The path.Match error is ignored because NewToolRules rejected malformed rules.
 func RuleMatches(rule, toolName string) bool {
 	const opaqueSep = "\x00"
 	rule = strings.ReplaceAll(rule, "/", opaqueSep)

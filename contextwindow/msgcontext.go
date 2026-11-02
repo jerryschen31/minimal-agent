@@ -38,8 +38,12 @@ type ContextState struct {
 	Gen      int
 }
 
-// NewChatContext wraps w. Auto-compaction is needed once the window holds autoCompactThreshold messages; a threshold of 0
-// (or less) means auto-compaction is off. Config never says 0: it has its own autoCompact switch, which SetupChatContext turns into 0.
+// NewChatContext wraps w. Auto-compaction is needed once the window holds autoCompactThreshold messages.
+//
+// Notes:
+//   - a threshold of 0 (or less) means auto-compaction is off. Config never says 0: it has its own autoCompact switch,
+//     which SetupChatContext turns into 0
+//   - the error result is always nil today
 func NewChatContext(w ContextWindow, autoCompactThreshold int) (*ChatContext, error) {
 	return &ChatContext{
 		window:               w,
@@ -49,60 +53,104 @@ func NewChatContext(w ContextWindow, autoCompactThreshold int) (*ChatContext, er
 	}, nil
 }
 
+// GetWindow returns the underlying ContextWindow.
+//
+// Notes:
+//   - reads c.window without taking c.mu; the window has its own lock, but calls made on it directly bypass the ChatContext lock
+//     (and so its generation counter)
 func (c *ChatContext) GetWindow() ContextWindow {
 	return c.window
 }
 
+// ShouldStartCompaction reports whether the caller may start a compaction, claiming the in-progress flag if so.
+//
+// Notes:
+//   - it is an atomic compare-and-swap, so of several concurrent callers exactly one gets true
+//   - the winner must call EndCompaction when done (CompactChatContext does this with defer), or no compaction can start again
 func (c *ChatContext) ShouldStartCompaction() bool {
 	return c.compactInProgress.CompareAndSwap(false, true)
 }
 
+// EndCompaction releases the in-progress flag that ShouldStartCompaction set.
+//
+// Notes:
+//   - safe to call when the flag is not set
 func (c *ChatContext) EndCompaction() {
 	c.compactInProgress.Store(false)
 }
 
+// IsAutoCompactionNeeded reports whether the window has reached the auto-compaction threshold.
+//
+// Notes:
+//   - always false when the threshold is 0 or less (auto-compaction off)
+//   - only reads the size; it does not claim the in-progress flag, so pair it with ShouldStartCompaction
 func (c *ChatContext) IsAutoCompactionNeeded() bool {
 	return c.autoCompactThreshold > 0 && c.window.GetSize() >= c.autoCompactThreshold
 }
 
-// WaitForCompaction blocks until any in-flight background compaction finishes. Safe to call
-// even when none is running — Wait() on a zero counter returns immediately, no blocking.
-// This is useful for code that needs to ensure all background compaction has completed before proceeding, such as during graceful shutdown.
+// WaitForCompaction blocks until any in-flight background compaction finishes.
+//
+// Notes:
+//   - safe to call even when none is running: Wait() on a zero counter returns immediately, no blocking
+//   - useful for code that needs to ensure all background compaction has completed before proceeding, such as during graceful
+//     shutdown
 func (c *ChatContext) WaitForCompaction() {
 	c.CompactWG.Wait()
 }
 
+// AddMessages appends msgs to the window under the context lock.
+//
+// Notes:
+//   - the window decides what to evict when it is over its maximum size; see ContextWindow.AddMessages for the user-first rule
 func (c *ChatContext) AddMessages(msgs []model.ChatMessage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.window.AddMessages(msgs)
 }
 
+// GetMessages returns a copy of the messages in the window under the context lock.
+//
+// Notes:
+//   - the slice is a copy, so the caller may keep or modify it
 func (c *ChatContext) GetMessages() []model.ChatMessage {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.window.GetMessages()
 }
 
+// RemoveLast removes the last n messages from the window under the context lock.
+//
+// Notes:
+//   - does not change the generation counter
 func (c *ChatContext) RemoveLast(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.window.RemoveLast(n)
 }
 
+// GetSize returns how many messages the window holds now.
+//
+// Notes: none.
 func (c *ChatContext) GetSize() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.window.GetSize()
 }
 
+// GetMaxSize returns the most messages the window can hold.
+//
+// Notes: none.
 func (c *ChatContext) GetMaxSize() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.window.GetMaxSize()
 }
 
-// Snapshot() gets a snapshot of the state for the current context window - for now this includes the chat history and the generation counter
+// Snapshot returns the window's messages together with the generation counter, taken under one lock.
+//
+// Notes:
+//   - for now the state is the chat history and the generation counter
+//   - pass the state to Compact later: the generation tells Compact whether the window was cleared or compacted in between
 func (c *ChatContext) Snapshot() ContextState {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -112,6 +160,10 @@ func (c *ChatContext) Snapshot() ContextState {
 	}
 }
 
+// Clear empties the window and increments the generation counter.
+//
+// Notes:
+//   - the generation bump makes any compaction that took a Snapshot before the clear fail instead of resurrecting old messages
 func (c *ChatContext) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,6 +172,14 @@ func (c *ChatContext) Clear() {
 }
 
 // Compact replaces the messages in state with summaryMsgs, keeping any messages added since state was taken.
+//
+// Notes:
+//   - returns false, changing nothing, if the generation has moved on since the snapshot (the window was cleared or compacted
+//     meanwhile), because compaction cannot be done safely then
+//   - messages are matched by ID (getMessageIDs), because new messages may be added concurrently while the LLM writes the summary;
+//     the result is the summary first, then the new messages in their original order
+//   - if enough new messages arrived that summary plus survivors no longer fit, clampToMax trims the survivors
+//   - on success the generation counter is incremented
 func (c *ChatContext) Compact(state ContextState, summaryMsgs []model.ChatMessage) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -150,8 +210,11 @@ func (c *ChatContext) Compact(state ContextState, summaryMsgs []model.ChatMessag
 	return true
 }
 
-// given a slice of chat messages,get message IDs back as a map
-// this assumes that ID is unique and present for each message
+// getMessageIDs returns the IDs of messages as a set.
+//
+// Notes:
+//   - assumes ID is unique and present for each message; messages with an empty ID are skipped, so they are never treated as
+//     already summarized
 func getMessageIDs(messages []model.ChatMessage) map[string]bool {
 
 	messageIDs := make(map[string]bool, len(messages))
@@ -164,11 +227,18 @@ func getMessageIDs(messages []model.ChatMessage) map[string]bool {
 	return messageIDs
 }
 
-// clampToMax trims a compacted message slice (the first numSummary messages are the summary, then surviving messages oldest-to-newest)
-// to at most maxSize messages. This only matters in the rare event that enough new messages were added while the summary was being
-// generated that the summary plus every survivor no longer fits. The summary is always kept and the oldest survivors are dropped first,
-// then any survivors before the next user message, so the kept survivors start at a whole turn (possibly leaving just the summary).
-// It assumes maxSize >= numSummary and returns msgs unchanged (not copied) when it already fits.
+// clampToMax trims a compacted message slice to at most maxSize messages.
+//
+// Notes:
+//   - msgs is the first numSummary summary messages, then surviving messages oldest-to-newest
+//   - only matters in the rare event that enough new messages were added while the summary was being generated that the summary
+//     plus every survivor no longer fits
+//   - the summary is always kept and the oldest survivors are dropped first, then any survivors before the next user message, so the
+//     kept survivors start at a whole turn (possibly leaving just the summary)
+//   - skipping to the next user message is needed because the cut may land mid-turn, leaving orphaned tool results or an assistant
+//     reply whose question is gone
+//   - assumes maxSize >= numSummary and returns msgs unchanged (not copied) when it already fits; otherwise it allocates a fresh
+//     slice so it does not alias msgs' backing array
 func clampToMax(msgs []model.ChatMessage, numSummary, maxSize int) []model.ChatMessage {
 	if len(msgs) <= maxSize {
 		return msgs
@@ -184,7 +254,11 @@ func clampToMax(msgs []model.ChatMessage, numSummary, maxSize int) []model.ChatM
 	return append(trimmed, msgs[start:]...)
 }
 
-// creates a new chat context instance from the context window settings in cfg
+// SetupChatContext creates a new chat context instance from the context window settings in cfg.
+//
+// Notes:
+//   - validates cfg with CheckConfig first, so a bad setting fails here rather than later
+//   - the auto-compaction threshold is 0 (off) unless cfg.AutoCompact is set; otherwise it is autoCompactAt(cfg)
 func SetupChatContext(cfg config.Config) (*ChatContext, error) {
 	if err := CheckConfig(cfg); err != nil {
 		return nil, err
@@ -207,8 +281,15 @@ func SetupChatContext(cfg config.Config) (*ChatContext, error) {
 	return cc, nil
 }
 
-// CheckConfig rejects context window settings that would fail later or quietly misbehave. Called by SetupChatContext, and by
-// the agent's own config check, so info mode reports the same errors chat mode would.
+// CheckConfig rejects context window settings that would fail later or quietly misbehave.
+//
+// Notes:
+//   - called by SetupChatContext, and by the agent's own config check, so info mode reports the same errors chat mode would
+//   - the window must hold at least MinContextWindowMessages, the strategy must be one of WindowStrategies, and the summarizer
+//     prompt must not be blank
+//   - autoCompactThreshold is checked even when autoCompact is false, so a typo is caught before auto-compaction is turned back on
+//   - [agent] with autoCompact on, the start point must be above 4 messages: compaction leaves 2 messages (the summary pair) and a
+//     plain turn adds at least 2 more, so a threshold of 4 or less would compact after nearly every turn
 func CheckConfig(cfg config.Config) error {
 	if cfg.ContextWindowMessages < MinContextWindowMessages {
 		return fmt.Errorf("contextWindowMessages must be at least %d (the summary pair plus one turn), got %d", MinContextWindowMessages, cfg.ContextWindowMessages)
@@ -232,12 +313,26 @@ func CheckConfig(cfg config.Config) error {
 	return nil
 }
 
-// autoCompactAt is the message count at which auto-compaction starts
+// autoCompactAt is the message count at which auto-compaction starts.
+//
+// Notes:
+//   - the product of the window size and the threshold fraction, truncated toward zero
 func autoCompactAt(cfg config.Config) int {
 	return int(float64(cfg.ContextWindowMessages) * cfg.AutoCompactThreshold)
 }
 
-// makes a call to the provider to summarize the given chat messages, with systemPrompt (config's summarizerPrompt) as the instructions
+// SummarizeChatContext makes a call to the provider to summarize the given chat messages, with systemPrompt (config's
+// summarizerPrompt) as the instructions.
+//
+// Notes:
+//   - returns an error for no messages, a provider error, or an empty summary (a Chat response with no text is an error)
+//   - the messages are rendered as plain text, one block per message (tool calls and tool call IDs included), and sent inside
+//     <transcript> tags in a brand-new request slice, so the original backing array is never touched
+//   - the user's extra instructions (addlInstructions) go in the one system message, because some providers reject or ignore a system
+//     message that isn't first
+//   - [agent] the system message also ranks the user's own text above anything inside the transcript (which can hold text from files
+//     or tools)
+//   - no tools are offered to the model for this call
 func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.ChatMessage, systemPrompt, addlInstructions string) (string, error) {
 	if len(msgs) == 0 {
 		return "", fmt.Errorf("no messages to summarize")
@@ -279,10 +374,22 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 	return summary, nil
 }
 
-// compacts the chat context by summarizing the current messages and replacing them with a user/assistant pair: a request for a summary, and the summary.
-// It returns the assistant message, which holds the summary.
-// in the future, the compaction could be more sophisticated (compacting a subset of messages, merging similar messages, having categories for messages, etc.)
-// addlInstructions provide additional information for the summarization process, guiding how the chat context should be summarized.
+// CompactChatContext compacts the chat context by summarizing the current messages and replacing them with a user/assistant
+// pair: a request for a summary, and the summary. It returns the assistant message, which holds the summary.
+//
+// Notes:
+//   - addlInstructions provide additional information for the summarization process, guiding how the chat context should be
+//     summarized
+//   - releases the in-progress flag (EndCompaction) on every return path, so the caller must have claimed it first with
+//     ShouldStartCompaction
+//   - takes a Snapshot first and Compact applies the summary against it, so messages added while the LLM was working survive; if the
+//     window was cleared or compacted meanwhile it returns an error ([system] Chat context compaction failed)
+//   - [agent] a pair, not a lone user message: as a user message the model could read the summary as a new request, and the next user
+//     turn would make two user messages in a row. As the assistant's own answer, text injected into the summary (from files or
+//     tools) also carries less authority than if it looked like the user said it
+//   - the user half is made up (the user never typed it); chat history keeps what really happened, only the context is replaced
+//   - in the future, the compaction could be more sophisticated (compacting a subset of messages, merging similar messages, having
+//     categories for messages, etc.)
 func CompactChatContext(ctx context.Context, chatctx *ChatContext, p model.Provider, systemPrompt, addlInstructions string) (model.ChatMessage, error) {
 	defer chatctx.EndCompaction() // ensure the compaction lock is released after compaction is done
 
@@ -313,7 +420,10 @@ func CompactChatContext(ctx context.Context, chatctx *ChatContext, p model.Provi
 	}
 }
 
-// DebugChatContext prints the current chat context to w, for debugging (shown only with -debug / "debug": true)
+// DebugChatContext prints the current chat context to w, for debugging.
+//
+// Notes:
+//   - shown only with -debug / "debug": true
 func DebugChatContext(w io.Writer, msgContext []model.ChatMessage) {
 	fmt.Fprintln(w, "[debug] --- context window ---")
 	for i, msg := range msgContext {

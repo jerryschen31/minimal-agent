@@ -106,10 +106,12 @@ type McpServerConfig struct {
 
 // TransportType works out which transport an MCP server uses, and rejects entries that are ambiguous or contradictory.
 //
-//		command             -> stdio
-//		url                 -> http
-//		url + "type": "sse" -> sse (caller warns and skips)
-//	    weird mix of fields (e.g., command and url specified) or unknown fields -> error
+// Notes:
+//   - The mapping: command -> stdio; url -> http; url + "type": "sse" -> sse (caller warns and skips); a weird mix of
+//     fields (e.g., command and url specified) or unknown fields -> error.
+//   - The transport is inferred from the fields first, then an explicit "type" confirms or refines it.
+//   - A known field that doesn't apply is an error, not a warning: ignoring e.g. an "env" token on a remote server
+//     would silently drop the credential and surface later as a confusing 401.
 func (m McpServerConfig) TransportType() (string, error) {
 
 	hasCmd, hasURL := m.Command != "", m.URL != ""
@@ -158,6 +160,12 @@ func (m McpServerConfig) TransportType() (string, error) {
 	return kind, nil
 }
 
+// GetDefaultConfig returns the built-in defaults every setting starts from.
+//
+// Notes:
+//   - Each call returns a fresh Config, but InBuffer and OutBuffer point at os.Stdin and os.Stdout.
+//   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
+//     FlagsOverlay layers the flags.
 func GetDefaultConfig() Config {
 	return Config{
 		UserID:        "default_user",
@@ -198,7 +206,15 @@ func GetDefaultConfig() Config {
 	}
 }
 
-// setDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in config defaults
+// SetDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in
+// config defaults.
+//
+// Notes:
+//   - The file is read from flags.Config; the defaults are loaded first, so missing keys in the file keep their
+//     defaults.
+//   - Unrecognized fields display a warning (on cfg.OutBuffer, sorted so the warnings are stable) and get ignored;
+//     a file that cannot be read or parsed is an error.
+//   - Key matching is case-insensitive, as in encoding/json.
 func SetDefaultConfig(flags Flags) (Config, error) {
 	// first get the default config, so missing keys in the file keep their defaults
 	cfg := GetDefaultConfig()
@@ -239,7 +255,9 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 }
 
 // configJSONKeys returns the lowercased JSON key of every Config field that can be set from a file.
-// Untagged or `json:"-"` fields (InBuffer, OutBuffer, McpServerStderr) are left out.
+//
+// Notes:
+//   - Untagged or `json:"-"` fields (InBuffer, OutBuffer, McpServerStderr) are left out.
 func configJSONKeys() map[string]bool {
 	keys := make(map[string]bool)
 	t := reflect.TypeOf(Config{})
@@ -254,7 +272,10 @@ func configJSONKeys() map[string]bool {
 }
 
 // PrintConfig prints an explicit allowlist of settings that are safe to show.
-// MCP servers are listed by name and transport only.
+//
+// Notes:
+//   - MCP servers are listed by name and transport only.
+//   - Output goes to cfg.OutBuffer; the base URL goes through DisplayURL.
 func PrintConfig(cfg Config) {
 	w := cfg.OutBuffer
 	fmt.Fprintln(w, "Current agent configuration:")
@@ -309,7 +330,11 @@ func PrintConfig(cfg Config) {
 
 // DisplayURL returns raw in a form that is safe to print: scheme, host and path stay, while the parts that can
 // carry a credential (user:password@, the query string, the fragment) are replaced by [hidden], whatever they
-// contain. It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+// contain.
+//
+// Notes:
+//   - It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+//   - A URL that does not parse or has no host is replaced entirely, since it can't tell which part is which.
 func DisplayURL(raw string) string {
 	if raw == "" {
 		return ""

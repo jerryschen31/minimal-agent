@@ -19,7 +19,10 @@ type ReadFileTool struct {
 }
 
 // NewReadFileTool creates a read_file tool that reads only inside ws (NewWorkspace).
-// maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
+//
+// Notes:
+//   - maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
+//   - A nil ws is an error.
 func NewReadFileTool(ws *Workspace, maxBytes int) (*ReadFileTool, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("read_file needs a workspace")
@@ -31,6 +34,9 @@ func NewReadFileTool(ws *Workspace, maxBytes int) (*ReadFileTool, error) {
 }
 
 // fileKind names a non-regular file type for the error shown to the model.
+//
+// Notes:
+//   - Anything that is not a pipe, socket or device is reported as "special file".
 func fileKind(mode os.FileMode) string {
 	switch {
 	case mode&os.ModeNamedPipe != 0:
@@ -46,7 +52,10 @@ func fileKind(mode os.FileMode) string {
 	}
 }
 
-// GetToolDefinition returns the definition of the read_file tool
+// GetToolDefinition returns the definition of the read_file tool.
+//
+// Notes:
+//   - The description states the per-call cap (maxBytes in KB), so the model knows to read large files in pieces.
 func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"read_file",
@@ -76,6 +85,16 @@ func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 }
 
 // CallTool executes the read_file tool with the given arguments and context. It returns the file contents, or an error.
+//
+// Notes:
+//   - Order of defences: resolveInfo (workspace check) then openRoot (os.Root, a second line of defence) then openFile
+//     (regular file, same file as checked).
+//   - A limit of 0 means "not given" and a limit above maxBytes is lowered to it. A file with a NUL byte is refused as
+//     binary.
+//   - The piece starts and ends on character boundaries, so the next piece (at the offset in the truncation note)
+//     neither repeats nor loses bytes; a limit smaller than one character is an error rather than an endless
+//     "continue at the same offset".
+//   - A truncated result ends with a note giving the offset to pass to the next call.
 func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
 	var params struct {
@@ -168,6 +187,10 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 }
 
 // trimPartialRune drops an incomplete multi-byte character from the end of b.
+//
+// Notes:
+//   - Looks back at most utf8.UTFMax bytes; a complete final character, or no start byte in that range, leaves b
+//     unchanged.
 func trimPartialRune(b []byte) []byte {
 	for i := 1; i <= utf8.UTFMax && i <= len(b); i++ {
 		if utf8.RuneStart(b[len(b)-i]) {
