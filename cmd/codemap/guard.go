@@ -14,7 +14,9 @@ import (
 // codeUnchanged returns the .go files changed since a git ref whose code differs from the version at the ref, ignoring comments.
 //
 // Notes:
-//   - Deleted files are reported as "name (deleted)"; added files are not listed.
+//   - Deleted files are reported as "name (deleted)".
+//   - A file added since the ref, staged or not, counts as a code change if it holds anything but a package clause
+//     (reported as "name (added, contains code)"); a new comment-only file such as a doc.go passes.
 //   - Renames are treated as a delete plus an add (--no-renames), so a renamed file is reported.
 //   - A file that fails to parse is reported.
 func codeUnchanged(root, ref string) ([]string, error) {
@@ -22,28 +24,44 @@ func codeUnchanged(root, ref string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var bad []string
+	var entries [][2]string // {status, path relative to the repository top}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		status, name, ok := strings.Cut(line, "\t")
-		if !ok {
-			continue
+		if status, name, ok := strings.Cut(line, "\t"); ok {
+			entries = append(entries, [2]string{status, name})
 		}
-		switch status {
-		case "A":
-			continue
-		case "D":
+	}
+	// git diff never lists files that are not tracked yet, so a new file nobody has staged would slip through.
+	untracked, err := git(root, "ls-files", "--others", "--exclude-standard", "--full-name", "--", "*.go")
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range strings.Fields(untracked) {
+		entries = append(entries, [2]string{"A", name})
+	}
+	top, err := git(root, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, err
+	}
+	top = strings.TrimSpace(top)
+
+	var bad []string
+	for _, e := range entries {
+		status, name := e[0], e[1]
+		if status == "D" {
 			bad = append(bad, name+" (deleted)")
 			continue
 		}
+		cur, err := readFile(filepath.Join(top, name))
+		if err != nil {
+			return nil, err
+		}
+		if status == "A" {
+			if !onlyPackageClause(cur) {
+				bad = append(bad, name+" (added, contains code)")
+			}
+			continue
+		}
 		old, err := git(root, "show", ref+":"+name)
-		if err != nil {
-			return nil, err
-		}
-		top, err := git(root, "rev-parse", "--show-toplevel")
-		if err != nil {
-			return nil, err
-		}
-		cur, err := readFile(filepath.Join(strings.TrimSpace(top), name))
 		if err != nil {
 			return nil, err
 		}
@@ -54,6 +72,15 @@ func codeUnchanged(root, ref string) ([]string, error) {
 		}
 	}
 	return bad, nil
+}
+
+// onlyPackageClause reports whether a Go source file holds nothing but comments and a package clause.
+//
+// Notes:
+//   - Imports, declarations and compiler directives all count as code; a file that does not parse does too.
+func onlyPackageClause(src []byte) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, 0)
+	return err == nil && len(f.Decls) == 0 && directives(src) == ""
 }
 
 // stripped prints a Go source file with its comments dropped, so two files can be compared by code alone.

@@ -95,15 +95,54 @@ func Test_CodeUnchanged_DeletedFileIsReported(t *testing.T) {
 	}
 }
 
-func Test_CodeUnchanged_AddedFileIsIgnoredWhetherStagedOrNot(t *testing.T) {
+func Test_CodeUnchanged_AddedFileWithCodeIsReportedWhetherStagedOrNot(t *testing.T) {
 	dir := guardRepo(t)
 	os.WriteFile(filepath.Join(dir, "new.go"), []byte("package p\n\nfunc New() {}\n"), 0o644)
-	if got, err := codeUnchanged(dir, "HEAD"); err != nil || len(got) != 0 {
+	want := []string{"new.go (added, contains code)"}
+	if got, err := codeUnchanged(dir, "HEAD"); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("untracked: %v, %v", got, err)
 	}
 	runGit(t, dir, "add", "new.go")
+	if got, err := codeUnchanged(dir, "HEAD"); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("staged: %v, %v", got, err)
+	}
+}
+
+func Test_CodeUnchanged_AddedCommentOnlyFilePassesWhetherStagedOrNot(t *testing.T) {
+	dir := guardRepo(t)
+	os.WriteFile(filepath.Join(dir, "doc.go"), []byte("// Package p does things.\npackage p\n"), 0o644)
+	if got, err := codeUnchanged(dir, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("untracked: %v, %v", got, err)
+	}
+	runGit(t, dir, "add", "doc.go")
 	if got, err := codeUnchanged(dir, "HEAD"); err != nil || len(got) != 0 {
 		t.Fatalf("staged: %v, %v", got, err)
+	}
+}
+
+func Test_CodeUnchanged_AddedFileWithOnlyAnImportOrADirectiveIsReported(t *testing.T) {
+	for name, src := range map[string]string{
+		"imp.go": "package p\n\nimport _ \"embed\"\n",
+		"dir.go": "//go:build ignore\n\npackage p\n",
+		"bad.go": "package p\n\nfunc (",
+	} {
+		dir := guardRepo(t)
+		os.WriteFile(filepath.Join(dir, name), []byte(src), 0o644)
+		got, err := codeUnchanged(dir, "HEAD")
+		if err != nil || len(got) != 1 {
+			t.Errorf("%s: got %v, %v", name, got, err)
+		}
+	}
+}
+
+func Test_CodeUnchanged_UntrackedFileInAGitIgnoredPathIsNotReported(t *testing.T) {
+	dir := guardRepo(t)
+	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("scratch/\n"), 0o644)
+	runGit(t, dir, "add", ".gitignore")
+	os.MkdirAll(filepath.Join(dir, "scratch"), 0o755)
+	os.WriteFile(filepath.Join(dir, "scratch", "x.go"), []byte("package s\n\nfunc X() {}\n"), 0o644)
+	if got, err := codeUnchanged(dir, "HEAD"); err != nil || len(got) != 0 {
+		t.Fatalf("got %v, %v", got, err)
 	}
 }
 

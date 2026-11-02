@@ -64,6 +64,35 @@ func Test_Load_ExcludesTestFiles(t *testing.T) {
 	}
 }
 
+func Test_Load_IncludesFilesForOtherOperatingSystems(t *testing.T) {
+	// util_windows.go does not build on most test machines; the map must list it anyway.
+	p := pkgByDir(t, mustLoad(t, copyFixture(t)), "util")
+	if !contains(p.Files, "util_windows.go") {
+		t.Errorf("Files = %v, want util_windows.go in it", p.Files)
+	}
+	f := funcByKey(t, p, "WindowsOnly")
+	if f.File != "util_windows.go" || f.Sig != "func WindowsOnly() bool" {
+		t.Errorf("got %+v", f)
+	}
+}
+
+func Test_Load_SkipsFilesOfAnotherPackageAndUnderscoreAndDotFiles(t *testing.T) {
+	root := copyFixture(t)
+	os.WriteFile(filepath.Join(root, "util", "_hidden.go"), []byte("package util\n\nfunc Hidden1() {}\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "util", ".dot.go"), []byte("package util\n\nfunc Hidden2() {}\n"), 0o644)
+	p := pkgByDir(t, mustLoad(t, root), "util")
+	for _, skipped := range []string{"gen.go", "_hidden.go", ".dot.go"} { // gen.go is `package main` behind //go:build ignore
+		if contains(p.Files, skipped) {
+			t.Errorf("%s listed in %v", skipped, p.Files)
+		}
+	}
+	for _, f := range p.Funcs {
+		if f.Name == "main" || strings.HasPrefix(f.Name, "Hidden") {
+			t.Errorf("function %s from a skipped file listed", f.Name)
+		}
+	}
+}
+
 func Test_Load_ReturnsErrorOnSyntaxError(t *testing.T) {
 	root := copyFixture(t)
 	editFile(t, root, "util/util.go", "return x * 2", "return x * (")

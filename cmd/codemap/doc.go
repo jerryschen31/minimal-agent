@@ -33,6 +33,7 @@
 //
 //	guard.go
 //	  func codeUnchanged(root, ref string) ([]string, error)
+//	  func onlyPackageClause(src []byte) bool
 //	  func stripped(src []byte) (string, error)
 //	  func squash(s string) string
 //	  func directives(src []byte) string

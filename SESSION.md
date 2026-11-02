@@ -1063,3 +1063,8 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >   header Notes.
 > - **Jerry still owes:** a review of the facts the doc-keeper agents added (listed in the entry above); decision on
 >   whether to add a GitHub Actions workflow later (no `.github/` yet).
+>
+> (2026-11-02) PR #34 Copilot comments addressed on `feat/doc-func-ref-guide-codemap`, not committed
+> (`DECISIONS.md § PR #34 Copilot review`): `-code-unchanged` now catches added/untracked files with code; the map now
+> includes other-OS files (`procgroup_windows.go` is in `CODEMAP.md`). Tests updated/added in `guard_test.go` and
+> `load_test.go`; the fixture gained `util/util_windows.go` and `util/gen.go`.

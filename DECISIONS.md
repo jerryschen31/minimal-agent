@@ -3839,3 +3839,18 @@ Jerry's answers after the simplification:
   rule is behavioural: whoever changes a function body, Jerry or an agent, rereads its header and updates the one-liner
   and Notes if needed (`CLAUDE.md § Code map`). A `-changed <ref>` mode that lists functions whose body changed but whose
   header did not was offered and not built.
+
+### 2026-11-02 — PR #34 Copilot review: added files and other-OS files
+
+Copilot found two real gaps in the codemap tool (both confirmed against the code, then fixed):
+- **`-code-unchanged` ignored added files** (it skipped git status `A`, and `git diff` never lists untracked files). An
+  added or untracked `.go` file now counts as a code change unless it holds only comments and a package clause
+  (`name (added, contains code)`), so a new comment-only `doc.go` still passes. An import-only file, a file with a
+  `//go:` directive, or a file that does not parse is reported. Untracked files come from `git ls-files --others
+  --exclude-standard`, so git-ignored paths stay out. The old "added file is ignored" test was replaced on purpose.
+- **The map left out files that do not build on the host OS** (`mcpconnect/procgroup_windows.go` was missing from
+  `CODEMAP.md` and `mcpconnect/doc.go`). `load` still uses `packages.Load` only to find the package directories; `buildPkg`
+  now parses every non-test `.go` file there itself, whatever its build constraints. Skipped: files whose package name
+  differs from the package's (a `//go:build ignore` script), and names starting with `_` or `.`. The loader no longer
+  loads syntax at all, which also makes it faster. Downside: the map shows every variant of a function (the unix and
+  windows `startInOwnGroup`, each under its own file), and a package whose files are all for other OSes still fails to load.

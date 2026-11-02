@@ -44,6 +44,7 @@ minimal-agent/
 │   ├── conn.go
 │   ├── doc.go
 │   ├── procgroup_unix.go
+│   ├── procgroup_windows.go
 │   └── tools.go
 ├── memory/
 │   ├── doc.go
@@ -177,6 +178,7 @@ docgo.go
 
 guard.go
   func codeUnchanged(root, ref string) ([]string, error)
+  func onlyPackageClause(src []byte) bool
   func stripped(src []byte) (string, error)
   func squash(s string) string
   func directives(src []byte) string
@@ -326,6 +328,10 @@ conn.go
   func (s *McpConnection) Close() error
 
 procgroup_unix.go
+  func startInOwnGroup(cmd *exec.Cmd)
+  func killGroup(cmd *exec.Cmd)
+
+procgroup_windows.go
   func startInOwnGroup(cmd *exec.Cmd)
   func killGroup(cmd *exec.Cmd)
 

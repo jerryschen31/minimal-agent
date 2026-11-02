@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -33,17 +35,17 @@ type Pkg struct {
 	PkgDocFiles []string // files that carry a package comment (should be only doc.go)
 }
 
-// load parses every package under root (tests excluded) and returns them sorted by directory.
+// load finds every package under root and parses its files (tests excluded) and returns them sorted by directory.
 //
 // Notes:
-//   - Only syntax is loaded, not types: the map holds signatures as written, so a type error elsewhere does not stop it.
-//     A syntax error in any package fails the whole run.
+//   - Neither types nor syntax come from the loader: it only finds the packages. buildPkg parses the files, so a type
+//     error elsewhere does not stop the map, while a syntax error in any package fails the whole run.
 //   - Packages in git-ignored directories (such as scratch/) are skipped.
-//   - Files that only compile on another OS (such as *_windows.go on a Mac) are not in the map.
+//   - Files for every operating system and build tag are included; see buildPkg.
 func load(root string) ([]Pkg, error) {
 	cfg := &packages.Config{
 		Dir:  root,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedSyntax,
+		Mode: packages.NeedName | packages.NeedFiles,
 	}
 	loaded, err := packages.Load(cfg, "./...")
 	if err != nil {
@@ -84,38 +86,51 @@ func gitIgnored(root, dir string) bool {
 // buildPkg turns one loaded package into a Pkg: its files, package-comment locations and one Func per declared function.
 //
 // Notes:
-//   - Files are sorted by name so the output does not depend on the loader's order.
+//   - It parses every non-test .go file in the package's directory itself, whatever its build constraints, so files for
+//     other operating systems (such as *_windows.go on a Mac) are in the map. The loader alone would give only the files
+//     that build for this machine.
+//   - A file whose package name differs from the package's (a //go:build ignore script, say) is skipped, as are files
+//     whose names start with "_" or ".", which the go command ignores too.
+//   - Files are sorted by name so the output does not depend on directory order.
 func buildPkg(lp *packages.Package, absRoot string) (Pkg, error) {
 	p := Pkg{ImportPath: lp.PkgPath, Name: lp.Name}
-	type file struct {
-		name string
-		ast  *ast.File
+	if lp.Dir == "" {
+		return p, fmt.Errorf("package %s: no directory", lp.PkgPath)
 	}
-	var files []file
-	for _, f := range lp.Syntax {
-		abs := lp.Fset.Position(f.Pos()).Filename
-		files = append(files, file{filepath.Base(abs), f})
-		if p.Dir == "" {
-			rel, err := filepath.Rel(absRoot, filepath.Dir(abs))
-			if err != nil {
-				return p, err
-			}
-			p.Dir = filepath.ToSlash(rel)
-		}
+	rel, err := filepath.Rel(absRoot, lp.Dir)
+	if err != nil {
+		return p, err
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
-	for _, f := range files {
-		p.Files = append(p.Files, f.name)
-		if f.ast.Doc != nil {
-			p.PkgDocFiles = append(p.PkgDocFiles, f.name)
+	p.Dir = filepath.ToSlash(rel)
+	entries, err := os.ReadDir(lp.Dir)
+	if err != nil {
+		return p, err
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries { // ReadDir returns entries sorted by name
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") ||
+			strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".") {
+			continue
 		}
-		for _, d := range f.ast.Decls {
+		f, err := parser.ParseFile(fset, filepath.Join(lp.Dir, name), nil, parser.ParseComments)
+		if err != nil {
+			return p, err
+		}
+		if f.Name.Name != lp.Name {
+			continue
+		}
+		p.Files = append(p.Files, name)
+		if f.Doc != nil {
+			p.PkgDocFiles = append(p.PkgDocFiles, name)
+		}
+		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok {
 				continue
 			}
-			fx := Func{Key: funcName(fn), Name: fn.Name.Name, File: f.name}
-			fx.Sig = oneLine(printNode(lp.Fset, withoutBody(fn)))
+			fx := Func{Key: funcName(fn), Name: fn.Name.Name, File: name}
+			fx.Sig = oneLine(printNode(fset, withoutBody(fn)))
 			if fn.Doc != nil {
 				fx.Header = fn.Doc.Text()
 			}

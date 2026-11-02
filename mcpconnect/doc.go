@@ -24,6 +24,10 @@
 //	  func startInOwnGroup(cmd *exec.Cmd)
 //	  func killGroup(cmd *exec.Cmd)
 //
+//	procgroup_windows.go
+//	  func startInOwnGroup(cmd *exec.Cmd)
+//	  func killGroup(cmd *exec.Cmd)
+//
 //	tools.go
 //	  func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
 //	  func hintsFrom(a *mcp.ToolAnnotations) ToolHints
