@@ -1004,3 +1004,22 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > (`DECISIONS.md § Slice 3 built`): `ToolRules`, `askRules`, `approval: allow-all` with the startup confirmation.
 > Next: slice 4 (`write_file` + `create_directory`; write-deny list for `.git/` and the agent's config; a short
 > preview of the content in the ask prompt).
+>
+> (2026-11-01, end of session) **PR #33** (slice 3, branch `feat/tool-deny-ask-run-rules`, merged into **`build`**, not
+> `master`; local `origin/master` is stale at PR #29). Copilot found that the test sub-agent's slice 3 rewrite of
+> `config/config_test.go` deleted 7 unrelated tests (a script replaced everything between two comments). They are
+> restored from `build` (9b1f4e1) and **PR #33 is merged** (a2259f4). Jerry said to ignore Copilot's first two
+> comments. After any test
+> sub-agent, compare test names with `build`; deleting an obsolete test is fine if the agent reports it with a reason.
+> Name rules vs effects discussed: `DECISIONS.md § Tool-name rules are an approval layer`.
+>
+> **Next:** slice 4 `write_file` + `create_directory`, then 5 `edit_file`, then 6
+> `copy_file`/`move_file` (append_file rejected; maybe later an append mode or a notes tool). Slice 4 plan: both go
+> through `Workspace` (`resolve`/`check`/`openRoot`, never `os.Open` on a model path); a **write-deny list**
+> (`.git/`, the agent's own config file; plus the read deny list and `traceDir`); the ask prompt shows a **short
+> preview** (path, size, first few lines, quoted); `O_EXCL` for "create new" writes; a size cap as a constant. The
+> ask defaults already name `write_file`, `edit_file`, `create_directory`, `copy_file`, `move_file`, so slice 4
+> changes no defaults. Optional small fixes first: trace the allow-all startup answer (confirmed or not); print the
+> normalized rules in the allow-all notice; `%q` on the `[tool] Tool called:` name. Still open from earlier: welcome
+> banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused, `maxSteps` discarding a turn,
+> the autonomous-port warning for `allow-all` with empty `denyRules`.

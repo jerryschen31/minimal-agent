@@ -3738,3 +3738,22 @@ Files: `hooks/toolrules.go` (was `denyrules.go`), `agent/react.go`, `agent/chat.
   column floated earlier: less churn in a format the tests pin, same information.
 - Still for the autonomous port: `allow-all` without a confirmation prompt (the config is the consent), and the
   proposed startup warning when `allow-all` meets an empty `denyRules`.
+
+### 2026-11-01 — Tool-name rules are an approval layer, not a security boundary
+
+From a discussion with Jerry after slice 3 (no code change). Rules match tool *names*, not what a call does. The model
+can't invent a name to dodge a rule (an unregistered name fails as `unknown tool`), but a name doesn't reliably tell
+you the effect: an MCP tool like `github_merge_pull_request` matches no default rule, `edit_file` can empty a file
+that a denied `delete_file` would have removed, and a shell tool can do anything.
+
+- **The split:** `builtin.Workspace` is the boundary for files, since it limits effects whatever the tool's name
+  (slice 4's write-deny list belongs there). `denyRules`/`askRules` decide *when to ask*.
+- **The intended workflow (Jerry):** run `-mode info`, read each MCP tool's name, hints and description, and put the
+  ones to deny or ask about in config by exact name (or `<server>_*` for a whole server). Info mode already shows
+  which tools each rule matches. Name rules fit this well: the set of tools is fixed at startup and visible.
+- **Downsides kept open:** a tool a server adds later matches no rule and runs unasked (`<server>_*` catches it but
+  then asks about the server's harmless read tools too, until an allow list exists). Server descriptions and
+  annotations are untrusted: use `readOnlyHint`/`destructiveHint` only to make a rule stricter, never looser. A shell
+  tool needs a sandbox, not rules.
+- **Not chosen now:** an allow list, declared effects per built-in tool, per-argument rules, a model judging each
+  call, undo snapshots. Revisit with `run_command` and the autonomous port.
