@@ -305,3 +305,40 @@ func Test_Digest_DroppedAndRunLevelMarkers(t *testing.T) {
 		t.Errorf("a dropped model_response was read as an empty reply:\n%s", s)
 	}
 }
+
+func Test_Digest_WriteFileAndCreateDirectoryDescribed(t *testing.T) {
+	tests := []struct {
+		name, tool, args, content string
+		failed                    bool
+		want                      string
+	}{
+		{"created", "write_file", `{"path":"a.txt","content":"hi"}`, "created a.txt (2 bytes)", false, "write_file : created a.txt (2 bytes)"},
+		{"overwrote", "write_file", `{"path":"a.txt","content":"hi"}`, "overwrote a.txt (2 bytes)", false, "write_file : overwrote a.txt (2 bytes)"},
+		{"failed shows the path and the error, not the content", "write_file", `{"path":"a.txt","content":"SECRET BODY"}`, "a.txt is blocked", true, "write_file : write a.txt (failed: a.txt is blocked)"},
+		{"no path falls back to the generic line", "write_file", `{}`, "", false, "write_file : {}"},
+		{"mkdir", "create_directory", `{"path":"docs/x"}`, "created directory docs/x", false, "create_directory : mkdir docs/x"},
+		{"mkdir failed", "create_directory", `{"path":"x"}`, "boom", true, "create_directory : mkdir x (failed: boom)"},
+	}
+	for _, tc := range tests {
+		if got := describe(tc.tool, tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func Test_Digest_EditFileDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"edited", `{"path":"a.go","old_string":"x","new_string":"y"}`, "edited a.go (2 replacements, 90 bytes)", false, "edit_file : edited a.go (2 replacements, 90 bytes)"},
+		{"failed shows path and error, not the strings", `{"path":"a.go","old_string":"SECRET","new_string":"y"}`, "old_string was not found", true, "edit_file : edit a.go (failed: old_string was not found)"},
+		{"no path falls back to the generic line", `{}`, "", false, "edit_file : {}"},
+	}
+	for _, tc := range tests {
+		if got := describe("edit_file", tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

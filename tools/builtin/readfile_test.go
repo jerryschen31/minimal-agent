@@ -16,7 +16,7 @@ const testMaxBytes = 4096
 
 // newReadFile builds a workspace and a read_file tool on it, as SetupBuiltinTools does; an error from either is returned.
 func newReadFile(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
-	ws, err := NewWorkspace(workDir, traceDir, deny)
+	ws, err := NewWorkspace(workDir, traceDir, "", deny)
 	if err != nil {
 		return nil, err
 	}

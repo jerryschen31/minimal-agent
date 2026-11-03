@@ -87,7 +87,7 @@ func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 // CallTool executes the read_file tool with the given arguments and context. It returns the file contents, or an error.
 //
 // Notes:
-//   - Order of defences: resolveInfo (workspace check) then openRoot (os.Root, a second line of defence) then openFile
+//   - Order of defences: resolvePath (workspace check) then openRoot (os.Root, a second line of defence) then openFile
 //     (regular file, same file as checked).
 //   - A limit of 0 means "not given" and a limit above maxBytes is lowered to it. A file with a NUL byte is refused as
 //     binary.
@@ -123,7 +123,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
 		return "", err
 	}
-	rel, want, err := t.ws.resolveInfo(params.Path)
+	rel, want, err := t.ws.resolvePath(params.Path)
 	if err != nil {
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
 	}

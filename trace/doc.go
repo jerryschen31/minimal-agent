@@ -200,6 +200,11 @@
 //	  func (s *Scope) ID() string
 //	  func (s *Scope) End()
 //
+//	shorten.go
+//	  func shortenArguments(args string) string
+//	  func isBodyKey(k string) bool
+//	  func cutChars(s string, n int) string
+//
 //	subscriber.go
 //	  func NewJSONLSubscriber(dir, runID string) (Subscriber, error)
 //	  func (s *jsonlSubscriber) Write(line []byte) error

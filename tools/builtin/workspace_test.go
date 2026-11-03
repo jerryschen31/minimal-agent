@@ -14,7 +14,7 @@ import (
 // newWorkspace builds a workspace on workDir with traceDir and deny, failing the test on error.
 func newWorkspace(t *testing.T, workDir, traceDir string, deny DenyList) *Workspace {
 	t.Helper()
-	ws, err := NewWorkspace(workDir, traceDir, deny)
+	ws, err := NewWorkspace(workDir, traceDir, "", deny)
 	if err != nil {
 		t.Fatalf("NewWorkspace(%q, %q): %v", workDir, traceDir, err)
 	}
@@ -40,10 +40,10 @@ func Test_Unit_NewWorkspace_InvalidWorkDir_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	file := writeFile(t, dir, "plain.txt", []byte("x"))
 
-	if ws, err := NewWorkspace(filepath.Join(dir, "missing"), "", DenyList{}); err == nil || ws != nil {
+	if ws, err := NewWorkspace(filepath.Join(dir, "missing"), "", "", DenyList{}); err == nil || ws != nil {
 		t.Errorf("missing workDir: expected (nil, error), got (%v, %v)", ws, err)
 	}
-	if ws, err := NewWorkspace(file, "", DenyList{}); err == nil || ws != nil || !strings.Contains(err.Error(), "not a directory") {
+	if ws, err := NewWorkspace(file, "", "", DenyList{}); err == nil || ws != nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("file workDir: expected (nil, 'not a directory' error), got (%v, %v)", ws, err)
 	}
 }
@@ -58,7 +58,7 @@ func Test_Unit_NewWorkspace_TraceDirContainsWorkDir_ReturnsError(t *testing.T) {
 	}
 	for name, traceDir := range map[string]string{"equal": work, "parent": parent} {
 		t.Run(name, func(t *testing.T) {
-			ws, err := NewWorkspace(work, traceDir, DenyList{})
+			ws, err := NewWorkspace(work, traceDir, "", DenyList{})
 			if err == nil || ws != nil || !strings.Contains(err.Error(), "so the file tools could reach nothing") {
 				t.Errorf("expected (nil, 'file tools could reach nothing' error), got (%v, %v)", ws, err)
 			}
@@ -103,7 +103,7 @@ func Test_Unit_Workspace_Check_Inside_ReturnsRel(t *testing.T) {
 		filepath.Join(ws.rootDir, "sub", "b", "c"):  filepath.Join("sub", "b", "c"),
 		filepath.Join(ws.rootDir, "..notdotdot.md"): "..notdotdot.md", // starts with ".." but is a plain name inside rootDir
 	} {
-		rel, err := ws.check("requested", real)
+		rel, err := ws.checkPath("requested", real)
 		if err != nil || rel != want {
 			t.Errorf("check(%q) = (%q, %v), want (%q, nil)", real, rel, err, want)
 		}
@@ -125,7 +125,7 @@ func Test_Unit_Workspace_Check_Outside_Refused(t *testing.T) {
 		filepath.Join(parent, "work-evil", "secret.txt"),
 		filepath.Join(string(filepath.Separator), "etc", "hosts"),
 	} {
-		rel, err := ws.check("REQUESTED-NAME", real)
+		rel, err := ws.checkPath("REQUESTED-NAME", real)
 		if err == nil || rel != "" || !strings.Contains(err.Error(), "outside the allowed directory") {
 			t.Errorf("check(%q) = (%q, %v), want an outside-the-directory error", real, rel, err)
 			continue
@@ -145,7 +145,7 @@ func Test_Unit_Workspace_Check_DenyListed_Refused(t *testing.T) {
 	ws := newWorkspace(t, t.TempDir(), "", deny)
 	for _, rel := range []string{".env", filepath.Join("sub", "key.pem"), "creds.secret", filepath.Join("deep", "x", "API.SECRET")} {
 		real := filepath.Join(ws.rootDir, rel)
-		got, err := ws.check("REQUESTED-NAME", real)
+		got, err := ws.checkPath("REQUESTED-NAME", real)
 		if err == nil || got != "" || !strings.Contains(err.Error(), "blocked") || !strings.Contains(err.Error(), "deny list") {
 			t.Errorf("check(%q) = (%q, %v), want a deny-list error", rel, got, err)
 			continue
@@ -156,7 +156,7 @@ func Test_Unit_Workspace_Check_DenyListed_Refused(t *testing.T) {
 	}
 	// [agent] the extra must not leak into a workspace built without it
 	plain := newWorkspace(t, t.TempDir(), "", DenyList{})
-	if _, err := plain.check("creds.secret", filepath.Join(plain.rootDir, "creds.secret")); err != nil {
+	if _, err := plain.checkPath("creds.secret", filepath.Join(plain.rootDir, "creds.secret")); err != nil {
 		t.Errorf("a workspace without the extra refused creds.secret: %v", err)
 	}
 }
@@ -171,7 +171,7 @@ func Test_Unit_Workspace_Check_TraceDir_Refused(t *testing.T) {
 		filepath.Join(work, "logs", "trace", "run.jsonl"),
 		filepath.Join(work, "LOGS", "Trace", "run.jsonl"), // case-insensitive, like isWithin
 	} {
-		rel, err := ws.check("REQUESTED-NAME", real)
+		rel, err := ws.checkPath("REQUESTED-NAME", real)
 		if err == nil || rel != "" || !strings.Contains(err.Error(), "trace directory") {
 			t.Errorf("check(%q) = (%q, %v), want a trace-directory error", real, rel, err)
 			continue
@@ -180,7 +180,7 @@ func Test_Unit_Workspace_Check_TraceDir_Refused(t *testing.T) {
 			t.Errorf("check(%q): error should name the requested path: %q", real, err)
 		}
 	}
-	if rel, err := ws.check("x", filepath.Join(work, "logs", "trace-notes.txt")); err != nil || rel != filepath.Join("logs", "trace-notes.txt") {
+	if rel, err := ws.checkPath("x", filepath.Join(work, "logs", "trace-notes.txt")); err != nil || rel != filepath.Join("logs", "trace-notes.txt") {
 		t.Errorf("trace-notes.txt: got (%q, %v), want it allowed", rel, err)
 	}
 }
@@ -193,7 +193,7 @@ func Test_Unit_Workspace_Check_TraceDir_Refused(t *testing.T) {
 func Test_Unit_Workspace_Resolve_Missing_ReturnsError(t *testing.T) {
 	ws := newWorkspace(t, t.TempDir(), "", DenyList{})
 	for _, p := range []string{"missing.txt", filepath.Join(ws.rootDir, "missing.txt"), filepath.Join("nodir", "x")} {
-		if rel, err := ws.resolve(p); err == nil || rel != "" {
+		if rel, _, err := ws.resolvePath(p); err == nil || rel != "" {
 			t.Errorf("resolve(%q) = (%q, %v), want an error", p, rel, err)
 		}
 	}
@@ -212,7 +212,7 @@ func Test_Unit_Workspace_Resolve_RelativeAndAbsolute_SameRel(t *testing.T) {
 		filepath.Join(ws.rootDir, "sub", "b.txt"),
 		filepath.Join(work, "sub", "b.txt"),
 	} {
-		if rel, err := ws.resolve(p); err != nil || rel != want {
+		if rel, _, err := ws.resolvePath(p); err != nil || rel != want {
 			t.Errorf("resolve(%q) = (%q, %v), want (%q, nil)", p, rel, err, want)
 		}
 	}
@@ -316,7 +316,7 @@ func Test_Unit_Workspace_Resolve_Missing_ErrorNamesRequestOnly(t *testing.T) {
 	mkdir(t, work, "sub")
 	ws := newWorkspace(t, work, "", DenyList{})
 	for _, p := range missingRelPaths {
-		_, err := ws.resolve(p)
+		_, _, err := ws.resolvePath(p)
 		expectErrorHidesWorkDir(t, "resolve("+p+")", err, work, p)
 		if !errors.Is(err, fs.ErrNotExist) {
 			t.Errorf("resolve(%q): expected errors.Is(err, fs.ErrNotExist), got %v", p, err)
@@ -351,25 +351,25 @@ func Test_Unit_FileTools_Missing_ErrorHidesWorkDir(t *testing.T) {
 func Test_Unit_Workspace_Check_DirOnlyDeny_NonexistentCountsAsDir(t *testing.T) {
 	ws := newWorkspace(t, t.TempDir(), "", newDenyList(t, "secrets/"))
 	for _, rel := range []string{"secrets", filepath.Join("new", "secrets")} {
-		if got, err := ws.check("REQUESTED-NAME", filepath.Join(ws.rootDir, rel)); err == nil || !strings.Contains(err.Error(), "deny list") {
+		if got, err := ws.checkPath("REQUESTED-NAME", filepath.Join(ws.rootDir, rel)); err == nil || !strings.Contains(err.Error(), "deny list") {
 			t.Errorf("check(nonexistent %q) = (%q, %v), want a deny-list error", rel, got, err)
 		}
 	}
 	writeFile(t, ws.rootDir, "notes/secrets", []byte("x"))
-	if rel, err := ws.check("x", filepath.Join(ws.rootDir, "notes", "secrets")); err != nil || rel != filepath.Join("notes", "secrets") {
+	if rel, err := ws.checkPath("x", filepath.Join(ws.rootDir, "notes", "secrets")); err != nil || rel != filepath.Join("notes", "secrets") {
 		t.Errorf("check(file notes/secrets) = (%q, %v), want it allowed", rel, err)
 	}
 	mkdir(t, ws.rootDir, "app/secrets")
-	if got, err := ws.check("x", filepath.Join(ws.rootDir, "app", "secrets")); err == nil || !strings.Contains(err.Error(), "deny list") {
+	if got, err := ws.checkPath("x", filepath.Join(ws.rootDir, "app", "secrets")); err == nil || !strings.Contains(err.Error(), "deny list") {
 		t.Errorf("check(directory app/secrets) = (%q, %v), want a deny-list error", got, err)
 	}
 }
 
 //*************************************//
-// resolveInfo and openFile (the check-then-open race)
+// resolvePath and openFile (the check-then-open race)
 //*************************************//
 
-// lstatInfo returns os.Lstat(path), failing the test on error. Tests use it to take want the way resolveInfo does,
+// lstatInfo returns os.Lstat(path), failing the test on error. Tests use it to take want the way resolvePath does,
 // before a simulated swap.
 func lstatInfo(t *testing.T, path string) os.FileInfo {
 	t.Helper()
@@ -464,7 +464,7 @@ func Test_Unit_Workspace_OpenFile_RenamedOver_Refused(t *testing.T) {
 	expectOpenRefused(t, "openFile(a.txt renamed over)", f, info, err, work, "a.txt", "was replaced while it was being opened; try again")
 }
 
-// - Verify resolveInfo returns the rel path and an info that is the same file as the one requested (by relative and
+// - Verify resolvePath returns the rel path and an info that is the same file as the one requested (by relative and
 // absolute path), and resolve still returns the same rel
 func Test_Unit_Workspace_ResolveInfo_RegularFile_SameFile(t *testing.T) {
 	work := t.TempDir()
@@ -473,22 +473,19 @@ func Test_Unit_Workspace_ResolveInfo_RegularFile_SameFile(t *testing.T) {
 	wantRel := filepath.Join("sub", "a.txt")
 
 	for _, p := range []string{wantRel, path} {
-		rel, info, err := ws.resolveInfo(p)
+		rel, info, err := ws.resolvePath(p)
 		if err != nil || rel != wantRel {
-			t.Fatalf("resolveInfo(%q) = (%q, %v), want (%q, nil)", p, rel, err, wantRel)
+			t.Fatalf("resolvePath(%q) = (%q, %v), want (%q, nil)", p, rel, err, wantRel)
 		}
 		if info == nil || !os.SameFile(info, lstatInfo(t, path)) || !info.Mode().IsRegular() {
-			t.Errorf("resolveInfo(%q): expected the info of sub/a.txt, got %v", p, info)
-		}
-		if r, err := ws.resolve(p); err != nil || r != rel {
-			t.Errorf("resolve(%q) = (%q, %v), want the same rel as resolveInfo (%q)", p, r, err, rel)
+			t.Errorf("resolvePath(%q): expected the info of sub/a.txt, got %v", p, info)
 		}
 	}
 }
 
-// - Verify resolveInfo refuses what resolve refuses (missing, deny-listed, outside workDir, inside traceDir), with
+// - Verify resolvePath refuses what resolve refuses (missing, deny-listed, outside workDir, inside traceDir), with
 // the same error, a nil info, and no absolute workDir in the message
-func Test_Unit_Workspace_ResolveInfo_Refused_SameErrorsAsResolve(t *testing.T) {
+func Test_Unit_Workspace_ResolvePath_Refused_HidesWorkDir(t *testing.T) {
 	parent := t.TempDir()
 	work := filepath.Join(parent, "work")
 	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
@@ -503,15 +500,12 @@ func Test_Unit_Workspace_ResolveInfo_Refused_SameErrorsAsResolve(t *testing.T) {
 		filepath.Join("..", "outside.txt"):   "outside the allowed directory",
 		filepath.Join("traces", "run.jsonl"): "inside the trace directory",
 	} {
-		rel, info, err := ws.resolveInfo(p)
+		rel, info, err := ws.resolvePath(p)
 		if rel != "" || info != nil || err == nil || !strings.Contains(err.Error(), wantMsg) {
-			t.Errorf("resolveInfo(%q) = (%q, %v, %v), want (\"\", nil, an error containing %q)", p, rel, info, err, wantMsg)
+			t.Errorf("resolvePath(%q) = (%q, %v, %v), want (\"\", nil, an error containing %q)", p, rel, info, err, wantMsg)
 			continue
 		}
-		expectErrorHidesWorkDir(t, "resolveInfo("+p+")", err, work, p) // an absolute request is named as given; outside.txt's path doesn't contain workDir
-		if _, rerr := ws.resolve(p); rerr == nil || rerr.Error() != err.Error() {
-			t.Errorf("resolve(%q) error = %v, want the same as resolveInfo's %q", p, rerr, err)
-		}
+		expectErrorHidesWorkDir(t, "resolvePath("+p+")", err, work, p) // an absolute request is named as given; outside.txt's path doesn't contain workDir
 	}
 }
 

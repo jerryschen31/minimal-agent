@@ -106,7 +106,7 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start listing
 		return "", err
 	}
-	rel, err := t.ws.resolve(params.Path) // refuses outside workDir, a deny-listed directory, the trace directory
+	rel, _, err := t.ws.resolvePath(params.Path) // refuses outside workDir, a deny-listed directory, the trace directory
 	if err != nil {
 		return "", err
 	}
@@ -157,7 +157,7 @@ func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (str
 		}
 		visits++
 		// The walk never follows symlinks, so p joined onto rootDir is already the real path, as check expects
-		if _, err := t.ws.check(p, filepath.Join(t.ws.rootDir, filepath.FromSlash(p))); err != nil {
+		if _, err := t.ws.checkPath(p, filepath.Join(t.ws.rootDir, filepath.FromSlash(p))); err != nil {
 			if d.IsDir() {
 				return fs.SkipDir // hidden directory (e.g. .ssh): its contents would be hidden anyway (their path contains it); this skips reading them
 			}

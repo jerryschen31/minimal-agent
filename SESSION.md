@@ -1068,3 +1068,29 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > (`DECISIONS.md § PR #34 Copilot review`): `-code-unchanged` now catches added/untracked files with code; the map now
 > includes other-OS files (`procgroup_windows.go` is in `CODEMAP.md`). Tests updated/added in `guard_test.go` and
 > `load_test.go`; the fixture gained `util/util_windows.go` and `util/gen.go`.
+>
+> (2026-11-02) Slice 4 part 1 built on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 part 1
+> built`): `resolveNewPath`, `.git` write-deny, `create_directory`. Renames done earlier today: `resolve`/`resolveInfo` →
+> `resolvePath`, `check` → `checkPath`, package `resolvePath` → `resolveSymLinks`. **Next:** `write_file` (`maxWriteBytes`
+> 1 MB, no parent dirs, no overwrite flag, `created`/`overwrote`, `O_EXCL` for new, ask-prompt preview) plus write-deny
+> for the `-config` file (needs its path in `NewWorkspace`). Then a test sub-agent pass (diff test names vs `build`).
+>
+> (2026-11-02) **Slice 4 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 built`):
+> `write_file`, config-file write-deny (`Config.ConfigFile` → `NewWorkspace`), approval preview, digest lines, tests.
+> `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass. Enable with `builtinTools: ["create_directory",
+> "write_file"]`. **Jerry to do:** review; try it live (`go run . -config … `, ask the agent to write a file, read the
+> approval preview); diff test names vs `build` (none deleted here). Not covered by tests: the swap race inside
+> `openForWrite`. **Next:** slice 5 `edit_file` (needs its own result-size check), then 6 `copy_file`/`move_file`.
+>
+> (2026-11-02) **Slice 5 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 5 built`):
+> `edit_file`, shared `openExisting`/`checkWritable`/`resolvePathForWrite`, trace body cutting (`trace/shorten.go`),
+> approval summary for edits, digest line. `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass; `-mode info`
+> lists the three write tools. Enable with `builtinTools: ["create_directory","write_file","edit_file"]`. **Jerry to do:**
+> review; try the write tools live and read the approval questions. **Known limits:** non-atomic in-place writes; mtime
+> granularity; hardlinks (checks are by name); edit vs write_file of one file not serialized. **Next:** slice 6
+> `copy_file`/`move_file`, then `run_command`, `/reload`, then the autonomous port (Jerry builds it himself).
+>
+> (2026-11-03) PR #35 Copilot's 4 inline comments fixed on `feat/built-in-write-file-and-edit-file-tool`, not committed
+> (`DECISIONS.md § PR #35 Copilot review`): preview shapes exclusive, `openDir` for creates, hard-link refusal for
+> writes, `stillAtPath`. Trace shortening gaps from the PR summary (malformed JSON
+> arguments, case-variant keys) also fixed. **Open:** read-through-hard-link of `.env` by `read_file` is still allowed.

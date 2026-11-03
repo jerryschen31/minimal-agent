@@ -17,6 +17,13 @@
 //	  func checkConfig(cfg config.Config) error
 //	  func createSystemMessage(systemPrompt string) model.ChatMessage
 //
+//	approval_preview.go
+//	  func approvalPreview(call model.ToolCall) []string
+//	  func writePreview(path, content string) []string
+//	  func rawPreview(args string) []string
+//	  func editPreview(path, oldStr, newStr string, all bool) []string
+//	  func previewFirstLine(s string) string
+//
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
 //	  func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession)

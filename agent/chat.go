@@ -199,7 +199,9 @@ func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSessio
 		cs.PromptAllowDenyCall = func(ctx context.Context, call model.ToolCall, reason error) bool {
 			fmt.Fprintln(cs.OutBuffer, "[system] Tool call needs approval:")
 			fmt.Fprintf(cs.OutBuffer, "Tool: %q\n", call.Function.Name) // %q: a name from an MCP server could hold terminal escape codes
-			fmt.Fprintf(cs.OutBuffer, "Arguments: %q\n", call.Function.Arguments)
+			for _, line := range approvalPreview(call) {                // a short preview, not the whole arguments (a written file can be 1 MB)
+				fmt.Fprintln(cs.OutBuffer, line)
+			}
 			fmt.Fprintln(cs.OutBuffer, "Reason:", reason)
 			return tty.AskYesNo(ctx, "Allow once? [y/N] ")
 		}

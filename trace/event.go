@@ -266,11 +266,12 @@ func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []mo
 // messageRecord converts a chat message into the record stored in a trace event.
 //
 // Notes:
-//   - Tool calls become ToolCallRecords with the call ID, name and arguments string.
+//   - Tool calls become ToolCallRecords with the call ID, name and arguments string (long file bodies cut by
+//     shortenArguments).
 func messageRecord(m model.ChatMessage) MessageRecord {
 	r := MessageRecord{ID: m.ID, Role: m.Role, Type: m.Type, Content: m.Content, ToolCallID: m.ToolCallID}
 	for _, tc := range m.ToolCalls {
-		r.ToolCalls = append(r.ToolCalls, ToolCallRecord{CallID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		r.ToolCalls = append(r.ToolCalls, ToolCallRecord{CallID: tc.ID, Name: tc.Function.Name, Arguments: shortenArguments(tc.Function.Arguments)})
 	}
 	return r
 }
@@ -316,9 +317,10 @@ type ToolRequestedData struct {
 
 // GetToolRequestedData builds the tool_requested payload from the model's tool call.
 //
-// Notes: none.
+// Notes:
+//   - The arguments go through shortenArguments, so a written file's text is not copied into the trace.
 func GetToolRequestedData(call model.ToolCall) ToolRequestedData {
-	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments}
+	return ToolRequestedData{CallID: call.ID, Name: call.Function.Name, Arguments: shortenArguments(call.Function.Arguments)}
 }
 
 // Decisions recorded in a tool_vetoed event: what happened after a hook vetoed a call.

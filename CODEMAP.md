@@ -11,6 +11,7 @@ minimal-agent/
 ├── main.go
 ├── agent/
 │   ├── agent.go
+│   ├── approval_preview.go
 │   ├── chat.go
 │   ├── compaction.go
 │   ├── doc.go
@@ -60,14 +61,19 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── createdirectory.go
 │       ├── denylist.go
 │       ├── doc.go
+│       ├── editfile.go
 │       ├── ignorelist.go
 │       ├── listfiles.go
+│       ├── nlink_other.go
+│       ├── nlink_unix.go
 │       ├── pathpattern.go
 │       ├── readfile.go
 │       ├── searchfiles.go
-│       └── workspace.go
+│       ├── workspace.go
+│       └── writefile.go
 └── trace/
     ├── digest.go
     ├── digest_activity.go
@@ -77,6 +83,7 @@ minimal-agent/
     ├── recorder.go
     ├── redact.go
     ├── scope.go
+    ├── shorten.go
     └── subscriber.go
 ```
 
@@ -100,6 +107,13 @@ agent.go
   func (agent *Agent) ShutdownAgent(ctx context.Context)
   func checkConfig(cfg config.Config) error
   func createSystemMessage(systemPrompt string) model.ChatMessage
+
+approval_preview.go
+  func approvalPreview(call model.ToolCall) []string
+  func writePreview(path, content string) []string
+  func rawPreview(args string) []string
+  func editPreview(path, oldStr, newStr string, all bool) []string
+  func previewFirstLine(s string) string
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -408,12 +422,25 @@ tool.go
 `github.com/jerryschen31/minimal-agent/tools/builtin`
 
 ```text
+createdirectory.go
+  func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
+  func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
+  func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+
 denylist.go
   func DeniedNames() []string
   func NewDenyList(extra []string) (DenyList, error)
   func (d DenyList) Patterns() []string
   func (d DenyList) IsDenied(rel string, isDir bool) bool
   func isEnvExample(name string) bool
+
+editfile.go
+  func NewEditFileTool(ws *Workspace) (*EditFileTool, error)
+  func (t *EditFileTool) GetToolDefinition() model.ToolDef
+  func applyEdit(content, old, new string, all bool, maxBytes int) (string, int, error)
+  func (t *EditFileTool) lockFor(rel string) *sync.Mutex
+  func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func missingFileHint(err error, requested string) error
 
 ignorelist.go
   func NewIgnoreList(patterns []string) (IgnoreList, error)
@@ -425,6 +452,12 @@ listfiles.go
   func (t *ListFilesTool) GetToolDefinition() model.ToolDef
   func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func matchName(pattern, name string) bool
+
+nlink_other.go
+  func linkCount(fi os.FileInfo) (uint64, bool)
+
+nlink_unix.go
+  func linkCount(fi os.FileInfo) (uint64, bool)
 
 pathpattern.go
   func parsePathPatterns(key string, raw []string) ([]pathPattern, error)
@@ -448,14 +481,26 @@ searchfiles.go
   func cutLine(line []byte, start int) string
 
 workspace.go
-  func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error)
-  func (w *Workspace) resolve(requested string) (string, error)
-  func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error)
-  func (w *Workspace) check(requested, real string) (rel string, err error)
+  func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspace, error)
+  func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
+  func errMsgHidePath(requested string, err error) error
+  func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+  func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
+  func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error)
+  func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
+  func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
-  func resolvePath(p string) (string, error)
+  func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)
+  func (w *Workspace) stillAtPath(root *os.Root, requested, rel string, f *os.File) error
+  func resolveSymLinks(p string) (string, error)
   func isWithin(dir, p string) bool
+
+writefile.go
+  func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
+  func (t *WriteFileTool) GetToolDefinition() model.ToolDef
+  func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os.File, string, error)
 ```
 
 ## trace (package trace)
@@ -536,6 +581,11 @@ scope.go
   func OutcomeOf(err error) (status, errText string)
   func (s *Scope) ID() string
   func (s *Scope) End()
+
+shorten.go
+  func shortenArguments(args string) string
+  func isBodyKey(k string) bool
+  func cutChars(s string, n int) string
 
 subscriber.go
   func NewJSONLSubscriber(dir, runID string) (Subscriber, error)

@@ -25,7 +25,7 @@ func Test_Unit_NewWorkspace_SymlinkedWorkDir_RootDirResolved(t *testing.T) {
 		t.Errorf("rootDir = %q, want the resolved %q", ws.rootDir, real)
 	}
 	for _, p := range []string{"a.txt", filepath.Join(link, "a.txt"), filepath.Join(real, "a.txt")} {
-		if rel, err := ws.resolve(p); err != nil || rel != "a.txt" {
+		if rel, _, err := ws.resolvePath(p); err != nil || rel != "a.txt" {
 			t.Errorf("resolve(%q) = (%q, %v), want (\"a.txt\", nil)", p, rel, err)
 		}
 	}
@@ -39,7 +39,7 @@ func Test_Unit_Workspace_Resolve_SymlinkOutside_Refused(t *testing.T) {
 	symlink(t, outside, filepath.Join(work, "innocent.txt"))
 	ws := newWorkspace(t, work, "", DenyList{})
 
-	rel, err := ws.resolve("innocent.txt")
+	rel, _, err := ws.resolvePath("innocent.txt")
 	if err == nil || rel != "" || !strings.Contains(err.Error(), "outside the allowed directory") {
 		t.Fatalf("resolve(innocent.txt) = (%q, %v), want an outside-the-directory error", rel, err)
 	}
@@ -55,7 +55,7 @@ func Test_Unit_Workspace_Resolve_DanglingSymlink_ErrorHidesWorkDir(t *testing.T)
 	symlink(t, "nowhere-target.txt", filepath.Join(work, "dangling"))
 	ws := newWorkspace(t, work, "", DenyList{})
 
-	_, err := ws.resolve("dangling")
+	_, _, err := ws.resolvePath("dangling")
 	expectErrorHidesWorkDir(t, "resolve(dangling)", err, work, "dangling")
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("expected errors.Is(err, fs.ErrNotExist), got %v", err)
@@ -77,7 +77,7 @@ func Test_Unit_Workspace_Resolve_SymlinkLoop_ErrorHidesWorkDir(t *testing.T) {
 	symlink(t, "loop-a", filepath.Join(work, "loop-b"))
 	ws := newWorkspace(t, work, "", DenyList{})
 
-	rel, err := ws.resolve("loop-a")
+	rel, _, err := ws.resolvePath("loop-a")
 	if rel != "" {
 		t.Errorf("expected no rel for a loop, got %q", rel)
 	}
@@ -259,7 +259,7 @@ func Test_Unit_Workspace_OpenRoot_WorkDirSwapped_ReturnsError(t *testing.T) {
 // read its a.txt)
 func Test_Unit_Workspace_OpenRoot_SwapAfterResolve_Refused(t *testing.T) {
 	f := newMovedWorkDirFixture(t)
-	rel, err := f.ws.resolve("a.txt")
+	rel, _, err := f.ws.resolvePath("a.txt")
 	if err != nil || rel != "a.txt" {
 		t.Fatalf("resolve(a.txt) before the swap = (%q, %v), want (\"a.txt\", nil)", rel, err)
 	}
@@ -287,7 +287,7 @@ func swapForSymlink(t *testing.T, path, target string) {
 	symlink(t, target, path)
 }
 
-// - Verify the race openFile closes: want is a.txt's lstat (what resolveInfo approved), a.txt is then swapped for a
+// - Verify the race openFile closes: want is a.txt's lstat (what resolvePath approved), a.txt is then swapped for a
 // symlink to .env, and openFile refuses instead of returning .env's contents (os.Root alone would follow the link,
 // since .env is inside workDir)
 func Test_Unit_Workspace_OpenFile_SwappedForSymlinkToDenyListed_Refused(t *testing.T) {
@@ -295,9 +295,9 @@ func Test_Unit_Workspace_OpenFile_SwappedForSymlinkToDenyListed_Refused(t *testi
 	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
 	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
 	ws := newWorkspace(t, work, "", DenyList{})
-	rel, want, err := ws.resolveInfo("a.txt")
+	rel, want, err := ws.resolvePath("a.txt")
 	if err != nil {
-		t.Fatalf("resolveInfo(a.txt) before the swap: %v", err)
+		t.Fatalf("resolvePath(a.txt) before the swap: %v", err)
 	}
 	swapForSymlink(t, path, ".env")
 
@@ -315,9 +315,9 @@ func Test_Unit_Workspace_OpenFile_SwappedForSymlinkIntoTraceDir_Refused(t *testi
 	path := writeFile(t, work, "a.txt", []byte("ALLOWED-A"))
 	writeFile(t, work, "traces/run.jsonl", []byte("FAKE_SECRET_TOKEN_123"))
 	ws := newWorkspace(t, work, filepath.Join(work, "traces"), DenyList{})
-	rel, want, err := ws.resolveInfo("a.txt")
+	rel, want, err := ws.resolvePath("a.txt")
 	if err != nil {
-		t.Fatalf("resolveInfo(a.txt) before the swap: %v", err)
+		t.Fatalf("resolvePath(a.txt) before the swap: %v", err)
 	}
 	swapForSymlink(t, path, filepath.Join("traces", "run.jsonl"))
 
@@ -325,7 +325,7 @@ func Test_Unit_Workspace_OpenFile_SwappedForSymlinkIntoTraceDir_Refused(t *testi
 	expectOpenRefused(t, "openFile(a.txt -> traces/run.jsonl)", f, info, err, work, "a.txt", "was replaced while it was being opened")
 }
 
-// - Verify resolveInfo on a symlink (notes.txt -> real.txt) returns the resolved rel and real.txt's info, not the
+// - Verify resolvePath on a symlink (notes.txt -> real.txt) returns the resolved rel and real.txt's info, not the
 // link's, so openFile (which follows the link) accepts it
 func Test_Unit_Workspace_ResolveInfo_Symlink_ReturnsTargetInfo(t *testing.T) {
 	work := t.TempDir()
@@ -333,32 +333,32 @@ func Test_Unit_Workspace_ResolveInfo_Symlink_ReturnsTargetInfo(t *testing.T) {
 	symlink(t, "real.txt", filepath.Join(work, "notes.txt"))
 	ws := newWorkspace(t, work, "", DenyList{})
 
-	rel, info, err := ws.resolveInfo("notes.txt")
+	rel, info, err := ws.resolvePath("notes.txt")
 	if err != nil || rel != "real.txt" {
-		t.Fatalf("resolveInfo(notes.txt) = (%q, %v), want (\"real.txt\", nil)", rel, err)
+		t.Fatalf("resolvePath(notes.txt) = (%q, %v), want (\"real.txt\", nil)", rel, err)
 	}
 	if info == nil || info.Mode()&fs.ModeSymlink != 0 || !os.SameFile(info, lstatInfo(t, target)) {
 		t.Fatalf("expected real.txt's info, got %v", info)
 	}
 	f, _, err := ws.openFile(openRootT(t, ws), "notes.txt", rel, info)
 	if err != nil {
-		t.Fatalf("openFile(notes.txt) with resolveInfo's info: %v", err)
+		t.Fatalf("openFile(notes.txt) with resolvePath's info: %v", err)
 	}
 	f.Close()
 }
 
-// - Verify resolveInfo refuses a symlink to a deny-listed file with a nil info and an error naming only the link
+// - Verify resolvePath refuses a symlink to a deny-listed file with a nil info and an error naming only the link
 func Test_Unit_Workspace_ResolveInfo_SymlinkToDenyListed_Refused(t *testing.T) {
 	work := t.TempDir()
 	writeFile(t, work, ".env", []byte("FAKE_SECRET_TOKEN_123"))
 	symlink(t, ".env", filepath.Join(work, "notes.txt"))
 	ws := newWorkspace(t, work, "", DenyList{})
 
-	rel, info, err := ws.resolveInfo("notes.txt")
+	rel, info, err := ws.resolvePath("notes.txt")
 	if rel != "" || info != nil || err == nil || !strings.Contains(err.Error(), "deny list") {
-		t.Fatalf("resolveInfo(notes.txt -> .env) = (%q, %v, %v), want a deny-list error", rel, info, err)
+		t.Fatalf("resolvePath(notes.txt -> .env) = (%q, %v, %v), want a deny-list error", rel, info, err)
 	}
-	expectErrorHidesWorkDir(t, "resolveInfo(notes.txt)", err, work, "notes.txt")
+	expectErrorHidesWorkDir(t, "resolvePath(notes.txt)", err, work, "notes.txt")
 }
 
 // - Verify a KNOWN LIMIT (documented on openFile, not a bug this test asks to fix): if a directory above the file is
@@ -370,7 +370,7 @@ func Test_Unit_Workspace_OpenFile_KnownLimit_DirSwappedBeforeWantTaken_NotDetect
 	writeFile(t, work, "d/a.txt", []byte("ALLOWED-A"))
 	writeFile(t, work, ".ssh/a.txt", []byte("FAKE_SECRET_TOKEN_123"))
 	ws := newWorkspace(t, work, "", DenyList{})
-	rel, err := ws.resolve(filepath.Join("d", "a.txt")) // the name is approved
+	rel, _, err := ws.resolvePath(filepath.Join("d", "a.txt")) // the name is approved
 	if err != nil {
 		t.Fatalf("resolve(d/a.txt): %v", err)
 	}

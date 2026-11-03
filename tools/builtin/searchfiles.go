@@ -168,7 +168,7 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start searching
 		return "", err
 	}
-	rel, startInfo, err := t.ws.resolveInfo(params.Path) // refuses outside workDir, a deny-listed path, the trace directory
+	rel, startInfo, err := t.ws.resolvePath(params.Path) // refuses outside workDir, a deny-listed path, the trace directory
 	if err != nil {
 		return "", err
 	}
@@ -212,7 +212,7 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 			visits++
 		}
 		// The walk never follows symlinks, so p joined onto rootDir is already the real path, as check expects
-		if _, err := t.ws.check(p, filepath.Join(t.ws.rootDir, filepath.FromSlash(p))); err != nil {
+		if _, err := t.ws.checkPath(p, filepath.Join(t.ws.rootDir, filepath.FromSlash(p))); err != nil {
 			if d.IsDir() {
 				return fs.SkipDir // hidden directory (e.g. .ssh): not looked into
 			}
@@ -231,7 +231,7 @@ func (t *SearchFilesTool) CallTool(ctx context.Context, args json.RawMessage) (s
 			return nil
 		}
 		// want is the file the check approved; searchFile refuses a file swapped in since. d.Info is an Lstat of the
-		// entry (a symlink swapped in shows up as a symlink); the start path was taken by resolveInfo instead
+		// entry (a symlink swapped in shows up as a symlink); the start path was taken by resolvePath instead
 		want := startInfo
 		if p != start {
 			if want, err = d.Info(); err != nil {

@@ -3854,3 +3854,150 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
   differs from the package's (a `//go:build ignore` script), and names starting with `_` or `.`. The loader no longer
   loads syntax at all, which also makes it faster. Downside: the map shows every variant of a function (the unix and
   windows `startInOwnGroup`, each under its own file), and a package whose files are all for other OSes still fails to load.
+
+### 2026-11-02 — Slice 4 (`write_file` + `create_directory`): Jerry's answers
+
+- **`write_file` does not create parent directories.** A missing parent is an error the model can recover from by
+  calling `create_directory` first. Keeps `create_directory` meaningful and keeps one tool to one effect. Downside: one
+  extra tool call when writing into a new folder.
+- **Overwrite needs no flag; the ask prompt is enough** (`write_file` is in the `askRules` defaults). Downside: under
+  `approval: allow-all` nobody is asked, so a model can overwrite a file silently. Accepted: allow-all is an explicit,
+  confirmed opt-in. The result text says `created` or `overwrote`.
+- **Write-deny list starts with `.git/`, the config file passed to the agent, and `traceDir`.** It is checked on top of
+  the read deny list and config `denyPaths`. `traceDir` is already refused by `checkPath` for reads, so writes inherit it.
+  `Workspace` needs the config file's path to deny it (new argument to `NewWorkspace`, or a field set by setup).
+- **Rename:** the planned `resolveNew` is `resolveNewPath` (the existing `resolve`/`resolveInfo` became `resolvePath`,
+  `check` became `checkPath`).
+- **Size cap (proposed, not yet confirmed):** an unexported constant `maxWriteBytes = 1 << 20` (1 MB) in `writefile.go`,
+  like `maxListEntries`. It equals the `readFileMaxBytes` default, so anything written can be read back in one call.
+  It is a backstop: the model's own output limit is far lower. Downside: not configurable without a code change.
+- **Renames and cap agreed (Jerry, same day):** the package-level `resolvePath(p)` (normalizes any path, tolerates a
+  missing tail, no checks; used for `traceDir`) is now `resolveSymLinks`, so `(w *Workspace) resolvePath` is the only
+  `resolvePath`. `maxWriteBytes = 1 << 20` (1 MB per `write_file` call, unexported constant) is agreed. It bounds one
+  call's content (= the file's final size, since `write_file` replaces the whole file), not total disk use; `edit_file`
+  will need its own result-size check.
+
+### 2026-11-02 — Slice 4 part 1 built: `resolveNewPath` and `create_directory`
+
+- **`Workspace.resolveNewPath(requested) (rel, err)`**: the write-side `resolvePath`. Joins onto `rootDir`, resolves the
+  longest existing prefix with `resolveSymLinks` and adds the missing tail back, runs `checkPath`, then a **write-deny**
+  check. Returns no identity (nothing to compare yet); the caller writes through `openRoot` (`os.Root`), which refuses
+  `..` and symlink escapes again at write time.
+- **Write-deny list is `writeDeniedNames = [".git"]`** on `Workspace` (matches a directory or file at any depth; a
+  submodule's `.git` is a file). Reason: a planted `.git/hooks/pre-commit` runs on the user's next commit, outside the
+  approval gate. **Not yet done:** the config file passed with `-config` and `traceDir` for writes (`traceDir` is
+  already refused by `checkPath`). The config file's path is not in `Config` today (only `main.go` has it), so it
+  needs a new argument to `NewWorkspace`/`SetupBuiltinTools`; do it with `write_file`.
+- **`create_directory`** (`tools/builtin/createdirectory.go`): arg `path`; `MkdirAll` (0755) through `os.Root`;
+  idempotent (`directory x already exists`), a file in the way is an error, result text `created directory x`. Enabled
+  with `builtinTools: ["create_directory"]`; the ask default already names it.
+- **`errMsgHidePath`** now keeps `ENOTDIR` ("not a directory") instead of the vague "can't be resolved".
+- Tests: `createdirectory_test.go`, `createdirectory_unix_test.go` (written by Claude, small; a test sub-agent pass for
+  more edge cases is still to do).
+
+### 2026-11-02 — Slice 4 built: `write_file`, config-file write-deny, approval preview
+
+- **`write_file`** (`tools/builtin/writefile.go`): args `path`, `content` (empty content is allowed, a missing one is
+  an error). Checks in order: `content` ≤ `maxWriteBytes` (1 MB constant; `tool.maxBytes` is a field only so tests can
+  use a small one), no NUL byte (it writes text, as `read_file` reads text), `resolveNewPath`, `openRoot`, the parent
+  must exist (else "create it with create_directory first"). New file: `O_EXCL`, mode 0644. Existing regular file:
+  `Lstat` → open `O_WRONLY|O_NONBLOCK` **without `O_TRUNC`** → `fstat` + `os.SameFile` against the Lstat → only then
+  `Truncate(0)`; mode kept. A directory, symlink, pipe or socket at the path is refused. Result: `created x (N bytes)` /
+  `overwrote x (N bytes)`. Downside, accepted: the write is not atomic (a disk-full failure leaves a truncated file);
+  temp file + rename would fix it but changes the inode and mode on overwrite.
+- **Not covered:** a hardlink to a deny-listed or write-denied file under an allowed name (checks are by name); the
+  Lstat is taken inside `openForWrite`, so a swap between `resolveNewPath` and that Lstat to a regular file at the same
+  approved name is not detected (harmless: same name). No test stages the swap race (no hook to pause between the steps).
+- **Config file is write-denied.** New `Config.ConfigFile` (`json:"-"`, set by `SetDefaultConfig` from `-config`,
+  never read from a file) is passed to `NewWorkspace(workDir, traceDir, configFile, deny)`, resolved with
+  `resolveSymLinks` (the file need not exist), and compared case-insensitively in `resolveNewPath`. It can still be
+  read. Reason: otherwise the model could rewrite its own `askRules`/`denyRules` for the next run.
+- **Approval preview** (`agent/approval_preview.go`): a call with string `path` and `content` arguments shows the path,
+  size, line count and the first 5 lines (120 chars each), everything quoted with `%q`; any other call shows the raw
+  arguments cut at 500 characters. Replaces printing the whole `Arguments:` (a written file can be 1 MB). Downside: the
+  user approves a preview, not the whole content. Applies to any tool with that argument shape, including an MCP
+  server's write tool.
+- **Digest** (`trace/digest_activity.go`): `write_file : created x (N bytes)` on success (the result text, so the digest can
+  tell created from overwrote), `write_file : write x (failed: …)` on failure (never the content); `create_directory :
+  mkdir x`. One existing test (`Test_Digest_AllowedByConfig_NoteAndFooter`) used `write_file` as a stand-in name and
+  expected the generic line; its expected line was changed on purpose.
+- **Bug the tests caught while building:** the `NewWorkspace` edit that stored `configFile` had not applied, so the
+  config file was not protected until `Test_WriteFile_Refused` failed.
+- Tests: `writefile_test.go`, `writefile_unix_test.go`, `approval_preview_test.go`, plus cases in `tool_test.go`,
+  `config_test.go`, `digest_test.go`. No test was deleted.
+
+### 2026-11-02 — Slice 5 built: `edit_file`, shared write checks, shorter traces
+
+- **`edit_file`** (`tools/builtin/editfile.go`): args `path`, `old_string` (non-empty), `new_string` (may be empty = delete;
+  must differ), `replace_all` (default false). `old_string` must match exactly once, or `replace_all` replaces every
+  non-overlapping match; zero matches and ambiguous matches are errors that give a count and never print file text. A
+  zero-match error adds a hint when the file uses CRLF and `old_string` uses LF. A missing file is an error pointing at
+  `write_file`; an edit never creates a file. A NUL byte in either string or in the file is refused (text only).
+- **Sizes (Jerry: reuse 1 MB for input file and result):** the file must be ≤ `maxWriteBytes`, each string ≤ it, and the
+  result is computed (`len + n*(len(new)-len(old))`) and refused above it *before* it is built, so `replace_all` with a
+  long `new_string` can't use unbounded memory.
+- **In place, not atomic (Jerry's choice):** the new content is built in memory first (every logical error happens before
+  the file is touched), then `Truncate(0)` + `WriteAt`. Mode and inode are kept. Downside: a disk-full failure part-way
+  leaves a truncated file.
+- **Changed-while-editing guard (Jerry agreed; a small window remains and is accepted):** the file is `Stat`ed again just
+  before the truncate; a different size or mtime refuses the edit ("changed while it was being edited"). mtime is coarse on
+  some filesystems, so a same-size change within the timestamp tick is not seen. The test hook `afterRead` stages this.
+- **Per-path mutex (Jerry: yes):** edits of one file by this tool are serialized (`lockFor`, keyed by the resolved,
+  lowercased relative path), because tool calls in one step run concurrently. An edit and a `write_file` of the same file
+  are not serialized.
+- **Shared code:** `openFile` is now `openExisting(…, flag)` with `O_RDONLY`; `write_file`'s overwrite and `edit_file`
+  use it with write flags. It refuses a directory or non-regular `want` *before* the open (a write open never tries a
+  pipe) and the opened descriptor must be `want` (`os.SameFile`) before anything is truncated. `resolveNewPath`'s
+  write-deny checks became `checkWritable`, shared with the new `resolvePathForWrite` (`resolvePath` + `checkWritable`).
+  Side effect fixed: `write_file` used to turn its own "was replaced while opening" message into "can't be resolved".
+- **Approval is one question per tool call, never per line (Jerry).** `approvalPreview` shows, for a call with
+  `path` + `old_string` + `new_string`: the path, a computed summary line ("replace one match / every match of N lines
+  (X bytes) with M lines (Y bytes)") and the first line of each side (120 chars, `%q`). The summary is computed from the
+  arguments, not written by the model, so it can't misdescribe the edit. Downside: the user does not see the lines after
+  the first.
+- **Traces keep no whole file bodies (Jerry).** `trace.shortenArguments` cuts `content`, `old_string` and `new_string` to
+  200 characters plus "… [N bytes in all, cut for the trace]" when the arguments exceed 1000 bytes. It is applied where
+  arguments are copied: `tool_requested` and the message records of `model_request`/`model_response`. Other fields (path,
+  `replace_all`, a long shell command) are untouched. After a cut the JSON keys come back sorted. Conversation memory still
+  holds the full call; only the trace is shortened. This also covers `write_file`.
+- **Digest says only that a file was edited:** `edit_file : edited x (N replacements, M bytes)`; a failure shows
+  `edit x (failed: …)`, never the strings.
+- Tests: `editfile_test.go`, `editfile_unix_test.go`, plus cases in `approval_preview_test.go`, `shorten_test.go`,
+  `digest_test.go`, `tool_test.go`. No test was deleted.
+
+### 2026-11-03 — PR #35 Copilot review: four fixes to the write tools
+
+Copilot's four inline comments, each confirmed against the code and given a test that fails without the fix (checked by
+disabling the fix).
+- **Approval preview could describe the wrong operation.** `write_file` ignores unknown keys, so a call with `content`
+  plus `old_string`/`new_string` was previewed as an edit while `content` was what got written (it hid the data from the
+  user). The shapes are now mutually exclusive: an edit has no `content`; a write has no `old_string`/`new_string`; a mix
+  is shown raw with a `[warning]` line. The struct decode is case-insensitive like the tools' own decode.
+- **A directory above a new file could be swapped for a symlink to `.git` after the check.** `os.Root` only stops links
+  that leave `rootDir`; a relative link to `.git` stays inside, so `resolveNewPath`'s write-deny check (on the path as it
+  was) did not hold at the moment of the write. `resolveNewPath` now returns a `newTarget` (path, nearest existing
+  directory above it, and that directory's identity); `create_directory` and `write_file` create only through
+  `openDir`, which opens that directory as its own `os.Root` (tied to the directory, not its path) and refuses it
+  unless `os.SameFile` matches the approved one. Remaining window: between the approval's `Lstat` of that directory and
+  `openDir`'s open, a swap that is undone before the compare is not seen (accepted, as for `openRoot`). `os.Root` itself
+  already refuses a link with an absolute target.
+- **Hard links bypassed the name-based write-deny.** `notes.txt` hard-linked to `.env`, `.git/config` or the config file
+  passed the checks and the same-inode compare then accepted it. Chosen fix (Jerry's call to revisit): `openExisting`
+  refuses to open for writing any file with `st_nlink > 1`. Downside: a legitimately hard-linked file (e.g. a pnpm
+  store) can't be edited by the tools. Not covered: platforms without a link count (non-Unix: check skipped), and
+  **reading** through a hard link to `.env` (`read_file` is still allowed; a separate, older gap, needs the same kind of
+  inode policy if it matters).
+- **A rename after the open sent writes to an unlinked file.** `f.Stat()` is the descriptor's inode, so if another
+  process renamed the file and put another at the path, `edit_file` / `write_file` wrote the old inode and reported
+  success while the path was unchanged. `stillAtPath` compares the open descriptor with what the path names now
+  (`os.SameFile`) just before the truncate in both tools. A tiny window between that check and the truncate remains.
+- Also fixed: the `candidte` typo (summary comment on the PR).
+- **Trace shortening gaps from the same review, fixed (Jerry: yes).** (1) Body keys (`content`, `old_string`,
+  `new_string`) are now matched case-insensitively, as the tools' JSON decode does, so `Content` is cut too. (2) Arguments
+  over 1000 bytes that are not a readable JSON object (invalid or truncated JSON, an array, a string, `null`) are cut
+  as a whole to 1000 characters plus a byte count, so a file body in a malformed call no longer reaches the trace. Two
+  cases in `Test_Unit_ShortenArguments_Untouched` (long invalid JSON, long non-object) expected the old pass-through and
+  were removed on purpose; their replacement is `Test_Unit_ShortenArguments_UnreadableLongArguments_CutWhole`. Downside:
+  a long malformed call is no longer fully visible in the trace (the memory/conversation still has it).
+- Tests: `writeraces_unix_test.go` (hard links, swapped parent, rename after open, `stillAtPath`, accepted directories),
+  two preview tests. No test was deleted.

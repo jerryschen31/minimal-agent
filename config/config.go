@@ -67,6 +67,8 @@ type Config struct {
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
 
+	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
+
 	// tool rules configuration (glob rules on model-facing tool names; a config file's list replaces that list's default, [] means no rules)
 	DenyRules []string `json:"denyRules"` // matching calls are refused, never asked, in every mode (default: none)
 	AskRules  []string `json:"askRules"`  // matching calls need the user's approval; a deny rule wins over an ask rule
@@ -226,6 +228,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 
 	// otherwise for the config file, read its contents and parse the JSON
 	filename := *flags.Config
+	cfg.ConfigFile = filename
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file: %w", err)

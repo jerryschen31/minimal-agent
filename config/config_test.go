@@ -1010,3 +1010,23 @@ func Test_Unit_PrintConfig_ShowsIgnorePaths(t *testing.T) {
 		}
 	}
 }
+
+// - Verify ConfigFile is the -config path when a file is loaded, "" with no file, and is never read from the file
+// itself (json:"-"): a "configFile" key is an unknown field and ignored
+func Test_Unit_SetDefaultConfig_ConfigFile_SetFromFlagNotFromFile(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"configFile": "/etc/passwd"}`))
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || cfg.ConfigFile != path {
+		t.Fatalf("ConfigFile = %q, err %v; want %q", cfg.ConfigFile, err, path)
+	}
+	if !strings.Contains(out, "configFile") {
+		t.Errorf("expected an unrecognized-field warning, got %q", out)
+	}
+	var none Config
+	captureStdout(t, func() { none, err = SetDefaultConfig(Flags{}) })
+	if err != nil || none.ConfigFile != "" {
+		t.Errorf("no config file: ConfigFile = %q, err %v", none.ConfigFile, err)
+	}
+}
