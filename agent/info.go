@@ -141,6 +141,19 @@ func printRules(w io.Writer, title, meaning string, rules, defaults, toolNames [
 			// apart would mean recording which keys the file set
 			source = "default"
 		}
+		if strings.HasPrefix(rule, hooks.CommandRulePrefix) {
+			// a command rule is matched against run_command calls' command lines, not tool names
+			applies := slices.Contains(toolNames, "run_command")
+			switch {
+			case applies:
+				fmt.Fprintf(w, "  %-20s %-9s applies to run_command calls (matched against the command line)\n", rule, source)
+			case !allListed:
+				fmt.Fprintf(w, "  %-20s %-9s applies to run_command calls (run_command is not listed above)\n", rule, source)
+			default:
+				fmt.Fprintf(w, "  %-20s %-9s run_command is not set up, so this applies to nothing\n", rule, source)
+			}
+			continue
+		}
 		var matches []string
 		for _, name := range toolNames {
 			if hooks.RuleMatches(rule, name) {
@@ -168,6 +181,7 @@ func printRules(w io.Writer, title, meaning string, rules, defaults, toolNames [
 //   - Under read_file it also prints what that tool never reads: the built-in deny list, any denyPaths, and the trace
 //     directory.
 func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool) {
+	cfg.OutBuffer = w // setup warnings (e.g. run_command skipped because runCommands is empty) belong in the report
 	builtins, err := tools.SetupBuiltinTools(cfg)
 	if err != nil {
 		fmt.Fprintf(w, "Built-in tools: FAILED: %v\n", err)

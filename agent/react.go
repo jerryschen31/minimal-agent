@@ -63,6 +63,8 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 //     rejected.
 //   - If Arguments is empty, json.RawMessage would be an empty byte slice, so a proper empty JSON object `{}` is
 //     passed instead.
+//   - The call runs under a context limited to cfg.ToolTimeoutSeconds. A tool that ignores its context cannot be
+//     stopped by this (the loop waits for it), so every tool must honour ctx.
 func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error) {
 	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, that is an error.
 	tool, ok := cs.Tools.Lookup(call.Function.Name)
@@ -91,7 +93,21 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
 	}
-	return callToolSafely(ctx, tool, args)
+	// 5. Limit the call to cfg.ToolTimeoutSeconds (built-in and MCP tools alike). 0 = no limit (only a hand-built config
+	// in a test; checkConfig makes real configs positive).
+	toolCtx := ctx
+	if secs := cs.Config.ToolTimeoutSeconds; secs > 0 {
+		var cancel context.CancelFunc
+		toolCtx, cancel = context.WithTimeout(ctx, time.Duration(secs)*time.Second)
+		defer cancel()
+	}
+	result, err := callToolSafely(toolCtx, tool, args)
+	// ctx still alive and only the tool's own deadline passed: say it timed out, so the model can react (a Ctrl+C or the
+	// turn timeout ends ctx itself and is reported by the caller instead)
+	if err != nil && ctx.Err() == nil && errors.Is(toolCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("tool timed out after %ds (toolTimeoutSeconds): %w", cs.Config.ToolTimeoutSeconds, err)
+	}
+	return result, err
 }
 
 // checkBeforeToolHooks calls hooks that check the tool calls. It returns an error if any hook vetoes the call.

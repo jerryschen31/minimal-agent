@@ -1044,3 +1044,34 @@ func Test_Unit_SetDefaultConfig_CopyFileMaxBytes(t *testing.T) {
 		t.Errorf("(%d, %v), want 5242880", cfg.CopyFileMaxBytes, err)
 	}
 }
+
+// - Verify the run_command and timeout settings: defaults (no programs allowed, 128 KB cap, 5 and 10 minutes), keys read
+// from a config file without an "unrecognized field" warning, and the values shown by PrintConfig
+func Test_Unit_SetDefaultConfig_RunCommandAndTimeouts(t *testing.T) {
+	d := GetDefaultConfig()
+	if len(d.RunCommands) != 0 || len(d.CommandEnv) != 0 || d.CommandMaxOutputBytes != 128<<10 || d.ToolTimeoutSeconds != 300 || d.TurnTimeoutSeconds != 600 {
+		t.Errorf("defaults: runCommands %v, commandEnv %v, cap %d, tool %d, turn %d", d.RunCommands, d.CommandEnv, d.CommandMaxOutputBytes, d.ToolTimeoutSeconds, d.TurnTimeoutSeconds)
+	}
+	if slices.Contains(d.AskRules, "run_command") || slices.Contains(d.AskRules, "run_command:*") {
+		t.Errorf("run_command must not be in the default askRules (no allow list to carve exceptions): %v", d.AskRules)
+	}
+	path := writeTempFile(t, "config.json", []byte(`{"runCommands":["go","npm"],"commandEnv":["NPM_CONFIG_CACHE"],"commandMaxOutputBytes":2048,"toolTimeoutSeconds":60,"turnTimeoutSeconds":120}`))
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || !slices.Equal(cfg.RunCommands, []string{"go", "npm"}) || !slices.Equal(cfg.CommandEnv, []string{"NPM_CONFIG_CACHE"}) ||
+		cfg.CommandMaxOutputBytes != 2048 || cfg.ToolTimeoutSeconds != 60 || cfg.TurnTimeoutSeconds != 120 {
+		t.Errorf("(%+v, %v)", cfg, err)
+	}
+	if strings.Contains(out, "unrecognized") {
+		t.Errorf("keys not recognised: %q", out)
+	}
+	var shown bytes.Buffer
+	cfg.OutBuffer = &shown
+	PrintConfig(cfg)
+	for _, want := range []string{"runCommands:   [go npm]", "commandEnv:", "commandMaxOutputBytes: 2048", "toolTimeoutSeconds: 60", "turnTimeoutSeconds: 120"} {
+		if !strings.Contains(shown.String(), want) {
+			t.Errorf("PrintConfig lacks %q:\n%s", want, shown.String())
+		}
+	}
+}

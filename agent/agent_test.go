@@ -60,7 +60,7 @@ func Test_Shutdown_RecordsRunEndAfterBackgroundCompaction(t *testing.T) {
 func Test_SetupAgent_RejectsNonPositiveMCPResultCap(t *testing.T) {
 	for _, n := range []int{0, -1} {
 		var a Agent
-		err := a.SetupAgent(context.Background(), config.Config{MaxSteps: 10, ResponseTimeoutSeconds: 300, MCPResultMaxBytes: n}, nil)
+		err := a.SetupAgent(context.Background(), config.Config{MaxSteps: 10, ResponseTimeoutSeconds: 300, ToolTimeoutSeconds: 300, TurnTimeoutSeconds: 600, MCPResultMaxBytes: n}, nil)
 		if err == nil || !strings.Contains(err.Error(), "mcpResultMaxBytes") {
 			t.Errorf("MCPResultMaxBytes %d: err = %v, want an mcpResultMaxBytes error", n, err)
 		}

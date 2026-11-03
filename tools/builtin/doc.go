@@ -72,6 +72,17 @@
 //	  func (t *ReadFileTool) GetToolDefinition() model.ToolDef
 //	  func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 //
+//	runcommand.go
+//	  func NewRunCommandTool(ws *Workspace, names, extraEnv []string, maxBytes int, warn io.Writer) (*RunCommandTool, error)
+//	  func (w *Workspace) inside(path string) bool
+//	  func resolveSymLinksOrSelf(path string) string
+//	  func (t *RunCommandTool) GetToolDefinition() model.ToolDef
+//	  func (t *RunCommandTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *RunCommandTool) environment() []string
+//	  func (w *capWriter) Write(p []byte) (int, error)
+//	  func (w *capWriter) exceeded() bool
+//	  func (w *capWriter) String() string
+//
 //	searchfiles.go
 //	  func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*SearchFilesTool, error)
 //	  func (t *SearchFilesTool) GetToolDefinition() model.ToolDef

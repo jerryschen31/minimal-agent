@@ -45,6 +45,8 @@ type Config struct {
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
 
 	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300)
+	ToolTimeoutSeconds     int  `json:"toolTimeoutSeconds"`     // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
+	TurnTimeoutSeconds     int  `json:"turnTimeoutSeconds"`     // most seconds one whole turn (model calls plus tools) may take; must be positive and at least toolTimeoutSeconds (default 600)
 	Debug                  bool `json:"debug"`                  // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
@@ -82,13 +84,16 @@ type Config struct {
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
-	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
-	CopyFileMaxBytes  int `json:"copyFileMaxBytes"`  // largest file one copy_file call copies; must be positive (default 100 MB). Bytes go file to file, not into the model's context
-	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
-	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files or search_files call looks at, matching or not; must be positive (default 10,000)
+	ReadFileMaxBytes      int `json:"readFileMaxBytes"`      // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
+	CopyFileMaxBytes      int `json:"copyFileMaxBytes"`      // largest file one copy_file call copies; must be positive (default 100 MB). Bytes go file to file, not into the model's context
+	MCPResultMaxBytes     int `json:"mcpResultMaxBytes"`     // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
+	MaxSearchFiles        int `json:"maxSearchFiles"`        // most files and directories one list_files or search_files call looks at, matching or not; must be positive (default 10,000)
+	CommandMaxOutputBytes int `json:"commandMaxOutputBytes"` // most output one run_command call returns; the program is killed past it; must be positive (default 128 KB)
 
 	// tools and MCP servers configuration
 	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
+	RunCommands  []string                   `json:"runCommands"`  // programs run_command may start, bare names looked up on PATH at setup; [] (the default) = run_command is not set up
+	CommandEnv   []string                   `json:"commandEnv"`   // environment variable names passed to those programs, added to the built-in list (which can't be shrunk)
 	DenyPaths    []string                   `json:"denyPaths"`    // .gitignore-style path patterns the file tools never touch, added to the built-in list (which can't be removed)
 	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files and search_files leave out (an ignored directory can't be listed or searched); a config file's list replaces the default, [] = no paths ignored
 	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
@@ -188,6 +193,8 @@ func GetDefaultConfig() Config {
 		MaxSteps:      10,
 
 		ResponseTimeoutSeconds: 300, // 5 minutes; slow local models may need more
+		ToolTimeoutSeconds:     300, // 5 minutes; a cold `go test` or an MCP call can be slow
+		TurnTimeoutSeconds:     600, // 10 minutes; must be at least ToolTimeoutSeconds
 		TraceEnabled:           true,
 		DigestEnabled:          true,
 		RedactionLevel:         "standard",
@@ -200,13 +207,14 @@ func GetDefaultConfig() Config {
 		AutoCompactThreshold:  0.9,
 		SummarizerPrompt:      "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely.",
 
-		TraceDir:           ".agent-trace",
-		TraceMaxEventBytes: 100 << 20, // 100 MB
-		ReadFileMaxBytes:   1 << 20,   // 1 MB
-		CopyFileMaxBytes:   100 << 20, // 100 MB
-		MCPResultMaxBytes:  256 << 10, // 256 KB
-		MaxSearchFiles:     10000,
-		IgnorePaths:        []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
+		TraceDir:              ".agent-trace",
+		TraceMaxEventBytes:    100 << 20, // 100 MB
+		ReadFileMaxBytes:      1 << 20,   // 1 MB
+		CopyFileMaxBytes:      100 << 20, // 100 MB
+		MCPResultMaxBytes:     256 << 10, // 256 KB
+		MaxSearchFiles:        10000,
+		CommandMaxOutputBytes: 128 << 10, // 128 KB
+		IgnorePaths:           []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
 	}
 }
 
@@ -297,6 +305,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
+	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
+	fmt.Fprintf(w, "  turnTimeoutSeconds: %d\n", cfg.TurnTimeoutSeconds)
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
@@ -314,7 +324,10 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  copyFileMaxBytes: %d\n", cfg.CopyFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  maxSearchFiles: %d\n", cfg.MaxSearchFiles)
+	fmt.Fprintf(w, "  commandMaxOutputBytes: %d\n", cfg.CommandMaxOutputBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
+	fmt.Fprintf(w, "  runCommands:   %v\n", cfg.RunCommands)
+	fmt.Fprintf(w, "  commandEnv:    %v (names added to the built-in list)\n", cfg.CommandEnv)
 	fmt.Fprintf(w, "  denyPaths:     %v (added to the built-in list)\n", cfg.DenyPaths)
 	fmt.Fprintf(w, "  ignorePaths:   %v\n", cfg.IgnorePaths)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)

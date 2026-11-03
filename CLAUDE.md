@@ -242,6 +242,17 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   (`denyRules` empty; `askRules` `*delete*`, `*remove*` and the write tools), and a config file's list replaces that
   list's default (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built`, `§ Policy out of the core` and
   `§ Approval levels: deny / ask / run`.
+- **`run_command` is opt-in by `runCommands` and is not contained** (`tools/builtin/runcommand.go`; `DECISIONS.md § run_command plan`
+  and `§ run_command built`). Enabled only when `run_command` is in `builtinTools` AND `runCommands` (bare program names, resolved
+  to absolute paths once at setup, refused inside `workDir`) is non-empty; otherwise setup warns and skips it. No shell, empty
+  stdin, environment limited to `DefaultCommandEnv` plus `commandEnv` (extend-only), own process group killed on context end and
+  after exit, output cut at `commandMaxOutputBytes` (program killed). A running program bypasses every `Workspace` check; only `dir`
+  is checked. Rules: `run_command:<glob>` in `denyRules`/`askRules` match the joined command line (`hooks.ToolRules.LevelFor`);
+  rules without that prefix match tool names only; there is no allow list (not matched = runs), so `run_command` is deliberately
+  not in the default `askRules`. Unreadable arguments fail closed to ask. A glob over a command line is not a detector.
+- **Timeouts:** `toolTimeoutSeconds` (default 300) bounds every tool call, MCP included (`executeToolCall`); `turnTimeoutSeconds`
+  (default 600) bounds a whole turn (`handleUserInput`) and must not be below the tool limit (`checkConfig`). A tool must honour
+  its context. Ctrl+C and the turn timeout are told apart from the tool's own deadline by which context ended.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

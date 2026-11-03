@@ -14,6 +14,8 @@
 //	  func checkRules(kind string, rulesIn []string) ([]string, error)
 //	  func (t *ToolRules) BeforeTool(ctx context.Context, call model.ToolCall) error
 //	  func (t *ToolRules) Level(toolName string) (level, rule string)
+//	  func (t *ToolRules) LevelFor(call model.ToolCall) (level, rule string)
+//	  func CommandLine(call model.ToolCall) (line string, ok bool)
 //	  func (t *ToolRules) DenyRules() []string
 //	  func (t *ToolRules) AskRules() []string
 //	  func RuleMatches(rule, toolName string) bool

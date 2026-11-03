@@ -193,6 +193,7 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 // Notes:
 //   - Shared by SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
 //   - ResponseTimeoutSeconds of 0 would time out every model call at once.
+//   - toolTimeoutSeconds and turnTimeoutSeconds must be positive, and the turn's limit at least the tool's.
 //   - mcpResultMaxBytes is checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad
 //     cap would silently drop every MCP tool.
 //   - A typo in a safety setting (approval) fails setup rather than silently meaning something else.
@@ -204,6 +205,17 @@ func checkConfig(cfg config.Config) error {
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {
 		return fmt.Errorf("responseTimeoutSeconds must be a positive integer, got %d", cfg.ResponseTimeoutSeconds)
+	}
+	// the tool timeout bounds every tool call; the turn timeout must leave room for it, or the turn would end at the same
+	// moment as the tool and the model would never see the timeout
+	if cfg.ToolTimeoutSeconds <= 0 {
+		return fmt.Errorf("toolTimeoutSeconds must be a positive integer, got %d", cfg.ToolTimeoutSeconds)
+	}
+	if cfg.TurnTimeoutSeconds <= 0 {
+		return fmt.Errorf("turnTimeoutSeconds must be a positive integer, got %d", cfg.TurnTimeoutSeconds)
+	}
+	if cfg.TurnTimeoutSeconds < cfg.ToolTimeoutSeconds {
+		return fmt.Errorf("turnTimeoutSeconds (%d) must not be less than toolTimeoutSeconds (%d)", cfg.TurnTimeoutSeconds, cfg.ToolTimeoutSeconds)
 	}
 	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
 	if cfg.MCPResultMaxBytes <= 0 {

@@ -3,7 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"slices"
 	"sort"
 	"sync"
 
@@ -26,6 +29,8 @@ type Tool interface {
 //     trace files and deny-listed names).
 //   - The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
 //     pattern always fails setup.
+//   - "run_command" is set up only when cfg.RunCommands names at least one usable program; otherwise a warning goes to
+//     cfg.OutBuffer and the tool is skipped. The reverse (runCommands set, tool not in builtinTools) also warns.
 //   - "read_file" and the old spelling "ReadFile" both build the read tool; an unknown name fails setup.
 func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 	deny, err := builtin.NewDenyList(cfg.DenyPaths)
@@ -39,6 +44,10 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, cfg.ConfigFile, deny)
 	if err != nil {
 		return nil, err
+	}
+	out := cfg.OutBuffer // setup warnings (run_command) go here; nil in a hand-built config means nowhere
+	if out == nil {
+		out = io.Discard
 	}
 	tools := []Tool{}
 	// add the built-in tools specified in the config
@@ -92,10 +101,28 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 				return nil, err
 			}
 			tools = append(tools, moveFile)
+		case "run_command":
+			// no programs listed = nothing to run: skip the tool and say why (a silent skip looks like a broken tool)
+			if len(cfg.RunCommands) == 0 {
+				fmt.Fprintln(out, `[warning] run_command is in builtinTools but runCommands is empty; run_command is not set up`)
+				continue
+			}
+			runCommand, err := builtin.NewRunCommandTool(ws, cfg.RunCommands, cfg.CommandEnv, cfg.CommandMaxOutputBytes, out)
+			if errors.Is(err, builtin.ErrNoCommands) {
+				fmt.Fprintln(out, "[warning] none of the runCommands programs can be used; run_command is not set up")
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, runCommand)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
 		}
+	}
+	if len(cfg.RunCommands) > 0 && !slices.Contains(cfg.BuiltinTools, "run_command") {
+		fmt.Fprintln(out, `[warning] runCommands is set but "run_command" is not in builtinTools; the tool is not set up`)
 	}
 	return tools, nil
 }

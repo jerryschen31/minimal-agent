@@ -1214,3 +1214,15 @@ uses `textutils.CutBytes`; rules `run_command:<program> <argument prefix>` match
 read the call's arguments and unparseable arguments fail closed (ask); precedence deny > allow > ask > run; `run_command`
 joins the default `askRules`; `approvalPreview` gets a `command` + `args` shape. The test that treats `run_command:rm` as an
 invalid rule (`agent/info_test.go`, `hooks/toolrules_test.go`) has to change.
+
+
+### 2026-11-03 — `run_command` built (branch `feat/run-command`, not committed except the plan entry in DECISIONS.md)
+
+Plan committed as 719b81c ("DECISIONS: run_command plan complete"). Everything else is uncommitted: the tool, `LevelFor` command
+rules, `toolTimeoutSeconds` / `turnTimeoutSeconds`, config keys and docs, preview, digest, info, tests, codemap. `go vet`,
+`go test -race ./...`, `go run ./cmd/codemap -lint` and `GOOS=windows go build ./...` are clean. Details and the two bugs the
+mutation pass found: `DECISIONS.md § run_command built`.
+
+Next: Jerry commits and opens the PR (base `build`); then `/reload` (plan in the "`/reload` designed in detail, then deferred"
+entry; it is deferred, ask first), then Jerry's autonomous port. Worth trying by hand: a config with `runCommands: ["go"]`,
+`builtinTools` incl. `run_command`, ask rule `run_command:go run*`, then ask the agent to run `go test ./...` and `go run .`.

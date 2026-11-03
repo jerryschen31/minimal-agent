@@ -125,3 +125,48 @@ func Test_Unit_ApprovalPreview_PlainShapesStillClassified(t *testing.T) {
 		t.Errorf("lone old_string: %q", got)
 	}
 }
+
+// - Verify a run_command call shows the program, each argument quoted separately (a space inside one is visible) and the
+// directory, and that terminal escape codes are quoted
+func Test_Unit_ApprovalPreview_RunCommand(t *testing.T) {
+	args, _ := json.Marshal(map[string]any{"command": "go", "args": []string{"test", "-run", "A B", "\x1b[31m"}, "dir": "sub"})
+	got := strings.Join(approvalPreview(model.ToolCall{Function: model.ToolCallFunc{Name: "run_command", Arguments: string(args)}}), "\n")
+	for _, want := range []string{`Run: "go"`, `Args: ["test" "-run" "A B" "\x1b[31m"]`, `In directory: "sub"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("raw escape code in preview: %q", got)
+	}
+	plain := strings.Join(approvalPreview(previewCall(`{"command":"ls"}`)), "\n")
+	if plain != `Run: "ls"` {
+		t.Errorf("no args: %q", plain)
+	}
+}
+
+// - Verify a very long argument list is cut and says how many arguments there were
+func Test_Unit_ApprovalPreview_RunCommand_LongArgsCut(t *testing.T) {
+	many := make([]string, 300)
+	for i := range many {
+		many[i] = "argument-number"
+	}
+	args, _ := json.Marshal(map[string]any{"command": "echo", "args": many})
+	got := strings.Join(approvalPreview(previewCall(string(args))), "\n")
+	if !strings.Contains(got, "(300 arguments in all)") || len(got) > 700 {
+		t.Errorf("len %d: %.200s", len(got), got)
+	}
+}
+
+// - Verify a call with command AND path, content or old/new strings is not shown as a command (the shapes are exclusive)
+func Test_Unit_ApprovalPreview_RunCommand_ShapeIsExclusive(t *testing.T) {
+	for _, args := range []string{
+		`{"command":"ls","path":"a","content":"x"}`,
+		`{"command":"ls","old_string":"a","new_string":"b"}`,
+	} {
+		got := strings.Join(approvalPreview(previewCall(args)), "\n")
+		if strings.HasPrefix(got, "Run:") {
+			t.Errorf("%s shown as a command: %s", args, got)
+		}
+	}
+}

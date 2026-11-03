@@ -4136,3 +4136,39 @@ in `runCommands` is the consent to run it, unasked.
 
 **Tests:** a full mutation-check pass. **Changes to existing tests:** `run_command:rm` is no longer an invalid rule
 (`hooks/toolrules_test.go`, `agent/info_test.go`).
+
+
+### 2026-11-03 — `run_command` built (as planned in the entry above, with these differences)
+
+Files: `tools/builtin/runcommand.go`, `commandenv.go`; `hooks/toolrules.go` (`LevelFor`, `CommandLine`, `CommandRulePrefix`);
+`tools/tool.go` (setup); `agent/react.go` (tool timeout), `agent/chat.go` (turn timeout), `agent/agent.go` (`checkConfig`),
+`agent/approval_preview.go` (`commandPreview`), `agent/info.go`, `trace/digest_activity.go`; config keys `runCommands`,
+`commandEnv`, `commandMaxOutputBytes`, `toolTimeoutSeconds`, `turnTimeoutSeconds` (documented, with the Go, Python and npm
+example configs, in `config/doc.go`).
+
+- **As planned:** argv only, absolute paths resolved at setup (refused inside `workDir`), filtered environment (`commandEnv`
+  extend-only), empty stdin, own process group (killed on context end and again after exit), non-zero exit is a normal result,
+  `dir` through `Workspace.resolvePath`, 128 KB plain cut-off that kills the program, `run_command` not in the default
+  `askRules`, no `allowRules`, glob rules over the joined command line, unreadable arguments fail closed to "ask".
+- **Rule scoping (detail the plan left open):** a rule starting with `run_command:` is matched against the command line
+  only; every other rule is matched against the tool name only. So the default `*delete*` does not ask for
+  `go test -run TestDelete`. `Level(name)` stays for info mode; `BeforeTool` uses `LevelFor(call)`.
+- **Turn timeout message:** plain `[error] ReAct loop error: turn timed out after Ns (turnTimeoutSeconds)`, not a separate
+  bracket line. It is not `[interrupted]`, and the trace status is `error`.
+- **Tool timeout:** `toolCtx` in `executeToolCall`; the error is wrapped as `tool timed out after Ns (toolTimeoutSeconds)`
+  only when the parent context is still alive. A tool that ignores its context is not stopped (the loop waits for it); this
+  is a stated limit. A value of 0 (hand-built test config) means no limit; `checkConfig` makes real configs positive.
+- **Bug found by the mutation pass:** the output cut used `textutils.CutBytes` on a buffer already holding exactly the limit,
+  so it saw nothing to cut and left half a character. Now `TrimPartialRune` runs when output was dropped. The first test
+  used a cap that fell on a character boundary and missed it; it now uses a cap inside a character.
+- **Another weak test fixed:** `go test`'s own stdin is `/dev/null`, so inheriting stdin went unnoticed; the test now
+  replaces `os.Stdin` with a pipe nobody writes to.
+- **Mutation pass:** 28 mutants (env passed whole, `commandEnv` replacing the defaults, stdin inherited, no post-exit group
+  kill, no own group, cap not killing, cap off by one, half characters, `dir` unchecked, exit status lost, ctx end not an
+  error, program inside `workDir` allowed, unlisted program runs, path in `runCommands`, name rules matching the command
+  line, unreadable arguments running, ask beating deny, colon rule allowed anywhere, arguments dropped from the command line,
+  tool timeout not applied or mislabelling Ctrl+C, turn timeout not applied or mislabelling Ctrl+C, turn < tool allowed,
+  empty `runCommands` not skipped, preview joining arguments, digest showing the program only, `run_command` in the default
+  `askRules`). All killed after the two fixes above.
+- **Not done / known limits:** no sandbox (so no unattended use yet); the output tail is lost past the cap; no Windows
+  process-tree kill (as `mcpconnect`); the unix-only tests do not run on Windows (it builds: `GOOS=windows go build ./...`).

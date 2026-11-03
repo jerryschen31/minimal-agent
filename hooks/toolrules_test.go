@@ -156,10 +156,10 @@ func Test_Unit_ToolRules_Deny_InvalidRules(t *testing.T) {
 		})
 	}
 
-	t.Run("tool:program form", func(t *testing.T) {
-		d, err := NewToolRules([]string{"run_command:rm"}, nil)
-		if err == nil || !strings.Contains(err.Error(), "run_command") {
-			t.Fatalf("want error mentioning run_command, got %v", err)
+	t.Run("colon outside the run_command form", func(t *testing.T) {
+		d, err := NewToolRules([]string{"fs:read"}, nil)
+		if err == nil || !strings.Contains(err.Error(), "run_command:") {
+			t.Fatalf("want error mentioning the run_command: prefix, got %v", err)
 		}
 		if d != nil {
 			t.Errorf("want nil ToolRules on error, got %+v", d)
@@ -403,7 +403,7 @@ func Test_Unit_ToolRules_InvalidRule_NamesTheList(t *testing.T) {
 	}{
 		{"bad deny", []string{"["}, []string{"*delete*"}, `invalid deny rule "["`},
 		{"bad ask", []string{"*push*"}, []string{"*delete*", "fs_["}, `invalid ask rule "fs_["`},
-		{"ask tool:program form", nil, []string{"run_command:rm"}, `invalid ask rule "run_command:rm"`},
+		{"ask colon outside run_command form", nil, []string{"fs:read"}, `invalid ask rule "fs:read"`},
 		{"both bad: deny reported", []string{"["}, []string{"]["}, `invalid deny rule "["`},
 	}
 	for _, c := range cases {
@@ -436,5 +436,95 @@ func Test_Unit_ToolRules_RuleLists_ReturnCopies(t *testing.T) {
 	}
 	if got := r.AskRules(); !slices.Equal(got, []string{"*delete*"}) {
 		t.Errorf("AskRules() = %q after changing a copy", got)
+	}
+}
+
+func runCmd(args string) model.ToolCall { return call("run_command", args) }
+
+func newDenyAsk(t *testing.T, deny, ask []string) *ToolRules {
+	t.Helper()
+	r, err := NewToolRules(deny, ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// - Verify a run_command: rule is matched against the joined command line: a deny rule refuses the matching program,
+// the same program with another subcommand is not matched, and * crosses '/' in arguments such as ./...
+func Test_Unit_ToolRules_CommandRules_MatchTheCommandLine(t *testing.T) {
+	r := newDenyAsk(t, []string{"run_command:rm*", "run_command:go test*"}, nil)
+	checkCall(t, r, runCmd(`{"command":"rm","args":["-rf","x"]}`), "run_command:rm*")
+	checkCall(t, r, runCmd(`{"command":"go","args":["test","./..."]}`), "run_command:go test*")
+	checkCall(t, r, runCmd(`{"command":"go","args":["build","./..."]}`), "")
+	checkCall(t, r, runCmd(`{"command":"RM","args":["x"]}`), "run_command:rm*") // case-insensitive, like tool names
+	checkCall(t, r, runCmd(`{"Command":"rm"}`), "run_command:rm*")             // keys are read as the tool reads them
+}
+
+// - Verify an ask command rule asks (wraps ErrNeedsApproval) and a command matching no rule runs, so listing a program in
+// runCommands is enough to run it unasked
+func Test_Unit_ToolRules_CommandRules_AskAndRun(t *testing.T) {
+	r := newDenyAsk(t, nil, []string{"run_command:go run*", "run_command:npm install*"})
+	err := r.BeforeTool(context.Background(), runCmd(`{"command":"go","args":["run","main.go"]}`))
+	if !errors.Is(err, ErrNeedsApproval) || !strings.Contains(err.Error(), `"run_command:go run*"`) {
+		t.Errorf("go run: err = %v, want a needs-approval error naming the rule", err)
+	}
+	if err := r.BeforeTool(context.Background(), runCmd(`{"command":"go","args":["test"]}`)); err != nil {
+		t.Errorf("go test: want it to run, got %v", err)
+	}
+	if err := r.BeforeTool(context.Background(), runCmd(`{"command":"python3","args":["a.py"]}`)); err != nil {
+		t.Errorf("python3: want it to run, got %v", err)
+	}
+}
+
+// - Verify deny beats ask for commands, and the plain rule "run_command" and "run_command:*" cover every call
+func Test_Unit_ToolRules_CommandRules_DenyBeatsAsk_BlanketRules(t *testing.T) {
+	r := newDenyAsk(t, []string{"run_command:rm*"}, []string{"run_command:*"})
+	checkCall(t, r, runCmd(`{"command":"rm","args":["x"]}`), "run_command:rm*")
+	if err := r.BeforeTool(context.Background(), runCmd(`{"command":"go"}`)); !errors.Is(err, ErrNeedsApproval) {
+		t.Errorf("run_command:*: err = %v, want needs approval", err)
+	}
+	byName := newDenyAsk(t, nil, []string{"run_command"})
+	if err := byName.BeforeTool(context.Background(), runCmd(`{"command":"go"}`)); !errors.Is(err, ErrNeedsApproval) {
+		t.Errorf("plain run_command rule: err = %v, want needs approval", err)
+	}
+}
+
+// - Verify a tool-name rule is NOT matched against the command line: the default "*delete*" must not ask for
+// `go test -run TestDelete`, and a command rule never applies to another tool
+func Test_Unit_ToolRules_NameRules_IgnoreTheCommandLine(t *testing.T) {
+	r := newDenyAsk(t, []string{"run_command:go test*"}, []string{"*delete*", "*remove*"})
+	if err := r.BeforeTool(context.Background(), runCmd(`{"command":"go","args":["vet","-run","TestDelete"]}`)); err != nil {
+		t.Errorf("name rule matched the command line: %v", err)
+	}
+	checkCall(t, r, call("other_tool", `{"command":"go","args":["test"]}`), "") // same arguments, different tool
+}
+
+// - Verify a run_command call whose arguments can't be read fails closed to ask, while a deny rule by name still wins
+// and a readable call is unaffected
+func Test_Unit_ToolRules_CommandRules_UnreadableArgumentsAsk(t *testing.T) {
+	r := newDenyAsk(t, nil, nil)
+	for _, args := range []string{`{}`, `{"command":5}`, `{"command":""}`, `{"command":"go","args":"test"}`, `[1]`, `not json`} {
+		err := r.BeforeTool(context.Background(), runCmd(args))
+		if !errors.Is(err, ErrNeedsApproval) {
+			t.Errorf("%s: err = %v, want needs approval", args, err)
+		}
+	}
+	deny := newDenyAsk(t, []string{"run_command"}, nil)
+	checkCall(t, deny, runCmd(`{}`), "run_command")
+}
+
+// - Verify CommandLine's format, and that Level(name) (used by info mode) is unchanged by command rules
+func Test_Unit_CommandLine_And_Level(t *testing.T) {
+	line, ok := CommandLine(runCmd(`{"command":"go","args":["test","./..."]}`))
+	if !ok || line != "run_command:go test ./..." {
+		t.Errorf("CommandLine = (%q, %v)", line, ok)
+	}
+	if line, ok := CommandLine(runCmd(`{"command":"ls"}`)); !ok || line != "run_command:ls" {
+		t.Errorf("no args: (%q, %v)", line, ok)
+	}
+	r := newDenyAsk(t, []string{"run_command:rm*"}, nil)
+	if level, _ := r.Level("run_command"); level != LevelRun {
+		t.Errorf("Level(run_command) = %q, want run: a command rule needs the call", level)
 	}
 }

@@ -388,10 +388,12 @@ func describe(name, args, content string, failed bool) string {
 		}
 	case "shell", "run_command", "bash":
 		var in struct {
-			Command string `json:"command"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
 		}
 		if json.Unmarshal([]byte(args), &in) == nil && in.Command != "" {
-			line = name + " : " + oneLine(in.Command, maxShellChars)
+			// run_command sends the program and its arguments apart; join them so the digest shows the command line
+			line = name + " : " + oneLine(strings.Join(append([]string{in.Command}, in.Args...), " "), maxShellChars)
 		}
 	}
 	if line == "" {

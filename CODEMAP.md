@@ -66,6 +66,7 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── commandenv.go
 │       ├── copyfile.go
 │       ├── createdirectory.go
 │       ├── denylist.go
@@ -78,6 +79,7 @@ minimal-agent/
 │       ├── nlink_unix.go
 │       ├── pathpattern.go
 │       ├── readfile.go
+│       ├── runcommand.go
 │       ├── searchfiles.go
 │       ├── workspace.go
 │       └── writefile.go
@@ -121,6 +123,7 @@ approval_preview.go
   func rawPreview(args string) []string
   func editPreview(path, oldStr, newStr string, all bool) []string
   func previewFirstLine(s string) string
+  func commandPreview(command string, args *[]string, dir *string) []string
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -326,6 +329,8 @@ toolrules.go
   func checkRules(kind string, rulesIn []string) ([]string, error)
   func (t *ToolRules) BeforeTool(ctx context.Context, call model.ToolCall) error
   func (t *ToolRules) Level(toolName string) (level, rule string)
+  func (t *ToolRules) LevelFor(call model.ToolCall) (level, rule string)
+  func CommandLine(call model.ToolCall) (line string, ok bool)
   func (t *ToolRules) DenyRules() []string
   func (t *ToolRules) AskRules() []string
   func RuleMatches(rule, toolName string) bool
@@ -508,6 +513,17 @@ readfile.go
   func fileKind(mode os.FileMode) string
   func (t *ReadFileTool) GetToolDefinition() model.ToolDef
   func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+
+runcommand.go
+  func NewRunCommandTool(ws *Workspace, names, extraEnv []string, maxBytes int, warn io.Writer) (*RunCommandTool, error)
+  func (w *Workspace) inside(path string) bool
+  func resolveSymLinksOrSelf(path string) string
+  func (t *RunCommandTool) GetToolDefinition() model.ToolDef
+  func (t *RunCommandTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *RunCommandTool) environment() []string
+  func (w *capWriter) Write(p []byte) (int, error)
+  func (w *capWriter) exceeded() bool
+  func (w *capWriter) String() string
 
 searchfiles.go
   func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*SearchFilesTool, error)
