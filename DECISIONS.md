@@ -4001,3 +4001,48 @@ disabling the fix).
   a long malformed call is no longer fully visible in the trace (the memory/conversation still has it).
 - Tests: `writeraces_unix_test.go` (hard links, swapped parent, rename after open, `stillAtPath`, accepted directories),
   two preview tests. No test was deleted.
+
+### 2026-11-03 — Slice 6 built: `copy_file` and `move_file`
+
+- **`move_file` is a rename (Jerry's call), not copy-then-remove.** I first planned copy-then-remove to keep every write
+  inside a descriptor-bound directory Root (`os.Root` can't rename between two Roots), which would have capped moves at
+  the copy limit and lost atomicity. Jerry pointed out that a Unix move only re-points a directory entry, so the plan was
+  changed: `root.Rename(srcRel, dstRel)` by path. To keep the "parent swapped for a symlink to `.git`" hole closed, both
+  parents go through `openDir` (identity compare) immediately before, and the source is re-`Lstat`ed and compared with
+  the approved file. A very small window between those checks and the rename remains (accepted, as for the other tools).
+  The inode, mode and mtime are kept, any size works, and an existing destination file is replaced atomically.
+  Across filesystems the rename fails with `EXDEV`; the message says to use `copy_file` and remove the original. No
+  fallback copy (rare inside a workspace; it would add a second path and a cap).
+- **Files only for both tools.** Moving or copying a directory could launder files out from under an anchored deny
+  pattern (rename `secrets` to `pub` and `secrets/*.env` stops matching). A directory source is an error.
+- **`copy_file`**: streams in 256 KB pieces and checks the context between pieces (Ctrl+C stops a long copy). Cap
+  `maxTransferBytes` = 100 MB, a constant (Jerry accepted it; it does stop copying a larger binary; raise the constant
+  or make it a config key if that bites). Copied bytes never enter the model's context, so the cap is a disk-fill
+  backstop, not the 1 MB of `write_file`. The size is checked before the copy and again while copying (a file that grows
+  is stopped). Binary files are fine. A new file gets the source's permission bits; an overwritten file keeps its mode.
+  A failed copy removes the partial NEW file; a failed overwrite can leave a truncated destination.
+- **Shared code:** `openForWrite` became a `Workspace` method with a `perm` argument and is used by `write_file` and
+  `copy_file`; `resolvePathForWrite` now returns a `newTarget` (and `anchorFor` builds it), so `edit_file` and `move_file`
+  get the parent directory's identity too. Fixed a comment mangled by an earlier bulk rename ("nameative" -> "relative").
+- **Hard links:** `copy_file` refuses a source or an overwritten destination with more than one name (`st_nlink > 1`):
+  copying `.env` through an alias would otherwise leak it. `move_file` does not need the check for the destination:
+  renaming over a hard link replaces only that name, so the protected inode is untouched (tested). Renaming one name of an
+  inode onto another name of the same inode is refused (rename(2) would silently do nothing).
+- **Approval:** both tools are ask rules by default. Their arguments are two short paths, so the raw `Arguments:` line shows
+  them completely; no preview was added (a preview that guesses from key names is what Copilot's PR #35 comment 1 was
+  about). Digest: `copy_file : copied a -> b (N bytes)` / `move_file : moved a -> b (N bytes)`; failures show both paths
+  and the error.
+- A planned `From:`/`To:` preview and a destination same-inode check in `copy_file` were dropped (the check was
+  unreachable because hard-linked sources are refused first).
+- Tests: `copyfile_test.go`, `movefile_test.go`, `copymove_unix_test.go`, plus `tool_test.go` and `digest_test.go`
+  cases. Each defence was disabled once to confirm a test fails (hard-link refusal, source-replaced check, partial-file
+  removal). No test was deleted.
+
+### 2026-11-03 — `copy_file` limit is configurable (`copyFileMaxBytes`)
+
+- The 100 MB limit (first a constant `maxTransferBytes`, see `§ Slice 6 built`) is now the config key `copyFileMaxBytes`
+  (default `100 << 20`, listed in `config/doc.go` and `PrintConfig`). `NewCopyFileTool(ws, maxBytes)` requires a positive
+  value, checked only when `copy_file` is enabled (like `readFileMaxBytes` for `read_file`); the tool description states
+  the configured size. The constant was removed; the default lives in `GetDefaultConfig`. No flag was added.
+- Tests: `Test_SetupBuiltinTools_CopyFile_MaxBytes`, `Test_Unit_SetDefaultConfig_CopyFileMaxBytes`, and the constructor
+  cases in `copyfile_test.go`.

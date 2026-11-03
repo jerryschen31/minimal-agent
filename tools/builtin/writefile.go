@@ -125,7 +125,7 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 		return "", fmt.Errorf("the directory %s doesn't exist; create it with create_directory first", filepath.ToSlash(filepath.Dir(target.rel)))
 	}
 
-	f, verb, err := t.openForWrite(dir, params.Path, name)
+	f, verb, err := t.ws.openForWrite(dir, params.Path, name, 0o644)
 	if err != nil {
 		return "", err
 	}
@@ -145,17 +145,17 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 // Notes:
 //   - root is the Root of the file's parent directory (openDir) and name is the file's name in it; requested names the
 //     file in errors. The caller closes the file.
-//   - Missing: created with O_EXCL (0644). Regular file: opened without O_TRUNC (openExisting: same file as the Lstat
+//   - Missing: created with O_EXCL (mode perm, before the umask). Regular file: opened without O_TRUNC (openExisting: same file as the Lstat
 //     taken here, and not a file with several names), checked to still be at its path (stillAtPath), then truncated.
 //     Anything else (a directory, a symlink swapped in, a pipe, a socket, a device) is refused.
 //   - [agent] The Lstat is taken here because resolveNewPath returns the identity of the directory, not of the file. A
 //     swap between resolveNewPath and this Lstat shows up as a symlink (refused) or as another regular file at the
 //     same already-approved name (harmless); a swap after the Lstat fails the SameFile check.
-func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os.File, string, error) {
+func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error) {
 	want, err := root.Lstat(name)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 		if errors.Is(err, fs.ErrExist) {
 			return nil, "", fmt.Errorf("%s was created while it was being written; try again", requested)
 		}
@@ -166,11 +166,11 @@ func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os
 	case err != nil:
 		return nil, "", errMsgHidePath(requested, err)
 	}
-	f, _, err := t.ws.openExisting(root, requested, name, want, os.O_WRONLY) // no O_TRUNC until the checks pass
+	f, _, err := w.openExisting(root, requested, name, want, os.O_WRONLY) // no O_TRUNC until the checks pass
 	if err != nil {
-		return nil, "", err // our own message, or an os.Root error that names only the nameative path
+		return nil, "", err // our own message, or an os.Root error that names only the relative path
 	}
-	if err := t.ws.stillAtPath(root, requested, name, f); err != nil {
+	if err := w.stillAtPath(root, requested, name, f); err != nil {
 		f.Close()
 		return nil, "", err
 	}

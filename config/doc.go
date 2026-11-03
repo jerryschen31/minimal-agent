@@ -79,6 +79,8 @@
 // Tool output caps (bytes, positive; they bound how much context one tool call can use):
 //
 //	readFileMaxBytes    most one read_file call returns; bigger files are read in pieces                  [1 MB]
+//	copyFileMaxBytes    largest file one copy_file call copies (a larger one is refused; the bytes go from
+//	                    file to file, not into the model's context)                                         [100 MB]
 //	mcpResultMaxBytes   most of an MCP tool result passed to the model; the rest is cut with a note        [256 KB]
 //
 // Search limit (positive; bounds how long one call can take, not only what it returns):
@@ -90,7 +92,7 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files", "search_files",
-//	                "create_directory", "write_file", "edit_file"                                           [["read_file"]]
+//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file"                  [["read_file"]]
 //	denyPaths       extra path patterns the file tools never read, list or search, e.g. "*.secret",
 //	                "secrets/", "config/creds.json". Added to the built-in list (.env, .env.*, *.pem,
 //	                *.key, id_rsa*, .ssh, .agent-trace), which can't be removed; .env.example is always

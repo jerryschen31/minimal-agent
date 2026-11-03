@@ -61,12 +61,14 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── copyfile.go
 │       ├── createdirectory.go
 │       ├── denylist.go
 │       ├── doc.go
 │       ├── editfile.go
 │       ├── ignorelist.go
 │       ├── listfiles.go
+│       ├── movefile.go
 │       ├── nlink_other.go
 │       ├── nlink_unix.go
 │       ├── pathpattern.go
@@ -422,6 +424,13 @@ tool.go
 `github.com/jerryschen31/minimal-agent/tools/builtin`
 
 ```text
+copyfile.go
+  func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)
+  func (t *CopyFileTool) GetToolDefinition() model.ToolDef
+  func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error)
+  func pathErrorOnly(requested string, err error) error
+  func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+
 createdirectory.go
   func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
   func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
@@ -452,6 +461,12 @@ listfiles.go
   func (t *ListFilesTool) GetToolDefinition() model.ToolDef
   func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func matchName(pattern, name string) bool
+
+movefile.go
+  func NewMoveFileTool(ws *Workspace) (*MoveFileTool, error)
+  func (t *MoveFileTool) GetToolDefinition() model.ToolDef
+  func renameError(source, destination string, err error) error
+  func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 
 nlink_other.go
   func linkCount(fi os.FileInfo) (uint64, bool)
@@ -485,8 +500,9 @@ workspace.go
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
   func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+  func (w *Workspace) anchorFor(requested, rel, real string) (newTarget, error)
   func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
-  func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error)
+  func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
   func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
@@ -500,7 +516,7 @@ writefile.go
   func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
   func (t *WriteFileTool) GetToolDefinition() model.ToolDef
   func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-  func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os.File, string, error)
+  func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error)
 ```
 
 ## trace (package trace)

@@ -162,10 +162,11 @@ func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start editing
 		return "", err
 	}
-	rel, want, err := t.ws.resolvePathForWrite(params.Path)
+	target, want, err := t.ws.resolvePathForWrite(params.Path)
 	if err != nil {
 		return "", missingFileHint(err, params.Path)
 	}
+	rel := target.rel
 	mu := t.lockFor(rel)
 	mu.Lock()
 	defer mu.Unlock()
