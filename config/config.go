@@ -189,7 +189,7 @@ func GetDefaultConfig() Config {
 		ChatStoreType: "in-memory",
 		InBuffer:      os.Stdin,
 		OutBuffer:     os.Stdout,
-		BuiltinTools:  []string{"read_file"},
+		BuiltinTools:  []string{"read_file", "write_file", "edit_file", "create_directory", "copy_file", "move_file", "list_files", "search_files", "run_command"},
 		MaxSteps:      10,
 
 		ResponseTimeoutSeconds: 300, // 5 minutes; slow local models may need more
