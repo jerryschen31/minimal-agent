@@ -81,7 +81,7 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 			}
 			tools = append(tools, editFile)
 		case "copy_file":
-			copyFile, err := builtin.NewCopyFileTool(ws)
+			copyFile, err := builtin.NewCopyFileTool(ws, cfg.CopyFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}

@@ -10,7 +10,7 @@
 // method signatures in source order.
 //
 //	copyfile.go
-//	  func NewCopyFileTool(ws *Workspace) (*CopyFileTool, error)
+//	  func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)
 //	  func (t *CopyFileTool) GetToolDefinition() model.ToolDef
 //	  func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error)
 //	  func pathErrorOnly(requested string, err error) error

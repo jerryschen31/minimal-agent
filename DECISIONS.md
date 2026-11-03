@@ -4037,3 +4037,12 @@ disabling the fix).
 - Tests: `copyfile_test.go`, `movefile_test.go`, `copymove_unix_test.go`, plus `tool_test.go` and `digest_test.go`
   cases. Each defence was disabled once to confirm a test fails (hard-link refusal, source-replaced check, partial-file
   removal). No test was deleted.
+
+### 2026-11-03 — `copy_file` limit is configurable (`copyFileMaxBytes`)
+
+- The 100 MB limit (first a constant `maxTransferBytes`, see `§ Slice 6 built`) is now the config key `copyFileMaxBytes`
+  (default `100 << 20`, listed in `config/doc.go` and `PrintConfig`). `NewCopyFileTool(ws, maxBytes)` requires a positive
+  value, checked only when `copy_file` is enabled (like `readFileMaxBytes` for `read_file`); the tool description states
+  the configured size. The constant was removed; the default lives in `GetDefaultConfig`. No flag was added.
+- Tests: `Test_SetupBuiltinTools_CopyFile_MaxBytes`, `Test_Unit_SetDefaultConfig_CopyFileMaxBytes`, and the constructor
+  cases in `copyfile_test.go`.

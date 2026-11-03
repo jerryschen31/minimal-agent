@@ -1030,3 +1030,17 @@ func Test_Unit_SetDefaultConfig_ConfigFile_SetFromFlagNotFromFile(t *testing.T) 
 		t.Errorf("no config file: ConfigFile = %q, err %v", none.ConfigFile, err)
 	}
 }
+
+// - Verify copyFileMaxBytes defaults to 100 MB and a config file can override it
+func Test_Unit_SetDefaultConfig_CopyFileMaxBytes(t *testing.T) {
+	if got := GetDefaultConfig().CopyFileMaxBytes; got != 100<<20 {
+		t.Errorf("default = %d", got)
+	}
+	path := writeTempFile(t, "config.json", []byte(`{"copyFileMaxBytes": 5242880}`))
+	var cfg Config
+	var err error
+	captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || cfg.CopyFileMaxBytes != 5242880 {
+		t.Errorf("(%d, %v), want 5242880", cfg.CopyFileMaxBytes, err)
+	}
+}

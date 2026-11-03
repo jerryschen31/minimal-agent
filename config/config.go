@@ -83,6 +83,7 @@ type Config struct {
 
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
 	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
+	CopyFileMaxBytes  int `json:"copyFileMaxBytes"`  // largest file one copy_file call copies; must be positive (default 100 MB). Bytes go file to file, not into the model's context
 	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
 	MaxSearchFiles    int `json:"maxSearchFiles"`    // most files and directories one list_files or search_files call looks at, matching or not; must be positive (default 10,000)
 
@@ -202,6 +203,7 @@ func GetDefaultConfig() Config {
 		TraceDir:           ".agent-trace",
 		TraceMaxEventBytes: 100 << 20, // 100 MB
 		ReadFileMaxBytes:   1 << 20,   // 1 MB
+		CopyFileMaxBytes:   100 << 20, // 100 MB
 		MCPResultMaxBytes:  256 << 10, // 256 KB
 		MaxSearchFiles:     10000,
 		IgnorePaths:        []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
@@ -309,6 +311,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
+	fmt.Fprintf(w, "  copyFileMaxBytes: %d\n", cfg.CopyFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
 	fmt.Fprintf(w, "  maxSearchFiles: %d\n", cfg.MaxSearchFiles)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)

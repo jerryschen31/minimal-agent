@@ -13,19 +13,13 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
-// maxTransferBytes is the largest file copy_file copies. [agent] The bytes go from one file to another and never into
-// the model's context, so this is far above the 1 MB that write_file and edit_file hold in memory. It is a backstop
-// against one call filling the disk, not a limit on total disk use. Downside: a larger file, such as a big binary,
-// can't be copied by this tool. A constant, not a config key, to keep one number to reason about; raise it here.
-const maxTransferBytes = 100 << 20 // 100 MB
-
 // copyChunk is how many bytes copyWithContext moves between checks of the context.
 const copyChunk = 256 << 10
 
 // CopyFileTool copies one regular file to a new or existing path inside the workspace.
 type CopyFileTool struct {
 	ws       *Workspace // where it may read and write (shared with the other file tools)
-	maxBytes int64      // largest file it copies (maxTransferBytes; a field so tests can use a small one)
+	maxBytes int64      // largest file it copies (config copyFileMaxBytes). [agent] The bytes go from one file to another and never into the model's context, so this is far above the 1 MB that write_file and edit_file hold in memory; it is a backstop against one call filling the disk, not a limit on total disk use
 	// afterResolve, if not nil, runs after both paths are approved and before anything is opened; tests use it to swap a
 	// directory or file at that moment, which nothing else can stage deterministically
 	afterResolve func()
@@ -37,12 +31,16 @@ type CopyFileTool struct {
 // NewCopyFileTool creates a copy_file tool that works only inside ws (NewWorkspace).
 //
 // Notes:
+//   - maxBytes is the largest file it copies (config copyFileMaxBytes) and must be positive. A larger file is refused.
 //   - A nil ws is an error.
-func NewCopyFileTool(ws *Workspace) (*CopyFileTool, error) {
+func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("copy_file needs a workspace")
 	}
-	return &CopyFileTool{ws: ws, maxBytes: maxTransferBytes}, nil
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("copy_file max bytes must be positive, got %d", maxBytes)
+	}
+	return &CopyFileTool{ws: ws, maxBytes: int64(maxBytes)}, nil
 }
 
 // GetToolDefinition returns the definition of the copy_file tool.
@@ -54,7 +52,7 @@ func (t *CopyFileTool) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"copy_file",
 		fmt.Sprintf("Copies one file to a new path inside the working directory. The destination is the full new file path (not a folder), "+
-			"its folder must already exist (use create_directory first), and an existing file there is replaced. Files only, up to %d MB.", t.maxBytes>>20),
+			"its folder must already exist (use create_directory first), and an existing file there is replaced. Files only, up to %d MB.", max(t.maxBytes>>20, 1)),
 		json.RawMessage(`{
 			"type": "object",
 			"properties": {

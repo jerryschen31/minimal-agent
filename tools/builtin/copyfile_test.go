@@ -18,7 +18,7 @@ func newCopyTool(t *testing.T, work, traceDir, configFile string) *CopyFileTool 
 	if err != nil {
 		t.Fatal(err)
 	}
-	tool, err := NewCopyFileTool(ws)
+	tool, err := NewCopyFileTool(ws, 100<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +128,13 @@ func Test_CopyFile_BadArgumentsAndPaths(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(work, "nodir")); err == nil {
 		t.Error("the missing destination parent was created")
 	}
-	if _, err := NewCopyFileTool(nil); err == nil {
+	if _, err := NewCopyFileTool(nil, 1); err == nil {
 		t.Error("nil workspace: want an error")
+	}
+	for _, bad := range []int{0, -1} {
+		if _, err := NewCopyFileTool(newWorkspace(t, work, "", DenyList{}), bad); err == nil || !strings.Contains(err.Error(), "must be positive") {
+			t.Errorf("max bytes %d: error = %v", bad, err)
+		}
 	}
 }
 
@@ -180,7 +185,7 @@ func Test_CopyFile_ProtectedPaths_Refused(t *testing.T) {
 }
 
 // - Verify the size limit: a file over the limit is refused up front without creating the destination, a file at the
-// limit is copied, and the default limit is 100 MB with the description saying so
+// limit is copied, and the limit given to the constructor (config copyFileMaxBytes) is the one used and shown
 func Test_CopyFile_SizeLimit(t *testing.T) {
 	work := t.TempDir()
 	writeFile(t, work, "big.bin", bytes.Repeat([]byte("x"), 11))
@@ -196,9 +201,13 @@ func Test_CopyFile_SizeLimit(t *testing.T) {
 	if _, err := copyCall(tool, "fit.bin", "fit2.bin"); err != nil {
 		t.Errorf("at the limit: %v", err)
 	}
-	def := newCopyTool(t, work, "", "")
+	def := newCopyTool(t, work, "", "") // built with 100 MB
 	if def.maxBytes != 100<<20 || !strings.Contains(def.GetToolDefinition().Function.Desc, "100 MB") {
-		t.Errorf("default limit %d, description %q", def.maxBytes, def.GetToolDefinition().Function.Desc)
+		t.Errorf("limit %d, description %q", def.maxBytes, def.GetToolDefinition().Function.Desc)
+	}
+	small, err := NewCopyFileTool(newWorkspace(t, work, "", DenyList{}), 5<<20)
+	if err != nil || small.maxBytes != 5<<20 || !strings.Contains(small.GetToolDefinition().Function.Desc, "5 MB") {
+		t.Errorf("configured limit: (%v, %v)", small, err)
 	}
 }
 

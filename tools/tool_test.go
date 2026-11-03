@@ -675,3 +675,39 @@ func Test_SetupBuiltinTools_CopyAndMoveFile(t *testing.T) {
 		t.Errorf("config file changed: %q", b)
 	}
 }
+
+// - Verify copyFileMaxBytes reaches copy_file: a file over the configured limit is refused, one within it is copied,
+// and a non-positive limit fails setup (only when copy_file is enabled)
+func Test_SetupBuiltinTools_CopyFile_MaxBytes(t *testing.T) {
+	work := t.TempDir()
+	for f, n := range map[string]int{"small.txt": 10, "big.txt": 11} {
+		if err := os.WriteFile(filepath.Join(work, f), []byte(strings.Repeat("x", n)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := builtinCfg([]string{"copy_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.CopyFileMaxBytes = 10
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(src, dst string) error {
+		args, _ := json.Marshal(map[string]string{"source": src, "destination": dst})
+		_, err := built[0].CallTool(context.Background(), args)
+		return err
+	}
+	if err := call("small.txt", "s2.txt"); err != nil {
+		t.Errorf("within the limit: %v", err)
+	}
+	if err := call("big.txt", "b2.txt"); err == nil || !strings.Contains(err.Error(), "11 bytes") {
+		t.Errorf("over the limit: error = %v", err)
+	}
+	cfg.CopyFileMaxBytes = 0
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("zero limit with copy_file enabled: error = %v", err)
+	}
+	cfg.BuiltinTools = []string{"read_file"}
+	if _, err := SetupBuiltinTools(cfg); err != nil {
+		t.Errorf("zero limit without copy_file: %v", err)
+	}
+}
