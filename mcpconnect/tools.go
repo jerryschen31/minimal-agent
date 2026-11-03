@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -95,7 +96,7 @@ func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, e
 //   - The text is cut to maxBytes (which must be positive) with a truncation note.
 //   - Images and other non-text content are replaced by a placeholder; with no content blocks at all it falls back to
 //     the structured output, if the server sent one.
-//   - The byte cut can split a multi-byte character; the broken character is dropped.
+//   - The byte cut never splits a multi-byte character (textutils.CutBytes backs up to the character before it).
 //   - When the tool reported failure (IsError), the text is the error message (runToolCall prefixes "error: ").
 func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error) {
 	if res == nil {
@@ -124,10 +125,9 @@ func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error) {
 		text = string(b)
 	}
 
-	// cap the size, then drop any multi-byte character that the byte cut split in half
-	if len(text) > maxBytes {
-		text = strings.ToValidUTF8(text[:maxBytes], "") +
-			fmt.Sprintf("\n[truncated: result is larger than %d KB]", maxBytes/1024)
+	// cap the size; the cut never splits a multi-byte character
+	if cut, wasCut := textutils.CutBytes(text, maxBytes); wasCut {
+		text = cut + fmt.Sprintf("\n[truncated: result is larger than %d KB]", maxBytes/1024)
 	}
 
 	// the tool ran but reported failure: the text is the error message (runToolCall prefixes "error: ")

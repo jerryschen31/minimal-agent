@@ -104,8 +104,19 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	defer taskTrace.End()
 
 	// ReAct turn loop - maybe consider passing a pointer to msgContext in future - to save on a full-copy of the context to reActLoop()
-	turnMsgs, err := reActLoop(ctx, cs, taskTrace, msgContext, userMsg)
+	// the whole turn (model calls plus tools) is limited to cfg.TurnTimeoutSeconds; 0 = no limit (hand-built test config)
+	turnCtx := ctx
+	if secs := cs.Config.TurnTimeoutSeconds; secs > 0 {
+		var cancel context.CancelFunc
+		turnCtx, cancel = context.WithTimeout(ctx, time.Duration(secs)*time.Second)
+		defer cancel()
+	}
+	turnMsgs, err := reActLoop(turnCtx, cs, taskTrace, msgContext, userMsg)
 	if err != nil {
+		// only the turn's own deadline passed (not Ctrl+C): a plain message, not "[interrupted]", and nothing is added to memory
+		if ctx.Err() == nil && errors.Is(turnCtx.Err(), context.DeadlineExceeded) {
+			err = fmt.Errorf("turn timed out after %ds (turnTimeoutSeconds)", cs.Config.TurnTimeoutSeconds)
+		}
 		taskTrace.Fail(err)                      // "canceled" for Ctrl+C, otherwise "error"; the message is recorded either way
 		cs.Output.Error("ReAct loop error", err) // a Ctrl+C cancel shows as [interrupted]; nothing is added to memory
 		return false

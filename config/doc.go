@@ -37,6 +37,10 @@
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]
+//	toolTimeoutSeconds  most seconds one tool call (built-in or MCP) may take; the call is stopped and the
+//	                model sees "tool timed out". Positive                                                  [300]
+//	turnTimeoutSeconds  most seconds one whole turn (model calls plus tools) may take; the turn is stopped
+//	                and nothing is added to memory. Positive and not less than toolTimeoutSeconds          [600]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
 //	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
@@ -82,6 +86,8 @@
 //	copyFileMaxBytes    largest file one copy_file call copies (a larger one is refused; the bytes go from
 //	                    file to file, not into the model's context)                                         [100 MB]
 //	mcpResultMaxBytes   most of an MCP tool result passed to the model; the rest is cut with a note        [256 KB]
+//	commandMaxOutputBytes  most output one run_command call returns; the program is killed past it and the
+//	                    rest is lost (a plain cut-off; use read_file to read a file)                      [128 KB]
 //
 // Search limit (positive; bounds how long one call can take, not only what it returns):
 //
@@ -92,7 +98,15 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files", "search_files",
-//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file"                  [["read_file"]]
+//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"   [["read_file"]]
+//	runCommands     programs run_command may start: bare names, looked up on PATH once at startup. The
+//	                only way to enable run_command: with [] (the default) the tool is not set up, and a
+//	                warning says so. A listed program runs unasked unless a deny or ask rule matches
+//	                (Command rules below). NOT a sandbox, see Running commands below                      [none]
+//	commandEnv      environment variable names run_command passes to a program, ADDED to the built-in
+//	                list (PATH HOME USER TMPDIR LANG LC_ALL TERM GOPATH GOROOT GOCACHE GOMODCACHE GOPROXY
+//	                GOFLAGS GOTOOLCHAIN VIRTUAL_ENV PYTHONPATH; tools/builtin/commandenv.go). Never shrinks
+//	                it. Everything else of the agent's environment (API keys) is not passed               [none]
 //	denyPaths       extra path patterns the file tools never read, list or search, e.g. "*.secret",
 //	                "secrets/", "config/creds.json". Added to the built-in list (.env, .env.*, *.pem,
 //	                *.key, id_rsa*, .ssh, .agent-trace), which can't be removed; .env.example is always
@@ -104,6 +118,46 @@
 //	                [] = ignore nothing; a bad pattern fails startup
 //	                                                [[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]]
 //	mcpServers      MCP servers by name: {"<name>": {...}}; a tool is named <name>_<tool> for the model    [none]
+//
+// Running commands (run_command). Not a shell: the program starts with an argument list, so pipes, && and $VAR are
+// literal text; stdin is empty, so interactive programs do not work; it runs in its own process group, killed when
+// the call ends, so nothing it starts outlives the call. A non-zero exit is a normal result ("[exit status N]").
+// It is NOT contained: a running program can read and write anything you can, which bypasses every file-tool check
+// (.git, the config file, denyPaths, the hard-link refusal). An allowed interpreter (python3, go, npm) is code
+// execution. cat, head, grep and sed read .env and the other names read_file refuses: do not list them.
+// Best-effort guard: before a program starts, each argument (and the value of a --flag=value) that names a file the
+// file tools refuse (the deny list and denyPaths, .env but not .env.example, and the trace directory) refuses the
+// whole call, never asks, whether or not the file exists, and also when a symlink or ".." leads to it. It catches
+// mistakes, not a determined program: it cannot see a directory that holds such a file ("grep -r KEY ."), a name an
+// interpreter or "sh -c" builds, "git show HEAD:.env", or a path the program gets another way. Not a boundary.
+// Choosing runCommands is the consent; the safety nets are deny and ask rules, and later a sandbox.
+//
+// Command rules (denyRules, askRules): a rule starting with "run_command:" applies to run_command calls and is
+// matched, ignoring case, against the command line "run_command:<program> <arguments joined by spaces>" with *
+// matching anything, '/' included. A rule without that prefix matches tool names only, so "*delete*" does not
+// match "go test -run TestDelete". "run_command:*" is every command; "run_command" is every call by name. Deny
+// beats ask; with no match the command runs. A glob over the command line is not a detector: "go -C dir run x"
+// does not match "run_command:go run*". A call whose arguments cannot be read is asked. With nobody to ask, an
+// ask is refused unless approval is "allow-all". run_command is NOT in the default askRules.
+//
+// Example, Go and Python (go test and go build run unasked; go run, go install, python3 and pip ask first):
+//
+//	{ "builtinTools": ["read_file", "write_file", "run_command"],
+//	  "runCommands": ["go", "python3"],
+//	  "askRules": ["run_command:go run*", "run_command:go install*", "run_command:python3*",
+//	               "write_file", "edit_file", "*delete*", "*remove*"] }
+//
+// Example, npm (npm test and npm ls run unasked; install, run, exec, npx and publish ask first or are refused):
+//
+//	{ "builtinTools": ["read_file", "write_file", "run_command"],
+//	  "runCommands": ["npm", "node"],
+//	  "commandEnv": ["NPM_CONFIG_CACHE", "NODE_PATH"],
+//	  "denyRules": ["run_command:npm publish*"],
+//	  "askRules": ["run_command:npm install*", "run_command:npm run*", "run_command:npm exec*",
+//	               "run_command:node*", "write_file", "edit_file", "*delete*", "*remove*"] }
+//
+// (NODE_OPTIONS is left out of commandEnv on purpose: it can inject code.) Remember that a config file's list
+// replaces the default, so repeat the default askRules you still want.
 //
 // Path patterns (denyPaths, ignorePaths), .gitignore-style; paths are relative to workDir and matched ignoring case:
 //

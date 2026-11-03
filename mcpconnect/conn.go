@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/procutils"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -86,12 +87,12 @@ func ConnectMCPServer(ctx context.Context, sname string, cfg config.Config) (*Mc
 // connectLocalMCPServer connects to a local MCP server by starting it as a child process and talking over stdio.
 //
 // Notes:
-//   - The server runs in its own process group (startInOwnGroup), so a Ctrl+C that cancels a chat turn does not also
+//   - The server runs in its own process group (procutils.StartInOwnGroup), so a Ctrl+C that cancels a chat turn does not also
 //     kill it; Close kills the group.
 //   - Its stderr goes to cfg.McpServerStderr, or os.Stderr when that is nil.
 //   - The configured "env" is added after our own environment (npx/node need PATH, HOME, ...); os/exec uses the last
 //     value of a duplicate key, so config wins. Keys are sorted so the child's environment is repeatable.
-//   - On a failed handshake the SDK stops the server; killGroup also stops anything it started.
+//   - On a failed handshake the SDK stops the server; procutils.KillGroup also stops anything it started.
 func connectLocalMCPServer(ctx context.Context, name string, config config.McpServerConfig, cfg config.Config) (*McpConnection, error) {
 	command := config.Command
 	args := config.Args
@@ -105,7 +106,7 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	if cfg.McpServerStderr != nil {
 		cmd.Stderr = cfg.McpServerStderr
 	}
-	startInOwnGroup(cmd) // so a Ctrl+C that cancels a chat turn does not also kill the server
+	procutils.StartInOwnGroup(cmd) // so a Ctrl+C that cancels a chat turn does not also kill the server
 	// Apply the configured "env": start from our own environment (npx/node need PATH, HOME, ...) and add
 	// the configured entries after it. os/exec uses the last value of a duplicate key, so config wins.
 	if len(config.Env) > 0 {
@@ -119,7 +120,7 @@ func connectLocalMCPServer(ctx context.Context, name string, config config.McpSe
 	// Create client-server connection (session)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
-		killGroup(cmd) // the SDK stopped the server on a failed handshake; this also stops anything it started
+		procutils.KillGroup(cmd) // the SDK stopped the server on a failed handshake; this also stops anything it started
 		return nil, fmt.Errorf("failed to connect to MCP server %s: %w", name, err)
 	}
 
@@ -262,7 +263,7 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 func (s *McpConnection) Close() error {
 	err := s.Session.Close()
 	if s.cmd != nil {
-		killGroup(s.cmd)
+		procutils.KillGroup(s.cmd)
 	}
 	return err
 }

@@ -4046,3 +4046,166 @@ disabling the fix).
   the configured size. The constant was removed; the default lives in `GetDefaultConfig`. No flag was added.
 - Tests: `Test_SetupBuiltinTools_CopyFile_MaxBytes`, `Test_Unit_SetDefaultConfig_CopyFileMaxBytes`, and the constructor
   cases in `copyfile_test.go`.
+
+
+### 2026-11-02 — Two helper packages: `procutils` and `textutils`
+
+Settled with Jerry while planning `run_command`, which needs both helpers. mvp4's tool only had them inline.
+
+- **Why:** `run_command` must start a command in its own process group and kill the group, as `mcpconnect` already did.
+  `tools/builtin` cannot import `mcpconnect` (`mcpconnect` imports `tools`, which imports `builtin`), and Jerry does not
+  want duplicated helpers. Text was cut in five places, each its own way, and `run_command`'s output cap would be a sixth.
+- **Rule:** a helper package imports only the standard library: no package of this module, no third-party module. It is
+  checked by `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`).
+- **Names:** one `utils/` package was proposed first and dropped. Go style discourages `util`/`helpers` packages (the name says
+  nothing and they collect unrelated code), so there are two packages named for what they do. **Downside:** a new kind of
+  helper means a new package, or a pause to ask whether it fits one of these.
+- **`procutils`** (`procgroup_unix.go`, `procgroup_windows.go`): `StartInOwnGroup`, `KillGroup`, moved from `mcpconnect` and
+  exported. Behaviour is unchanged, so the earlier decisions (item 14, item 17: no tree kill on Windows) still hold.
+  `mcpconnect`'s two process-group tests stay in `mcpconnect` because they test the server connection; `procutils` has its
+  own, which use `sh` with a background `sleep` and read EOF on the stdout pipe to know the child is gone.
+- **`textutils`** (`cut.go`): `CutRunes(s, n)` and `CutBytes(s, limit)` return the cut text and whether they cut; the caller adds
+  its own marker. `TrimPartialRune` moved from `tools/builtin/readfile.go`. Callers moved over: `trace.cutChars`,
+  `trace.oneLine`, `agent.previewFirstLine`, `mcpconnect` (`flattenMCPResult`), `read_file`.
+- **One behaviour change:** `flattenMCPResult` used to cut at `maxBytes` and then call `ToValidUTF8`, which also deleted bytes that
+  were already invalid in the tool's output. `CutBytes` backs up only when the cut lands inside a character (at most 3
+  bytes), so other invalid bytes are kept. The existing test (no half characters) still passes.
+- **Left where they are:** `searchfiles.cutLine` (cuts a window around a match and drops invalid bytes on purpose), and the
+  single-caller helpers `plural`, `safeText`, `firstLine` and `linkCount`. They move when a second package needs them.
+  `mvp3/` and `mvp4/` are separate modules and keep their own copies.
+- **Mutation checks:** no back-up in `CutBytes`; `KillGroup` and `StartInOwnGroup` doing nothing; a module import added to
+  `textutils`. Each makes a test fail.
+
+
+### 2026-11-03 — `run_command` plan: shape agreed with Jerry (before the build)
+
+Settled over a Q&A with Jerry on the branch `feat/run-command`. Supersedes the "Still open" list in `§ Command execution:
+contain, don't detect` and the 2026-11-02 planning notes in `SESSION.md`. Built in the next entries.
+
+**The tool** (`tools/builtin/runcommand.go`, ported from `mvp4/tools/builtin/runcommand.go`)
+- Arguments `command` (a bare program name), `args` (list of strings), optional `dir` (checked with `Workspace.resolvePath`:
+  inside `workDir`, not deny-listed). Not a shell: pipes, `&&` and `$VAR` are literal text. Stdin is empty, so interactive
+  programs do not work (on purpose). A non-zero exit is a normal result (`[exit status N]`). Own process group, killed when the
+  context ends and again after exit (`procutils`).
+- **Which programs: the config list `runCommands`, default `[]`, no built-in defaults.** Entries are bare names (no `/`). Each
+  is resolved once at setup to an absolute path from the agent's PATH; a path inside `workDir` is refused (a file the model
+  writes can't stand in for `go`). A missing program is warned about and left out of the tool's `command` enum. The tool is
+  **not set up** when `runCommands` is empty (or none of its programs was found); setup prints a warning, and `-mode info`
+  shows it, so "I enabled it and the model says no such tool" has an explanation. `runCommands` set while `run_command` is
+  not in `builtinTools` also warns (the config does nothing). Both are needed: `builtinTools` names the tool, `runCommands`
+  says which programs. Rejected: failing startup on an empty list (Jerry: a conditional in setup is simpler).
+- **Output cap: `commandMaxOutputBytes`, default 128 KB, a plain cut-off.** The first N bytes are kept (`textutils.CutBytes`
+  so no half character), the program is killed past the cap and the result says so. Jerry dropped the head-and-tail ring
+  buffer for now. Downside, stated: the tail of a long output (a test summary) is lost, and re-running the same command does
+  not page like `read_file`. The description tells the model to read files with `read_file` and to narrow a command instead.
+  A 128 KB result is about 32-40k tokens; `read_file`'s own cap is 1 MB because it pages.
+- **Environment: filtered.** The child gets only the names in `DefaultCommandEnv` (`tools/builtin/commandenv.go`, one exported
+  list, so it is easy to find): `PATH HOME USER TMPDIR LANG LC_ALL TERM GOPATH GOROOT GOCACHE GOMODCACHE GOPROXY GOFLAGS
+  GOTOOLCHAIN VIRTUAL_ENV PYTHONPATH`. The config key **`commandEnv` extends it and never shrinks it** (like `denyPaths`).
+  `ANTHROPIC_API_KEY` and the like are not passed unless someone lists them. The npm example adds `NPM_CONFIG_CACHE` and
+  `NODE_PATH`, not `NODE_OPTIONS` (it can inject code).
+
+**Timeouts, generalised** (new config keys, in seconds like `responseTimeoutSeconds`)
+- `toolTimeoutSeconds` (default 300) bounds every tool call, built-ins and MCP tools alike. Checked 2026-11-03: MCP calls
+  had **no** timeout before (only `responseTimeoutSeconds`, for model calls), so a hung MCP server could freeze a turn.
+  `reActLoop` wraps each call in a context with this limit; expiry is an error observation ("timed out after …") that the
+  model can react to, and `run_command` returns the output so far. `run_command` has no timeout of its own.
+- `turnTimeoutSeconds` (default 600) bounds one whole turn (LLM calls plus tools). Expiry prints `[turn timed out after …]`
+  and adds nothing to memory, like Ctrl+C but with its own message. Both must be positive and `turnTimeoutSeconds <
+  toolTimeoutSeconds` fails setup (otherwise the turn ends at the same moment as the tool and the model never sees the
+  timeout). The parent context ending (Ctrl+C, turn timeout) is told apart from the tool's own deadline by which context ended.
+
+**Approval: no `allowRules` list** (Jerry). The model stays "not in `denyRules` or `askRules` means it runs". Listing a program
+in `runCommands` is the consent to run it, unasked.
+- Rules for commands have the form `run_command:<glob>`. The glob is matched (lowercased, `*` crossing `/` like the existing
+  tool-name matcher) against the call's **joined command line**, `run_command:go test ./...`. A plain `run_command` rule
+  still matches every call. Deny beats ask beats run, as before. `hooks.ToolRules` gets a `LevelFor(call)` that reads the
+  arguments; `Level(name)` stays for info mode. **A `run_command` call whose arguments can't be read fails closed to
+  "ask"** (a deny rule by name still wins).
+- **`run_command` is not in the default `askRules`** (earlier plan reversed): without an allow list, a blanket ask rule could
+  not have exceptions ("ask for everything except `go test`"). The opt-in is `runCommands`, and asks are added by the user.
+- No terminal: an ask is refused unless `approval` is `allow-all` (already how `askRules` work). **One auto-approve switch**
+  (`approval`), no separate one for commands (Jerry).
+- Honest limits (to be in `config/doc.go`): a glob over the command line is not a detector, `go -C dir run x` slips past
+  `run_command:go run*`; an allowed interpreter (`python3`, `go`, `npm`) is code execution, not a sandbox, and bypasses every
+  file-tool protection (`.git`, the config file, the deny list, hard-link refusal); `cat`, `head`, `grep` and `sed` in
+  `runCommands` read `.env` and the other names `read_file` refuses, so the examples leave them out. "Unattended means
+  contained" still applies to the autonomous port.
+- Interpreters get no special category in code, only documented example configs (`python3`, `go`, `npm`) in `config/doc.go`:
+  narrow `runCommands`, with `askRules` such as `run_command:go run*`, `run_command:npm install*`, `run_command:python3*`.
+
+**Tests:** a full mutation-check pass. **Changes to existing tests:** `run_command:rm` is no longer an invalid rule
+(`hooks/toolrules_test.go`, `agent/info_test.go`).
+
+
+### 2026-11-03 — `run_command` built (as planned in the entry above, with these differences)
+
+Files: `tools/builtin/runcommand.go`, `commandenv.go`; `hooks/toolrules.go` (`LevelFor`, `CommandLine`, `CommandRulePrefix`);
+`tools/tool.go` (setup); `agent/react.go` (tool timeout), `agent/chat.go` (turn timeout), `agent/agent.go` (`checkConfig`),
+`agent/approval_preview.go` (`commandPreview`), `agent/info.go`, `trace/digest_activity.go`; config keys `runCommands`,
+`commandEnv`, `commandMaxOutputBytes`, `toolTimeoutSeconds`, `turnTimeoutSeconds` (documented, with the Go, Python and npm
+example configs, in `config/doc.go`).
+
+- **As planned:** argv only, absolute paths resolved at setup (refused inside `workDir`), filtered environment (`commandEnv`
+  extend-only), empty stdin, own process group (killed on context end and again after exit), non-zero exit is a normal result,
+  `dir` through `Workspace.resolvePath`, 128 KB plain cut-off that kills the program, `run_command` not in the default
+  `askRules`, no `allowRules`, glob rules over the joined command line, unreadable arguments fail closed to "ask".
+- **Rule scoping (detail the plan left open):** a rule starting with `run_command:` is matched against the command line
+  only; every other rule is matched against the tool name only. So the default `*delete*` does not ask for
+  `go test -run TestDelete`. `Level(name)` stays for info mode; `BeforeTool` uses `LevelFor(call)`.
+- **Turn timeout message:** plain `[error] ReAct loop error: turn timed out after Ns (turnTimeoutSeconds)`, not a separate
+  bracket line. It is not `[interrupted]`, and the trace status is `error`.
+- **Tool timeout:** `toolCtx` in `executeToolCall`; the error is wrapped as `tool timed out after Ns (toolTimeoutSeconds)`
+  only when the parent context is still alive. A tool that ignores its context is not stopped (the loop waits for it); this
+  is a stated limit. A value of 0 (hand-built test config) means no limit; `checkConfig` makes real configs positive.
+- **Bug found by the mutation pass:** the output cut used `textutils.CutBytes` on a buffer already holding exactly the limit,
+  so it saw nothing to cut and left half a character. Now `TrimPartialRune` runs when output was dropped. The first test
+  used a cap that fell on a character boundary and missed it; it now uses a cap inside a character.
+- **Another weak test fixed:** `go test`'s own stdin is `/dev/null`, so inheriting stdin went unnoticed; the test now
+  replaces `os.Stdin` with a pipe nobody writes to.
+- **Mutation pass:** 28 mutants (env passed whole, `commandEnv` replacing the defaults, stdin inherited, no post-exit group
+  kill, no own group, cap not killing, cap off by one, half characters, `dir` unchecked, exit status lost, ctx end not an
+  error, program inside `workDir` allowed, unlisted program runs, path in `runCommands`, name rules matching the command
+  line, unreadable arguments running, ask beating deny, colon rule allowed anywhere, arguments dropped from the command line,
+  tool timeout not applied or mislabelling Ctrl+C, turn timeout not applied or mislabelling Ctrl+C, turn < tool allowed,
+  empty `runCommands` not skipped, preview joining arguments, digest showing the program only, `run_command` in the default
+  `askRules`). All killed after the two fixes above.
+- **Not done / known limits:** no sandbox (so no unattended use yet); the output tail is lost past the cap; no Windows
+  process-tree kill (as `mcpconnect`); the unix-only tests do not run on Windows (it builds: `GOOS=windows go build ./...`).
+
+
+### 2026-11-03 — `run_command`: arguments are checked against the file tools' deny list (best effort)
+
+Jerry asked whether `cat .env` can be refused. Command rules (`run_command:*.env*`) work on text and also match `.env.example`;
+Jerry chose a built-in check against the deny list `read_file` uses, documented as best effort.
+
+- **What it does** (`Workspace.checkCommandArgs`, called in `CallTool` before the program starts): each argument, and the value
+  after the first `=` of a `-flag=value`, is read as a path relative to `dir` (or absolute), resolved through symlinks as far as
+  it exists (`resolveSymLinks`), and, if it is inside `workDir`, passed to `checkPath`: the deny list (`.env` but not
+  `.env.example`, `*.pem`, `id_rsa*`, `.ssh`, `denyPaths`) and the trace directory. A hit refuses the whole call with
+  `command refused, argument … is blocked: …`. It is an error from the tool, never an approval question (as for the file tools).
+- **Judged by name:** a path that does not exist is judged as written, so `cat .env` is refused whether or not the file is there;
+  a symlink to a protected file and `./sub/../.env` are refused. An argument outside `workDir` (`/etc/hosts`) is not checked.
+- **Where it sits:** inside the tool, after the approval gate, so an approved ask can still be refused; the tool description
+  tells the model so. It reuses `checkPath` rather than a second pattern list, so config `denyPaths` apply to both.
+- **Honest limits (also in `config/doc.go`):** it cannot see a directory that holds a protected file (`grep -r KEY .` is the
+  commonest leak), a name an interpreter or `sh -c` builds, `git show HEAD:.env`, or a path the program obtains another way; an
+  allowed interpreter bypasses it entirely. False positives are possible when a plain word looks like a denied name (`-run X.key`).
+  So it catches accidents and clumsy prompt injection, not a determined program. Real containment is still the sandbox.
+- **Tests / mutation pass:** `Test_RunCommand_Args_*` (11 refusal cases, one allowed-arguments case). Six mutants killed: check
+  not called, flag value ignored, symlinks not resolved, no deny check, relative path not joined to `dir`, outside paths checked.
+
+
+### 2026-11-03 — PR #37 Copilot review: mixed command/file previews, `CutBytes` and stray continuation bytes
+
+- **Approval preview (`agent/approval_preview.go`):** a `run_command` call that also carried `path`/`content`/`old_string`/
+  `new_string` fell through to `writePreview`, so the user approved a file preview while the tool (which ignores unknown keys)
+  ran the command. Same class as the earlier write_file/edit_file mixed shape (`§ Slice 5 built`). Now a call with `command`
+  plus any file field gets the `[warning] …shown as sent:` line and the raw arguments. A command alone is still `commandPreview`.
+- **`textutils.CutBytes`:** `CutBytes("é\x80x", 2)` returned `""`: the backward search treated the é's own continuation byte
+  as part of a longer run and walked to the start, then the "no start byte nearby" test failed. It now finds the nearest start
+  byte within `UTFMax-1` bytes, decodes from there, and backs up only if that is a valid multi-byte character that crosses the
+  cut; otherwise it cuts where asked, so bytes that were already invalid are kept. (The `run_command` output cut was not
+  affected: it uses `TrimPartialRune`.)
+- **Tests:** four new `CutBytes` cases and a five-shape `ShapeIsExclusive` test. Mutation checks: removing the mixed-shape
+  branch, and dropping the "valid and crosses the cut" condition, each fail a test.

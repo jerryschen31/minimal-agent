@@ -23,6 +23,7 @@
 //	  func rawPreview(args string) []string
 //	  func editPreview(path, oldStr, newStr string, all bool) []string
 //	  func previewFirstLine(s string) string
+//	  func commandPreview(command string, args *[]string, dir *string) []string
 //
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool

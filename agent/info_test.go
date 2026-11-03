@@ -680,11 +680,11 @@ func Test_Unit_PrintToolRules_ConfigReplacesDefaults_OnlyConfigShown(t *testing.
 	}
 }
 
-// - Verify an invalid deny or ask rule (bad glob, or the tool:program form) returns false and prints one FAILED line
+// - Verify an invalid deny or ask rule (bad glob, or a colon outside the run_command: form) returns false and prints one FAILED line
 // naming its list and the rule, with no rule sections after it
 func Test_Unit_PrintToolRules_InvalidRule_Fails(t *testing.T) {
 	for _, list := range []string{"deny", "ask"} {
-		for _, rule := range []string{"*delete[", "run_command:rm"} {
+		for _, rule := range []string{"*delete[", "fs:read"} {
 			cfg := rulesCfg([]string{rule}, nil)
 			if list == "ask" {
 				cfg = rulesCfg(nil, []string{rule})
@@ -1085,5 +1085,22 @@ func Test_Unit_PrintInfo_BuiltinTools_BadIgnorePaths_Fails(t *testing.T) {
 	}
 	if !strings.Contains(out, "Built-in tools: FAILED: ignorePaths") {
 		t.Errorf("expected a Built-in tools: FAILED ignorePaths row in output:\n%s", out)
+	}
+}
+
+// - Verify a run_command: rule is listed as applying to run_command calls (not "matches nothing <- warning") when
+// run_command is set up, and says so when it is not
+func Test_Unit_PrintToolRules_CommandRule(t *testing.T) {
+	var out bytes.Buffer
+	if !printToolRules(&out, rulesCfg(nil, []string{"run_command:go run*"}), []string{"read_file", "run_command"}, true) {
+		t.Fatal("want ok")
+	}
+	if got := out.String(); !strings.Contains(got, "run_command:go run*") || !strings.Contains(got, "applies to run_command calls") || strings.Contains(got, "warning") {
+		t.Errorf("set up:\n%s", got)
+	}
+	out.Reset()
+	printToolRules(&out, rulesCfg(nil, []string{"run_command:go run*"}), []string{"read_file"}, true)
+	if got := out.String(); !strings.Contains(got, "run_command is not set up") {
+		t.Errorf("not set up:\n%s", got)
 	}
 }

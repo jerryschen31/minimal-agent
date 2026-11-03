@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -709,5 +710,59 @@ func Test_SetupBuiltinTools_CopyFile_MaxBytes(t *testing.T) {
 	cfg.BuiltinTools = []string{"read_file"}
 	if _, err := SetupBuiltinTools(cfg); err != nil {
 		t.Errorf("zero limit without copy_file: %v", err)
+	}
+}
+
+// - Verify run_command is not set up when runCommands is empty (a warning says why), is set up with only the programs
+// found when some are listed (a warning names the missing one), and that the reverse mismatch warns too
+func Test_SetupBuiltinTools_RunCommand(t *testing.T) {
+	work := t.TempDir()
+	var out bytes.Buffer
+	cfg := builtinCfg([]string{"run_command", "read_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.OutBuffer = &out
+
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || built[0].GetToolDefinition().Function.Name != "read_file" {
+		t.Fatalf("empty runCommands: (%v, %v)", built, err)
+	}
+	if !strings.Contains(out.String(), "runCommands is empty; run_command is not set up") {
+		t.Errorf("warning missing: %q", out.String())
+	}
+
+	out.Reset()
+	cfg.RunCommands = []string{"sh", "no-such-program-xyz"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 2 || built[0].GetToolDefinition().Function.Name != "run_command" {
+		t.Fatalf("listed: (%v, %v)", built, err)
+	}
+	if !strings.Contains(out.String(), `"no-such-program-xyz" not found on PATH`) {
+		t.Errorf("missing-program warning: %q", out.String())
+	}
+
+	out.Reset()
+	cfg.RunCommands = []string{"no-such-program-xyz"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || !strings.Contains(out.String(), "none of the runCommands programs can be used") {
+		t.Errorf("none usable: (%v, %v), out %q", built, err, out.String())
+	}
+
+	out.Reset()
+	cfg.BuiltinTools, cfg.RunCommands = []string{"read_file"}, []string{"sh"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || !strings.Contains(out.String(), `"run_command" is not in builtinTools`) {
+		t.Errorf("reverse mismatch: (%v, %v), out %q", built, err, out.String())
+	}
+
+	cfg.BuiltinTools, cfg.RunCommands, cfg.OutBuffer = []string{"run_command"}, []string{"sh"}, nil
+	if _, err := SetupBuiltinTools(cfg); err != nil { // a nil OutBuffer must not panic
+		t.Errorf("nil OutBuffer: %v", err)
+	}
+	cfg.OutBuffer, cfg.CommandMaxOutputBytes = &out, 0
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("zero commandMaxOutputBytes: %v", err)
+	}
+	cfg.CommandMaxOutputBytes, cfg.RunCommands = 100, []string{"/bin/sh"}
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "bare program name") {
+		t.Errorf("path in runCommands: %v", err)
 	}
 }

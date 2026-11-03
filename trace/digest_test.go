@@ -361,3 +361,14 @@ func Test_Digest_CopyAndMoveFileDescribed(t *testing.T) {
 		}
 	}
 }
+
+// - Verify the digest shows a run_command call as one command line (program and arguments joined), not just the program
+func Test_Digest_RunCommandDescribed(t *testing.T) {
+	got := describe("run_command", `{"command":"go","args":["test","-run","TestX","./pkg"]}`, "", false)
+	if !strings.Contains(got, "go test -run TestX ./pkg") {
+		t.Errorf("describe = %q", got)
+	}
+	if got := describe("run_command", `{"command":"ls"}`, "", false); !strings.Contains(got, "run_command : ls") {
+		t.Errorf("no args: %q", got)
+	}
+}

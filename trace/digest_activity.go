@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // ActivityDigest is the first Digester: "what did the agent do and change", for a quick human review (a PR review, an audit).
@@ -386,10 +388,12 @@ func describe(name, args, content string, failed bool) string {
 		}
 	case "shell", "run_command", "bash":
 		var in struct {
-			Command string `json:"command"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
 		}
 		if json.Unmarshal([]byte(args), &in) == nil && in.Command != "" {
-			line = name + " : " + oneLine(in.Command, maxShellChars)
+			// run_command sends the program and its arguments apart; join them so the digest shows the command line
+			line = name + " : " + oneLine(strings.Join(append([]string{in.Command}, in.Args...), " "), maxShellChars)
 		}
 	}
 	if line == "" {
@@ -429,8 +433,8 @@ func vetoNote(d ToolVetoedData) string {
 //   - It cuts by runes, not bytes, and appends "…" when it cut.
 func oneLine(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "…"
+	if cut, wasCut := textutils.CutRunes(s, max); wasCut {
+		return cut + "…"
 	}
 	return s
 }
