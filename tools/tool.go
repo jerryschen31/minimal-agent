@@ -3,10 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"slices"
 	"sort"
 	"sync"
 
+	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 )
@@ -18,32 +22,115 @@ type Tool interface {
 	CallTool(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// setup built-in tools; traceDir is passed so read_file can refuse to read the trace files, and denyFileNames adds
-// name patterns to the built-in file deny list (checked even when no file tool is enabled, so a bad pattern fails setup)
-func SetupBuiltinTools(toolList []string, workDir, traceDir string, readFileMaxBytes int, denyFileNames []string) ([]Tool, error) {
-	deny, err := builtin.NewDenyList(denyFileNames)
+// SetupBuiltinTools builds the built-in tools named in cfg.BuiltinTools.
+//
+// Notes:
+//   - cfg.WorkDir, cfg.TraceDir and cfg.DenyPaths make the workspace the file tools share (workDir and below, minus the
+//     trace files and deny-listed names).
+//   - The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
+//     pattern always fails setup.
+//   - "run_command" is set up only when cfg.RunCommands names at least one usable program; otherwise a warning goes to
+//     cfg.OutBuffer and the tool is skipped. The reverse (runCommands set, tool not in builtinTools) also warns.
+//   - "read_file" and the old spelling "ReadFile" both build the read tool; an unknown name fails setup.
+func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
+	deny, err := builtin.NewDenyList(cfg.DenyPaths)
 	if err != nil {
 		return nil, err
 	}
+	ignore, err := builtin.NewIgnoreList(cfg.IgnorePaths)
+	if err != nil {
+		return nil, err
+	}
+	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, cfg.ConfigFile, deny)
+	if err != nil {
+		return nil, err
+	}
+	out := cfg.OutBuffer // setup warnings (run_command) go here; nil in a hand-built config means nowhere
+	if out == nil {
+		out = io.Discard
+	}
 	tools := []Tool{}
 	// add the built-in tools specified in the config
-	for _, t := range toolList {
+	for _, t := range cfg.BuiltinTools {
 		switch t {
 		case "read_file", "ReadFile": // the model-facing name, as in deny rules; "ReadFile" is the old spelling, still accepted
-			readFile, err := builtin.NewReadFileTool(workDir, traceDir, readFileMaxBytes, deny)
+			readFile, err := builtin.NewReadFileTool(ws, cfg.ReadFileMaxBytes)
 			if err != nil {
 				return nil, err
 			}
 			tools = append(tools, readFile)
+		case "list_files":
+			listFiles, err := builtin.NewListFilesTool(ws, cfg.MaxSearchFiles, ignore)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, listFiles)
+		case "search_files":
+			searchFiles, err := builtin.NewSearchFilesTool(ws, cfg.MaxSearchFiles, ignore)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, searchFiles)
+		case "create_directory":
+			createDir, err := builtin.NewCreateDirectoryTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, createDir)
+		case "write_file":
+			writeFile, err := builtin.NewWriteFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, writeFile)
+		case "edit_file":
+			editFile, err := builtin.NewEditFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, editFile)
+		case "copy_file":
+			copyFile, err := builtin.NewCopyFileTool(ws, cfg.CopyFileMaxBytes)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, copyFile)
+		case "move_file":
+			moveFile, err := builtin.NewMoveFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, moveFile)
+		case "run_command":
+			// no programs listed = nothing to run: skip the tool and say why (a silent skip looks like a broken tool)
+			if len(cfg.RunCommands) == 0 {
+				fmt.Fprintln(out, `[warning] run_command is in builtinTools but runCommands is empty; run_command is not set up`)
+				continue
+			}
+			runCommand, err := builtin.NewRunCommandTool(ws, cfg.RunCommands, cfg.CommandEnv, cfg.CommandMaxOutputBytes, out)
+			if errors.Is(err, builtin.ErrNoCommands) {
+				fmt.Fprintln(out, "[warning] none of the runCommands programs can be used; run_command is not set up")
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, runCommand)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
 		}
 	}
+	if len(cfg.RunCommands) > 0 && !slices.Contains(cfg.BuiltinTools, "run_command") {
+		fmt.Fprintln(out, `[warning] runCommands is set but "run_command" is not in builtinTools; the tool is not set up`)
+	}
 	return tools, nil
 }
 
-// creates a tool registry
+// SetupToolRegistry creates a tool registry holding the built-in tools followed by the MCP tools.
+//
+// Notes:
+//   - A duplicate or empty tool name across the two lists fails with the error from Register.
 func SetupToolRegistry(builtinTools []Tool, mcpTools []Tool) (*ToolRegistry, error) {
 	tools := []Tool{}
 	// first add the built-in tools (ReadFile Tool to start)
@@ -73,6 +160,10 @@ type toolEntry struct {
 	def  model.ToolDef // captured once, at Register time
 }
 
+// NewToolRegistry returns a registry with every tool in tools registered, in order.
+//
+// Notes:
+//   - Stops at the first tool Register refuses (nil, empty name, duplicate name) and returns that error.
 func NewToolRegistry(tools []Tool) (*ToolRegistry, error) {
 	// initialize an empty tool registry
 	reg := &ToolRegistry{
@@ -107,7 +198,14 @@ func NewToolRegistry(tools []Tool) (*ToolRegistry, error) {
 // 	return false
 // }
 
-// Adds a new tool to the tool registry. It returns an error if the tool name is empty or if a tool with the same name is already registered.
+// Register adds a new tool to the tool registry. It returns an error if the tool name is empty or if a tool with the
+// same name is already registered.
+//
+// Notes:
+//   - Tools that match an existing tool name do NOT overwrite. Lock() is called on writes.
+//   - [agent] A nil check catches only a nil interface; a typed nil pointer (e.g. (*MyTool)(nil)) passes and would
+//     panic below. Deliberately not handled: nothing here creates one.
+//   - The tool's definition is captured once, here, and the sorted definition list is rebuilt.
 func (r *ToolRegistry) Register(t Tool) error {
 	// if passed Tool is nil, error out
 	// [agent] This catches only a nil interface; a typed nil pointer (e.g. (*MyTool)(nil)) passes and would panic below. Deliberately not handled: nothing here creates one.
@@ -133,8 +231,12 @@ func (r *ToolRegistry) Register(t Tool) error {
 	return nil
 }
 
-// assuming that tool map exists, builds / rebuilds the ordered (sorted) list of tool definitions for the LLM context
-// since this modifies the registry, ANY method that calls this MUST already hold the write lock (Lock) on the registry.
+// rebuildToolDefList builds / rebuilds the ordered (sorted by name) list of tool definitions for the LLM context,
+// assuming that the tool map exists.
+//
+// Notes:
+//   - Since this modifies the registry, ANY method that calls this MUST already hold the write lock (Lock) on the
+//     registry.
 func (r *ToolRegistry) rebuildToolDefList() {
 	r.tooldefs = make([]model.ToolDef, 0, len(r.tools))
 	for _, toolEntry := range r.tools {
@@ -146,7 +248,10 @@ func (r *ToolRegistry) rebuildToolDefList() {
 	})
 }
 
-// Deletes a tool from the registry by name. It returns true if the tool was found and removed, false otherwise.
+// Remove deletes a tool from the registry by name. It returns true if the tool was found and removed, false otherwise.
+//
+// Notes:
+//   - Takes the write lock and rebuilds the sorted definition list when something was removed.
 func (r *ToolRegistry) Remove(name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -158,7 +263,10 @@ func (r *ToolRegistry) Remove(name string) bool {
 	return true
 }
 
-// Looks up a tool by name. It returns the tool and true if found, or nil and false otherwise.
+// Lookup looks up a tool by name. It returns the tool and true if found, or nil and false otherwise.
+//
+// Notes:
+//   - Takes only the read lock, so lookups can run concurrently.
 func (r *ToolRegistry) Lookup(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -166,8 +274,10 @@ func (r *ToolRegistry) Lookup(name string) (Tool, bool) {
 	return t.tool, ok
 }
 
-// Returns the cached tool definitions, sorted by name.
-// Callers must not modify the returned slice.
+// GetToolDefs returns the cached tool definitions, sorted by name.
+//
+// Notes:
+//   - Callers must not modify the returned slice.
 func (r *ToolRegistry) GetToolDefs() []model.ToolDef {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

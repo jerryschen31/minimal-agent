@@ -11,8 +11,13 @@ type jsonlSubscriber struct {
 	f *os.File
 }
 
-// NewJSONLSubscriber creates dir (owner-only, 0700) if needed and a new trace file <dir>/<runID>.jsonl (owner-only, 0600).
-// It fails if the file already exists: a run never appends to or overwrites another run's trace.
+// NewJSONLSubscriber creates dir (owner-only, 0700) if needed and a new trace file <dir>/<runID>.jsonl (owner-only,
+// 0600).
+//
+// Notes:
+//   - It fails if the file already exists: a run never appends to or overwrites another run's trace.
+//   - The run ID becomes a file name, so an empty ID or one carrying a path is an error.
+//   - O_EXCL makes it create-only, and it does not follow a symlink planted at the path.
 func NewJSONLSubscriber(dir, runID string) (Subscriber, error) {
 	if runID == "" || filepath.Base(runID) != runID { // the run ID becomes a file name, so it must not carry a path
 		return nil, fmt.Errorf("trace: invalid run ID %q", runID)
@@ -28,8 +33,12 @@ func NewJSONLSubscriber(dir, runID string) (Subscriber, error) {
 	return &jsonlSubscriber{f: f}, nil
 }
 
-// Write appends line and a newline. [agent] It is one Write call and the file is not buffered, so each event reaches
-// the operating system at once and a crash of the agent loses at most the event being written.
+// Write appends line and a newline.
+//
+// Notes:
+//   - [agent] It is one Write call and the file is not buffered, so each event reaches the operating system at once
+//     and a crash of the agent loses at most the event being written.
+//   - The line is copied into a new buffer, so the caller's slice is never touched.
 func (s *jsonlSubscriber) Write(line []byte) error {
 	buf := make([]byte, 0, len(line)+1) // a copy, so the caller's slice is never touched
 	buf = append(buf, line...)
@@ -39,6 +48,9 @@ func (s *jsonlSubscriber) Write(line []byte) error {
 }
 
 // Close flushes the file to disk and closes it.
+//
+// Notes:
+//   - The file is closed even if Sync failed; a close error is returned in preference to a sync error.
 func (s *jsonlSubscriber) Close() error {
 	syncErr := s.f.Sync()
 	if err := s.f.Close(); err != nil {

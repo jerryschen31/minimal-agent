@@ -19,6 +19,12 @@ const (
 	TransportSSE   = "sse"
 )
 
+// Approval values: what happens to a tool call that matches an ask rule.
+const (
+	ApprovalAsk      = "ask"       // ask the user (chat on a terminal); with nobody to ask, deny
+	ApprovalAllowAll = "allow-all" // run it without asking (chat confirms this once at startup); deny rules still apply
+)
+
 type Config struct {
 	// User configuration
 	UserID string `json:"userId"`
@@ -39,6 +45,8 @@ type Config struct {
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
 
 	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300)
+	ToolTimeoutSeconds     int  `json:"toolTimeoutSeconds"`     // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
+	TurnTimeoutSeconds     int  `json:"turnTimeoutSeconds"`     // most seconds one whole turn (model calls plus tools) may take; must be positive and at least toolTimeoutSeconds (default 600)
 	Debug                  bool `json:"debug"`                  // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
@@ -61,8 +69,12 @@ type Config struct {
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
 
-	// deny rules configuration
-	DenyRules []string `json:"denyRules"` // glob rules on model-facing tool names; a config file's list replaces the default, [] means no rules
+	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
+
+	// tool rules configuration (glob rules on model-facing tool names; a config file's list replaces that list's default, [] means no rules)
+	DenyRules []string `json:"denyRules"` // matching calls are refused, never asked, in every mode (default: none)
+	AskRules  []string `json:"askRules"`  // matching calls need the user's approval; a deny rule wins over an ask rule
+	Approval  string   `json:"approval"`  // "ask" | "allow-all": allow-all runs ask-rule calls without asking, never deny-rule calls (default "ask")
 
 	// tracing configuration
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
@@ -72,13 +84,19 @@ type Config struct {
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
-	ReadFileMaxBytes  int `json:"readFileMaxBytes"`  // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
-	MCPResultMaxBytes int `json:"mcpResultMaxBytes"` // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
+	ReadFileMaxBytes      int `json:"readFileMaxBytes"`      // most one read_file call returns; a bigger file is read in pieces with offset/limit (default 1 MB, about 250k tokens)
+	CopyFileMaxBytes      int `json:"copyFileMaxBytes"`      // largest file one copy_file call copies; must be positive (default 100 MB). Bytes go file to file, not into the model's context
+	MCPResultMaxBytes     int `json:"mcpResultMaxBytes"`     // most of an MCP tool result that is passed to the model; the rest is cut with a note (default 256 KB)
+	MaxSearchFiles        int `json:"maxSearchFiles"`        // most files and directories one list_files or search_files call looks at, matching or not; must be positive (default 10,000)
+	CommandMaxOutputBytes int `json:"commandMaxOutputBytes"` // most output one run_command call returns; the program is killed past it; must be positive (default 128 KB)
 
 	// tools and MCP servers configuration
-	BuiltinTools  []string                   `json:"builtinTools"`  // names of built-in tools to enable
-	DenyFileNames []string                   `json:"denyFileNames"` // name patterns the file tools never read, added to the built-in list (which can't be removed)
-	McpServers    map[string]McpServerConfig `json:"mcpServers"`    // configuration for MCP servers
+	BuiltinTools []string                   `json:"builtinTools"` // names of built-in tools to enable
+	RunCommands  []string                   `json:"runCommands"`  // programs run_command may start, bare names looked up on PATH at setup; [] (the default) = run_command is not set up
+	CommandEnv   []string                   `json:"commandEnv"`   // environment variable names passed to those programs, added to the built-in list (which can't be shrunk)
+	DenyPaths    []string                   `json:"denyPaths"`    // .gitignore-style path patterns the file tools never touch, added to the built-in list (which can't be removed)
+	IgnorePaths  []string                   `json:"ignorePaths"`  // .gitignore-style path patterns list_files and search_files leave out (an ignored directory can't be listed or searched); a config file's list replaces the default, [] = no paths ignored
+	McpServers   map[string]McpServerConfig `json:"mcpServers"`   // configuration for MCP servers
 }
 
 type McpServerConfig struct {
@@ -96,10 +114,12 @@ type McpServerConfig struct {
 
 // TransportType works out which transport an MCP server uses, and rejects entries that are ambiguous or contradictory.
 //
-//		command             -> stdio
-//		url                 -> http
-//		url + "type": "sse" -> sse (caller warns and skips)
-//	    weird mix of fields (e.g., command and url specified) or unknown fields -> error
+// Notes:
+//   - The mapping: command -> stdio; url -> http; url + "type": "sse" -> sse (caller warns and skips); a weird mix of
+//     fields (e.g., command and url specified) or unknown fields -> error.
+//   - The transport is inferred from the fields first, then an explicit "type" confirms or refines it.
+//   - A known field that doesn't apply is an error, not a warning: ignoring e.g. an "env" token on a remote server
+//     would silently drop the credential and surface later as a confusing 401.
 func (m McpServerConfig) TransportType() (string, error) {
 
 	hasCmd, hasURL := m.Command != "", m.URL != ""
@@ -148,6 +168,12 @@ func (m McpServerConfig) TransportType() (string, error) {
 	return kind, nil
 }
 
+// GetDefaultConfig returns the built-in defaults every setting starts from.
+//
+// Notes:
+//   - Each call returns a fresh Config, but InBuffer and OutBuffer point at os.Stdin and os.Stdout.
+//   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
+//     FlagsOverlay layers the flags.
 func GetDefaultConfig() Config {
 	return Config{
 		UserID:        "default_user",
@@ -167,10 +193,13 @@ func GetDefaultConfig() Config {
 		MaxSteps:      10,
 
 		ResponseTimeoutSeconds: 300, // 5 minutes; slow local models may need more
+		ToolTimeoutSeconds:     300, // 5 minutes; a cold `go test` or an MCP call can be slow
+		TurnTimeoutSeconds:     600, // 10 minutes; must be at least ToolTimeoutSeconds
 		TraceEnabled:           true,
 		DigestEnabled:          true,
 		RedactionLevel:         "standard",
-		DenyRules:              []string{"*delete*", "*remove*"},
+		AskRules:               []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"},
+		Approval:               ApprovalAsk,
 
 		ContextWindowMessages: 50,
 		ContextStrategy:       "offset",
@@ -178,14 +207,26 @@ func GetDefaultConfig() Config {
 		AutoCompactThreshold:  0.9,
 		SummarizerPrompt:      "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely.",
 
-		TraceDir:           ".agent-trace",
-		TraceMaxEventBytes: 100 << 20, // 100 MB
-		ReadFileMaxBytes:   1 << 20,   // 1 MB
-		MCPResultMaxBytes:  256 << 10, // 256 KB
+		TraceDir:              ".agent-trace",
+		TraceMaxEventBytes:    100 << 20, // 100 MB
+		ReadFileMaxBytes:      1 << 20,   // 1 MB
+		CopyFileMaxBytes:      100 << 20, // 100 MB
+		MCPResultMaxBytes:     256 << 10, // 256 KB
+		MaxSearchFiles:        10000,
+		CommandMaxOutputBytes: 128 << 10, // 128 KB
+		IgnorePaths:           []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
 	}
 }
 
-// setDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in config defaults
+// SetDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in
+// config defaults.
+//
+// Notes:
+//   - The file is read from flags.Config; the defaults are loaded first, so missing keys in the file keep their
+//     defaults.
+//   - Unrecognized fields display a warning (on cfg.OutBuffer, sorted so the warnings are stable) and get ignored;
+//     a file that cannot be read or parsed is an error.
+//   - Key matching is case-insensitive, as in encoding/json.
 func SetDefaultConfig(flags Flags) (Config, error) {
 	// first get the default config, so missing keys in the file keep their defaults
 	cfg := GetDefaultConfig()
@@ -197,6 +238,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 
 	// otherwise for the config file, read its contents and parse the JSON
 	filename := *flags.Config
+	cfg.ConfigFile = filename
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file: %w", err)
@@ -226,7 +268,9 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 }
 
 // configJSONKeys returns the lowercased JSON key of every Config field that can be set from a file.
-// Untagged or `json:"-"` fields (InBuffer, OutBuffer, McpServerStderr) are left out.
+//
+// Notes:
+//   - Untagged or `json:"-"` fields (InBuffer, OutBuffer, McpServerStderr) are left out.
 func configJSONKeys() map[string]bool {
 	keys := make(map[string]bool)
 	t := reflect.TypeOf(Config{})
@@ -241,7 +285,10 @@ func configJSONKeys() map[string]bool {
 }
 
 // PrintConfig prints an explicit allowlist of settings that are safe to show.
-// MCP servers are listed by name and transport only.
+//
+// Notes:
+//   - MCP servers are listed by name and transport only.
+//   - Output goes to cfg.OutBuffer; the base URL goes through DisplayURL.
 func PrintConfig(cfg Config) {
 	w := cfg.OutBuffer
 	fmt.Fprintln(w, "Current agent configuration:")
@@ -258,6 +305,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
+	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
+	fmt.Fprintf(w, "  turnTimeoutSeconds: %d\n", cfg.TurnTimeoutSeconds)
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)
@@ -272,10 +321,18 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
+	fmt.Fprintf(w, "  copyFileMaxBytes: %d\n", cfg.CopyFileMaxBytes)
 	fmt.Fprintf(w, "  mcpResultMaxBytes: %d\n", cfg.MCPResultMaxBytes)
+	fmt.Fprintf(w, "  maxSearchFiles: %d\n", cfg.MaxSearchFiles)
+	fmt.Fprintf(w, "  commandMaxOutputBytes: %d\n", cfg.CommandMaxOutputBytes)
 	fmt.Fprintf(w, "  builtinTools:  %v\n", cfg.BuiltinTools)
-	fmt.Fprintf(w, "  denyFileNames: %v (added to the built-in list)\n", cfg.DenyFileNames)
+	fmt.Fprintf(w, "  runCommands:   %v\n", cfg.RunCommands)
+	fmt.Fprintf(w, "  commandEnv:    %v (names added to the built-in list)\n", cfg.CommandEnv)
+	fmt.Fprintf(w, "  denyPaths:     %v (added to the built-in list)\n", cfg.DenyPaths)
+	fmt.Fprintf(w, "  ignorePaths:   %v\n", cfg.IgnorePaths)
 	fmt.Fprintf(w, "  denyRules:     %v\n", cfg.DenyRules)
+	fmt.Fprintf(w, "  askRules:      %v\n", cfg.AskRules)
+	fmt.Fprintf(w, "  approval:      %s\n", cfg.Approval)
 	if len(cfg.McpServers) == 0 {
 		fmt.Fprintln(w, "  mcpServers:    none")
 		return
@@ -292,7 +349,11 @@ func PrintConfig(cfg Config) {
 
 // DisplayURL returns raw in a form that is safe to print: scheme, host and path stay, while the parts that can
 // carry a credential (user:password@, the query string, the fragment) are replaced by [hidden], whatever they
-// contain. It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+// contain.
+//
+// Notes:
+//   - It hides by position in the URL, not by recognising tokens. A token inside the path is still shown.
+//   - A URL that does not parse or has no host is replaced entirely, since it can't tell which part is which.
 func DisplayURL(raw string) string {
 	if raw == "" {
 		return ""

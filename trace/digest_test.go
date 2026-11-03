@@ -116,6 +116,64 @@ func Test_Digest_ShellCommandsShownVerbatim(t *testing.T) {
 	}
 }
 
+func Test_Digest_ListFilesDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"all options", `{"path":"cmd","recursive":true,"pattern":"*.go"}`, "", false, `list_files : list cmd (recursive, "*.go")`},
+		{"no args defaults to dot", `{}`, "", false, "list_files : list ."},
+		{"path only", `{"path":"sub"}`, "", false, "list_files : list sub"},
+		{"recursive only", `{"recursive":true}`, "", false, "list_files : list . (recursive)"},
+		{"pattern only", `{"pattern":"*_test.go"}`, "", false, `list_files : list . ("*_test.go")`},
+		{"failed", `{"path":"sub/x"}`, "sub/x: no such file or directory", true, "list_files : list sub/x (failed: sub/x: no such file or directory)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := describe("list_files", tt.args, tt.content, tt.failed); got != tt.want {
+				t.Errorf("describe = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	t.Run("invalid JSON falls back to the generic line", func(t *testing.T) {
+		if got := describe("list_files", "not json", "", false); !strings.HasPrefix(got, "list_files : not json") {
+			t.Errorf("describe = %q", got)
+		}
+	})
+}
+
+func Test_Digest_SearchFilesDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"query only defaults to dot", `{"query":"TODO"}`, "", false, `search_files : search "TODO" in .`},
+		{"path", `{"query":"x","path":"cmd"}`, "", false, `search_files : search "x" in cmd`},
+		{"all options", `{"query":"a.b","path":"src","pattern":"*.go","regex":true,"ignoreCase":true,"skip":200}`, "", false,
+			`search_files : search "a.b" in src ("*.go", regex, ignoreCase, skip 200)`},
+		{"skip 0 not shown", `{"query":"x","skip":0,"regex":false}`, "", false, `search_files : search "x" in .`},
+		{"query is quoted", `{"query":"say \"hi\""}`, "", false, `search_files : search "say \"hi\"" in .`},
+		{"failed", `{"query":"x","path":"..","regex":true}`, ".. is outside the allowed directory", true,
+			`search_files : search "x" in .. (regex) (failed: .. is outside the allowed directory)`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := describe("search_files", tt.args, tt.content, tt.failed); got != tt.want {
+				t.Errorf("describe = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	for _, args := range []string{"not json", `{}`, `{"query":""}`} {
+		t.Run("generic line for "+args, func(t *testing.T) {
+			if got := describe("search_files", args, "", false); !strings.HasPrefix(got, "search_files : "+args) {
+				t.Errorf("describe = %q", got)
+			}
+		})
+	}
+}
+
 func Test_Digest_UnfinishedRun_SaysSo(t *testing.T) {
 	d := NewActivityDigest()
 	var out bytes.Buffer
@@ -245,5 +303,72 @@ func Test_Digest_DroppedAndRunLevelMarkers(t *testing.T) {
 	}
 	if strings.Contains(s, "answered, no tools") { // a dropped model_response is not a text-only reply
 		t.Errorf("a dropped model_response was read as an empty reply:\n%s", s)
+	}
+}
+
+func Test_Digest_WriteFileAndCreateDirectoryDescribed(t *testing.T) {
+	tests := []struct {
+		name, tool, args, content string
+		failed                    bool
+		want                      string
+	}{
+		{"created", "write_file", `{"path":"a.txt","content":"hi"}`, "created a.txt (2 bytes)", false, "write_file : created a.txt (2 bytes)"},
+		{"overwrote", "write_file", `{"path":"a.txt","content":"hi"}`, "overwrote a.txt (2 bytes)", false, "write_file : overwrote a.txt (2 bytes)"},
+		{"failed shows the path and the error, not the content", "write_file", `{"path":"a.txt","content":"SECRET BODY"}`, "a.txt is blocked", true, "write_file : write a.txt (failed: a.txt is blocked)"},
+		{"no path falls back to the generic line", "write_file", `{}`, "", false, "write_file : {}"},
+		{"mkdir", "create_directory", `{"path":"docs/x"}`, "created directory docs/x", false, "create_directory : mkdir docs/x"},
+		{"mkdir failed", "create_directory", `{"path":"x"}`, "boom", true, "create_directory : mkdir x (failed: boom)"},
+	}
+	for _, tc := range tests {
+		if got := describe(tc.tool, tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func Test_Digest_EditFileDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"edited", `{"path":"a.go","old_string":"x","new_string":"y"}`, "edited a.go (2 replacements, 90 bytes)", false, "edit_file : edited a.go (2 replacements, 90 bytes)"},
+		{"failed shows path and error, not the strings", `{"path":"a.go","old_string":"SECRET","new_string":"y"}`, "old_string was not found", true, "edit_file : edit a.go (failed: old_string was not found)"},
+		{"no path falls back to the generic line", `{}`, "", false, "edit_file : {}"},
+	}
+	for _, tc := range tests {
+		if got := describe("edit_file", tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func Test_Digest_CopyAndMoveFileDescribed(t *testing.T) {
+	tests := []struct {
+		name, tool, args, content string
+		failed                    bool
+		want                      string
+	}{
+		{"copied", "copy_file", `{"source":"a","destination":"b"}`, "copied a -> b (3 bytes)", false, "copy_file : copied a -> b (3 bytes)"},
+		{"moved over a file", "move_file", `{"source":"a","destination":"b"}`, "moved a -> b (3 bytes, overwrote existing)", false, "move_file : moved a -> b (3 bytes, overwrote existing)"},
+		{"copy failed", "copy_file", `{"source":"a","destination":"b"}`, "a is blocked", true, "copy_file : copy a -> b (failed: a is blocked)"},
+		{"move failed", "move_file", `{"source":"a","destination":"b"}`, "no such file", true, "move_file : move a -> b (failed: no such file)"},
+		{"missing destination falls back to the generic line", "move_file", `{"source":"a"}`, "", false, `move_file : {"source":"a"}`},
+	}
+	for _, tc := range tests {
+		if got := describe(tc.tool, tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// - Verify the digest shows a run_command call as one command line (program and arguments joined), not just the program
+func Test_Digest_RunCommandDescribed(t *testing.T) {
+	got := describe("run_command", `{"command":"go","args":["test","-run","TestX","./pkg"]}`, "", false)
+	if !strings.Contains(got, "go test -run TestX ./pkg") {
+		t.Errorf("describe = %q", got)
+	}
+	if got := describe("run_command", `{"command":"ls"}`, "", false); !strings.Contains(got, "run_command : ls") {
+		t.Errorf("no args: %q", got)
 	}
 }

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/model"
 )
 
@@ -252,7 +254,7 @@ func Test_ToolRegistry_ConcurrentRegisterAndRead_RaceFree(t *testing.T) {
 // - Verify SetupBuiltinTools builds the read_file tool for an existing workDir, and fails for a bad workDir
 // or an unknown tool name, so a misconfigured agent stops at startup instead of at the first file read
 func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, t.TempDir(), "", 4096, nil)
+	built, err := SetupBuiltinTools(builtinCfg([]string{"ReadFile"}, t.TempDir(), "", 4096, 1000, nil, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -260,10 +262,10 @@ func Test_SetupBuiltinTools_ReadFile_WorkDir(t *testing.T) {
 		t.Errorf("expected one read_file tool, got %v", defNames([]model.ToolDef{built[0].GetToolDefinition()}))
 	}
 
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), "", 4096, nil); err == nil {
+	if _, err := SetupBuiltinTools(builtinCfg([]string{"ReadFile"}, filepath.Join(t.TempDir(), "missing"), "", 4096, 1000, nil, nil)); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := SetupBuiltinTools([]string{"NoSuchTool"}, t.TempDir(), "", 4096, nil); err == nil {
+	if _, err := SetupBuiltinTools(builtinCfg([]string{"NoSuchTool"}, t.TempDir(), "", 4096, 1000, nil, nil)); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool")
 	}
 }
@@ -277,7 +279,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(work, "logs", "trace", "run.jsonl"), []byte("fake-trace"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	built, err := SetupBuiltinTools([]string{"ReadFile"}, work, filepath.Join(work, "logs", "trace"), 4096, nil)
+	built, err := SetupBuiltinTools(builtinCfg([]string{"ReadFile"}, work, filepath.Join(work, "logs", "trace"), 4096, 1000, nil, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +288,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "trace directory") {
 		t.Errorf("expected a trace-directory error, got (%q, %v)", got, err)
 	}
-	if _, err := SetupBuiltinTools([]string{"ReadFile"}, work, work, 4096, nil); err == nil {
+	if _, err := SetupBuiltinTools(builtinCfg([]string{"ReadFile"}, work, work, 4096, 1000, nil, nil)); err == nil {
 		t.Errorf("expected an error for a traceDir equal to workDir")
 	}
 }
@@ -295,7 +297,7 @@ func Test_SetupBuiltinTools_ReadFile_TraceDir(t *testing.T) {
 // "ReadFile" spelling, each giving one tool named read_file; an unknown name still errors
 func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 	for _, name := range []string{"read_file", "ReadFile"} {
-		built, err := SetupBuiltinTools([]string{name}, t.TempDir(), "", 4096, nil)
+		built, err := SetupBuiltinTools(builtinCfg([]string{name}, t.TempDir(), "", 4096, 1000, nil, nil))
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", name, err)
 		}
@@ -303,7 +305,7 @@ func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 			t.Errorf("%s: expected one read_file tool, got %d tools", name, len(built))
 		}
 	}
-	if _, err := SetupBuiltinTools([]string{"Read_File"}, t.TempDir(), "", 4096, nil); err == nil {
+	if _, err := SetupBuiltinTools(builtinCfg([]string{"Read_File"}, t.TempDir(), "", 4096, 1000, nil, nil)); err == nil {
 		t.Errorf("expected an error for an unknown built-in tool name")
 	}
 }
@@ -311,7 +313,7 @@ func Test_SetupBuiltinTools_ReadFile_BothSpellings(t *testing.T) {
 // - Verify listing both spellings builds two read_file tools, and the duplicate is caught when they are registered
 // (NewToolRegistry), not by SetupBuiltinTools
 func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *testing.T) {
-	built, err := SetupBuiltinTools([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096, nil)
+	built, err := SetupBuiltinTools(builtinCfg([]string{"read_file", "ReadFile"}, t.TempDir(), "", 4096, 1000, nil, nil))
 	if err != nil {
 		t.Fatalf("SetupBuiltinTools: unexpected error: %v", err)
 	}
@@ -323,29 +325,44 @@ func Test_SetupBuiltinTools_BothSpellingsTogether_DuplicateAtRegistration(t *tes
 	}
 }
 
-// - Verify a bad denyFileNames pattern fails SetupBuiltinTools, with no tools enabled as well as with read_file,
+// - Verify a bad denyPaths pattern fails SetupBuiltinTools, with no tools enabled as well as with read_file,
 // so a typo in the config stops startup instead of silently protecting nothing
-func Test_SetupBuiltinTools_DenyFileNames_BadPattern_Fails(t *testing.T) {
-	for _, bad := range []string{"[abc", "sub/creds.json", ""} {
+func Test_SetupBuiltinTools_DenyPaths_BadPattern_Fails(t *testing.T) {
+	for _, bad := range []string{"[abc", "sub//creds.json", "../creds.json", " creds.json", ""} {
 		for _, toolList := range [][]string{nil, {}, {"read_file"}} {
-			built, err := SetupBuiltinTools(toolList, t.TempDir(), "", 4096, []string{"*.secret", bad})
-			if err == nil || !strings.Contains(err.Error(), "denyFileNames") {
-				t.Errorf("pattern %q, tools %v: expected a denyFileNames error, got (%d tools, %v)", bad, toolList, len(built), err)
+			built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, []string{"*.secret", bad}, nil))
+			if err == nil || !strings.Contains(err.Error(), "denyPaths") {
+				t.Errorf("pattern %q, tools %v: expected a denyPaths error, got (%d tools, %v)", bad, toolList, len(built), err)
 			}
 		}
 	}
 }
 
-// - Verify SetupBuiltinTools passes denyFileNames through to read_file: a matching file is refused (the error names the
+// - Verify a denyPaths or ignorePaths pattern with "**" fails SetupBuiltinTools, whichever tools are enabled, so a rule
+// that looks recursive but would miss nested files stops startup instead of protecting less than it appears to
+func Test_SetupBuiltinTools_DoubleStarPattern_Fails(t *testing.T) {
+	for _, toolList := range [][]string{nil, {"read_file"}, {"read_file", "list_files"}} {
+		built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, []string{"**/*.secret"}, nil))
+		if err == nil || !strings.Contains(err.Error(), "denyPaths") || !strings.Contains(err.Error(), `"**" is not supported`) {
+			t.Errorf("denyPaths, tools %v: expected a denyPaths \"**\" error, got (%d tools, %v)", toolList, len(built), err)
+		}
+		built, err = SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, nil, []string{"build/**"}))
+		if err == nil || !strings.Contains(err.Error(), "ignorePaths") || !strings.Contains(err.Error(), `"**" is not supported`) {
+			t.Errorf("ignorePaths, tools %v: expected an ignorePaths \"**\" error, got (%d tools, %v)", toolList, len(built), err)
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools passes denyPaths through to read_file: a matching file is refused (the error names the
 // pattern), a non-matching one still reads, and the built-ins stay denied
-func Test_SetupBuiltinTools_DenyFileNames_Enforced(t *testing.T) {
+func Test_SetupBuiltinTools_DenyPaths_Enforced(t *testing.T) {
 	work := t.TempDir()
 	for name, body := range map[string]string{"creds.json": "FAKE_SECRET_TOKEN_123", "notes.txt": "ALLOWED-NOTES", ".env": "FAKE_SECRET_TOKEN_123"} {
 		if err := os.WriteFile(filepath.Join(work, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	built, err := SetupBuiltinTools([]string{"read_file"}, work, "", 4096, []string{"Creds.JSON"})
+	built, err := SetupBuiltinTools(builtinCfg([]string{"read_file"}, work, "", 4096, 1000, []string{"Creds.JSON"}, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,5 +381,388 @@ func Test_SetupBuiltinTools_DenyFileNames_Enforced(t *testing.T) {
 	}
 	if got, err := call("notes.txt"); err != nil || got != "ALLOWED-NOTES" {
 		t.Errorf("notes.txt: expected ALLOWED-NOTES, got (%q, %v)", got, err)
+	}
+}
+
+// - Verify SetupBuiltinTools builds the workspace even when no file tool is enabled: with an empty (or nil) tool list,
+// a missing workDir, a workDir that is a file, or a traceDir equal to workDir still fails setup, with no tools
+func Test_SetupBuiltinTools_NoTools_BadWorkspace_Fails(t *testing.T) {
+	work := t.TempDir()
+	file := filepath.Join(work, "plain.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name, workDir, traceDir, want string
+	}{
+		{"missing workDir", filepath.Join(work, "missing"), "", "workDir"},
+		{"workDir is a file", file, "", "not a directory"},
+		{"traceDir is workDir", work, work, "is workDir or contains it"},
+	}
+	for _, tc := range cases {
+		for _, toolList := range [][]string{nil, {}} {
+			built, err := SetupBuiltinTools(builtinCfg(toolList, tc.workDir, tc.traceDir, 4096, 1000, nil, nil))
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(built) != 0 {
+				t.Errorf("%s, tools %v: expected an error containing %q and no tools, got (%d tools, %v)", tc.name, toolList, tc.want, len(built), err)
+			}
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools builds list_files: ["list_files"] gives one tool named list_files, and
+// ["read_file","list_files"] gives both, in that order
+func Test_SetupBuiltinTools_ListFiles(t *testing.T) {
+	built, err := SetupBuiltinTools(builtinCfg([]string{"list_files"}, t.TempDir(), "", 4096, 1000, nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(built) != 1 || built[0].GetToolDefinition().Function.Name != "list_files" {
+		t.Fatalf("expected one list_files tool, got %d tools", len(built))
+	}
+
+	built, err = SetupBuiltinTools(builtinCfg([]string{"read_file", "list_files"}, t.TempDir(), "", 4096, 1000, nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]model.ToolDef, len(built))
+	for i, b := range built {
+		names[i] = b.GetToolDefinition()
+	}
+	if got, want := strings.Join(defNames(names), ","), "read_file,list_files"; got != want {
+		t.Errorf("expected tools %q, got %q", want, got)
+	}
+}
+
+// - Verify SetupBuiltinTools builds search_files: ["search_files"] gives one tool named search_files that searches
+// workDir, and ["list_files","search_files"] gives both, in that order
+func Test_SetupBuiltinTools_SearchFiles(t *testing.T) {
+	work := t.TempDir()
+	if err := os.WriteFile(filepath.Join(work, "a.txt"), []byte("hit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, work, "", 4096, 1000, nil, nil))
+	if err != nil || len(built) != 1 || built[0].GetToolDefinition().Function.Name != "search_files" {
+		t.Fatalf("expected one search_files tool, got (%d tools, %v)", len(built), err)
+	}
+	if got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"query":"hit"}`)); err != nil || got != "a.txt:1: hit" {
+		t.Errorf(`expected "a.txt:1: hit", got (%q, %v)`, got, err)
+	}
+
+	built, err = SetupBuiltinTools(builtinCfg([]string{"list_files", "search_files"}, t.TempDir(), "", 4096, 1000, nil, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	names := make([]model.ToolDef, len(built))
+	for i, b := range built {
+		names[i] = b.GetToolDefinition()
+	}
+	if got, want := strings.Join(defNames(names), ","), "list_files,search_files"; got != want {
+		t.Errorf("expected tools %q, got %q", want, got)
+	}
+}
+
+// - Verify SetupBuiltinTools passes maxSearchFiles and ignorePaths to search_files: maxSearchFiles 0 fails setup with
+// "must be positive", and an ignored directory's files are not searched
+func Test_SetupBuiltinTools_SearchFiles_MaxSearchFilesAndIgnore(t *testing.T) {
+	if built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, t.TempDir(), "", 4096, 0, nil, nil)); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("maxSearchFiles 0: expected a 'must be positive' error, got (%d tools, %v)", len(built), err)
+	}
+
+	work := t.TempDir()
+	for _, rel := range []string{"a.txt", filepath.Join("vendor", "b.txt")} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, rel), []byte("hit"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	built, err := SetupBuiltinTools(builtinCfg([]string{"search_files"}, work, "", 4096, 1000, nil, []string{"vendor/"}))
+	if err != nil || len(built) != 1 {
+		t.Fatalf("expected one search_files tool, got (%d tools, %v)", len(built), err)
+	}
+	if got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"query":"hit"}`)); err != nil || got != "a.txt:1: hit" {
+		t.Errorf(`expected only "a.txt:1: hit", got (%q, %v)`, got, err)
+	}
+}
+
+// - Verify SetupBuiltinTools with a valid workDir and an empty tool list succeeds with zero tools
+func Test_SetupBuiltinTools_NoTools_ValidWorkDir_NoTools(t *testing.T) {
+	for _, toolList := range [][]string{nil, {}} {
+		built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, nil, nil))
+		if err != nil || len(built) != 0 {
+			t.Errorf("tools %v: expected (0 tools, nil), got (%d tools, %v)", toolList, len(built), err)
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools passes maxSearchFiles to list_files: 0 fails setup with "must be positive", and a limit
+// of 2 makes a listing of three files stop after two with the stopped note
+func Test_SetupBuiltinTools_ListFiles_MaxSearchFiles(t *testing.T) {
+	if built, err := SetupBuiltinTools(builtinCfg([]string{"list_files"}, t.TempDir(), "", 4096, 0, nil, nil)); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("maxSearchFiles 0: expected a 'must be positive' error, got (%d tools, %v)", len(built), err)
+	}
+
+	work := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(work, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	built, err := SetupBuiltinTools(builtinCfg([]string{"list_files"}, work, "", 4096, 2, nil, nil))
+	if err != nil || len(built) != 1 {
+		t.Fatalf("expected one list_files tool, got (%d tools, %v)", len(built), err)
+	}
+	got, err := built[0].CallTool(context.Background(), json.RawMessage(`{}`))
+	if err != nil || strings.Contains(got, "c.txt") || !strings.Contains(got, "[stopped after looking at 2 entries") {
+		t.Errorf("expected a listing stopped after 2 entries without c.txt, got (%q, %v)", got, err)
+	}
+}
+
+// - Verify maxSearchFiles is checked only by the tool that uses it: with only read_file enabled, 0 does not fail setup
+// (as readFileMaxBytes is checked only by read_file)
+func Test_SetupBuiltinTools_ReadFileOnly_MaxSearchFilesNotChecked(t *testing.T) {
+	built, err := SetupBuiltinTools(builtinCfg([]string{"read_file"}, t.TempDir(), "", 4096, 0, nil, nil))
+	if err != nil || len(built) != 1 {
+		t.Errorf("expected (1 tool, nil), got (%d tools, %v)", len(built), err)
+	}
+}
+
+// - Verify a bad ignorePaths pattern fails SetupBuiltinTools with an ignorePaths error, even with no tools enabled
+func Test_SetupBuiltinTools_IgnorePaths_BadPattern_Fails(t *testing.T) {
+	for _, bad := range []string{"[abc", "sub//x", "./x", "x ", ""} {
+		for _, toolList := range [][]string{nil, {}, {"list_files"}} {
+			built, err := SetupBuiltinTools(builtinCfg(toolList, t.TempDir(), "", 4096, 1000, nil, []string{"*.tmp", bad}))
+			if err == nil || !strings.Contains(err.Error(), "ignorePaths") || len(built) != 0 {
+				t.Errorf("pattern %q, tools %v: expected an ignorePaths error and no tools, got (%d tools, %v)", bad, toolList, len(built), err)
+			}
+		}
+	}
+}
+
+// - Verify SetupBuiltinTools passes ignorePaths to list_files: ["*.log"] leaves out a .log file, and nil ignores
+// nothing (the contents of .git are listed)
+func Test_SetupBuiltinTools_ListFiles_IgnorePaths(t *testing.T) {
+	work := t.TempDir()
+	for _, rel := range []string{"app.log", "main.go", filepath.Join(".git", "HEAD")} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(work, rel)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(work, rel), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func(ignorePaths []string) string {
+		t.Helper()
+		built, err := SetupBuiltinTools(builtinCfg([]string{"list_files"}, work, "", 4096, 1000, nil, ignorePaths))
+		if err != nil || len(built) != 1 {
+			t.Fatalf("ignorePaths %q: expected one list_files tool, got (%d tools, %v)", ignorePaths, len(built), err)
+		}
+		got, err := built[0].CallTool(context.Background(), json.RawMessage(`{"recursive": true}`))
+		if err != nil {
+			t.Fatalf("ignorePaths %q: list_files: %v", ignorePaths, err)
+		}
+		return got
+	}
+
+	if got := list([]string{"*.log"}); strings.Contains(got, "app.log") || !strings.Contains(got, "main.go") {
+		t.Errorf(`ignorePaths ["*.log"]: expected main.go without app.log, got %q`, got)
+	}
+	if got := list(nil); !strings.Contains(got, "app.log") || !strings.Contains(got, "HEAD") {
+		t.Errorf("ignorePaths nil: expected app.log and .git/HEAD to be listed, got %q", got)
+	}
+}
+
+// builtinCfg builds the config SetupBuiltinTools reads, from the settings these tests vary.
+func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, maxSearchFiles int, denyPaths, ignorePaths []string) config.Config {
+	cfg := config.GetDefaultConfig()
+	cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir = toolList, workDir, traceDir
+	cfg.ReadFileMaxBytes, cfg.MaxSearchFiles = readFileMaxBytes, maxSearchFiles
+	cfg.DenyPaths, cfg.IgnorePaths = denyPaths, ignorePaths
+	return cfg
+}
+
+// - Verify SetupBuiltinTools builds create_directory and write_file, in the order listed, and that the config file path
+// reaches the workspace: write_file refuses to overwrite it and still writes another file
+func Test_SetupBuiltinTools_WriteTools_ConfigFileProtected(t *testing.T) {
+	work := t.TempDir()
+	cfgFile := filepath.Join(work, "agent.json")
+	if err := os.WriteFile(cfgFile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := builtinCfg([]string{"create_directory", "write_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.ConfigFile = cfgFile
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(built) != 2 || built[0].GetToolDefinition().Function.Name != "create_directory" || built[1].GetToolDefinition().Function.Name != "write_file" {
+		t.Fatalf("unexpected tools: %d", len(built))
+	}
+	ctx := context.Background()
+	if _, err := built[1].CallTool(ctx, json.RawMessage(`{"path":"agent.json","content":"pwned"}`)); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("overwriting the config file: error = %v", err)
+	}
+	if got, err := built[1].CallTool(ctx, json.RawMessage(`{"path":"notes.txt","content":"hi"}`)); err != nil || got != "created notes.txt (2 bytes)" {
+		t.Errorf("write_file = (%q, %v)", got, err)
+	}
+	if got, _ := os.ReadFile(cfgFile); string(got) != "{}" {
+		t.Errorf("config file changed: %q", got)
+	}
+}
+
+// - Verify SetupBuiltinTools builds edit_file, and that the config file path reaches it: an edit of the config file is
+// refused while another file is edited
+func Test_SetupBuiltinTools_EditFile_ConfigFileProtected(t *testing.T) {
+	work := t.TempDir()
+	cfgFile := filepath.Join(work, "agent.json")
+	for f, c := range map[string]string{cfgFile: `{"a":1}`, filepath.Join(work, "n.txt"): "old"} {
+		if err := os.WriteFile(f, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := builtinCfg([]string{"edit_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.ConfigFile = cfgFile
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || built[0].GetToolDefinition().Function.Name != "edit_file" {
+		t.Fatalf("(%v, %v)", built, err)
+	}
+	ctx := context.Background()
+	if _, err := built[0].CallTool(ctx, json.RawMessage(`{"path":"agent.json","old_string":"1","new_string":"2"}`)); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("editing the config file: error = %v", err)
+	}
+	if got, err := built[0].CallTool(ctx, json.RawMessage(`{"path":"n.txt","old_string":"old","new_string":"new"}`)); err != nil || got != "edited n.txt (1 replacement, 3 bytes)" {
+		t.Errorf("edit = (%q, %v)", got, err)
+	}
+	if b, _ := os.ReadFile(cfgFile); string(b) != `{"a":1}` {
+		t.Errorf("config file changed: %q", b)
+	}
+}
+
+// - Verify SetupBuiltinTools builds copy_file and move_file and the config file path reaches them: copying onto or
+// moving away the config file is refused, and an ordinary copy and move work
+func Test_SetupBuiltinTools_CopyAndMoveFile(t *testing.T) {
+	work := t.TempDir()
+	cfgFile := filepath.Join(work, "agent.json")
+	for f, c := range map[string]string{cfgFile: "{}", filepath.Join(work, "a.txt"): "A"} {
+		if err := os.WriteFile(f, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := builtinCfg([]string{"copy_file", "move_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.ConfigFile = cfgFile
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 2 || built[0].GetToolDefinition().Function.Name != "copy_file" || built[1].GetToolDefinition().Function.Name != "move_file" {
+		t.Fatalf("(%v, %v)", built, err)
+	}
+	ctx := context.Background()
+	call := func(i int, src, dst string) (string, error) {
+		args, _ := json.Marshal(map[string]string{"source": src, "destination": dst})
+		return built[i].CallTool(ctx, args)
+	}
+	if _, err := call(0, "a.txt", "agent.json"); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("copy onto the config file: error = %v", err)
+	}
+	if _, err := call(1, "agent.json", "b.txt"); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("move the config file: error = %v", err)
+	}
+	if got, err := call(0, "a.txt", "copy.txt"); err != nil || got != "copied a.txt -> copy.txt (1 bytes)" {
+		t.Errorf("copy = (%q, %v)", got, err)
+	}
+	if got, err := call(1, "copy.txt", "moved.txt"); err != nil || got != "moved copy.txt -> moved.txt (1 bytes)" {
+		t.Errorf("move = (%q, %v)", got, err)
+	}
+	if b, _ := os.ReadFile(cfgFile); string(b) != "{}" {
+		t.Errorf("config file changed: %q", b)
+	}
+}
+
+// - Verify copyFileMaxBytes reaches copy_file: a file over the configured limit is refused, one within it is copied,
+// and a non-positive limit fails setup (only when copy_file is enabled)
+func Test_SetupBuiltinTools_CopyFile_MaxBytes(t *testing.T) {
+	work := t.TempDir()
+	for f, n := range map[string]int{"small.txt": 10, "big.txt": 11} {
+		if err := os.WriteFile(filepath.Join(work, f), []byte(strings.Repeat("x", n)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := builtinCfg([]string{"copy_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.CopyFileMaxBytes = 10
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(src, dst string) error {
+		args, _ := json.Marshal(map[string]string{"source": src, "destination": dst})
+		_, err := built[0].CallTool(context.Background(), args)
+		return err
+	}
+	if err := call("small.txt", "s2.txt"); err != nil {
+		t.Errorf("within the limit: %v", err)
+	}
+	if err := call("big.txt", "b2.txt"); err == nil || !strings.Contains(err.Error(), "11 bytes") {
+		t.Errorf("over the limit: error = %v", err)
+	}
+	cfg.CopyFileMaxBytes = 0
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("zero limit with copy_file enabled: error = %v", err)
+	}
+	cfg.BuiltinTools = []string{"read_file"}
+	if _, err := SetupBuiltinTools(cfg); err != nil {
+		t.Errorf("zero limit without copy_file: %v", err)
+	}
+}
+
+// - Verify run_command is not set up when runCommands is empty (a warning says why), is set up with only the programs
+// found when some are listed (a warning names the missing one), and that the reverse mismatch warns too
+func Test_SetupBuiltinTools_RunCommand(t *testing.T) {
+	work := t.TempDir()
+	var out bytes.Buffer
+	cfg := builtinCfg([]string{"run_command", "read_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.OutBuffer = &out
+
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || built[0].GetToolDefinition().Function.Name != "read_file" {
+		t.Fatalf("empty runCommands: (%v, %v)", built, err)
+	}
+	if !strings.Contains(out.String(), "runCommands is empty; run_command is not set up") {
+		t.Errorf("warning missing: %q", out.String())
+	}
+
+	out.Reset()
+	cfg.RunCommands = []string{"sh", "no-such-program-xyz"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 2 || built[0].GetToolDefinition().Function.Name != "run_command" {
+		t.Fatalf("listed: (%v, %v)", built, err)
+	}
+	if !strings.Contains(out.String(), `"no-such-program-xyz" not found on PATH`) {
+		t.Errorf("missing-program warning: %q", out.String())
+	}
+
+	out.Reset()
+	cfg.RunCommands = []string{"no-such-program-xyz"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || !strings.Contains(out.String(), "none of the runCommands programs can be used") {
+		t.Errorf("none usable: (%v, %v), out %q", built, err, out.String())
+	}
+
+	out.Reset()
+	cfg.BuiltinTools, cfg.RunCommands = []string{"read_file"}, []string{"sh"}
+	built, err = SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 1 || !strings.Contains(out.String(), `"run_command" is not in builtinTools`) {
+		t.Errorf("reverse mismatch: (%v, %v), out %q", built, err, out.String())
+	}
+
+	cfg.BuiltinTools, cfg.RunCommands, cfg.OutBuffer = []string{"run_command"}, []string{"sh"}, nil
+	if _, err := SetupBuiltinTools(cfg); err != nil { // a nil OutBuffer must not panic
+		t.Errorf("nil OutBuffer: %v", err)
+	}
+	cfg.OutBuffer, cfg.CommandMaxOutputBytes = &out, 0
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		t.Errorf("zero commandMaxOutputBytes: %v", err)
+	}
+	cfg.CommandMaxOutputBytes, cfg.RunCommands = 100, []string{"/bin/sh"}
+	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "bare program name") {
+		t.Errorf("path in runCommands: %v", err)
 	}
 }

@@ -4,103 +4,40 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"path/filepath"
-	"strings"
-	"syscall"
 	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
-// ReadFileTool reads text files, but only inside root (the configured workDir and its subdirectories)
-// and never a file on the deny list. Absolute paths, "..", and symlinks are all resolved first, so none of
-// them can reach outside root.
+// ReadFileTool reads text files only within the workspace (i.e., within rootDir, excluding deny-listed files and the trace directory if it's within rootDir's path)
 type ReadFileTool struct {
-	root     string   // absolute path of the allowed directory, with symlinks resolved
-	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	deny     DenyList // names never read (the built-ins plus config denyFileNames)
-	maxBytes int      // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
+	ws       *Workspace // where it may read (shared with the other file tools)
+	maxBytes int        // most one call returns; this bounds how much of the model's context a call can use. A bigger file is read in pieces with offset and limit
 }
 
-// NewReadFileTool creates a read_file tool confined to workDir. workDir must be an existing directory.
-// traceDir (config traceDir, "" = none) is never read from, so the agent can't read its own audit log; it need not
-// exist yet, and it must not be workDir or a parent of it (read_file could then read nothing).
-// maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
-// deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
-func NewReadFileTool(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
+// NewReadFileTool creates a read_file tool that reads only inside ws (NewWorkspace).
+//
+// Notes:
+//   - maxBytes is the most one call returns (config readFileMaxBytes) and must be positive.
+//   - A nil ws is an error.
+func NewReadFileTool(ws *Workspace, maxBytes int) (*ReadFileTool, error) {
+	if ws == nil {
+		return nil, fmt.Errorf("read_file needs a workspace")
+	}
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("read_file max bytes must be positive, got %d", maxBytes)
 	}
-	abs, err := filepath.Abs(workDir)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	root, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
-	}
-	t := &ReadFileTool{root: root, maxBytes: maxBytes, deny: deny}
-	if traceDir != "" {
-		// [agent] relative to the process's directory, like the trace recorder that creates it (not to workDir)
-		if t.traceDir, err = resolvePath(traceDir); err != nil {
-			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
-		}
-		if isWithin(t.traceDir, root) {
-			return nil, fmt.Errorf("traceDir %q is workDir or contains it, so read_file could read nothing", traceDir)
-		}
-	}
-	return t, nil
-}
-
-// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with. p need not
-// exist yet (the recorder creates the trace directory when a run starts): the longest existing part is resolved and
-// the rest is added back unchanged.
-func resolvePath(p string) (string, error) {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	rest := ""
-	for {
-		real, err := filepath.EvalSymlinks(abs)
-		if err == nil {
-			return filepath.Join(real, rest), nil
-		}
-		parent := filepath.Dir(abs)
-		if !errors.Is(err, fs.ErrNotExist) || parent == abs {
-			return "", err
-		}
-		if _, lerr := os.Lstat(abs); lerr == nil {
-			// [agent] abs exists but EvalSymlinks says "not found": a symlink to a missing target. Protecting the
-			// link's own path would miss where the recorder actually writes, so refuse it.
-			return "", fmt.Errorf("%s is a symlink to a path that doesn't exist", abs)
-		}
-		rest = filepath.Join(filepath.Base(abs), rest)
-		abs = parent
-	}
-}
-
-// isWithin reports whether path p is dir or inside it. Both are absolute and symlink-resolved. The comparison ignores
-// case, because macOS and Windows filesystems do (".AGENT-TRACE" is the same directory there); on Linux that can
-// refuse a path that differs only in case, which errs on the safe side.
-func isWithin(dir, p string) bool {
-	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(p))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return &ReadFileTool{ws: ws, maxBytes: maxBytes}, nil
 }
 
 // fileKind names a non-regular file type for the error shown to the model.
+//
+// Notes:
+//   - Anything that is not a pipe, socket or device is reported as "special file".
 func fileKind(mode os.FileMode) string {
 	switch {
 	case mode&os.ModeNamedPipe != 0:
@@ -116,31 +53,10 @@ func fileKind(mode os.FileMode) string {
 	}
 }
 
-// resolve turns the model's path (relative to root, or absolute) into a path relative to root with every
-// symlink followed, or returns an error if it ends up outside root or on the deny list. The deny list is
-// checked on the resolved path, so a symlink named notes.txt that points at .env is refused too.
-func (t *ReadFileTool) resolve(requested string) (string, error) {
-	candidate := requested
-	if !filepath.IsAbs(requested) {
-		candidate = filepath.Join(t.root, requested)
-	}
-	real, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
-		return "", err
-	}
-	rel, err := filepath.Rel(t.root, real)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%s is outside the allowed directory", requested)
-	}
-	if t.deny.IsDenied(rel) {
-		return "", fmt.Errorf("%s is blocked: it matches the sensitive-file deny list (%s; .env.example is allowed)", requested, strings.Join(t.deny.Patterns(), ", "))
-	}
-	if t.traceDir != "" && isWithin(t.traceDir, real) {
-		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)
-	}
-	return rel, nil
-}
-
+// GetToolDefinition returns the definition of the read_file tool.
+//
+// Notes:
+//   - The description states the per-call cap (maxBytes in KB), so the model knows to read large files in pieces.
 func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"read_file",
@@ -169,6 +85,17 @@ func (t *ReadFileTool) GetToolDefinition() model.ToolDef {
 	)
 }
 
+// CallTool executes the read_file tool with the given arguments and context. It returns the file contents, or an error.
+//
+// Notes:
+//   - Order of defences: resolvePath (workspace check) then openRoot (os.Root, a second line of defence) then openFile
+//     (regular file, same file as checked).
+//   - A limit of 0 means "not given" and a limit above maxBytes is lowered to it. A file with a NUL byte is refused as
+//     binary.
+//   - The piece starts and ends on character boundaries, so the next piece (at the offset in the truncation note)
+//     neither repeats nor loses bytes; a limit smaller than one character is an error rather than an endless
+//     "continue at the same offset".
+//   - A truncated result ends with a note giving the offset to pass to the next call.
 func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	// decode args into a small struct with a Path field; bad JSON returns an error. Empty path also returns an error
 	var params struct {
@@ -197,37 +124,23 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start reading
 		return "", err
 	}
-	rel, err := t.resolve(params.Path)
+	rel, want, err := t.ws.resolvePath(params.Path)
 	if err != nil {
 		return "", err // e.g. "lstat go.mod: no such file or directory" or "... is outside the allowed directory"
 	}
 	// os.Root is a second line of defence: it refuses ".." and symlink escapes at open time, so a
-	// symlink swapped in after resolve() still cannot leave root
-	root, err := os.OpenRoot(t.root)
+	// symlink swapped in after resolve() still cannot leave the workspace's rootDir
+	root, err := t.ws.openRoot()
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	// Open with O_NONBLOCK: opening a named pipe (FIFO) normally waits for a writer, which would hang the whole
-	// agent turn (this call is synchronous and cannot be cancelled once inside open). With O_NONBLOCK the open
-	// returns at once, and the file type is checked on the opened descriptor below, not on the path, so a
-	// regular file swapped for a pipe after resolve() cannot be raced in. O_NONBLOCK does not change reads of
-	// regular files.
-	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	// openFile refuses a directory, a named pipe (without blocking on it) and a file swapped in after the check
+	f, info, err := t.ws.openFile(root, params.Path, rel, want)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	info, err := f.Stat() // fstat on the descriptor we actually opened
-	if err != nil {
-		return "", err
-	}
-	if info.IsDir() {
-		return "", fmt.Errorf("%s is a directory, not a file", params.Path)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is not a regular file (it is a %s)", params.Path, fileKind(info.Mode()))
-	}
 
 	if params.Offset > info.Size() {
 		return "", fmt.Errorf("offset %d is past the end of the file (%d bytes)", params.Offset, info.Size())
@@ -259,7 +172,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		data, start = data[1:], start+1
 	}
 	if more {
-		data = trimPartialRune(data)
+		data = textutils.TrimPartialRune(data)
 	}
 	// Nothing left after trimming means the limit is smaller than one character. Saying "continue at offset=N" would hand
 	// back the same offset forever (and burn the ReAct step budget), so fail with something the model can act on.
@@ -272,17 +185,4 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	return string(bytes.ToValidUTF8(data, nil)) +
 		fmt.Sprintf("\n[truncated: showed bytes %d-%d of %d; call read_file again with offset=%d to continue]", start, end, info.Size(), end), nil
-}
-
-// trimPartialRune drops an incomplete multi-byte character from the end of b.
-func trimPartialRune(b []byte) []byte {
-	for i := 1; i <= utf8.UTFMax && i <= len(b); i++ {
-		if utf8.RuneStart(b[len(b)-i]) {
-			if !utf8.FullRune(b[len(b)-i:]) {
-				return b[:len(b)-i]
-			}
-			return b
-		}
-	}
-	return b
 }

@@ -16,6 +16,15 @@ type OpenAICompat struct {
 	Timeout time.Duration // most one Chat call may take (config's responseTimeoutSeconds); 0 = no limit of its own
 }
 
+// Chat sends chatContext (and tools) to an OpenAI-compatible server's /chat/completions and returns the first choice's message.
+//
+// Notes:
+//   - a Timeout above 0 wraps ctx in a deadline for this one call; 0 means no limit of its own
+//   - sends an Authorization Bearer header only when ApiKey is set (empty for Ollama)
+//   - nil tools send no "tools" key at all (omitempty)
+//   - any status outside 200-299 is an error carrying only the status code, with the response body unread; a response with no
+//     choices is also an error
+//   - the returned message is exactly what the server sent: ID, Timestamp and Type are not filled in here
 func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error) {
 	// make a request to the OpenAI-compatible server
 	// 1. build a chatRequest with p.Model and the provided chat context

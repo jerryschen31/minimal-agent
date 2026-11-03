@@ -19,10 +19,19 @@ const LogoLines = `
 `
 const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /exit to exit\n     /compact to compact the conversation\n     /config to see the current agent configuration\n"
 
-// Main does a few things:
-// 1. Parses command-line flags and configuration -> Config instance
-// 2. Calls function to setup agent -> Agent instance
-// 3. Runs the agent main loop
+// main parses flags and the config file, then sets up and runs the agent.
+//
+// Notes:
+//   - Steps: (1) parse command-line flags into a flags value, (2) load the config file and overlay the flags on it to
+//     get a Config, (3) call SetupAgent to get an Agent, (4) run the agent main loop.
+//   - In info mode (config.ModeInfo) it prints what the agent would have and exits through os.Exit; it never calls
+//     SetupAgent, so there is no model call and no trace files.
+//   - Ctrl+C is delivered on a separate channel (intsigCh) so it can stop foreground work without killing the
+//     program; SIGTERM cancels the root context.
+//   - The deferred function cancels the context first (compaction and LLM requests use it), then calls ShutdownAgent;
+//     os.Exit skips deferred calls, so a path that exits early must not have anything to shut down yet.
+//   - A usage request (flag.ErrHelp) returns quietly; a flag, config or mode error prints "error:" to stderr and
+//     exits with code 2.
 func main() {
 	// Parse command-line flags -> flags variable
 	flags, err := config.ParseFlags(os.Args[1:], os.Stderr)

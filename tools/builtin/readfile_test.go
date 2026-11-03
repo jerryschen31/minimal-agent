@@ -14,12 +14,21 @@ import (
 // testMaxBytes is the per-call cap the tests use; it is small so the tests do not need megabyte files.
 const testMaxBytes = 4096
 
+// newReadFile builds a workspace and a read_file tool on it, as SetupBuiltinTools does; an error from either is returned.
+func newReadFile(workDir, traceDir string, maxBytes int, deny DenyList) (*ReadFileTool, error) {
+	ws, err := NewWorkspace(workDir, traceDir, "", deny)
+	if err != nil {
+		return nil, err
+	}
+	return NewReadFileTool(ws, maxBytes)
+}
+
 // newTool creates a read_file tool confined to dir, failing the test on error.
 func newTool(t *testing.T, dir string) *ReadFileTool {
 	t.Helper()
-	tool, err := NewReadFileTool(dir, "", testMaxBytes, DenyList{})
+	tool, err := newReadFile(dir, "", testMaxBytes, DenyList{})
 	if err != nil {
-		t.Fatalf("NewReadFileTool(%q, DenyList{}): %v", dir, err)
+		t.Fatalf("newReadFile(%q, DenyList{}): %v", dir, err)
 	}
 	return tool
 }
@@ -212,7 +221,7 @@ func Test_ReadFile_LimitSmallerThanACharacter_IsAnError(t *testing.T) {
 		t.Errorf("limit 2: got %q, %v", got, err)
 	}
 
-	tiny, err := NewReadFileTool(dir, "", 1, DenyList{}) // the configured cap is the limit when none is given
+	tiny, err := newReadFile(dir, "", 1, DenyList{}) // the configured cap is the limit when none is given
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,10 +489,10 @@ func Test_ReadFile_NewReadFileTool_InvalidWorkDir_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	file := writeFile(t, dir, "plain.txt", []byte("x"))
 
-	if _, err := NewReadFileTool(filepath.Join(dir, "missing"), "", testMaxBytes, DenyList{}); err == nil {
+	if _, err := newReadFile(filepath.Join(dir, "missing"), "", testMaxBytes, DenyList{}); err == nil {
 		t.Errorf("expected an error for a workDir that does not exist")
 	}
-	if _, err := NewReadFileTool(file, "", testMaxBytes, DenyList{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+	if _, err := newReadFile(file, "", testMaxBytes, DenyList{}); err == nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("expected a 'not a directory' error for a file, got %v", err)
 	}
 }
@@ -502,8 +511,8 @@ func Test_Unit_IsDenied(t *testing.T) {
 		"a.txt": false, "sub/b.txt": false, "ssh/config": false, "src/id_ed25519_notes.txt": false,
 	}
 	for rel, want := range cases {
-		if got := (DenyList{}).IsDenied(rel); got != want {
-			t.Errorf("DenyList{}.IsDenied(%q) = %v, want %v", rel, got, want)
+		if got := (DenyList{}).IsDenied(rel, false); got != want {
+			t.Errorf("DenyList{}.IsDenied(%q, false) = %v, want %v", rel, got, want)
 		}
 	}
 }
@@ -511,7 +520,7 @@ func Test_Unit_IsDenied(t *testing.T) {
 // - Verify NewReadFileTool rejects a cap that is zero or negative (a negative cap would panic when slicing)
 func Test_ReadFile_NewReadFileTool_NonPositiveCap_ReturnsError(t *testing.T) {
 	for _, n := range []int{0, -1} {
-		if _, err := NewReadFileTool(t.TempDir(), "", n, DenyList{}); err == nil || !strings.Contains(err.Error(), "must be positive") {
+		if _, err := newReadFile(t.TempDir(), "", n, DenyList{}); err == nil || !strings.Contains(err.Error(), "must be positive") {
 			t.Errorf("cap %d: expected a must-be-positive error, got %v", n, err)
 		}
 	}
@@ -521,7 +530,7 @@ func Test_ReadFile_NewReadFileTool_NonPositiveCap_ReturnsError(t *testing.T) {
 func Test_ReadFile_UsesConfiguredCap(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "minagent-read-file-test-cap.txt", bytes.Repeat([]byte("a"), 100))
-	tool, err := NewReadFileTool(dir, "", 10, DenyList{})
+	tool, err := newReadFile(dir, "", 10, DenyList{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,9 +560,9 @@ func Test_DeniedNames_ReturnsCopy(t *testing.T) {
 // newTraceTool creates a read_file tool confined to workDir that must never read traceDir, failing the test on error.
 func newTraceTool(t *testing.T, workDir, traceDir string) *ReadFileTool {
 	t.Helper()
-	tool, err := NewReadFileTool(workDir, traceDir, testMaxBytes, DenyList{})
+	tool, err := newReadFile(workDir, traceDir, testMaxBytes, DenyList{})
 	if err != nil {
-		t.Fatalf("NewReadFileTool(%q, %q, DenyList{}): %v", workDir, traceDir, err)
+		t.Fatalf("newReadFile(%q, %q, DenyList{}): %v", workDir, traceDir, err)
 	}
 	return tool
 }
@@ -680,7 +689,7 @@ func Test_ReadFile_TraceDir_OutsideWorkDir_Allowed(t *testing.T) {
 	expectReadable(t, tool, "trace/b.txt", "ALLOWED-B")
 }
 
-// - Verify NewReadFileTool fails when traceDir is workDir or a parent of it (read_file could then read nothing),
+// - Verify NewWorkspace fails when traceDir is workDir or a parent of it (the file tools could then reach nothing),
 // including when the two are spelled in different case
 func Test_ReadFile_NewReadFileTool_TraceDirContainsWorkDir_ReturnsError(t *testing.T) {
 	parent := t.TempDir()
@@ -696,7 +705,7 @@ func Test_ReadFile_NewReadFileTool_TraceDirContainsWorkDir_ReturnsError(t *testi
 		"equal, upper case": filepath.Join(parent, "WORK"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewReadFileTool(work, traceDir, testMaxBytes, DenyList{})
+			_, err := newReadFile(work, traceDir, testMaxBytes, DenyList{})
 			if err == nil || !strings.Contains(err.Error(), "is workDir or contains it") {
 				t.Errorf("expected an 'is workDir or contains it' error for traceDir %q, got %v", traceDir, err)
 			}

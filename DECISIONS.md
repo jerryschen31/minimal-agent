@@ -3423,3 +3423,843 @@ Files: `tools/builtin/denylist.go` (new), `tools/builtin/readfile.go`, `tools/to
 - **Downsides / limits:** names only, no path patterns (`"secrets/*.json"` can't be said; `"secrets"` blocks every
   directory of that name); the `.env.example` exception applies to extras too, so an extra like `"*.example"` won't
   block that one file; no way to *remove* a built-in even when a user has a real reason (by design).
+
+
+### 2026-10-30 — File tools slice 0 built: `builtin.Workspace` holds the path rules every file tool shares
+
+First slice of the pure-Go file tools (order agreed 2026-10-30: shared checks, `list_files`, `search_files`, the
+deny/ask/run levels with policy item 7, then `write_file` + `create_directory`, `edit_file`, `copy_file`/`move_file`).
+No change in what `read_file` allows. Files: `tools/builtin/workspace.go` (new), `tools/builtin/readfile.go`,
+`tools/tool.go`, `config/doc.go`.
+
+- **`Workspace`** (`rootDir`, `traceDir`, `deny`) answers "may a file tool touch this path?". `NewWorkspace` holds
+  the old `NewReadFileTool` checks on `workDir` and `traceDir`; methods `resolve` (path must exist: follow symlinks,
+  then `check`), `check` (outside `rootDir` / deny-listed / inside `traceDir`; split out so slice 4's `resolveNew`
+  for not-yet-existing paths gets the same rules), `openRoot`. `resolvePath` and `isWithin` moved with it;
+  `fileKind` stays in `readfile.go` until `edit_file` needs the same open-and-check code.
+- **`NewReadFileTool(ws *Workspace, maxBytes int)`**; a nil workspace is an error. The tool holds a named `ws` field,
+  not an embedded one, so calls read `t.ws.resolve(...)` and show where the rule lives (downside: a larger diff).
+- **Only `Workspace` and `NewWorkspace` are exported:** `tools.SetupBuiltinTools` must build one; nothing outside
+  `builtin` needs the methods (downside: other packages can test the rules only through a tool).
+- **Built once, up front, even with no file tool enabled** (Jerry). A missing or non-directory `workDir`, or a
+  `traceDir` that contains it, is a config error whether or not a tool uses it, as a bad `denyFileNames` pattern
+  already was. **Downside / behaviour change:** `builtinTools: []` with a nonexistent `workDir` used to start; it now
+  fails setup (chat and info mode).
+- **Name:** `Workspace`, not `Namespace` (Jerry asked). A Linux mount namespace gives a process its own view of the
+  filesystem; this is a check the tools run on each path, and everything outside stays reachable to code that
+  doesn't ask it. "Workspace" is the usual agent-tool word (Codex's `workspace-write`). `Jail` was the runner-up;
+  like `Namespace`, it sounds stronger than a path check.
+
+
+### 2026-10-31 — File tools slice 1 built: `list_files`
+
+Files: `tools/builtin/listfiles.go` (new), `tools/tool.go`, `config/doc.go`. Opt-in (`builtinTools: ["list_files"]`).
+
+- **Arguments:** `path` (default the workDir), `pattern` (`path.Match` on each entry's *name*, case-sensitive),
+  `recursive`. **No `**` glob** (Jerry agreed): the standard library has no matcher for it, and `path` + `recursive` +
+  `pattern` covers nearly every use; only wildcards in the *middle* of a path (`src/*/internal/*.go`) need two calls.
+- **Same rules as reading:** the directory goes through `ws.resolve`; each walked entry goes through `ws.check` and
+  is **hidden silently** if refused (a hidden directory is not looked into). The tool description says sensitive
+  files and the trace directory are never shown. Downside: the model can't tell "no `.env`" from "hidden `.env`".
+- **Symlinks are listed (`name -> (symlink)`) but never followed or resolved** (Jerry agreed). The walk never
+  follows links, so an entry's path joined onto `rootDir` is already its real path, which is what `check` expects.
+  Downside: files under a symlinked directory don't appear.
+- **Walk through `fs.WalkDir(root.FS(), …)`:** `root.FS()` can't leave `rootDir` (second line of defence); entries
+  come in name order, so the output is stable. Unreadable subdirectories are skipped, not errors.
+- **Output:** one line per entry, relative to workDir (`sub/`, `a.txt (120 bytes)`), so a path can go straight to
+  `read_file`. **Cap: 1000 entries** (a constant); the truncation note appears only when more entries exist.
+- **Open:** `.git/` is listed and walked, so a recursive listing from the root spends most of the cap on it. Options:
+  skip `.git` contents by default (a *default* by the three-question test, with an opt-out), or leave it to the
+  model to list subdirectories.
+
+### 2026-10-31 — `list_files` follow-ups: no absolute paths in path errors, `maxSearchFiles`, "(not readable)"
+
+From the slice 1 test sub-agent's findings; Jerry chose 1–3 and left the rest as is. Files:
+`tools/builtin/workspace.go`, `tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`,
+`config/config.go`, `config/doc.go`.
+
+1. **Path errors name only the requested path.** `Workspace.resolve` used to return `EvalSymlinks`'s raw error
+   (`lstat /Users/<name>/…/x: no such file or directory`), which put the home directory into the model's context and
+   sent it to the provider, for `read_file` and `list_files` alike. Now: `x: no such file or directory`, the cause
+   still wrapped (`errors.Is(err, fs.ErrNotExist)` works); a non-`PathError` failure says only "can't be resolved".
+   Downside: a rare odd failure loses detail the model never needed.
+2. **`maxSearchFiles`** (config, default 10,000, positive): the most entries one `list_files` call *looks at*,
+   shown or not (hidden ones count: they cost work). Separate from the 1000-line output cap, which only bounds what
+   is returned; this bounds how long a recursive walk with a rarely matching pattern can run. Hitting it ends the
+   output with a "stopped after looking at N entries" note. Named for search because `search_files` (slice 2) will
+   reuse it. Checked by the tool that uses it (as `readFileMaxBytes` is), so `0` fails setup only when `list_files`
+   is enabled. Downside: one more config key; counting directories as well as files makes the name slightly loose.
+3. **An unreadable subdirectory is shown as `locked/ (not readable)`** in a recursive listing, so it isn't mistaken
+   for an empty one. A non-recursive listing never opens it, so it shows a plain `locked/`.
+
+Left as is (Jerry): listing through a symlinked path shows the target's paths; "1 bytes".
+
+### 2026-10-31 — `list_files`: `.git` contents not walked; one stop note; honest "no match"
+
+Files: `tools/builtin/listfiles.go`.
+
+- **A recursive listing shows `.git/` but doesn't go into it** (Jerry): `.git/ (contents not listed; list it directly
+  to see them)`. Its contents are git's data, not the project, and they would use up both caps (1000 lines, 10,000
+  `maxSearchFiles` visits). Matched case-insensitively, any depth; listing `.git` directly still works; a *file*
+  named `.git` (worktrees, submodules) is listed normally. A package variable `notWalked`, built in for now.
+  **Open (asked Jerry):** whether to skip every dot-directory, and whether the list should become a config default
+  (category 2: visible, extendable, named opt-out) and include `node_modules`-style directories.
+- **One `note` instead of `truncated`/`stopped` flags:** each is set just before the walk stops, so only one can ever
+  apply; the old `switch` that "chose" between them was dead logic.
+- **"No match" says when it is partial:** if the visit limit stopped the walk and nothing was listed, the message adds
+  `(only the first N entries were looked at)`, so the model doesn't read it as "there is no such file".
+
+### 2026-10-31 — `ignorePaths`: what `list_files` leaves out is config, not code
+
+Supersedes the built-in `notWalked = [".git"]` from the entry above. Files: `tools/builtin/ignorelist.go` (new),
+`tools/builtin/listfiles.go`, `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `config/config.go`, `config/doc.go`.
+
+- **Jerry asked for a config field** listing paths `list_files` (and later `search_files`) ignore, e.g.
+  `[".git/", "*.pyc", "__pycache__/"]`. Default: `[".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"]`.
+- **Category 3 (user policy), not 2:** this filters noise, it protects nothing, so a config file's list *replaces*
+  the default (like `denyRules`) and `[]` turns it off. Contrast `denyFileNames`, which can only extend.
+- **Matching, same as `denyFileNames`:** `path.Match` on one name at a time, case-insensitive; a trailing `/` means
+  directories only. A `/` anywhere else, a `\`, an empty or malformed pattern fails setup (checked in
+  `SetupBuiltinTools` even when `list_files` is off). **Downside:** names, not paths: `build/output/` or `docs/*.tmp`
+  can't be said, and `"build/"` skips every directory of that name. Path patterns can be added later if needed.
+- **Behaviour:** an ignored *file* is left out (recursive or not); an ignored *directory* is shown, marked
+  `(contents not listed; list it directly to see them)` in a recursive listing, and not walked; listing it directly
+  works (the start directory is never ignored). Ignored entries count as one visit each against `maxSearchFiles`;
+  an ignored directory's contents cost nothing. The tool description lists the patterns, so a pattern search that
+  finds nothing inside `.git` is explained.
+- **Not part of `Workspace`:** the workspace holds safety rules ("may a tool touch this?"); ignoring is a per-tool
+  view, so `IgnoreList` is passed to the walking tools. `read_file` reads an ignored file normally.
+- **Downside:** `SetupBuiltinTools` now takes seven positional arguments, two of them `[]string` side by side
+  (`denyFileNames, ignorePaths`), which the compiler can't tell apart if swapped. An options struct would fix it;
+  not done yet.
+
+### 2026-10-31 — `SetupBuiltinTools(cfg config.Config)`
+
+Fixes the downside noted under `ignorePaths` (seven positional arguments, two `[]string` side by side). Jerry chose
+this over an options struct. Files: `tools/tool.go`, `agent/agent.go`, `agent/info.go`, `tools/tool_test.go`.
+
+- **Same shape as the other capabilities** (`SetupChatContext`, `SetupMemoryStore`, `SetupProvider`,
+  `SetupMCPConns`, `SetupRecorder` all take `cfg`), as CLAUDE.md already said they should. A new setting is a new
+  `Config` field read inside; no signature change, no caller to fix.
+- **Downside:** `tools` now imports `config` (allowed: `config` is a leaf), and setup could read any setting, not
+  only the seven it uses. An options struct would have kept `tools` independent of `config` at the cost of copying
+  those fields. Tests use a small `builtinCfg(...)` helper over `GetDefaultConfig()`.
+
+### 2026-10-31 — `denyPaths` and `ignorePaths` share .gitignore-style path patterns
+
+Supersedes the names-only matching of `denyFileNames` (item 6) and `ignorePaths` (earlier today), and the rule that
+listing an ignored directory directly still works. Files: `tools/builtin/pathpattern.go` (new),
+`tools/builtin/denylist.go`, `tools/builtin/ignorelist.go`, `tools/builtin/workspace.go`,
+`tools/builtin/listfiles.go`, `config/config.go`, `config/doc.go`, `agent/info.go`, `CLAUDE.md`.
+
+- **Jerry's rules, which are .gitignore's** (paths relative to workDir, case-insensitive): no `/` = a name at any depth
+  (`.env`; `*.env` is broader, it also matches `prod.env`); a `/` at the start or middle anchors at workDir
+  (`secrets/*.env` = secrets/a.env only, not secrets/old/a.env or app/secrets/a.env, since `*` never crosses `/`); a
+  trailing `/` = directories only; **a matched directory covers everything under it**. No `**`, no `!`.
+- **One matcher, `matchPath`, for both lists:** it tests rel and every directory above it, so deny and ignore behave
+  the same. Consequence (Jerry: "models should not be able to access paths that are in ignorePaths"): `list_files`
+  shows an ignored directory as `dir/ (ignored)` and refuses to list it directly (`cannot list <dir> (ignored path:
+  …)`). `read_file` is not yet affected (open question below).
+- **`denyFileNames` renamed `denyPaths`**, no fallback for the old key (Jerry: no users yet). Downside: an old config
+  with `denyFileNames` only gets the unknown-key warning, and its extra patterns are not applied.
+- **The doc says how to protect a tree:** deny the directory (`secrets` or `secrets/`), not `secrets/*.env`.
+- **Validation (both lists):** spaces at either end (closes the whitespace gap from item 6), `\`, an empty, `.` or `..`
+  part, or a malformed pattern fail setup.
+- **`check` needs to know whether the path is a directory** (for `dir/` patterns): it `Stat`s the resolved path; a
+  path that doesn't exist counts as a directory, so a `dir/` deny pattern also refuses a not-yet-written file of that
+  name (refusing too much is the safe way to be wrong). Downside: one extra `stat` per checked path, including per
+  listed entry.
+- **`.env.example` stays exempt** from every deny pattern, built-in or configured, even an anchored one.
+- **Open:** should `read_file` (and later tools) also refuse ignored paths? Jerry's principle suggests yes; it would
+  make `ignorePaths` a second, replaceable deny list.
+
+### 2026-10-31 — `ignorePaths` is for listing and searching only
+
+Resolves the open question in the entry above. **Jerry:** `read_file` still reads ignored paths but never `denyPaths`
+ones; `ignorePaths` applies only to `list_files` and `search_files`. This is how the code already behaves (only
+`list_files` reads the ignore list; `config/doc.go` says "read_file still reads them"), so nothing changed. Why: ignored
+paths are noise, not secrets, and the model sometimes needs a file inside one (a library source in `node_modules` to
+understand an error). The write tools (slices 4–6) follow `denyPaths` only, unless decided otherwise then.
+
+### 2026-10-31 — `.env.example` is exempt only as the last part of a path
+
+Found by the path-pattern test sub-agent: with `config/*` denied, `config/.env.example/creds.json` could be read,
+because `matchPath` skipped the `.env.example` directory and `*` can't reach the file below it. Now the exemption
+applies only to the last part of the path (`tools/builtin/pathpattern.go`): `config/.env.example` is still allowed,
+anything inside a directory of that name is checked as usual (built-in `.env.*` also denies such a directory).
+Downside: none known; it only refuses more.
+
+### 2026-10-31 — PR #30 review: `openRoot` checks it opened the original workDir; `**` refused
+
+Two Copilot comments plus a doc fix. Files: `tools/builtin/workspace.go`, `tools/builtin/pathpattern.go`,
+`config/doc.go`.
+
+- **A path can be repointed after startup.** `NewWorkspace` resolves workDir once, but `os.OpenRoot(rootDir)` looks
+  the path up again on every call. If something renames workDir and puts a symlink (or a new directory) at its path
+  (another program; an MCP filesystem server's `move_file`; later `run_command`, possibly prompt-injected), the
+  second line of defence would contain the tool to the wrong tree, and a swap between `resolve` and `openRoot`
+  slips past the first. **Fix:** `NewWorkspace` keeps the directory's `FileInfo`; `openRoot` compares the opened
+  directory with it (`os.SameFile`: same device and inode) and refuses otherwise ("restart the agent"). An open root
+  is tied to the directory, not its path, so later swaps can't move it.
+  - *Rejected:* keep one `os.Root` open for the whole run (Copilot's first suggestion). Same protection, but it needs
+    a close step through `SetupBuiltinTools` → `ShutdownAgent` and every test. Downside of the chosen fix: one extra
+    `fstat` per call, and a workDir that is legitimately deleted and recreated (re-clone) needs a restart.
+- **`**` is refused** in `denyPaths` / `ignorePaths`. `path.Match` reads it as two `*`, so `**/*.secret` looked
+  recursive but missed `a/b/x.secret`: a deny rule that protects less than it appears to. The error says to name the
+  directory instead.
+- **`config/doc.go`:** the `secrets/*.env` row's continuation was labelled `"/build"`; split it and gave `/build` its
+  own row (a leading `/` anchors a name at workDir).
+
+### 2026-10-31 — File tools slice 2: `search_files` (grep-style)
+
+Files: `tools/builtin/searchfiles.go` (new), `tools/tool.go`, `trace/digest_activity.go`, `config/config.go`,
+`config/doc.go`.
+
+- **Arguments:** `query` (required), `path` (a directory, searched with everything below it, or one file; default
+  `.`), `pattern` (file-name glob, as in `list_files`), `regex`, `ignoreCase`, `skip`. Always recursive: a one-level
+  search is rarely wanted.
+- **Plain text by default; `regex: true` for a Go regexp.** Code is full of `( . * [ $`, so treating every query as a
+  regex gives odd matches or errors (`Setup(`). Both modes compile to one RE2 regexp (`QuoteMeta` for plain text),
+  which runs in linear time, so a model's regex can't hang the turn. Downside: a model that sends a regex without the
+  flag gets no match and must retry.
+- **Whole files, streamed like grep.** First plan: load each file and skip files over 1 MiB (or over
+  `readFileMaxBytes`). Rejected because a big file was then never searched, and search has no offset to page through
+  it. Instead a `bufio.Scanner` reads line by line, so memory is bounded by the longest line, not the file. Limits:
+  a line over `maxSearchLineBytes` (10 MiB constant, not config: the buffer starts at 64 KiB and grows only when a line
+  needs it, so a big cap costs nothing for normal files) ends that file's search; a NUL byte in the first 8 KiB means
+  binary and the file is skipped. Both are counted in a `[not searched: …]` note so "no matches" stays honest.
+  Downside: no time limit; a search over a huge tree is slow (Ctrl+C is checked on every line; `maxSearchFiles` and
+  `ignorePaths` still bound it).
+- **Output paged: 200 matches per call, the next page with `skip`.** The cap protects the model's context; `skip`
+  means it never hides a match for good. Each page re-searches from the start in name order, counting the skipped
+  matches. Downsides: deep pages cost the reading of all earlier ones; a file changed between calls can shift a page;
+  no total count (the walk stops at the first match past the page).
+- **Long matching lines show 500 bytes around the match** (`maxMatchLineLen`), so a match deep in a minified line is
+  still visible. Downside: a full page of long lines is about 100 KB.
+- **Same visibility as `list_files`:** `ws.check` on every entry (deny list, trace directory), `ignorePaths` not
+  entered (no marker), a `path` that is itself ignored refused, symlinks and special files never opened, files opened
+  with `O_NONBLOCK` and re-checked as regular. The walk's guards are copied from `list_files`, not shared: the
+  callbacks differ (list marks "(not readable)" / "(ignored)"). Downside: a fix to the guards must be made twice.
+- `maxSearchFiles` and `ignorePaths` now apply to both tools; no new config key.
+
+### 2026-11-01 — PR #31 review: file tools check that the opened file is the one they checked
+
+Copilot comment on `search_files`; `read_file` had the same gap. Files: `tools/builtin/workspace.go`,
+`tools/builtin/readfile.go`, `tools/builtin/searchfiles.go`.
+
+- **The race (TOCTOU):** the workspace check approves a *name*; the open looks the name up again, and `os.Root`
+  follows symlinks that stay inside rootDir. If something swaps `a.txt` for a symlink to `.env` in between (another
+  program, an MCP filesystem server, later `run_command`; a prompt-injected model can run two tool calls at once), the
+  open returns `.env`, labelled `a.txt`. The post-open `f.Stat()` only proved the file was regular.
+- **Fix:** `Workspace.openFile(root, requested, rel, want)`, shared by both tools: open (`O_NONBLOCK`), fstat, refuse a
+  directory or special file, and refuse unless the opened file is `want` (`os.SameFile`: same device and inode, as
+  `openRoot` does for rootDir). `want` is taken by name *before* the check: `resolveInfo` (resolve plus an `Lstat` right
+  after `EvalSymlinks`) for `read_file` and a search start path, the walk entry's `d.Info()` (an `Lstat`) for files
+  found by the walk. A swap after `want` was taken gives a different inode and is refused ("was replaced while it was
+  being opened; try again"; search counts it as unreadable). Cost: one fstat per file.
+- *Rejected:* a mutex. It only orders goroutines in this process that take it; the swapper is another process. OS
+  file locks are advisory and lock contents, not directory entries.
+- **Remaining gap:** a *directory* above the file swapped in the moment between resolving the name and taking `want`;
+  both then follow the new directory and match. Microseconds wide, but not zero. Closing it needs the OS to report the
+  opened file's real path (`F_GETPATH` on macOS, `/proc/self/fd` on Linux) and checking that; per-OS code, deferred.
+  Hard links to a denied file remain out of reach of any path check (known before).
+
+### 2026-11-01 — Approval levels: deny / ask / run, and what autonomous mode does with `ask`
+
+Decided with Jerry before slice 3 (shape: this session). Not built yet.
+
+- **Three levels on model-facing tool names:** `denyRules` (refused, never asked, in every mode), `askRules` (the
+  user decides: `Allow once? [y/N]`), anything else runs. Deny wins over ask whatever the order. Today every hook veto
+  is ask-on-deny on a terminal; slice 3 makes only `askRules` (a hook error wrapping `hooks.ErrNeedsApproval`)
+  overridable, and any other hook error final.
+- **No built-in deny rules.** Defaults move to `askRules` (`*delete*`, `*remove*`, the write tools); `denyRules`
+  defaults to empty. A name guess is user policy (`§ Policy out of the core`). Containment stays in code regardless of
+  rules: the `Workspace` checks on built-in file tools, MCP same-origin, and the rest of that section's protections.
+- **With nobody to ask, `ask` is `deny`:** chat over a pipe, tests, and autonomous/worker modes. Fail closed.
+- **`"approval": "allow-all"` (with the autonomous port) turns `ask` into `run` and nothing else.** It never touches
+  `denyRules`; docs must say so plainly. Recorded in `run_start`.
+- **Downside, accepted:** with `allow-all` and `denyRules: []`, an unattended run executes every tool call the model
+  makes. The limit is then which tools are enabled (built-in file tools stay contained; an MCP server is only as
+  contained as the server itself; `run_command` would be unlimited). Proposed mitigation (not decided): a warning at
+  startup and a `run_start` field when `allow-all` is set and `denyRules` is empty.
+
+### 2026-11-01 — Policy item 7 built: the agent reports through `Output`, `reActLoop` never prints
+
+Item 7 of `§ Policy out of the core`, widened at Jerry's request to chat mode's own messages. Claude wrote it.
+Files: `agent/output.go` (new), `agent/react.go`, `agent/chat.go`, `agent/session.go`, `agent/agent.go`.
+
+- **`Output` interface:** `Assistant`, `ToolCalled`, `Thinking() (stop func())` for a turn in progress; `System(text)`,
+  `Error(what, err)`, `Interrupted()` for everything else. The caller knows *what* happened; the `Output` decides
+  *how it looks*. `chatOutput{w, showProgress}` prints the same `[assistant]`/`[tool]`/`[system]`/`[error]`/
+  `[interrupted]` lines as before. `ChatSession.ShowProgress` is gone; `NewChatSession` sets
+  `Output: chatOutput{w: cfg.OutBuffer, showProgress: shouldShowProgress(cfg)}`.
+- **Output is not logging** (Jerry): the trace is the record of what happened; `Output` is what the user needs to
+  see during a session. Rule against growth: a method per *kind* of message, never one per message.
+- **What goes through it:** anything that can happen in more than one mode (a turn, errors, Ctrl+C, auto-compaction)
+  plus chat's one-line slash-command replies, so every prefix lives in one file. **What stays on `OutBuffer`:** the
+  `-debug` context dump, the ask prompt (interactive, tied to the line editor), `/config` and info mode (reports, not
+  status), and `agent.go`'s MCP setup messages (printed before the session exists; revisit at the autonomous port).
+- **Errors are reported once, by the caller.** `reActLoop` returns its error without printing, so chat no longer
+  shows a model error twice (`error: …` then `[error] ReAct loop error: …`). `Error` turns a `context.Canceled` into
+  `Interrupted`, replacing four copies of that check. Side effect: an auto-compaction cancelled at quit prints
+  `[interrupted]` instead of `[error] Auto-compaction error: context canceled`.
+- *Rejected:* func fields per event, or one `func(kind, text)`. An interface keeps the methods together, so a new
+  mode implements all of them or doesn't compile. Also rejected: one method per message (`ContextCleared()`, …),
+  which every mode would have to implement for chat-only messages.
+- **Downsides:** `Output` captures the writer at construction, so code that swaps `cs.OutBuffer` must also set
+  `Output` (three tests do), and `OutBuffer` remains for the direct writes above, so there are still two paths. A nil
+  `Output` panics on the first model call (only `NewChatSession` builds sessions today). The tool name in
+  `[tool] Tool called:` is model-supplied and still printed unquoted (CLAUDE.md asks for `%q`); not changed here.
+
+### 2026-11-01 — Slice 3 built: deny / ask / run levels and `approval: allow-all`
+
+Built per `§ Approval levels: deny / ask / run` above, with three changes agreed with Jerry since. Claude wrote it.
+Files: `hooks/toolrules.go` (was `denyrules.go`), `agent/react.go`, `agent/chat.go`, `agent/session.go`,
+`agent/agent.go`, `agent/info.go`, `config/config.go`, `config/flags.go`, `config/doc.go`, `config.default.json`,
+`trace/event.go`, `trace/digest_activity.go`, `trace/doc.go`.
+
+- **`hooks.ToolRules`** replaces `DenyRules`: `Level(name)` (deny wins, then ask, else run), `BeforeTool` returns
+  `denied by rule "…"` or an error wrapping `ErrNeedsApproval` (`needs approval by rule "…"`). Only the latter can be
+  overridden in `checkBeforeToolHooks`; a plain hook error is now final (before, any veto could be overridden).
+- **Defaults:** `denyRules` empty; `askRules` `*delete*`, `*remove*` (chat behaves as before) plus the write tools'
+  names, reserved now so slice 4 doesn't touch defaults. `config.default.json` moved its two rules to `askRules`.
+- **No `level` field in the trace** (Jerry): the three decisions stay, and the `reason` text already tells a deny rule
+  (`denied by rule`) from an ask with nobody to ask (`needs approval by rule`); the digest prints it.
+- **`approval: ask | allow-all` in chat too** (Jerry), flag `-approve`. A string, not a bool, so a typo fails setup.
+  It applies only to `askRules`. **Chat must confirm it at startup** (Jerry): `confirmAllowAll` asks once
+  `Run ask-rule tool calls without asking for this session? [y/N]`; No, Enter or Ctrl+C keep asking per call, and
+  without a terminal it is not confirmed (asks are denied). Chosen over exiting on No: the session is still usable.
+  Downside: `run_start.approval` records what was configured, not whether it was confirmed; the per-call
+  `allowed_by_config` decisions show whether it took effect.
+- **New decision `allowed_by_config`** (an ask-rule call run because of allow-all), so the trace shows exactly the
+  calls that ran unasked. Downside: recorded as `tool_vetoed` though nothing was vetoed. The digest footer shows
+  `allowed by allow-all: N` only when N > 0.
+- **Info mode** lists deny and ask rules as two sections plus an `Approval:` line, instead of the per-tool level
+  column floated earlier: less churn in a format the tests pin, same information.
+- Still for the autonomous port: `allow-all` without a confirmation prompt (the config is the consent), and the
+  proposed startup warning when `allow-all` meets an empty `denyRules`.
+
+### 2026-11-01 — Tool-name rules are an approval layer, not a security boundary
+
+From a discussion with Jerry after slice 3 (no code change). Rules match tool *names*, not what a call does. The model
+can't invent a name to dodge a rule (an unregistered name fails as `unknown tool`), but a name doesn't reliably tell
+you the effect: an MCP tool like `github_merge_pull_request` matches no default rule, `edit_file` can empty a file
+that a denied `delete_file` would have removed, and a shell tool can do anything.
+
+- **The split:** `builtin.Workspace` is the boundary for files, since it limits effects whatever the tool's name
+  (slice 4's write-deny list belongs there). `denyRules`/`askRules` decide *when to ask*.
+- **The intended workflow (Jerry):** run `-mode info`, read each MCP tool's name, hints and description, and put the
+  ones to deny or ask about in config by exact name (or `<server>_*` for a whole server). Info mode already shows
+  which tools each rule matches. Name rules fit this well: the set of tools is fixed at startup and visible.
+- **Downsides kept open:** a tool a server adds later matches no rule and runs unasked (`<server>_*` catches it but
+  then asks about the server's harmless read tools too, until an allow list exists). Server descriptions and
+  annotations are untrusted: use `readOnlyHint`/`destructiveHint` only to make a rule stricter, never looser. A shell
+  tool needs a sandbox, not rules.
+- **Not chosen now:** an allow list, declared effects per built-in tool, per-argument rules, a model judging each
+  call, undo snapshots. Revisit with `run_command` and the autonomous port.
+
+### 2026-11-02 — Codemap: generated map in each package's `doc.go`, copied into `CODEMAP.md`
+
+Jerry wants a bird's-eye view of the repo that cannot drift from the code. Planned here; nothing built yet. Applies to
+the root module only (`mvp1`–`mvp4` and reference material are ignored).
+
+- **Go has no convention for a repo-wide map in `doc.go`.** A `doc.go` documents one package. The map is therefore
+  one section per package.
+- **Source of truth for the map:** each package's `doc.go` ends its package comment with a `# Codemap
+  (auto-generated)` section: every non-test function with its full signature, the one-liner from its header, and
+  its direct in-repo callees (one level; interface calls shown as `Provider.Chat (interface)`, never guessed).
+  The tool rewrites everything from that heading to the end of the comment, so no end marker is needed. Above it the
+  `doc.go` keeps a hand-written overview. Packages without a `doc.go` get one; a package comment anywhere else is a
+  checker error.
+- **`CODEMAP.md` (repo root)** is a straight copy of those sections plus a directory tree at the top. It is never
+  computed separately, so it cannot disagree with the `doc.go` files. No hyperlinks between entries (a doc comment
+  cannot link inside a preformatted block; dropped as cosmetic). Downside: a large file (about 280 functions);
+  `agent`'s `doc.go` alone will be several hundred lines.
+- **Function header format**, on every function including unexported ones: a one-liner that **starts with the
+  function's name** (matches `go doc`, gopls and staticcheck), then `Example:` (a short invocation) and `Notes:`
+  (non-obvious edge cases and implementation details, as `- ` bullets). Long explanatory comments that sit above
+  functions today move into Notes; inline `[agent]` comments inside bodies stay where they are.
+- **Tool:** `cmd/codemap`, loading types with `golang.org/x/tools/go/packages` (dev tool only; stdlib-only would match
+  callees by name and mislabel same-named methods). Output goes through `go/format`, because gofmt rewrites doc
+  comments and unstable output would make the freshness test flap.
+- **Drift guards:** (1) freshness test regenerates every `doc.go` section and `CODEMAP.md` and fails on any
+  difference; (2) header checker: every function has a header with Example and Notes; (3) staleness: each entry carries
+  a *reviewed* body hash that only an explicit `codemap -ack pkg.Func` updates (a hash rewritten on every run would
+  hide "body changed, header didn't"); the checker flags any function whose current hash differs.
+- **doc-keeper sub-agent** (`.claude/agents/doc-keeper.md`): writes or refreshes headers on flagged functions, then
+  runs `-ack`. Guard against PR #33's silent deletions: the tool compares the comment-stripped AST before and after,
+  and any non-comment change fails the run. Workflow: design → build → test sub-agent → doc-keeper → docs → Jerry
+  commits.
+- **Slices:** 1 this entry; 2 generator v1 (per-package sections, signatures, `CODEMAP.md`, freshness test); 3 callees;
+  4 header checker; 5 reviewed hash and `-ack`; 6 doc-keeper agent and a one-time backfill, package by package, Jerry
+  reviewing each; 7 wire into `CLAUDE.md`. Slices 2–5 are the `go/ast` learning exercise Jerry writes himself.
+- **Comes before slice 4 (`write_file`).**
+- **Superseded in part by `§ Codemap simplified (2026-11-02)`:** the map entry contents (one-liner, callees, `@hash`),
+  the `Example:` section, the reviewed hash and `-ack` (slice 5), and the type-checked load.
+
+### 2026-11-02 — Codemap simplified: signatures only, no Example, no reviewed hash
+
+Jerry, after the first build: "Each codemap should JUST contain the function definition" and "remove the Example
+section. It's useless for the most part." The map is meant to be completely deterministic: Go files and the function
+definitions in them.
+
+- **A map entry is the signature and nothing else.** Removed from the map: the header one-liner, the `calls:` line and
+  the `@hash`. A pure function of the code, so it cannot be wrong. The explanations live in the function headers,
+  next to the code.
+- **Header format is now one-liner + `Notes:`** (`Notes: none.` allowed). All 303 `Example:` sections were removed from
+  the existing headers by script (comments only; `-code-unchanged HEAD` confirms).
+- **Callees dropped entirely** (not just hidden): the code, its tests and the type-checked load went with them. The
+  loader now reads syntax only, which is faster and no longer fails on an unrelated type error (a syntax error still
+  fails). Downside: the call tree Jerry first asked for is gone; it can come back as its own generated section if it is
+  missed (the `go/types` code is in git history of this branch).
+- **Reviewed hash and `-ack` removed.** The hash lived in the map line; with the map signatures-only it has nowhere to
+  live, and a sidecar file was not asked for. Downside, stated plainly: nothing now detects a header whose words went
+  stale after the body changed. What remains: `-lint` checks shape (header exists, starts with the function's name, has
+  Notes), the freshness test checks the map, `-code-unchanged` guards comment-only jobs. Mitigation: `CLAUDE.md` tells
+  whoever changes a body to reread its header; a doc-keeper run can be pointed at `git diff` to refresh headers of
+  changed functions. Revisit if headers drift in practice.
+- **Tests:** `go test ./cmd/codemap` now includes `Test_Repo_CodemapIsFresh` and `Test_Repo_HeadersPassLint` on the real
+  repo, so a stale map or a function without a header fails the suite.
+- **Bugs found by the test sub-agent and fixed:** `load` panicked on a body-less (assembly) function; the comment-only
+  guard missed changes to `//go:build` and `//go:noinline` (it now compares directive comments with the code); multi-line
+  signatures printed with stray spaces; generic receivers with several type parameters broke key parsing.
+- **Wrong comments the header backfill corrected:** `OffsetWindow`/`InPlaceWindow`/`RingBufferWindow.Clear` claimed to
+  increment a generation counter; only `ChatContext.Clear` does.
+
+### 2026-11-02 — Codemap enforcement: pre-commit hook, and header Notes may drift
+
+Jerry's answers after the simplification:
+- **Pre-commit hook, no CI for now.** `.githooks/pre-commit` runs `codemap -check` and `-lint` and aborts the commit on
+  either failure. It only checks; it never regenerates or stages (a `git add` of a `doc.go` could stage a hand edit
+  Jerry left out of the commit). Shared through `core.hooksPath=.githooks` (set locally for this clone; each clone
+  runs `git config core.hooksPath .githooks` once). Downsides: `--no-verify` skips it; it checks the working tree,
+  not just the staged content; it adds a second or two per commit. A GitHub Actions workflow on `pull_request`
+  (`go test ./...` already includes the freshness and lint tests) stays available; the repo has no `.github/` yet.
+- **Header Notes drifting is accepted** as a minor defect (map signatures are generated, so they cannot drift). The
+  rule is behavioural: whoever changes a function body, Jerry or an agent, rereads its header and updates the one-liner
+  and Notes if needed (`CLAUDE.md § Code map`). A `-changed <ref>` mode that lists functions whose body changed but whose
+  header did not was offered and not built.
+
+### 2026-11-02 — PR #34 Copilot review: added files and other-OS files
+
+Copilot found two real gaps in the codemap tool (both confirmed against the code, then fixed):
+- **`-code-unchanged` ignored added files** (it skipped git status `A`, and `git diff` never lists untracked files). An
+  added or untracked `.go` file now counts as a code change unless it holds only comments and a package clause
+  (`name (added, contains code)`), so a new comment-only `doc.go` still passes. An import-only file, a file with a
+  `//go:` directive, or a file that does not parse is reported. Untracked files come from `git ls-files --others
+  --exclude-standard`, so git-ignored paths stay out. The old "added file is ignored" test was replaced on purpose.
+- **The map left out files that do not build on the host OS** (`mcpconnect/procgroup_windows.go` was missing from
+  `CODEMAP.md` and `mcpconnect/doc.go`). `load` still uses `packages.Load` only to find the package directories; `buildPkg`
+  now parses every non-test `.go` file there itself, whatever its build constraints. Skipped: files whose package name
+  differs from the package's (a `//go:build ignore` script), and names starting with `_` or `.`. The loader no longer
+  loads syntax at all, which also makes it faster. Downside: the map shows every variant of a function (the unix and
+  windows `startInOwnGroup`, each under its own file), and a package whose files are all for other OSes still fails to load.
+
+### 2026-11-02 — Slice 4 (`write_file` + `create_directory`): Jerry's answers
+
+- **`write_file` does not create parent directories.** A missing parent is an error the model can recover from by
+  calling `create_directory` first. Keeps `create_directory` meaningful and keeps one tool to one effect. Downside: one
+  extra tool call when writing into a new folder.
+- **Overwrite needs no flag; the ask prompt is enough** (`write_file` is in the `askRules` defaults). Downside: under
+  `approval: allow-all` nobody is asked, so a model can overwrite a file silently. Accepted: allow-all is an explicit,
+  confirmed opt-in. The result text says `created` or `overwrote`.
+- **Write-deny list starts with `.git/`, the config file passed to the agent, and `traceDir`.** It is checked on top of
+  the read deny list and config `denyPaths`. `traceDir` is already refused by `checkPath` for reads, so writes inherit it.
+  `Workspace` needs the config file's path to deny it (new argument to `NewWorkspace`, or a field set by setup).
+- **Rename:** the planned `resolveNew` is `resolveNewPath` (the existing `resolve`/`resolveInfo` became `resolvePath`,
+  `check` became `checkPath`).
+- **Size cap (proposed, not yet confirmed):** an unexported constant `maxWriteBytes = 1 << 20` (1 MB) in `writefile.go`,
+  like `maxListEntries`. It equals the `readFileMaxBytes` default, so anything written can be read back in one call.
+  It is a backstop: the model's own output limit is far lower. Downside: not configurable without a code change.
+- **Renames and cap agreed (Jerry, same day):** the package-level `resolvePath(p)` (normalizes any path, tolerates a
+  missing tail, no checks; used for `traceDir`) is now `resolveSymLinks`, so `(w *Workspace) resolvePath` is the only
+  `resolvePath`. `maxWriteBytes = 1 << 20` (1 MB per `write_file` call, unexported constant) is agreed. It bounds one
+  call's content (= the file's final size, since `write_file` replaces the whole file), not total disk use; `edit_file`
+  will need its own result-size check.
+
+### 2026-11-02 — Slice 4 part 1 built: `resolveNewPath` and `create_directory`
+
+- **`Workspace.resolveNewPath(requested) (rel, err)`**: the write-side `resolvePath`. Joins onto `rootDir`, resolves the
+  longest existing prefix with `resolveSymLinks` and adds the missing tail back, runs `checkPath`, then a **write-deny**
+  check. Returns no identity (nothing to compare yet); the caller writes through `openRoot` (`os.Root`), which refuses
+  `..` and symlink escapes again at write time.
+- **Write-deny list is `writeDeniedNames = [".git"]`** on `Workspace` (matches a directory or file at any depth; a
+  submodule's `.git` is a file). Reason: a planted `.git/hooks/pre-commit` runs on the user's next commit, outside the
+  approval gate. **Not yet done:** the config file passed with `-config` and `traceDir` for writes (`traceDir` is
+  already refused by `checkPath`). The config file's path is not in `Config` today (only `main.go` has it), so it
+  needs a new argument to `NewWorkspace`/`SetupBuiltinTools`; do it with `write_file`.
+- **`create_directory`** (`tools/builtin/createdirectory.go`): arg `path`; `MkdirAll` (0755) through `os.Root`;
+  idempotent (`directory x already exists`), a file in the way is an error, result text `created directory x`. Enabled
+  with `builtinTools: ["create_directory"]`; the ask default already names it.
+- **`errMsgHidePath`** now keeps `ENOTDIR` ("not a directory") instead of the vague "can't be resolved".
+- Tests: `createdirectory_test.go`, `createdirectory_unix_test.go` (written by Claude, small; a test sub-agent pass for
+  more edge cases is still to do).
+
+### 2026-11-02 — Slice 4 built: `write_file`, config-file write-deny, approval preview
+
+- **`write_file`** (`tools/builtin/writefile.go`): args `path`, `content` (empty content is allowed, a missing one is
+  an error). Checks in order: `content` ≤ `maxWriteBytes` (1 MB constant; `tool.maxBytes` is a field only so tests can
+  use a small one), no NUL byte (it writes text, as `read_file` reads text), `resolveNewPath`, `openRoot`, the parent
+  must exist (else "create it with create_directory first"). New file: `O_EXCL`, mode 0644. Existing regular file:
+  `Lstat` → open `O_WRONLY|O_NONBLOCK` **without `O_TRUNC`** → `fstat` + `os.SameFile` against the Lstat → only then
+  `Truncate(0)`; mode kept. A directory, symlink, pipe or socket at the path is refused. Result: `created x (N bytes)` /
+  `overwrote x (N bytes)`. Downside, accepted: the write is not atomic (a disk-full failure leaves a truncated file);
+  temp file + rename would fix it but changes the inode and mode on overwrite.
+- **Not covered:** a hardlink to a deny-listed or write-denied file under an allowed name (checks are by name); the
+  Lstat is taken inside `openForWrite`, so a swap between `resolveNewPath` and that Lstat to a regular file at the same
+  approved name is not detected (harmless: same name). No test stages the swap race (no hook to pause between the steps).
+- **Config file is write-denied.** New `Config.ConfigFile` (`json:"-"`, set by `SetDefaultConfig` from `-config`,
+  never read from a file) is passed to `NewWorkspace(workDir, traceDir, configFile, deny)`, resolved with
+  `resolveSymLinks` (the file need not exist), and compared case-insensitively in `resolveNewPath`. It can still be
+  read. Reason: otherwise the model could rewrite its own `askRules`/`denyRules` for the next run.
+- **Approval preview** (`agent/approval_preview.go`): a call with string `path` and `content` arguments shows the path,
+  size, line count and the first 5 lines (120 chars each), everything quoted with `%q`; any other call shows the raw
+  arguments cut at 500 characters. Replaces printing the whole `Arguments:` (a written file can be 1 MB). Downside: the
+  user approves a preview, not the whole content. Applies to any tool with that argument shape, including an MCP
+  server's write tool.
+- **Digest** (`trace/digest_activity.go`): `write_file : created x (N bytes)` on success (the result text, so the digest can
+  tell created from overwrote), `write_file : write x (failed: …)` on failure (never the content); `create_directory :
+  mkdir x`. One existing test (`Test_Digest_AllowedByConfig_NoteAndFooter`) used `write_file` as a stand-in name and
+  expected the generic line; its expected line was changed on purpose.
+- **Bug the tests caught while building:** the `NewWorkspace` edit that stored `configFile` had not applied, so the
+  config file was not protected until `Test_WriteFile_Refused` failed.
+- Tests: `writefile_test.go`, `writefile_unix_test.go`, `approval_preview_test.go`, plus cases in `tool_test.go`,
+  `config_test.go`, `digest_test.go`. No test was deleted.
+
+### 2026-11-02 — Slice 5 built: `edit_file`, shared write checks, shorter traces
+
+- **`edit_file`** (`tools/builtin/editfile.go`): args `path`, `old_string` (non-empty), `new_string` (may be empty = delete;
+  must differ), `replace_all` (default false). `old_string` must match exactly once, or `replace_all` replaces every
+  non-overlapping match; zero matches and ambiguous matches are errors that give a count and never print file text. A
+  zero-match error adds a hint when the file uses CRLF and `old_string` uses LF. A missing file is an error pointing at
+  `write_file`; an edit never creates a file. A NUL byte in either string or in the file is refused (text only).
+- **Sizes (Jerry: reuse 1 MB for input file and result):** the file must be ≤ `maxWriteBytes`, each string ≤ it, and the
+  result is computed (`len + n*(len(new)-len(old))`) and refused above it *before* it is built, so `replace_all` with a
+  long `new_string` can't use unbounded memory.
+- **In place, not atomic (Jerry's choice):** the new content is built in memory first (every logical error happens before
+  the file is touched), then `Truncate(0)` + `WriteAt`. Mode and inode are kept. Downside: a disk-full failure part-way
+  leaves a truncated file.
+- **Changed-while-editing guard (Jerry agreed; a small window remains and is accepted):** the file is `Stat`ed again just
+  before the truncate; a different size or mtime refuses the edit ("changed while it was being edited"). mtime is coarse on
+  some filesystems, so a same-size change within the timestamp tick is not seen. The test hook `afterRead` stages this.
+- **Per-path mutex (Jerry: yes):** edits of one file by this tool are serialized (`lockFor`, keyed by the resolved,
+  lowercased relative path), because tool calls in one step run concurrently. An edit and a `write_file` of the same file
+  are not serialized.
+- **Shared code:** `openFile` is now `openExisting(…, flag)` with `O_RDONLY`; `write_file`'s overwrite and `edit_file`
+  use it with write flags. It refuses a directory or non-regular `want` *before* the open (a write open never tries a
+  pipe) and the opened descriptor must be `want` (`os.SameFile`) before anything is truncated. `resolveNewPath`'s
+  write-deny checks became `checkWritable`, shared with the new `resolvePathForWrite` (`resolvePath` + `checkWritable`).
+  Side effect fixed: `write_file` used to turn its own "was replaced while opening" message into "can't be resolved".
+- **Approval is one question per tool call, never per line (Jerry).** `approvalPreview` shows, for a call with
+  `path` + `old_string` + `new_string`: the path, a computed summary line ("replace one match / every match of N lines
+  (X bytes) with M lines (Y bytes)") and the first line of each side (120 chars, `%q`). The summary is computed from the
+  arguments, not written by the model, so it can't misdescribe the edit. Downside: the user does not see the lines after
+  the first.
+- **Traces keep no whole file bodies (Jerry).** `trace.shortenArguments` cuts `content`, `old_string` and `new_string` to
+  200 characters plus "… [N bytes in all, cut for the trace]" when the arguments exceed 1000 bytes. It is applied where
+  arguments are copied: `tool_requested` and the message records of `model_request`/`model_response`. Other fields (path,
+  `replace_all`, a long shell command) are untouched. After a cut the JSON keys come back sorted. Conversation memory still
+  holds the full call; only the trace is shortened. This also covers `write_file`.
+- **Digest says only that a file was edited:** `edit_file : edited x (N replacements, M bytes)`; a failure shows
+  `edit x (failed: …)`, never the strings.
+- Tests: `editfile_test.go`, `editfile_unix_test.go`, plus cases in `approval_preview_test.go`, `shorten_test.go`,
+  `digest_test.go`, `tool_test.go`. No test was deleted.
+
+### 2026-11-03 — PR #35 Copilot review: four fixes to the write tools
+
+Copilot's four inline comments, each confirmed against the code and given a test that fails without the fix (checked by
+disabling the fix).
+- **Approval preview could describe the wrong operation.** `write_file` ignores unknown keys, so a call with `content`
+  plus `old_string`/`new_string` was previewed as an edit while `content` was what got written (it hid the data from the
+  user). The shapes are now mutually exclusive: an edit has no `content`; a write has no `old_string`/`new_string`; a mix
+  is shown raw with a `[warning]` line. The struct decode is case-insensitive like the tools' own decode.
+- **A directory above a new file could be swapped for a symlink to `.git` after the check.** `os.Root` only stops links
+  that leave `rootDir`; a relative link to `.git` stays inside, so `resolveNewPath`'s write-deny check (on the path as it
+  was) did not hold at the moment of the write. `resolveNewPath` now returns a `newTarget` (path, nearest existing
+  directory above it, and that directory's identity); `create_directory` and `write_file` create only through
+  `openDir`, which opens that directory as its own `os.Root` (tied to the directory, not its path) and refuses it
+  unless `os.SameFile` matches the approved one. Remaining window: between the approval's `Lstat` of that directory and
+  `openDir`'s open, a swap that is undone before the compare is not seen (accepted, as for `openRoot`). `os.Root` itself
+  already refuses a link with an absolute target.
+- **Hard links bypassed the name-based write-deny.** `notes.txt` hard-linked to `.env`, `.git/config` or the config file
+  passed the checks and the same-inode compare then accepted it. Chosen fix (Jerry's call to revisit): `openExisting`
+  refuses to open for writing any file with `st_nlink > 1`. Downside: a legitimately hard-linked file (e.g. a pnpm
+  store) can't be edited by the tools. Not covered: platforms without a link count (non-Unix: check skipped), and
+  **reading** through a hard link to `.env` (`read_file` is still allowed; a separate, older gap, needs the same kind of
+  inode policy if it matters).
+- **A rename after the open sent writes to an unlinked file.** `f.Stat()` is the descriptor's inode, so if another
+  process renamed the file and put another at the path, `edit_file` / `write_file` wrote the old inode and reported
+  success while the path was unchanged. `stillAtPath` compares the open descriptor with what the path names now
+  (`os.SameFile`) just before the truncate in both tools. A tiny window between that check and the truncate remains.
+- Also fixed: the `candidte` typo (summary comment on the PR).
+- **Trace shortening gaps from the same review, fixed (Jerry: yes).** (1) Body keys (`content`, `old_string`,
+  `new_string`) are now matched case-insensitively, as the tools' JSON decode does, so `Content` is cut too. (2) Arguments
+  over 1000 bytes that are not a readable JSON object (invalid or truncated JSON, an array, a string, `null`) are cut
+  as a whole to 1000 characters plus a byte count, so a file body in a malformed call no longer reaches the trace. Two
+  cases in `Test_Unit_ShortenArguments_Untouched` (long invalid JSON, long non-object) expected the old pass-through and
+  were removed on purpose; their replacement is `Test_Unit_ShortenArguments_UnreadableLongArguments_CutWhole`. Downside:
+  a long malformed call is no longer fully visible in the trace (the memory/conversation still has it).
+- Tests: `writeraces_unix_test.go` (hard links, swapped parent, rename after open, `stillAtPath`, accepted directories),
+  two preview tests. No test was deleted.
+
+### 2026-11-03 — Slice 6 built: `copy_file` and `move_file`
+
+- **`move_file` is a rename (Jerry's call), not copy-then-remove.** I first planned copy-then-remove to keep every write
+  inside a descriptor-bound directory Root (`os.Root` can't rename between two Roots), which would have capped moves at
+  the copy limit and lost atomicity. Jerry pointed out that a Unix move only re-points a directory entry, so the plan was
+  changed: `root.Rename(srcRel, dstRel)` by path. To keep the "parent swapped for a symlink to `.git`" hole closed, both
+  parents go through `openDir` (identity compare) immediately before, and the source is re-`Lstat`ed and compared with
+  the approved file. A very small window between those checks and the rename remains (accepted, as for the other tools).
+  The inode, mode and mtime are kept, any size works, and an existing destination file is replaced atomically.
+  Across filesystems the rename fails with `EXDEV`; the message says to use `copy_file` and remove the original. No
+  fallback copy (rare inside a workspace; it would add a second path and a cap).
+- **Files only for both tools.** Moving or copying a directory could launder files out from under an anchored deny
+  pattern (rename `secrets` to `pub` and `secrets/*.env` stops matching). A directory source is an error.
+- **`copy_file`**: streams in 256 KB pieces and checks the context between pieces (Ctrl+C stops a long copy). Cap
+  `maxTransferBytes` = 100 MB, a constant (Jerry accepted it; it does stop copying a larger binary; raise the constant
+  or make it a config key if that bites). Copied bytes never enter the model's context, so the cap is a disk-fill
+  backstop, not the 1 MB of `write_file`. The size is checked before the copy and again while copying (a file that grows
+  is stopped). Binary files are fine. A new file gets the source's permission bits; an overwritten file keeps its mode.
+  A failed copy removes the partial NEW file; a failed overwrite can leave a truncated destination.
+- **Shared code:** `openForWrite` became a `Workspace` method with a `perm` argument and is used by `write_file` and
+  `copy_file`; `resolvePathForWrite` now returns a `newTarget` (and `anchorFor` builds it), so `edit_file` and `move_file`
+  get the parent directory's identity too. Fixed a comment mangled by an earlier bulk rename ("nameative" -> "relative").
+- **Hard links:** `copy_file` refuses a source or an overwritten destination with more than one name (`st_nlink > 1`):
+  copying `.env` through an alias would otherwise leak it. `move_file` does not need the check for the destination:
+  renaming over a hard link replaces only that name, so the protected inode is untouched (tested). Renaming one name of an
+  inode onto another name of the same inode is refused (rename(2) would silently do nothing).
+- **Approval:** both tools are ask rules by default. Their arguments are two short paths, so the raw `Arguments:` line shows
+  them completely; no preview was added (a preview that guesses from key names is what Copilot's PR #35 comment 1 was
+  about). Digest: `copy_file : copied a -> b (N bytes)` / `move_file : moved a -> b (N bytes)`; failures show both paths
+  and the error.
+- A planned `From:`/`To:` preview and a destination same-inode check in `copy_file` were dropped (the check was
+  unreachable because hard-linked sources are refused first).
+- Tests: `copyfile_test.go`, `movefile_test.go`, `copymove_unix_test.go`, plus `tool_test.go` and `digest_test.go`
+  cases. Each defence was disabled once to confirm a test fails (hard-link refusal, source-replaced check, partial-file
+  removal). No test was deleted.
+
+### 2026-11-03 — `copy_file` limit is configurable (`copyFileMaxBytes`)
+
+- The 100 MB limit (first a constant `maxTransferBytes`, see `§ Slice 6 built`) is now the config key `copyFileMaxBytes`
+  (default `100 << 20`, listed in `config/doc.go` and `PrintConfig`). `NewCopyFileTool(ws, maxBytes)` requires a positive
+  value, checked only when `copy_file` is enabled (like `readFileMaxBytes` for `read_file`); the tool description states
+  the configured size. The constant was removed; the default lives in `GetDefaultConfig`. No flag was added.
+- Tests: `Test_SetupBuiltinTools_CopyFile_MaxBytes`, `Test_Unit_SetDefaultConfig_CopyFileMaxBytes`, and the constructor
+  cases in `copyfile_test.go`.
+
+
+### 2026-11-02 — Two helper packages: `procutils` and `textutils`
+
+Settled with Jerry while planning `run_command`, which needs both helpers. mvp4's tool only had them inline.
+
+- **Why:** `run_command` must start a command in its own process group and kill the group, as `mcpconnect` already did.
+  `tools/builtin` cannot import `mcpconnect` (`mcpconnect` imports `tools`, which imports `builtin`), and Jerry does not
+  want duplicated helpers. Text was cut in five places, each its own way, and `run_command`'s output cap would be a sixth.
+- **Rule:** a helper package imports only the standard library: no package of this module, no third-party module. It is
+  checked by `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`).
+- **Names:** one `utils/` package was proposed first and dropped. Go style discourages `util`/`helpers` packages (the name says
+  nothing and they collect unrelated code), so there are two packages named for what they do. **Downside:** a new kind of
+  helper means a new package, or a pause to ask whether it fits one of these.
+- **`procutils`** (`procgroup_unix.go`, `procgroup_windows.go`): `StartInOwnGroup`, `KillGroup`, moved from `mcpconnect` and
+  exported. Behaviour is unchanged, so the earlier decisions (item 14, item 17: no tree kill on Windows) still hold.
+  `mcpconnect`'s two process-group tests stay in `mcpconnect` because they test the server connection; `procutils` has its
+  own, which use `sh` with a background `sleep` and read EOF on the stdout pipe to know the child is gone.
+- **`textutils`** (`cut.go`): `CutRunes(s, n)` and `CutBytes(s, limit)` return the cut text and whether they cut; the caller adds
+  its own marker. `TrimPartialRune` moved from `tools/builtin/readfile.go`. Callers moved over: `trace.cutChars`,
+  `trace.oneLine`, `agent.previewFirstLine`, `mcpconnect` (`flattenMCPResult`), `read_file`.
+- **One behaviour change:** `flattenMCPResult` used to cut at `maxBytes` and then call `ToValidUTF8`, which also deleted bytes that
+  were already invalid in the tool's output. `CutBytes` backs up only when the cut lands inside a character (at most 3
+  bytes), so other invalid bytes are kept. The existing test (no half characters) still passes.
+- **Left where they are:** `searchfiles.cutLine` (cuts a window around a match and drops invalid bytes on purpose), and the
+  single-caller helpers `plural`, `safeText`, `firstLine` and `linkCount`. They move when a second package needs them.
+  `mvp3/` and `mvp4/` are separate modules and keep their own copies.
+- **Mutation checks:** no back-up in `CutBytes`; `KillGroup` and `StartInOwnGroup` doing nothing; a module import added to
+  `textutils`. Each makes a test fail.
+
+
+### 2026-11-03 — `run_command` plan: shape agreed with Jerry (before the build)
+
+Settled over a Q&A with Jerry on the branch `feat/run-command`. Supersedes the "Still open" list in `§ Command execution:
+contain, don't detect` and the 2026-11-02 planning notes in `SESSION.md`. Built in the next entries.
+
+**The tool** (`tools/builtin/runcommand.go`, ported from `mvp4/tools/builtin/runcommand.go`)
+- Arguments `command` (a bare program name), `args` (list of strings), optional `dir` (checked with `Workspace.resolvePath`:
+  inside `workDir`, not deny-listed). Not a shell: pipes, `&&` and `$VAR` are literal text. Stdin is empty, so interactive
+  programs do not work (on purpose). A non-zero exit is a normal result (`[exit status N]`). Own process group, killed when the
+  context ends and again after exit (`procutils`).
+- **Which programs: the config list `runCommands`, default `[]`, no built-in defaults.** Entries are bare names (no `/`). Each
+  is resolved once at setup to an absolute path from the agent's PATH; a path inside `workDir` is refused (a file the model
+  writes can't stand in for `go`). A missing program is warned about and left out of the tool's `command` enum. The tool is
+  **not set up** when `runCommands` is empty (or none of its programs was found); setup prints a warning, and `-mode info`
+  shows it, so "I enabled it and the model says no such tool" has an explanation. `runCommands` set while `run_command` is
+  not in `builtinTools` also warns (the config does nothing). Both are needed: `builtinTools` names the tool, `runCommands`
+  says which programs. Rejected: failing startup on an empty list (Jerry: a conditional in setup is simpler).
+- **Output cap: `commandMaxOutputBytes`, default 128 KB, a plain cut-off.** The first N bytes are kept (`textutils.CutBytes`
+  so no half character), the program is killed past the cap and the result says so. Jerry dropped the head-and-tail ring
+  buffer for now. Downside, stated: the tail of a long output (a test summary) is lost, and re-running the same command does
+  not page like `read_file`. The description tells the model to read files with `read_file` and to narrow a command instead.
+  A 128 KB result is about 32-40k tokens; `read_file`'s own cap is 1 MB because it pages.
+- **Environment: filtered.** The child gets only the names in `DefaultCommandEnv` (`tools/builtin/commandenv.go`, one exported
+  list, so it is easy to find): `PATH HOME USER TMPDIR LANG LC_ALL TERM GOPATH GOROOT GOCACHE GOMODCACHE GOPROXY GOFLAGS
+  GOTOOLCHAIN VIRTUAL_ENV PYTHONPATH`. The config key **`commandEnv` extends it and never shrinks it** (like `denyPaths`).
+  `ANTHROPIC_API_KEY` and the like are not passed unless someone lists them. The npm example adds `NPM_CONFIG_CACHE` and
+  `NODE_PATH`, not `NODE_OPTIONS` (it can inject code).
+
+**Timeouts, generalised** (new config keys, in seconds like `responseTimeoutSeconds`)
+- `toolTimeoutSeconds` (default 300) bounds every tool call, built-ins and MCP tools alike. Checked 2026-11-03: MCP calls
+  had **no** timeout before (only `responseTimeoutSeconds`, for model calls), so a hung MCP server could freeze a turn.
+  `reActLoop` wraps each call in a context with this limit; expiry is an error observation ("timed out after …") that the
+  model can react to, and `run_command` returns the output so far. `run_command` has no timeout of its own.
+- `turnTimeoutSeconds` (default 600) bounds one whole turn (LLM calls plus tools). Expiry prints `[turn timed out after …]`
+  and adds nothing to memory, like Ctrl+C but with its own message. Both must be positive and `turnTimeoutSeconds <
+  toolTimeoutSeconds` fails setup (otherwise the turn ends at the same moment as the tool and the model never sees the
+  timeout). The parent context ending (Ctrl+C, turn timeout) is told apart from the tool's own deadline by which context ended.
+
+**Approval: no `allowRules` list** (Jerry). The model stays "not in `denyRules` or `askRules` means it runs". Listing a program
+in `runCommands` is the consent to run it, unasked.
+- Rules for commands have the form `run_command:<glob>`. The glob is matched (lowercased, `*` crossing `/` like the existing
+  tool-name matcher) against the call's **joined command line**, `run_command:go test ./...`. A plain `run_command` rule
+  still matches every call. Deny beats ask beats run, as before. `hooks.ToolRules` gets a `LevelFor(call)` that reads the
+  arguments; `Level(name)` stays for info mode. **A `run_command` call whose arguments can't be read fails closed to
+  "ask"** (a deny rule by name still wins).
+- **`run_command` is not in the default `askRules`** (earlier plan reversed): without an allow list, a blanket ask rule could
+  not have exceptions ("ask for everything except `go test`"). The opt-in is `runCommands`, and asks are added by the user.
+- No terminal: an ask is refused unless `approval` is `allow-all` (already how `askRules` work). **One auto-approve switch**
+  (`approval`), no separate one for commands (Jerry).
+- Honest limits (to be in `config/doc.go`): a glob over the command line is not a detector, `go -C dir run x` slips past
+  `run_command:go run*`; an allowed interpreter (`python3`, `go`, `npm`) is code execution, not a sandbox, and bypasses every
+  file-tool protection (`.git`, the config file, the deny list, hard-link refusal); `cat`, `head`, `grep` and `sed` in
+  `runCommands` read `.env` and the other names `read_file` refuses, so the examples leave them out. "Unattended means
+  contained" still applies to the autonomous port.
+- Interpreters get no special category in code, only documented example configs (`python3`, `go`, `npm`) in `config/doc.go`:
+  narrow `runCommands`, with `askRules` such as `run_command:go run*`, `run_command:npm install*`, `run_command:python3*`.
+
+**Tests:** a full mutation-check pass. **Changes to existing tests:** `run_command:rm` is no longer an invalid rule
+(`hooks/toolrules_test.go`, `agent/info_test.go`).
+
+
+### 2026-11-03 — `run_command` built (as planned in the entry above, with these differences)
+
+Files: `tools/builtin/runcommand.go`, `commandenv.go`; `hooks/toolrules.go` (`LevelFor`, `CommandLine`, `CommandRulePrefix`);
+`tools/tool.go` (setup); `agent/react.go` (tool timeout), `agent/chat.go` (turn timeout), `agent/agent.go` (`checkConfig`),
+`agent/approval_preview.go` (`commandPreview`), `agent/info.go`, `trace/digest_activity.go`; config keys `runCommands`,
+`commandEnv`, `commandMaxOutputBytes`, `toolTimeoutSeconds`, `turnTimeoutSeconds` (documented, with the Go, Python and npm
+example configs, in `config/doc.go`).
+
+- **As planned:** argv only, absolute paths resolved at setup (refused inside `workDir`), filtered environment (`commandEnv`
+  extend-only), empty stdin, own process group (killed on context end and again after exit), non-zero exit is a normal result,
+  `dir` through `Workspace.resolvePath`, 128 KB plain cut-off that kills the program, `run_command` not in the default
+  `askRules`, no `allowRules`, glob rules over the joined command line, unreadable arguments fail closed to "ask".
+- **Rule scoping (detail the plan left open):** a rule starting with `run_command:` is matched against the command line
+  only; every other rule is matched against the tool name only. So the default `*delete*` does not ask for
+  `go test -run TestDelete`. `Level(name)` stays for info mode; `BeforeTool` uses `LevelFor(call)`.
+- **Turn timeout message:** plain `[error] ReAct loop error: turn timed out after Ns (turnTimeoutSeconds)`, not a separate
+  bracket line. It is not `[interrupted]`, and the trace status is `error`.
+- **Tool timeout:** `toolCtx` in `executeToolCall`; the error is wrapped as `tool timed out after Ns (toolTimeoutSeconds)`
+  only when the parent context is still alive. A tool that ignores its context is not stopped (the loop waits for it); this
+  is a stated limit. A value of 0 (hand-built test config) means no limit; `checkConfig` makes real configs positive.
+- **Bug found by the mutation pass:** the output cut used `textutils.CutBytes` on a buffer already holding exactly the limit,
+  so it saw nothing to cut and left half a character. Now `TrimPartialRune` runs when output was dropped. The first test
+  used a cap that fell on a character boundary and missed it; it now uses a cap inside a character.
+- **Another weak test fixed:** `go test`'s own stdin is `/dev/null`, so inheriting stdin went unnoticed; the test now
+  replaces `os.Stdin` with a pipe nobody writes to.
+- **Mutation pass:** 28 mutants (env passed whole, `commandEnv` replacing the defaults, stdin inherited, no post-exit group
+  kill, no own group, cap not killing, cap off by one, half characters, `dir` unchecked, exit status lost, ctx end not an
+  error, program inside `workDir` allowed, unlisted program runs, path in `runCommands`, name rules matching the command
+  line, unreadable arguments running, ask beating deny, colon rule allowed anywhere, arguments dropped from the command line,
+  tool timeout not applied or mislabelling Ctrl+C, turn timeout not applied or mislabelling Ctrl+C, turn < tool allowed,
+  empty `runCommands` not skipped, preview joining arguments, digest showing the program only, `run_command` in the default
+  `askRules`). All killed after the two fixes above.
+- **Not done / known limits:** no sandbox (so no unattended use yet); the output tail is lost past the cap; no Windows
+  process-tree kill (as `mcpconnect`); the unix-only tests do not run on Windows (it builds: `GOOS=windows go build ./...`).
+
+
+### 2026-11-03 — `run_command`: arguments are checked against the file tools' deny list (best effort)
+
+Jerry asked whether `cat .env` can be refused. Command rules (`run_command:*.env*`) work on text and also match `.env.example`;
+Jerry chose a built-in check against the deny list `read_file` uses, documented as best effort.
+
+- **What it does** (`Workspace.checkCommandArgs`, called in `CallTool` before the program starts): each argument, and the value
+  after the first `=` of a `-flag=value`, is read as a path relative to `dir` (or absolute), resolved through symlinks as far as
+  it exists (`resolveSymLinks`), and, if it is inside `workDir`, passed to `checkPath`: the deny list (`.env` but not
+  `.env.example`, `*.pem`, `id_rsa*`, `.ssh`, `denyPaths`) and the trace directory. A hit refuses the whole call with
+  `command refused, argument … is blocked: …`. It is an error from the tool, never an approval question (as for the file tools).
+- **Judged by name:** a path that does not exist is judged as written, so `cat .env` is refused whether or not the file is there;
+  a symlink to a protected file and `./sub/../.env` are refused. An argument outside `workDir` (`/etc/hosts`) is not checked.
+- **Where it sits:** inside the tool, after the approval gate, so an approved ask can still be refused; the tool description
+  tells the model so. It reuses `checkPath` rather than a second pattern list, so config `denyPaths` apply to both.
+- **Honest limits (also in `config/doc.go`):** it cannot see a directory that holds a protected file (`grep -r KEY .` is the
+  commonest leak), a name an interpreter or `sh -c` builds, `git show HEAD:.env`, or a path the program obtains another way; an
+  allowed interpreter bypasses it entirely. False positives are possible when a plain word looks like a denied name (`-run X.key`).
+  So it catches accidents and clumsy prompt injection, not a determined program. Real containment is still the sandbox.
+- **Tests / mutation pass:** `Test_RunCommand_Args_*` (11 refusal cases, one allowed-arguments case). Six mutants killed: check
+  not called, flag value ignored, symlinks not resolved, no deny check, relative path not joined to `dir`, outside paths checked.
+
+
+### 2026-11-03 — PR #37 Copilot review: mixed command/file previews, `CutBytes` and stray continuation bytes
+
+- **Approval preview (`agent/approval_preview.go`):** a `run_command` call that also carried `path`/`content`/`old_string`/
+  `new_string` fell through to `writePreview`, so the user approved a file preview while the tool (which ignores unknown keys)
+  ran the command. Same class as the earlier write_file/edit_file mixed shape (`§ Slice 5 built`). Now a call with `command`
+  plus any file field gets the `[warning] …shown as sent:` line and the raw arguments. A command alone is still `commandPreview`.
+- **`textutils.CutBytes`:** `CutBytes("é\x80x", 2)` returned `""`: the backward search treated the é's own continuation byte
+  as part of a longer run and walked to the start, then the "no start byte nearby" test failed. It now finds the nearest start
+  byte within `UTFMax-1` bytes, decodes from there, and backs up only if that is a valid multi-byte character that crosses the
+  cut; otherwise it cuts where asked, so bytes that were already invalid are kept. (The `run_command` output cut was not
+  affected: it uses `TrimPartialRune`.)
+- **Tests:** four new `CutBytes` cases and a five-shape `ShapeIsExclusive` test. Mutation checks: removing the mixed-shape
+  branch, and dropping the "valid and crosses the cut" condition, each fail a test.
+
+
+### 2026-11-03 — PR #38 Copilot review (build → master): what was fixed, what is accepted, what is deferred
+
+Six inline comments and one finding from the summary. All were checked against the code and are real; two are fixed by
+accepting and documenting a gap.
+
+**Fixed**
+- **`move_file` and hard links** (`movefile.go`): it never looked at the source's link count, so a hard link to `.env` or
+  `.git/config` under an allowed name could be renamed to a name `read_file` allows, and the secret read from there. After the
+  last `Lstat` and just before `Rename` it now refuses a source with more than one name, like `write_file`, `edit_file` and
+  `copy_file`. Test: `Test_MoveFile_HardLinkedSource_Refused`.
+- **Nil workspace** (`runcommand.go`): `NewRunCommandTool(nil, …)` panicked; it returns `run_command needs a workspace`, like
+  the other constructors.
+- **Windows `KillGroup`** (`procutils/procgroup_windows.go`): it was empty, and `run_command` sets `cmd.Cancel = KillGroup`, which
+  replaces Go's default (kill the process), so on Windows even the direct command kept running after a Ctrl+C or timeout. It now
+  kills the direct process. A Windows-only test was added; it was not run here (no Windows machine), only compiled.
+- **`cmd/codemap/guard.go`** (from the review summary): the untracked-file list was split with `strings.Fields`, so `my file.go`
+  became two names and `-code-unchanged` checked the wrong paths. It now uses `git ls-files -z` and splits on NUL (which also
+  stops git quoting non-ASCII names). Test: `Test_CodeUnchanged_UntrackedFileNamesWithSpacesAndUnicode`.
+- Mutation checks: removing the `move_file` check, the nil guard and the NUL split each fail a test.
+
+**Accepted and documented (Jerry's decision): hard links on Windows**
+- *What a link count is:* a file's content is stored once and a filename is a label for it; one file can have several labels
+  (hard links, `ln .env notes.txt`). The link count is how many labels a file has. The file tools protect secrets by name
+  (`.env`, `*.pem`, `.git/…`), and a hard link is a way round a name check: `notes.txt` is not on the deny list but is the same
+  file as `.env`. So `write_file`, `edit_file`, `copy_file` and now `move_file` refuse any file with more than one name.
+- *Windows:* it has hard links too, but Go's `os.FileInfo` exposes the count only on Unix. `linkCount` (`nlink_other.go`)
+  answers "unknown" there and every caller reads "unknown" as "fine". So on Windows the file tools still run (it builds and
+  nothing there has been run or tested) but **without hard-link protection**. Failing closed was rejected for now: it would
+  disable the write tools on Windows, to guard against a hard link that another program must already have made.
+- *Real fix, deferred until Windows is a target:* read `NumberOfLinks` with `syscall.GetFileInformationByHandle`, which needs an
+  open file handle. `linkCount` would take the opened `*os.File` instead of a `FileInfo` (Unix keeps `Stat_t.Nlink`, Windows
+  calls the API on `f.Fd()`). `openExisting` already has the file open; `copy_file` needs a look; `move_file` has no open file,
+  so it would open the source read-only just to count its links. Cannot be tested without a Windows machine.
+
+**Accepted and documented (Jerry's decision): `create_directory` and a symlink swapped in mid-call**
+- *The gap:* `resolveNewPath` and `openDir` pin only the nearest directory that already existed. `MkdirAll` then creates the
+  missing components below it. A second process could create one of those missing components as a symlink to `.git` between the
+  check and `MkdirAll`; `os.Root` stops escapes out of the root, not a redirect to `.git` inside it, so the directory would be
+  made under `.git`.
+- *Likelihood:* very low. Tool calls run one after another, so the model cannot start the racing process mid-call; it must
+  already be running, guess the path, and win a window of about a millisecond. The same class was fixed for the deepest
+  directory in the PR #35 review, so this is a hardening gap, not a new kind of problem.
+- *Fix, deferred:* replace `MkdirAll(tail)` with a loop over the missing components: `Mkdir` the component, `Lstat` it (must be
+  a directory, not a symlink), open it as a `Root`, and require `os.SameFile` between that handle and the `Lstat` result;
+  continue from the handle, never from the path. About 15 lines in `createdirectory.go`, plus a test that swaps a component
+  for a symlink between the steps.
+
+**Deferred: a Windows Job Object for `run_command` and MCP servers.** Only the direct process is killed on Windows now, so a
+grandchild (`node` under `npx`) can outlive the call, which contradicts "nothing a tool spawns outlives the call" there. A Job
+Object (`CreateJobObject`, `AssignProcessToJobObject`, `TerminateJobObject`; `kernel32` calls or `golang.org/x/sys/windows`)
+kills the whole tree; assigning it after `Start` leaves a small window unless the process starts suspended. The qualification
+is stated in `RunCommandTool`, `config/doc.go` and `CLAUDE.md`.

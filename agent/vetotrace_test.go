@@ -2,11 +2,12 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
+	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/trace"
 )
@@ -83,15 +84,15 @@ func Test_RunToolCall_VetoTrace_NoPrompt_Denied(t *testing.T) {
 
 // - Verify the user saying no records denied_by_user and the call still fails
 func Test_RunToolCall_VetoTrace_UserSaysNo(t *testing.T) {
-	fx, _ := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, _ := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, false)
 
 	events := runVetoed(t, fx)
 
 	vs := vetoes(events)
-	if len(vs) != 1 || vs[0].Decision != trace.VetoDeniedByUser || vs[0].Reason != errDenied.Error() || vs[0].CallID != "call_1" {
-		t.Fatalf("tool_vetoed = %+v, want one denied_by_user for call_1 with reason %q", vs, errDenied)
+	if len(vs) != 1 || vs[0].Decision != trace.VetoDeniedByUser || vs[0].Reason != errNeedsApproval.Error() || vs[0].CallID != "call_1" {
+		t.Fatalf("tool_vetoed = %+v, want one denied_by_user for call_1 with reason %q", vs, errNeedsApproval)
 	}
 	if !finished(t, events).Failed {
 		t.Error("expected tool_finished to be failed")
@@ -100,15 +101,15 @@ func Test_RunToolCall_VetoTrace_UserSaysNo(t *testing.T) {
 
 // - Verify the user saying yes records allowed_by_user, the tool runs, and tool_finished is not failed
 func Test_RunToolCall_VetoTrace_UserSaysYes(t *testing.T) {
-	fx, tool := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, tool := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, true)
 
 	events := runVetoed(t, fx)
 
 	vs := vetoes(events)
-	if len(vs) != 1 || vs[0].Decision != trace.VetoAllowedByUser || vs[0].Reason != errDenied.Error() {
-		t.Fatalf("tool_vetoed = %+v, want one allowed_by_user with reason %q", vs, errDenied)
+	if len(vs) != 1 || vs[0].Decision != trace.VetoAllowedByUser || vs[0].Reason != errNeedsApproval.Error() {
+		t.Fatalf("tool_vetoed = %+v, want one allowed_by_user with reason %q", vs, errNeedsApproval)
 	}
 	fin := finished(t, events)
 	if fin.Failed || fin.Content != "deleted" || tool.calls != 1 {
@@ -141,8 +142,8 @@ func Test_RunToolCall_VetoTrace_AllowedRecordsNone(t *testing.T) {
 
 // - Verify two vetoing hooks, first approved and second declined, record two events in hook order
 func Test_RunToolCall_VetoTrace_TwoHooks_ApproveThenDeny(t *testing.T) {
-	errSecond := errors.New(`denied by rule "*file*"`)
-	fx, tool := newHookFixture(t, &fakeHook{name: "first", err: errDenied}, &fakeHook{name: "second", err: errSecond})
+	errSecond := fmt.Errorf("%w by rule %q", hooks.ErrNeedsApproval, "*file*")
+	fx, tool := newHookFixture(t, &fakeHook{name: "first", err: errNeedsApproval}, &fakeHook{name: "second", err: errSecond})
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, true, false)
 
@@ -152,8 +153,8 @@ func Test_RunToolCall_VetoTrace_TwoHooks_ApproveThenDeny(t *testing.T) {
 	if len(vs) != 2 {
 		t.Fatalf("expected two tool_vetoed, got %d: %+v", len(vs), vs)
 	}
-	if vs[0].Decision != trace.VetoAllowedByUser || vs[0].Reason != errDenied.Error() {
-		t.Errorf("first tool_vetoed = %+v, want allowed_by_user over %q", vs[0], errDenied)
+	if vs[0].Decision != trace.VetoAllowedByUser || vs[0].Reason != errNeedsApproval.Error() {
+		t.Errorf("first tool_vetoed = %+v, want allowed_by_user over %q", vs[0], errNeedsApproval)
 	}
 	if vs[1].Decision != trace.VetoDeniedByUser || vs[1].Reason != errSecond.Error() {
 		t.Errorf("second tool_vetoed = %+v, want denied_by_user for %q", vs[1], errSecond)
@@ -165,7 +166,7 @@ func Test_RunToolCall_VetoTrace_TwoHooks_ApproveThenDeny(t *testing.T) {
 
 // - Verify wait_ms measures the time spent waiting for the user's answer
 func Test_RunToolCall_VetoTrace_WaitMS(t *testing.T) {
-	fx, _ := newHookFixture(t, &fakeHook{err: errDenied})
+	fx, _ := newHookFixture(t, &fakeHook{err: errNeedsApproval})
 	fx.Session.PromptAllowDenyCall = func(context.Context, model.ToolCall, error) bool {
 		time.Sleep(30 * time.Millisecond)
 		return false

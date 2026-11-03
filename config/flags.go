@@ -27,13 +27,17 @@ type Flags struct {
 	MaxSteps  *int
 	MaxTokens *int
 	Debug     *bool
+	Approve   *string
 }
 
 // ParseFlags parses args (os.Args[1:]) into Flags and validates each value that was given.
-// It returns flag.ErrHelp when -h/--help was requested; usage has already been written to out.
 //
-// Cross-checks against -mode only run when -mode itself was passed. If it wasn't, the effective
-// mode may still come from the config file, so that check belongs after the config merge.
+// Notes:
+//   - It returns flag.ErrHelp when -h/--help was requested; usage has already been written to out.
+//   - Cross-checks against -mode only run when -mode itself was passed. If it wasn't, the effective mode may still
+//     come from the config file, so that check belongs after the config merge (see ValidateMode).
+//   - A flag that was not passed stays nil, never a zero value.
+//   - -query and -q are the same flag; a positional argument is an error.
 func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	// register flags with the flag set
 	fs := flag.NewFlagSet("minagent", flag.ContinueOnError)
@@ -41,9 +45,9 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.Usage = func() { printUsage(out) }
 
 	var (
-		configPath, mode, query, queryShort, model, mission, workDir string
-		asJSON, debug                                                bool
-		maxSteps, maxTokens                                          int
+		configPath, mode, query, queryShort, model, mission, workDir, approve string
+		asJSON, debug                                                         bool
+		maxSteps, maxTokens                                                   int
 	)
 	fs.StringVar(&configPath, "config", "", "")
 	fs.StringVar(&mode, "mode", "", "")
@@ -56,6 +60,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.IntVar(&maxSteps, "maxsteps", 0, "")
 	fs.IntVar(&maxTokens, "maxtokens", 0, "")
 	fs.BoolVar(&debug, "debug", false, "")
+	fs.StringVar(&approve, "approve", "", "")
 
 	if err := fs.Parse(args); err != nil {
 		return Flags{}, err
@@ -80,6 +85,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"model", model, &f.Model},
 		{"mission", mission, &f.Mission},
 		{"workdir", workDir, &f.WorkDir},
+		{"approve", approve, &f.Approve},
 	} {
 		if !set[s.name] {
 			continue
@@ -131,6 +137,11 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		f.MaxTokens = new(maxTokens)
 	}
 
+	// -approve
+	if f.Approve != nil && *f.Approve != ApprovalAsk && *f.Approve != ApprovalAllowAll {
+		return Flags{}, fmt.Errorf("-approve must be %s or %s, got %q", ApprovalAsk, ApprovalAllowAll, *f.Approve)
+	}
+
 	// check that files exist
 	if f.Config != nil {
 		if err := requireFile("config", *f.Config); err != nil {
@@ -159,13 +170,19 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 }
 
 // ValidateMode checks the effective mode, after the config file and flags are merged, against the flags given.
-// ParseFlags can only check an explicit -mode; this also covers a mode chosen by the config file's "agentMode",
-// so `"agentMode": "info"` with --json is refused just like `-mode info --json`.
+//
+// Notes:
+//   - ParseFlags can only check an explicit -mode; this also covers a mode chosen by the config file's "agentMode",
+//     so `"agentMode": "info"` with --json is refused just like `-mode info --json`.
 func ValidateMode(cfg Config, f Flags) error {
 	return f.validateMode(cfg.AgentMode)
 }
 
 // validateMode checks the mode value and that the other flags make sense with it.
+//
+// Notes:
+//   - -query needs oneshot, and oneshot needs -query; -mission needs headless, and headless needs -mission; --json is
+//     refused in chat and info.
 func (f Flags) validateMode(mode string) error {
 	switch mode {
 	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo:
@@ -191,7 +208,10 @@ func (f Flags) validateMode(mode string) error {
 	return nil
 }
 
-// checks that a required directory exists
+// requireDir checks that a required directory exists.
+//
+// Notes:
+//   - flagName starts the error message ("-workdir: ...").
 func requireDir(flagName, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -203,7 +223,10 @@ func requireDir(flagName, path string) error {
 	return nil
 }
 
-// checks that a required file exists
+// requireFile checks that a required file exists.
+//
+// Notes:
+//   - flagName starts the error message ("-config: ..."); a directory is an error.
 func requireFile(flagName, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -215,6 +238,10 @@ func requireFile(flagName, path string) error {
 	return nil
 }
 
+// printUsage writes the help text for the command line flags to w.
+//
+// Notes:
+//   - Installed as the flag set's Usage, so it runs on -h/--help and on a flag parse error.
 func printUsage(w io.Writer) {
 	fmt.Fprint(w, `Usage: minagent [flags]
 
@@ -230,11 +257,15 @@ func printUsage(w io.Writer) {
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
   -debug                 Print the context window each turn and log MCP protocol messages to stderr
+  -approve <value>       ask | allow-all: allow-all runs tool calls that match ask rules without asking
+                         (chat asks you to confirm at startup); deny rules always apply
 `)
 }
 
 // FlagsOverlay returns cfg with any flag the user explicitly passed applied on top.
-// Flags left unspecified (nil) leave the config value untouched.
+//
+// Notes:
+//   - Flags left unspecified (nil) leave the config value untouched.
 func FlagsOverlay(cfg Config, f Flags) Config {
 	if f.Model != nil {
 		cfg.Model = *f.Model
@@ -256,6 +287,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.Debug != nil {
 		cfg.Debug = *f.Debug
+	}
+	if f.Approve != nil {
+		cfg.Approval = *f.Approve
 	}
 	return cfg
 }

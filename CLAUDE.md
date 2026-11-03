@@ -141,6 +141,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools/builtin/` (`ReadFileTool`), `mcpconnect/` (MCP client connections + the adapter that
   wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
+- **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
+  package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
+  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
+  what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
+  `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
@@ -165,13 +170,37 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   token on every redirect hop (and a 307/308 replays the body). Keep both layers if you touch the HTTP
   client; `http` -> `https` redirects are rejected for now (`DECISIONS.md § Deferred for Later`, item 6).
 - **`read_file` stays inside `workDir` and never reads deny-listed names** (`.env`, `.env.*` but not
-  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), plus any config `denyFileNames` patterns (`builtin.DenyList`:
-  config extends the list, never shrinks it), nor anything inside the configured
+  `.env.example`, `*.pem`, `*.key`, `id_rsa*`, `.ssh/`, `.agent-trace`), plus any config `denyPaths` patterns (`builtin.DenyList`, .gitignore-style rules in
+  `pathpattern.go`: config extends the list, never shrinks it), nor anything inside the configured
   `traceDir` (matched by resolved path, whatever its name). It resolves symlinks first, checks the *resolved*
-  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. A new
-  file-reading tool must reuse this, not call `os.Open` on a model-supplied path
-  (`DECISIONS.md § read_file is confined to workDir`). It also opens with `O_NONBLOCK` and accepts only regular
-  files (checked with `Stat` on the opened descriptor), because opening a named pipe blocks forever.
+  path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. These rules live
+  in `builtin.Workspace` (`tools/builtin/workspace.go`), built once in `SetupBuiltinTools` (even with no file tool
+  enabled) and shared by the file tools. A new file tool must take the `*Workspace` and go through its `resolvePath` /
+  `checkPath` / `openRoot`, not call `os.Open` on a model-supplied path
+  (`DECISIONS.md § read_file is confined to workDir`, `§ File tools slice 0`). A tool that reads a file opens it with
+  `Workspace.openFile`, passing the identity taken before the check (`resolvePath`, or a walk entry's `d.Info()`): it
+  opens with `O_NONBLOCK` (opening a named pipe blocks forever), accepts only regular files (checked on the opened
+  descriptor) and refuses a file swapped in after the check (`os.SameFile`; `DECISIONS.md § PR #31 review`).
+  **Write tools** (`create_directory`, `write_file`) use `Workspace.resolveNewPath` (the path may not exist yet), which adds
+  a write-deny on top of `checkPath`: `.git` and the `-config` file (`cfg.ConfigFile`) can be read but never written.
+  `write_file` opens an existing file without `O_TRUNC`, checks it on the descriptor (`os.SameFile`), and only then
+  truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
+  (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
+  (`DECISIONS.md § Slice 4 built`).
+  A new file or directory is created only through `Workspace.openDir` (the nearest existing directory above it, opened as its
+  own `os.Root` and compared with the identity `resolveNewPath` approved), so a parent swapped for a symlink to `.git`
+  after the check can't redirect the write. `openExisting` refuses to open for writing a file with more than one name
+  (hard link), and `stillAtPath` refuses to truncate a file that was renamed away after it was opened
+  (`DECISIONS.md § PR #35 Copilot review`).
+  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `openForWrite`, streamed in 256 KB pieces with
+  the context checked, up to `copyFileMaxBytes` (default 100 MB), files only, no hard-linked source) and `move_file`
+  (`resolvePathForWrite` + `resolveNewPath`, `openDir` on both parents, then `os.Root.Rename`: a real rename, no size cap,
+  files only; across filesystems it fails with a message pointing at `copy_file`) check both paths
+  (`DECISIONS.md § Slice 6 built`).
+  `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
+  match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
+  file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file
+  bodies (`trace.shortenArguments`); the approval question is one summary per call (`DECISIONS.md § Slice 5 built`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
   orphaned one, and since a failed turn is not added back, the same bad context is re-sent forever)
@@ -188,7 +217,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   exits and its deferred `ShutdownAgent` closes the servers that had connected. At the prompt, the line editor
   treats Ctrl+C as a key and clears the input. Each turn gets `createInterruptWatcher(ctx, interrupts)`: a child
   context cancelled by Ctrl+C; `stop()` cancels it and waits for the watcher to exit, so nothing that outlives the
-  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`mcpconnect/procgroup_*.go`),
+  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`procutils/procgroup_*.go`, called from `mcpconnect/conn.go`),
   so the terminal's Ctrl+C never reaches them; `McpConnection.Close` kills the group. `discardStrayInterrupts` runs *before* the watcher
   starts. A cancelled turn prints `[interrupted]` and adds nothing to memory. **Anything long-lived
   started from a turn (auto-compaction) must get the root context**, which is why `maybeStartAutoCompaction`
@@ -199,19 +228,66 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `newTTYReaderWith(&auto.Pilot{...}, io.Discard)`; the terminal must be set before the first `BindKey`.
 - **Every tool call passes `checkBeforeToolHooks` (`agent/react.go`) before it runs**, after the unknown-tool and
   argument checks. A veto is returned as the tool result (`error: denied by rule "…"`), never by skipping the call,
-  because every tool call needs a result. Each veto is traced as `tool_vetoed` (`denied` | `denied_by_user` |
-  `allowed_by_user`). The user is asked only through `cs.PromptAllowDenyCall`, which `runChatLoop` sets for a
-  `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second reader would
-  steal the next prompt line); `nil` means deny without asking. Model text shown in the question is printed with
-  `%q`. A new path that runs tools must go through this check. Deny rules match model-facing names
-  (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule fails setup.
-  `hooks` holds no rules of its own: the defaults (`*delete*`, `*remove*`) are `GetDefaultConfig().DenyRules`, and a
-  config file's `denyRules` replaces them (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built` and
-  `§ Policy out of the core`.
+  because every tool call needs a result. **Three levels** (`hooks.ToolRules`): a `denyRules` match is refused in every
+  mode and never asked; an `askRules` match returns an error wrapping `hooks.ErrNeedsApproval`; no match runs. Deny
+  wins over ask. **Only an `ErrNeedsApproval` veto can be overridden**: by `cs.AllowAskRules` (approval `allow-all`,
+  which chat sets only after the user confirms it at startup in `confirmAllowAll`; it never touches deny rules), or by
+  the user. Any other hook error is final. Each veto is traced as `tool_vetoed` (`denied` | `denied_by_user` |
+  `allowed_by_user` | `allowed_by_config`). The user is asked only through `cs.PromptAllowDenyCall`, which `chatLoop`
+  sets for a `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second
+  reader would steal the next prompt line); `nil` means nobody to ask, so an ask is denied. Model text shown in the
+  question is printed with `%q`. A new path that runs tools must go through this check. Rules match model-facing
+  names (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule or an
+  unknown `approval` value fails setup. `hooks` holds no rules of its own: the defaults are `GetDefaultConfig()`
+  (`denyRules` empty; `askRules` `*delete*`, `*remove*` and the write tools), and a config file's list replaces that
+  list's default (`[]` = no rules). See `DECISIONS.md § Approval gate v1 built`, `§ Policy out of the core` and
+  `§ Approval levels: deny / ask / run`.
+- **`run_command` is opt-in by `runCommands` and is not contained** (`tools/builtin/runcommand.go`; `DECISIONS.md § run_command plan`
+  and `§ run_command built`). Enabled only when `run_command` is in `builtinTools` AND `runCommands` (bare program names, resolved
+  to absolute paths once at setup, refused inside `workDir`) is non-empty; otherwise setup warns and skips it. No shell, empty
+  stdin, environment limited to `DefaultCommandEnv` plus `commandEnv` (extend-only), own process group killed on context end and
+  after exit, output cut at `commandMaxOutputBytes` (program killed). A running program bypasses every `Workspace` check; only `dir`
+  is checked. Rules: `run_command:<glob>` in `denyRules`/`askRules` match the joined command line (`hooks.ToolRules.LevelFor`);
+  rules without that prefix match tool names only; there is no allow list (not matched = runs), so `run_command` is deliberately
+  not in the default `askRules`. Unreadable arguments fail closed to ask. A glob over a command line is not a detector.
+  On Windows only the direct process is killed when the call ends (no Job Object), and the hard-link checks of the write tools are
+  skipped (no link count there); both are accepted gaps with the real fix written down (`DECISIONS.md § PR #38 review`).
+  **Best-effort argument guard:** `Workspace.checkCommandArgs` refuses (never asks) a call whose arguments, or `--flag=value` values,
+  name a file `checkPath` refuses (deny list, `denyPaths`, trace dir), also via symlinks or `..`. It misses directories (`grep -r .`),
+  interpreter-built names and `rev:path`; it is a guard against mistakes, not a boundary (`DECISIONS.md § run_command: arguments are checked`).
+- **Timeouts:** `toolTimeoutSeconds` (default 300) bounds every tool call, MCP included (`executeToolCall`); `turnTimeoutSeconds`
+  (default 600) bounds a whole turn (`handleUserInput`) and must not be below the tool limit (`checkConfig`). A tool must honour
+  its context. Ctrl+C and the turn timeout are told apart from the tool's own deadline by which context ended.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
   **`MaxTokens` is parsed and merged but not yet read**; don't assume `-maxtokens` takes effect.
+
+## Code map (root module only)
+
+`CODEMAP.md` is a generated map of every package: a directory tree, then each Go file's function and method
+signatures. It is copied from the `# Codemap (auto-generated)` section at the end of each package's `doc.go`, which
+`cmd/codemap` writes from the code. **Never edit those sections or `CODEMAP.md` by hand.**
+
+```sh
+go run ./cmd/codemap                         # regenerate every doc.go section and CODEMAP.md
+go run ./cmd/codemap -check                  # fail if anything is stale (go test ./cmd/codemap runs this too)
+go run ./cmd/codemap -lint                   # list functions with a missing or malformed header
+go run ./cmd/codemap -code-unchanged HEAD    # fail if anything but comments changed since a git ref
+```
+
+- **After adding, removing or changing a function signature, run `go run ./cmd/codemap`** and commit the result.
+- **Every function (exported or not) has a header**: a one-liner starting with the function's name, then `Notes:`
+  (bullets for what the code does not make obvious; `Notes: none.` if nothing). No `Example:` sections. The format is in
+  `cmd/codemap/doc.go`. Long explanations above a function belong in its Notes.
+- **Package comments live only in `doc.go`.** A new package needs a `doc.go` with a hand-written overview.
+- **Whoever changes a function body (you or an agent) rereads that function's header and updates its one-liner and Notes
+  if they no longer match.** Nothing enforces this; Notes drifting is accepted as a minor defect, but do not leave a
+  header you know is wrong. Signatures in the map cannot drift: they are generated.
+- The `doc-keeper` agent (`.claude/agents/doc-keeper.md`) writes headers and edits comments only. After it runs,
+  `-code-unchanged HEAD` must pass. See `DECISIONS.md § Codemap`.
+- **Pre-commit hook** (`.githooks/pre-commit`): blocks a commit when the map is stale or a function lacks a header. It
+  only checks, never stages. Enable once per clone: `git config core.hooksPath .githooks`. Skip with `--no-verify`.
 
 ## Conventions
 

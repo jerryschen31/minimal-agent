@@ -195,3 +195,62 @@ func Test_Unit_ValidateMode(t *testing.T) {
 		})
 	}
 }
+
+// - Verify -approve is nil when not passed and records ask or allow-all (single or double dash) when passed
+func Test_Unit_ParseFlags_Approve_Valid(t *testing.T) {
+	flags, err := ParseFlags(nil, io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.Approve != nil {
+		t.Errorf("expected nil Approve when not passed, got %q", *flags.Approve)
+	}
+	for _, args := range [][]string{{"-approve", "ask"}, {"-approve", "allow-all"}, {"--approve=allow-all"}} {
+		flags, err := ParseFlags(args, io.Discard)
+		if err != nil {
+			t.Fatalf("%q: unexpected error: %v", args, err)
+		}
+		want := args[len(args)-1]
+		if i := strings.Index(want, "="); i >= 0 {
+			want = want[i+1:]
+		}
+		if flags.Approve == nil || *flags.Approve != want {
+			t.Errorf("%q: expected Approve %q, got %v", args, want, flags.Approve)
+		}
+	}
+}
+
+// - Verify -approve rejects anything but ask or allow-all (including other cases and an empty value), naming the choices
+func Test_Unit_ParseFlags_Approve_Invalid(t *testing.T) {
+	for _, value := range []string{"bogus", "ALLOW-ALL", "allow_all", "Ask", "deny", "", "   "} {
+		t.Run(value, func(t *testing.T) {
+			flags, err := ParseFlags([]string{"-approve", value}, io.Discard)
+			if err == nil {
+				t.Fatalf("expected an error for -approve %q, got Approve %v", value, flags.Approve)
+			}
+			if !strings.Contains(err.Error(), "approve") {
+				t.Errorf("expected the error to name -approve, got %v", err)
+			}
+		})
+	}
+	_, err := ParseFlags([]string{"-approve", "bogus"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "ask") || !strings.Contains(err.Error(), "allow-all") || !strings.Contains(err.Error(), `"bogus"`) {
+		t.Errorf("expected the error to list ask and allow-all and quote the value, got %v", err)
+	}
+}
+
+// - Verify FlagsOverlay lets -approve override the config value, and leaves it alone when not passed
+func Test_Unit_FlagsOverlay_Approve(t *testing.T) {
+	cfg := GetDefaultConfig()
+	cfg.Approval = ApprovalAllowAll // as if "approval": "allow-all" came from the config file
+
+	if got := FlagsOverlay(cfg, Flags{}).Approval; got != ApprovalAllowAll {
+		t.Errorf("expected Approval to stay %q when -approve is not passed, got %q", ApprovalAllowAll, got)
+	}
+	if got := FlagsOverlay(cfg, Flags{Approve: new(ApprovalAsk)}).Approval; got != ApprovalAsk {
+		t.Errorf("expected -approve ask to win over the config file, got %q", got)
+	}
+	if got := FlagsOverlay(GetDefaultConfig(), Flags{Approve: new(ApprovalAllowAll)}).Approval; got != ApprovalAllowAll {
+		t.Errorf("expected -approve allow-all to win over the default, got %q", got)
+	}
+}

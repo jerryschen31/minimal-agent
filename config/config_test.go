@@ -493,15 +493,18 @@ func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
 	}
 }
 
-// - Verify the default deny rules are *delete* and *remove*, and a config file's denyRules replaces them: a file
-// without the key keeps the defaults, a list replaces them, and [] or null leaves no rules
+// defaultAskRules is the expected default ask list, written out so a change to the defaults shows up here.
+var defaultAskRules = []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"}
+
+// - Verify there are no default deny rules, and a config file's denyRules replaces that (empty) default: a file
+// without the key keeps none, a list is applied, and [] or null leaves no rules
 func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
 	cases := []struct {
 		desc string
 		json string
 		want []string
 	}{
-		{"no denyRules key keeps defaults", `{"model": "fake-model"}`, []string{"*delete*", "*remove*"}},
+		{"no denyRules key keeps the empty default", `{"model": "fake-model"}`, nil},
 		{"a list replaces defaults", `{"denyRules": ["*move*"]}`, []string{"*move*"}},
 		{"empty list means no rules", `{"denyRules": []}`, []string{}},
 		{"null means no rules", `{"denyRules": null}`, nil},
@@ -527,14 +530,113 @@ func Test_Unit_SetDefaultConfig_DenyRules_FileReplacesDefaults(t *testing.T) {
 	}
 }
 
-// - Verify GetDefaultConfig returns a fresh DenyRules slice each call, so changing one result can't change the defaults
-func Test_Unit_GetDefaultConfig_DenyRules_FreshSlice(t *testing.T) {
-	first := GetDefaultConfig()
-	first.DenyRules[0] = "changed"
-	first.DenyRules = append(first.DenyRules, "extra")
+// - Verify the default ask rules (*delete*, *remove* and the five file-changing tools), and a config file's askRules
+// replaces them: a file without the key keeps the defaults, a list replaces them, [] or null leaves no rules, and
+// setting only denyRules leaves the ask defaults alone
+func Test_Unit_SetDefaultConfig_AskRules_FileReplacesDefaults(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"no askRules key keeps defaults", `{"model": "fake-model"}`, defaultAskRules},
+		{"denyRules only keeps ask defaults", `{"denyRules": ["*push*"]}`, defaultAskRules},
+		{"a list replaces defaults", `{"askRules": ["*push*"]}`, []string{"*push*"}},
+		{"empty list means no rules", `{"askRules": []}`, []string{}},
+		{"null means no rules", `{"askRules": null}`, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
 
-	if got, want := GetDefaultConfig().DenyRules, []string{"*delete*", "*remove*"}; !slices.Equal(got, want) {
-		t.Errorf("GetDefaultConfig().DenyRules = %q after changing an earlier result, want %q", got, want)
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.AskRules, c.want) {
+				t.Errorf("AskRules = %q, want %q", cfg.AskRules, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify GetDefaultConfig returns a fresh AskRules slice each call, so changing one result can't change the defaults
+func Test_Unit_GetDefaultConfig_AskRules_FreshSlice(t *testing.T) {
+	first := GetDefaultConfig()
+	first.AskRules[0] = "changed"
+	first.AskRules = append(first.AskRules, "extra")
+
+	if got := GetDefaultConfig().AskRules; !slices.Equal(got, defaultAskRules) {
+		t.Errorf("GetDefaultConfig().AskRules = %q after changing an earlier result, want %q", got, defaultAskRules)
+	}
+}
+
+// - Verify the defaults: no deny rules and approval "ask"
+func Test_Unit_GetDefaultConfig_NoDenyRules_ApprovalAsk(t *testing.T) {
+	cfg := GetDefaultConfig()
+	if len(cfg.DenyRules) != 0 {
+		t.Errorf("DenyRules = %q, want none by default", cfg.DenyRules)
+	}
+	if cfg.Approval != ApprovalAsk || ApprovalAsk != "ask" || ApprovalAllowAll != "allow-all" {
+		t.Errorf("Approval = %q (consts %q, %q), want \"ask\" with consts ask, allow-all", cfg.Approval, ApprovalAsk, ApprovalAllowAll)
+	}
+}
+
+// - Verify "approval" in a config file is applied as given without a warning (validation is checkConfig's job), and a
+// file without the key keeps "ask"
+func Test_Unit_SetDefaultConfig_Approval_FromFile(t *testing.T) {
+	cases := []struct {
+		desc, json, want string
+	}{
+		{"no key keeps ask", `{"model": "fake-model"}`, "ask"},
+		{"allow-all", `{"approval": "allow-all"}`, "allow-all"},
+		{"ask", `{"approval": "ask"}`, "ask"},
+		{"unknown value passes through", `{"approval": "bogus"}`, "bogus"},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if cfg.Approval != c.want {
+				t.Errorf("Approval = %q, want %q", cfg.Approval, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows denyRules, askRules and approval on their own aligned lines
+func Test_Unit_PrintConfig_ShowsToolRulesAndApproval(t *testing.T) {
+	var out bytes.Buffer
+	cfg := GetDefaultConfig()
+	cfg.OutBuffer = &out
+	cfg.DenyRules = []string{"*push*"}
+	cfg.Approval = ApprovalAllowAll
+
+	PrintConfig(cfg)
+
+	got := out.String()
+	for _, want := range []string{
+		"  denyRules:     [*push*]\n",
+		"  askRules:      [*delete* *remove* write_file edit_file create_directory copy_file move_file]\n",
+		"  approval:      allow-all\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q to be printed, got:\n%s", want, got)
+		}
 	}
 }
 
@@ -710,21 +812,21 @@ func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
 	}
 }
 
-// - Verify denyFileNames is empty by default, so only the built-in file deny list applies
-func Test_Unit_GetDefaultConfig_DenyFileNames_Empty(t *testing.T) {
-	if got := GetDefaultConfig().DenyFileNames; len(got) != 0 {
-		t.Errorf("expected no default DenyFileNames, got %q", got)
+// - Verify denyPaths is empty by default, so only the built-in file deny list applies
+func Test_Unit_GetDefaultConfig_DenyPaths_Empty(t *testing.T) {
+	if got := GetDefaultConfig().DenyPaths; len(got) != 0 {
+		t.Errorf("expected no default DenyPaths, got %q", got)
 	}
 }
 
-// - Verify "denyFileNames" in a config file is applied as given, without a warning, and a file without the key leaves it empty
-func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T) {
+// - Verify "denyPaths" in a config file is applied as given, without a warning, and a file without the key leaves it empty
+func Test_Unit_SetDefaultConfig_DenyPaths_AppliedWithoutWarning(t *testing.T) {
 	cases := []struct {
 		desc string
 		json string
 		want []string
 	}{
-		{"a list is applied", `{"denyFileNames": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
+		{"a list is applied", `{"denyPaths": ["*.secret", "Credentials.json"]}`, []string{"*.secret", "Credentials.json"}},
 		{"no key leaves it empty", `{"model": "fake-model"}`, nil},
 	}
 	for _, c := range cases {
@@ -738,8 +840,8 @@ func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T
 			if err != nil {
 				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
 			}
-			if !slices.Equal(cfg.DenyFileNames, c.want) {
-				t.Errorf("DenyFileNames = %q, want %q", cfg.DenyFileNames, c.want)
+			if !slices.Equal(cfg.DenyPaths, c.want) {
+				t.Errorf("DenyPaths = %q, want %q", cfg.DenyPaths, c.want)
 			}
 			if out != "" {
 				t.Errorf("expected no warnings, got %q", out)
@@ -748,24 +850,228 @@ func Test_Unit_SetDefaultConfig_DenyFileNames_AppliedWithoutWarning(t *testing.T
 	}
 }
 
-// - Verify /config shows denyFileNames, both when set and when empty
-func Test_Unit_PrintConfig_ShowsDenyFileNames(t *testing.T) {
+// - Verify the old key "denyFileNames" is no longer recognized (renamed to denyPaths, no fallback): a config file that
+// still uses it gets an unrecognized-field warning and its patterns are NOT applied (the documented downside)
+func Test_Unit_SetDefaultConfig_OldDenyFileNamesKey_WarnsAndNotApplied(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"denyFileNames": ["*.secret"]}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if len(cfg.DenyPaths) != 0 {
+		t.Errorf("expected the old key's patterns not to be applied, got DenyPaths = %q", cfg.DenyPaths)
+	}
+	if !strings.HasPrefix(out, "[warning]") || !strings.Contains(out, `unrecognized field "denyFileNames"`) {
+		t.Errorf("expected an unrecognized-field warning naming denyFileNames, got %q", out)
+	}
+}
+
+// - Verify /config shows denyPaths on its own aligned line, both when set and when empty
+func Test_Unit_PrintConfig_ShowsDenyPaths(t *testing.T) {
 	for _, c := range []struct {
 		names []string
 		want  string
 	}{
-		{[]string{"*.secret", "creds.json"}, "denyFileNames: [*.secret creds.json] (added to the built-in list)"},
-		{nil, "denyFileNames: [] (added to the built-in list)"},
+		{[]string{"*.secret", "creds.json"}, "  denyPaths:     [*.secret creds.json] (added to the built-in list)\n"},
+		{nil, "  denyPaths:     [] (added to the built-in list)\n"},
 	} {
 		var out bytes.Buffer
 		cfg := GetDefaultConfig()
 		cfg.OutBuffer = &out
-		cfg.DenyFileNames = c.names
+		cfg.DenyPaths = c.names
 
 		PrintConfig(cfg)
 
 		if !strings.Contains(out.String(), c.want) {
 			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}
+
+// - Verify maxSearchFiles defaults to 10000
+func Test_Unit_GetDefaultConfig_MaxSearchFiles_Is10000(t *testing.T) {
+	if got := GetDefaultConfig().MaxSearchFiles; got != 10000 {
+		t.Errorf("expected MaxSearchFiles 10000, got %d", got)
+	}
+}
+
+// - Verify "maxSearchFiles" in a config file is applied without a warning, and a file without the key keeps the default
+func Test_Unit_SetDefaultConfig_MaxSearchFiles_AppliedWithoutWarning(t *testing.T) {
+	for _, c := range []struct {
+		json string
+		want int
+	}{
+		{`{"maxSearchFiles": 42}`, 42},
+		{`{"model": "fake-model"}`, 10000},
+	} {
+		path := writeTempFile(t, "config.json", []byte(c.json))
+
+		var cfg Config
+		var err error
+		out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+		if err != nil {
+			t.Fatalf("%s: SetDefaultConfig() returned an error: %v", c.json, err)
+		}
+		if cfg.MaxSearchFiles != c.want {
+			t.Errorf("%s: expected MaxSearchFiles %d, got %d", c.json, c.want, cfg.MaxSearchFiles)
+		}
+		if out != "" {
+			t.Errorf("%s: expected no warnings, got %q", c.json, out)
+		}
+	}
+}
+
+// - Verify /config shows maxSearchFiles, the default and a configured value
+func Test_Unit_PrintConfig_ShowsMaxSearchFiles(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{GetDefaultConfig().MaxSearchFiles, "maxSearchFiles: 10000\n"},
+		{42, "maxSearchFiles: 42\n"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.MaxSearchFiles = c.n
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}
+
+// - Verify ignorePaths defaults to .git/, node_modules/, __pycache__/, .venv/ and *.pyc
+func Test_Unit_GetDefaultConfig_IgnorePaths_Default(t *testing.T) {
+	want := []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"}
+	if got := GetDefaultConfig().IgnorePaths; !slices.Equal(got, want) {
+		t.Errorf("IgnorePaths = %q, want %q", got, want)
+	}
+}
+
+// - Verify "ignorePaths" in a config file replaces the default list without a warning ([] turns it off), and a file
+// without the key keeps the default
+func Test_Unit_SetDefaultConfig_IgnorePaths_ReplacesDefault(t *testing.T) {
+	cases := []struct {
+		desc string
+		json string
+		want []string
+	}{
+		{"a list replaces the default", `{"ignorePaths": ["*.tmp"]}`, []string{"*.tmp"}},
+		{"[] empties it", `{"ignorePaths": []}`, []string{}},
+		{"no key keeps the default", `{"model": "fake-model"}`, GetDefaultConfig().IgnorePaths},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			path := writeTempFile(t, "config.json", []byte(c.json))
+
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+			if err != nil {
+				t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+			}
+			if !slices.Equal(cfg.IgnorePaths, c.want) {
+				t.Errorf("IgnorePaths = %q, want %q", cfg.IgnorePaths, c.want)
+			}
+			if out != "" {
+				t.Errorf("expected no warnings, got %q", out)
+			}
+		})
+	}
+}
+
+// - Verify /config shows ignorePaths, the default list and an empty one
+func Test_Unit_PrintConfig_ShowsIgnorePaths(t *testing.T) {
+	for _, c := range []struct {
+		paths []string
+		want  string
+	}{
+		{GetDefaultConfig().IgnorePaths, "ignorePaths:   [.git/ node_modules/ __pycache__/ .venv/ *.pyc]\n"},
+		{[]string{}, "ignorePaths:   []\n"},
+	} {
+		var out bytes.Buffer
+		cfg := GetDefaultConfig()
+		cfg.OutBuffer = &out
+		cfg.IgnorePaths = c.paths
+
+		PrintConfig(cfg)
+
+		if !strings.Contains(out.String(), c.want) {
+			t.Errorf("expected %q to be printed, got:\n%s", c.want, out.String())
+		}
+	}
+}
+
+// - Verify ConfigFile is the -config path when a file is loaded, "" with no file, and is never read from the file
+// itself (json:"-"): a "configFile" key is an unknown field and ignored
+func Test_Unit_SetDefaultConfig_ConfigFile_SetFromFlagNotFromFile(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"configFile": "/etc/passwd"}`))
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || cfg.ConfigFile != path {
+		t.Fatalf("ConfigFile = %q, err %v; want %q", cfg.ConfigFile, err, path)
+	}
+	if !strings.Contains(out, "configFile") {
+		t.Errorf("expected an unrecognized-field warning, got %q", out)
+	}
+	var none Config
+	captureStdout(t, func() { none, err = SetDefaultConfig(Flags{}) })
+	if err != nil || none.ConfigFile != "" {
+		t.Errorf("no config file: ConfigFile = %q, err %v", none.ConfigFile, err)
+	}
+}
+
+// - Verify copyFileMaxBytes defaults to 100 MB and a config file can override it
+func Test_Unit_SetDefaultConfig_CopyFileMaxBytes(t *testing.T) {
+	if got := GetDefaultConfig().CopyFileMaxBytes; got != 100<<20 {
+		t.Errorf("default = %d", got)
+	}
+	path := writeTempFile(t, "config.json", []byte(`{"copyFileMaxBytes": 5242880}`))
+	var cfg Config
+	var err error
+	captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || cfg.CopyFileMaxBytes != 5242880 {
+		t.Errorf("(%d, %v), want 5242880", cfg.CopyFileMaxBytes, err)
+	}
+}
+
+// - Verify the run_command and timeout settings: defaults (no programs allowed, 128 KB cap, 5 and 10 minutes), keys read
+// from a config file without an "unrecognized field" warning, and the values shown by PrintConfig
+func Test_Unit_SetDefaultConfig_RunCommandAndTimeouts(t *testing.T) {
+	d := GetDefaultConfig()
+	if len(d.RunCommands) != 0 || len(d.CommandEnv) != 0 || d.CommandMaxOutputBytes != 128<<10 || d.ToolTimeoutSeconds != 300 || d.TurnTimeoutSeconds != 600 {
+		t.Errorf("defaults: runCommands %v, commandEnv %v, cap %d, tool %d, turn %d", d.RunCommands, d.CommandEnv, d.CommandMaxOutputBytes, d.ToolTimeoutSeconds, d.TurnTimeoutSeconds)
+	}
+	if slices.Contains(d.AskRules, "run_command") || slices.Contains(d.AskRules, "run_command:*") {
+		t.Errorf("run_command must not be in the default askRules (no allow list to carve exceptions): %v", d.AskRules)
+	}
+	path := writeTempFile(t, "config.json", []byte(`{"runCommands":["go","npm"],"commandEnv":["NPM_CONFIG_CACHE"],"commandMaxOutputBytes":2048,"toolTimeoutSeconds":60,"turnTimeoutSeconds":120}`))
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil || !slices.Equal(cfg.RunCommands, []string{"go", "npm"}) || !slices.Equal(cfg.CommandEnv, []string{"NPM_CONFIG_CACHE"}) ||
+		cfg.CommandMaxOutputBytes != 2048 || cfg.ToolTimeoutSeconds != 60 || cfg.TurnTimeoutSeconds != 120 {
+		t.Errorf("(%+v, %v)", cfg, err)
+	}
+	if strings.Contains(out, "unrecognized") {
+		t.Errorf("keys not recognised: %q", out)
+	}
+	var shown bytes.Buffer
+	cfg.OutBuffer = &shown
+	PrintConfig(cfg)
+	for _, want := range []string{"runCommands:   [go npm]", "commandEnv:", "commandMaxOutputBytes: 2048", "toolTimeoutSeconds: 60", "turnTimeoutSeconds: 120"} {
+		if !strings.Contains(shown.String(), want) {
+			t.Errorf("PrintConfig lacks %q:\n%s", want, shown.String())
 		}
 	}
 }

@@ -981,3 +981,248 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > Item 6 built (`DECISIONS.md § Policy cleanup item 6 built`): `builtin.DenyList` (built-ins + config
 > `denyFileNames`, extend-only). Note: `contextwindow` `Test_Unit_CheckConfig` fails since ef46747 (the new threshold
 > rule rejects 4 messages × 0.75); not from item 6. Next policy item: 7 (printing out of `reActLoop`).
+>
+> (2026-10-30) `contextwindow` `Test_Unit_CheckConfig` fixed: its cases now respect ef46747's rule (with
+> `autoCompact` on, the threshold must start above 4 messages). Item 6 committed (7dc068a).
+>
+> **File tools started** on branch `feat/built-in-write-edit-file-tools`. Order: slice 0 shared checks → 1
+> `list_files` → 2 `search_files` → 3 deny/ask/run levels + policy item 7 → 4 `write_file` + `create_directory` → 5
+> `edit_file` → 6 `copy_file`/`move_file`. Slice 0 (`builtin.Workspace`) built, not committed (`DECISIONS.md § File
+> tools slice 0 built`). Open for later slices: list/search hide deny-listed names (proposed); search skips symlinks
+> (proposed; a link inside workDir to `.env` would otherwise leak it); `O_EXCL` for "new file" writes; `move_file`
+> can't refuse to replace a file that appears after the check; write/edit size cap a constant; read-only tools stay
+> opt-in. Still open from item 6: `DenyList` accepts whitespace-padded patterns (match nothing) and `.`/`..`.
+
+>
+> (2026-11-01) Slices 1–2 merged (`list_files` PR #30, `search_files` PR #31). Slice 3 on branch
+> `feat/deny-ask-run-levels`: levels decided (`DECISIONS.md § Approval levels: deny / ask / run`); policy item 7
+> built, not committed (`§ Policy item 7 built`). Next: `hooks.ToolRules` + `askRules` (Jerry to choose who writes
+> it). Open for slice 4: write-deny list (`.git/`, the agent's own config), a short preview of `write_file` content
+> in the ask prompt.
+>
+> (2026-11-01) Item 7 merged (PR #32, `Output`). Slice 3 built on `feat/tool-deny-ask-run-rules`, not committed
+> (`DECISIONS.md § Slice 3 built`): `ToolRules`, `askRules`, `approval: allow-all` with the startup confirmation.
+> Next: slice 4 (`write_file` + `create_directory`; write-deny list for `.git/` and the agent's config; a short
+> preview of the content in the ask prompt).
+>
+> (2026-11-01, end of session) **PR #33** (slice 3, branch `feat/tool-deny-ask-run-rules`, merged into **`build`**, not
+> `master`; local `origin/master` is stale at PR #29). Copilot found that the test sub-agent's slice 3 rewrite of
+> `config/config_test.go` deleted 7 unrelated tests (a script replaced everything between two comments). They are
+> restored from `build` (9b1f4e1) and **PR #33 is merged** (a2259f4). Jerry said to ignore Copilot's first two
+> comments. After any test
+> sub-agent, compare test names with `build`; deleting an obsolete test is fine if the agent reports it with a reason.
+> Name rules vs effects discussed: `DECISIONS.md § Tool-name rules are an approval layer`.
+>
+> **Next:** slice 4 `write_file` + `create_directory`, then 5 `edit_file`, then 6
+> `copy_file`/`move_file` (append_file rejected; maybe later an append mode or a notes tool). Slice 4 plan: both go
+> through `Workspace` (`resolve`/`check`/`openRoot`, never `os.Open` on a model path); a **write-deny list**
+> (`.git/`, the agent's own config file; plus the read deny list and `traceDir`); the ask prompt shows a **short
+> preview** (path, size, first few lines, quoted); `O_EXCL` for "create new" writes; a size cap as a constant. The
+> ask defaults already name `write_file`, `edit_file`, `create_directory`, `copy_file`, `move_file`, so slice 4
+> changes no defaults. Optional small fixes first: trace the allow-all startup answer (confirmed or not); print the
+> normalized rules in the allow-all notice; `%q` on the `[tool] Tool called:` name. Still open from earlier: welcome
+> banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused, `maxSteps` discarding a turn,
+> the autonomous-port warning for `allow-all` with empty `denyRules`.
+>
+> (2026-11-02) **Codemap planned before slice 4** (`DECISIONS.md § Codemap: generated map in each package's doc.go`).
+> Each package's `doc.go` gets a generated `# Codemap (auto-generated)` section; `CODEMAP.md` copies them; headers
+> follow One-liner / Example / Notes; a `doc-keeper` sub-agent maintains them. **Next:** slice 2, the generator
+> (`cmd/codemap`), Jerry writes it from a skeleton. Slice 4 `write_file` + `create_directory` waits (plan above;
+> branch `feat/built-in-write-file-tool`, clean).
+>
+> (2026-11-02) **Codemap built** on branch `feat/doc-func-reference-guide`, not committed (`DECISIONS.md § Codemap` and
+> `§ Codemap simplified`). `cmd/codemap` generates a signatures-only `# Codemap (auto-generated)` section in every
+> package's `doc.go` plus `CODEMAP.md`; every function has a header (one-liner + Notes) written by four doc-keeper
+> sub-agents (comments only, verified with `-code-unchanged HEAD`); the test sub-agent wrote the tests and found four
+> bugs. `go.mod` gained `golang.org/x/tools v0.42.0` (+ `x/mod` indirect). Jerry to review: the headers (esp. facts the
+> agents added from the code, e.g. `GetWindow` bypassing the context lock, `NewChatContext`'s error always nil, the
+> `FakeProvider.Chat` precedence order, `newPlainReader`'s "stuck read ends only when input does", `ShutdownAgent` safe
+> after a failed setup). **Known gap:** nothing detects a header gone stale after a body change.
+> **Next:** slice 4 `write_file` + `create_directory` (plan above), now with the rule "run `go run ./cmd/codemap` after
+> changing a signature".
+>
+> (2026-11-02) Codemap enforcement: `.githooks/pre-commit` (check only) added and `core.hooksPath` set for this clone
+> (`DECISIONS.md § Codemap enforcement`). Agents that change a function body must update its header Notes
+> (`CLAUDE.md § Code map`); drift is otherwise tolerated.
+>
+> (2026-11-02, end of session) **Handoff for a fresh session — start slice 4 here.**
+> - **State:** branch `feat/doc-func-reference-guide` holds the codemap work, **uncommitted** (Jerry commits; base branch
+>   for PRs is `build`). Tree is green: `go test -race ./...`, `go vet ./...`, `gofmt`, `go run ./cmd/codemap -check`
+>   and `-lint`, `-code-unchanged HEAD` all pass. Slice 4 should start from a branch cut after the codemap is committed
+>   (an earlier branch `feat/built-in-write-file-tool` exists at 79f50d3 without the codemap).
+> - **Slice 4 = `write_file` + `create_directory`**, plan in the 2026-11-01 end-of-session entry above (`Workspace`
+>   `resolveNew`, write-deny list for `.git/` and the agent's own config, `O_EXCL` for create-new, size cap constant,
+>   ask-prompt preview, result text says `created`/`overwrote`). Three questions Jerry has not answered: does
+>   `write_file` auto-create parent dirs, does an overwrite need a flag or is the ask prompt enough, how strict is the
+>   write-deny list. Default to learning mode ([[feedback-learning-mode]]): `create_directory` + the `resolveNew`
+>   skeleton first, Jerry fills it in.
+> - **Codemap rules that now apply to every change** (`CLAUDE.md § Code map`): after changing a signature run
+>   `go run ./cmd/codemap`; every new function gets a header (one-liner starting with its name, then `Notes:`, no
+>   `Example:`); a new package needs a `doc.go`; the pre-commit hook (`.githooks/pre-commit`, needs
+>   `git config core.hooksPath .githooks` in a new clone) blocks a stale map; when changing a function body, update its
+>   header Notes.
+> - **Jerry still owes:** a review of the facts the doc-keeper agents added (listed in the entry above); decision on
+>   whether to add a GitHub Actions workflow later (no `.github/` yet).
+>
+> (2026-11-02) PR #34 Copilot comments addressed on `feat/doc-func-ref-guide-codemap`, not committed
+> (`DECISIONS.md § PR #34 Copilot review`): `-code-unchanged` now catches added/untracked files with code; the map now
+> includes other-OS files (`procgroup_windows.go` is in `CODEMAP.md`). Tests updated/added in `guard_test.go` and
+> `load_test.go`; the fixture gained `util/util_windows.go` and `util/gen.go`.
+>
+> (2026-11-02) Slice 4 part 1 built on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 part 1
+> built`): `resolveNewPath`, `.git` write-deny, `create_directory`. Renames done earlier today: `resolve`/`resolveInfo` →
+> `resolvePath`, `check` → `checkPath`, package `resolvePath` → `resolveSymLinks`. **Next:** `write_file` (`maxWriteBytes`
+> 1 MB, no parent dirs, no overwrite flag, `created`/`overwrote`, `O_EXCL` for new, ask-prompt preview) plus write-deny
+> for the `-config` file (needs its path in `NewWorkspace`). Then a test sub-agent pass (diff test names vs `build`).
+>
+> (2026-11-02) **Slice 4 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 built`):
+> `write_file`, config-file write-deny (`Config.ConfigFile` → `NewWorkspace`), approval preview, digest lines, tests.
+> `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass. Enable with `builtinTools: ["create_directory",
+> "write_file"]`. **Jerry to do:** review; try it live (`go run . -config … `, ask the agent to write a file, read the
+> approval preview); diff test names vs `build` (none deleted here). Not covered by tests: the swap race inside
+> `openForWrite`. **Next:** slice 5 `edit_file` (needs its own result-size check), then 6 `copy_file`/`move_file`.
+>
+> (2026-11-02) **Slice 5 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 5 built`):
+> `edit_file`, shared `openExisting`/`checkWritable`/`resolvePathForWrite`, trace body cutting (`trace/shorten.go`),
+> approval summary for edits, digest line. `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass; `-mode info`
+> lists the three write tools. Enable with `builtinTools: ["create_directory","write_file","edit_file"]`. **Jerry to do:**
+> review; try the write tools live and read the approval questions. **Known limits:** non-atomic in-place writes; mtime
+> granularity; hardlinks (checks are by name); edit vs write_file of one file not serialized. **Next:** slice 6
+> `copy_file`/`move_file`, then `run_command`, `/reload`, then the autonomous port (Jerry builds it himself).
+>
+> (2026-11-03) PR #35 Copilot's 4 inline comments fixed on `feat/built-in-write-file-and-edit-file-tool`, not committed
+> (`DECISIONS.md § PR #35 Copilot review`): preview shapes exclusive, `openDir` for creates, hard-link refusal for
+> writes, `stillAtPath`. Trace shortening gaps from the PR summary (malformed JSON
+> arguments, case-variant keys) also fixed. **Open:** read-through-hard-link of `.env` by `read_file` is still allowed.
+>
+> (2026-11-03) **Slice 6 built** on `feat/built-in-write-file-and-edit-file-tool`, not committed (`DECISIONS.md § Slice 6
+> built`): `copy_file` (streamed, 100 MB cap constant, files only) and `move_file` (a real `os.Root.Rename`, no size cap,
+> files only, EXDEV points at copy_file). Enable with `builtinTools: [..., "copy_file", "move_file"]`. **Jerry to do:**
+> review; try the tools live. **Known limits:** the move has a very small window between the `openDir` checks and the
+> rename; a copied file over 100 MB is refused; `read_file` through a hard link to `.env` still allowed; directory
+> copy/move not supported (by design). **Next:** `run_command`, `/reload`, then the autonomous port (Jerry builds it).
+>
+> (2026-11-03, end of session) **Handoff for a fresh session — start `run_command`, then `/reload`.**
+> - **State:** PRs #35 (create_directory, write_file, edit_file, the Copilot fixes) and #36 (copy_file, move_file,
+>   `copyFileMaxBytes`) are **merged into `build`**; local `build` is at c2d7c22, tree clean. Cut a new branch from
+>   `build` for each feature. The file-tool series (slices 0–6) is finished. Details: `DECISIONS.md § Slice 4 built`,
+>   `§ Slice 5 built`, `§ PR #35 Copilot review`, `§ Slice 6 built`.
+> - **Who writes it:** Jerry is rushing to the autonomous port, where he will slow down and write code himself, so for
+>   `run_command` and `/reload` Claude implements the whole slice (design first, Jerry decides, then build + tests +
+>   docs). Jerry commits and opens PRs (base `build`).
+> - **What the file-tool series left that `run_command` / `/reload` can reuse:**
+>   `Workspace.resolvePath` / `resolveNewPath` / `openDir` (a `dir` argument for `run_command`: use `resolvePath`,
+>   the read-side check); `Config.ConfigFile` (the `-config` path, set by `SetDefaultConfig`; `/reload` needs it to
+>   know which file to re-read); `approvalPreview` (`agent/approval_preview.go`; shapes are by key names, exclusive);
+>   `trace.shortenArguments` (cuts file bodies in traces); `describe` in `trace/digest_activity.go` (a `run_command`
+>   case already prints the command verbatim); `PromptAllowDenyCall` / `AskYesNo` / `ToolRules` (deny / ask / run).
+> - **`run_command` — what is already decided** (`DECISIONS.md § Command execution: contain, don't detect`, and the
+>   mvp4 port plan item 3, `§ New built-in tools` item 22): port `mvp4/tools/builtin/runcommand.go`: argv only (no
+>   shell), filtered environment, 3-minute timeout, 32 KB output cap, empty stdin, own process group killed on
+>   timeout and after exit, non-zero exit is a normal result (`[exit status N]`), optional `dir` checked inside
+>   `workDir`. An allow list in config with rules `run_command:<program> <argument prefix>` using the deny-rule matcher;
+>   a program not on the list **asks every time** (no "always"); deny rules reject without asking. **Not yet
+>   decided** (`§ Still open`): what "ask" means with no terminal; one auto-approve switch or one per level; whether
+>   interpreters (`python3`, `go run`, `sh`) are their own always-ask category; whether `run_command` is off by default
+>   until a sandbox exists. **New problem to design:** today `hooks.ToolRules` match tool *names* only
+>   (`§ Tool-name rules are an approval layer`); the `run_command:<program> <args>` form needs rules that see the
+>   arguments, so the rule matcher/`BeforeTool` input has to grow. **Honest limits to state again:** an allowed
+>   interpreter is code execution, not a sandbox, and it bypasses every file-tool check here (`.git`, the config file,
+>   the deny list, hard-link refusal); the file tools' protections do not extend to it. Reuse the
+>   Ctrl+C / process-group invariants in `CLAUDE.md` (nothing a tool spawns outlives the call; `mcpconnect/procgroup_*.go`).
+> - **`/reload` — decided** (same section): re-read the same config file (or defaults) and apply the same flags; build
+>   everything new first and swap only if every step worked; wait for (or refuse during) auto-compaction; an MCP server
+>   that fails to reconnect is warned about as at startup; trace a `config_reloaded` event with the changed field
+>   *names*, never values; trace settings, the context-window strategy and chat history are not reloaded. Where to look:
+>   `main.go` (load: `SetDefaultConfig`, `FlagsOverlay`, `ValidateMode`), `agent.SetupAgent` (builds the tools,
+>   workspace, hooks and MCP connections), the slash-command handling in `agent/chat.go` (`handleUserInput`), and the
+>   Ctrl+C invariants. Note the file tools build their `Workspace` in `SetupBuiltinTools`, so a reload rebuilds it.
+> - **Conventions that held this session:** tests written alongside the code, plus a mutation check (temporarily
+>   disable each new defence and confirm a test fails); `go run ./cmd/codemap` after any signature change, headers on
+>   every function; append dated entries to `DECISIONS.md` and `SESSION.md`; diff test names vs `build` (none were
+>   deleted); new Config fields get a line in `config/doc.go`, `PrintConfig` and a test.
+> - **Known gaps still open:** `read_file` / `search_files` through a hard link to `.env` is allowed (writes and `copy_file`
+>   refuse it); non-atomic in-place writes; edit vs `write_file` of one file not serialized; a very small window
+>   between the `openDir` checks and the `move_file` rename; `copy_file` refuses files over `copyFileMaxBytes`
+>   (100 MB). Older items: welcome-banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused,
+>   `maxSteps` discarding a turn, the autonomous-port warning for `allow-all` with empty `denyRules`.
+
+### 2026-11-02 — `/reload` designed in detail, then deferred
+
+Claude proposed a full `/reload` plan (nothing built). Jerry found it larger than expected and deferred it. Notes kept here
+so a later session can pick it up; the settled part is still `DECISIONS.md § Command execution: contain, don't detect`
+(the `/reload is planned` bullet). The items below are **open** until Jerry answers the four choices.
+
+- **Shape.**
+  - *No other file, structurally:* extract `config.Load(flags)` (`SetDefaultConfig` + `FlagsOverlay` + `ValidateMode`,
+    now inlined in `main.go`); `main` passes the agent a closure `func() (config.Config, error)` capturing the startup
+    flags. `/reload` takes no argument; `/reload foo.json` is a usage error. `ConfigFile` is already `json:"-"`.
+  - *Shared build step:* move `SetupAgent` steps 1, 3.5, 4–7 (provider, tool rules, built-in tools, MCP conns, registry)
+    into `buildRuntime(ctx, cfg, interrupts)` returning new parts without touching live state. Memory, context window
+    and recorder are not rebuilt.
+  - *Flow* (`agent/reload.go`): refuse if compaction is running → load → overlay non-reloadable fields (trace, context
+    window, chat store, `AgentMode`, `InBuffer`/`OutBuffer`/`McpServerStderr`) from the old config → diff → `buildRuntime`
+    → swap `ChatSession` fields in one block (`Config`, `Provider`, `Tools`, `Hooks`, `SystemMsg`, `Output`,
+    `Agent.mcpConns`) → close old MCP conns → trace `config_reloaded`.
+  - *Wiring:* a `cs.Reload func(ctx) error` closure set by the agent (like `PromptAllowDenyCall`), so `chat.go` doesn't
+    learn about `Agent`.
+  - *Diff by reflection* over `Config` json tags, names only; a classification table (reloadable / restart-only) plus a
+    test that fails when a new field isn't classified.
+- **Gotchas.**
+  - Reload can spawn processes (`mcpServers` `command`). The model can't type `/reload`, but the file can be changed by
+    anything that bypasses the file-tool write-deny (an MCP filesystem server, future `run_command`). Proposed: print
+    changed field names and ask y/N when `mcpServers`, `denyRules`, `askRules`, `approval`, `builtinTools`, `workDir` or
+    `denyPaths` changed; no terminal = refuse.
+  - Reset `AllowAskRules` and re-run `confirmAllowAll` on reload, or a lowered guard inherits an earlier "y".
+  - `json:"-"` runtime wiring (`InBuffer`, `OutBuffer`, `McpServerStderr`) must be copied from the old config or a fresh
+    Config has the wrong/nil writers.
+  - Auto-compaction goroutine reads `cs.Config`/`Provider`/`Recorder` → race with the swap; check
+    `ShouldStartCompaction()` and refuse with a retry message. Needs a `-race` test.
+  - Failure atomicity: new MCP conns live in locals until the swap; on error or Ctrl+C reload closes them itself (the
+    startup "kept on agent for ShutdownAgent" rule doesn't apply). Verify the turn's interrupt watcher covers reload.
+  - Build-first means old and new stdio servers briefly run together (a server holding a lock/port may fail to start).
+  - A partial MCP failure still "succeeds" with fewer tools: print tools added/removed and failed servers (URLs hidden
+    via `safeMCPError`).
+  - Fields set by a flag win: say "set by flag, ignored" if the file changed them. Restart-only changes are reported as
+    "needs restart", not applied silently. A `workDir` change does take effect (Workspace is rebuilt).
+  - Also: new trace event + data builder, `handleUserInput` Notes, `WelcomeMsg`, codemap, tests (extra args, deleted /
+    invalid file, bad rules keep old state, buffers kept, `AllowAskRules` reset, compaction refusal, cleanup on failure,
+    classification test) plus mutation checks.
+- **Choices still open (Claude's recommendation first):** (1) y/N confirm on security-relevant changes vs print-and-apply;
+  (2) keep unchanged MCP connections vs always reconnect; (3) refuse during compaction vs wait; (4) reject `/reload`
+  arguments (recommended) vs ignore them.
+- **Status:** deferred by Jerry; nothing in the code. `run_command` is also not started; the autonomous port is next in
+  Jerry's order unless he says otherwise.
+
+
+### 2026-11-02 — `procutils` and `textutils` created; `run_command` still waiting on Jerry's answers
+
+Done (see `DECISIONS.md § Two helper packages: procutils and textutils`): the process-group files moved from `mcpconnect` to
+`procutils` (exported `StartInOwnGroup`, `KillGroup`); `textutils` has `CutRunes`, `CutBytes`, `TrimPartialRune` and five
+callers moved to it; an import-rule test; codemap regenerated; all tests pass with `-race`. Not committed.
+
+Next: `run_command`, per the plan in the "Handoff for a fresh session" entry plus the 2026-11-02 planning notes below. Jerry
+has not answered the four open choices yet:
+1. A new `allowRules` list (recommended) vs one rule list with a level per entry.
+2. Interpreters (`python3`, `go run`, `sh`): no special category in code, just a documented example config (recommended).
+3. Timeout, output cap and environment as constants (recommended) vs config fields.
+4. Full mutation-check pass (recommended).
+
+Plan summary: `tools/builtin/runcommand.go` takes the `*Workspace`; `command` is a bare program name (no `/`) looked up on
+the agent's PATH at call time and refused if it resolves inside `workDir`; `cmd.Cancel` kills the whole group; the output cap
+uses `textutils.CutBytes`; rules `run_command:<program> <argument prefix>` match token by token, so `hooks.ToolRules` must
+read the call's arguments and unparseable arguments fail closed (ask); precedence deny > allow > ask > run; `run_command`
+joins the default `askRules`; `approvalPreview` gets a `command` + `args` shape. The test that treats `run_command:rm` as an
+invalid rule (`agent/info_test.go`, `hooks/toolrules_test.go`) has to change.
+
+
+### 2026-11-03 — `run_command` built (branch `feat/run-command`, not committed except the plan entry in DECISIONS.md)
+
+Plan committed as 719b81c ("DECISIONS: run_command plan complete"). Everything else is uncommitted: the tool, `LevelFor` command
+rules, `toolTimeoutSeconds` / `turnTimeoutSeconds`, config keys and docs, preview, digest, info, tests, codemap. `go vet`,
+`go test -race ./...`, `go run ./cmd/codemap -lint` and `GOOS=windows go build ./...` are clean. Details and the two bugs the
+mutation pass found: `DECISIONS.md § run_command built`.
+
+Next: Jerry commits and opens the PR (base `build`); then `/reload` (plan in the "`/reload` designed in detail, then deferred"
+entry; it is deferred, ask first), then Jerry's autonomous port. Worth trying by hand: a config with `runCommands: ["go"]`,
+`builtinTools` incl. `run_command`, ask rule `run_command:go run*`, then ask the agent to run `go test ./...` and `go run .`.

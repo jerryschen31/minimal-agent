@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // ActivityDigest is the first Digester: "what did the agent do and change", for a quick human review (a PR review, an audit).
@@ -19,7 +21,7 @@ type ActivityDigest struct {
 	modelErrs     int
 	runIncomplete int // same, for run-level events (their scope is the run ID, which is not a task)
 	compacts      int
-	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser)
+	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser, VetoAllowedByConfig)
 }
 
 type runSummary struct {
@@ -52,11 +54,17 @@ const (
 )
 
 // NewActivityDigest returns an empty ActivityDigest.
+//
+// Notes: none.
 func NewActivityDigest() *ActivityDigest {
 	return &ActivityDigest{byScope: map[string]*taskSummary{}, calls: map[string]*pendingCall{}, vetoes: map[string]int{}}
 }
 
-// task returns the task for a scope ID, making one if the task_start was not seen (e.g. a replay of a partial file).
+// task returns the task for a scope ID, making one if the task_start was not seen.
+//
+// Notes:
+//   - A missing task_start happens e.g. when replaying a partial file.
+//   - New tasks are appended to a.tasks, so the digest lists tasks in order of first appearance.
 func (a *ActivityDigest) task(scope string) *taskSummary {
 	t, ok := a.byScope[scope]
 	if !ok {
@@ -67,7 +75,19 @@ func (a *ActivityDigest) task(scope string) *taskSummary {
 	return t
 }
 
-// Add folds one event into the digest. A payload that does not decode is skipped: the digest is a summary, L0 has the truth.
+// Add folds one event into the digest.
+//
+// Notes:
+//   - A payload that does not decode is skipped: the digest is a summary, L0 has the truth.
+//   - A payload the recorder replaced with a truncated/dropped marker would decode into any typed payload as all zero
+//     values (a nameless tool_finished that matches nothing), so the event is only counted as incomplete (per task,
+//     or per run when its scope is the run ID) and not read.
+//   - Every tool_vetoed is counted per decision; its note is attached to the pending call so it shows on that call's
+//     line.
+//   - A tool_finished without a tool_requested is still shown.
+//   - Only a model_response with no tool calls inside a task counts as the task's reply.
+//   - A /compact is a task of its own; an auto compaction is recorded under the run ID, which is not a task, so it
+//     only counts.
 func (a *ActivityDigest) Add(ev Event) {
 	a.redacted += len(ev.Redactions)
 	if isMissingPayload(ev.EventData) {
@@ -157,9 +177,12 @@ func (a *ActivityDigest) Add(ev Event) {
 	}
 }
 
-// isMissingPayload reports whether data is one of the recorder's markers for a payload that could not be recorded:
-// {"truncated":true,"original_bytes":N} (over traceMaxEventBytes) or {"dropped":"..."} (redaction failed).
-// No real payload has either key.
+// isMissingPayload reports whether data is one of the recorder's markers for a payload that could not be recorded.
+//
+// Notes:
+//   - The markers are {"truncated":true,"original_bytes":N} (over traceMaxEventBytes) and {"dropped":"..."}
+//     (redaction failed).
+//   - No real payload has either key.
 func isMissingPayload(data json.RawMessage) bool {
 	var m struct {
 		Truncated bool   `json:"truncated"`
@@ -169,6 +192,16 @@ func isMissingPayload(data json.RawMessage) bool {
 }
 
 // Render writes the digest as markdown.
+//
+// Notes:
+//   - A run with no run_end is shown as "unfinished (no run_end)".
+//   - A task with no tool calls prints "answered, no tools (N chars)" or "no tools, no reply"; a slash command's
+//     effect line is the whole story when it had no calls.
+//   - Requested-but-unfinished calls are reported as "result missing (trace incomplete)" when the task had incomplete
+//     events, else "never finished".
+//   - The vetoes line counts vetoes, not calls: a call vetoed by two hooks counts twice.
+//   - The "allowed by allow-all" count is only shown when allow-all was in use, so older digests read the same;
+//     "unknown decision" counts a trace from a newer or hand-edited version.
 func (a *ActivityDigest) Render(w io.Writer) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Run %s\n\n", a.run.id)
@@ -231,7 +264,10 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	if total > 0 {
 		fmt.Fprintf(&b, "vetoes: %d (allowed once by user: %d, denied by user: %d, denied without asking: %d",
 			total, a.vetoes[VetoAllowedByUser], a.vetoes[VetoDeniedByUser], a.vetoes[VetoDenied])
-		if other := total - a.vetoes[VetoAllowedByUser] - a.vetoes[VetoDeniedByUser] - a.vetoes[VetoDenied]; other > 0 {
+		if n := a.vetoes[VetoAllowedByConfig]; n > 0 { // only shown when allow-all was in use, so older digests read the same
+			fmt.Fprintf(&b, ", allowed by allow-all: %d", n)
+		}
+		if other := total - a.vetoes[VetoAllowedByUser] - a.vetoes[VetoDeniedByUser] - a.vetoes[VetoDenied] - a.vetoes[VetoAllowedByConfig]; other > 0 {
 			fmt.Fprintf(&b, ", unknown decision: %d", other) // a trace from a newer or hand-edited version
 		}
 		b.WriteString(")\n")
@@ -241,7 +277,13 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 }
 
 // describe turns one finished tool call into its digest line, e.g. "read_file : read script1.py".
-// Known tool names get a tailored line, everything else the generic one.
+//
+// Notes:
+//   - Known tool names get a tailored line, everything else the generic one (name plus the arguments cut to
+//     maxArgsChars).
+//   - A missing path defaults to "." for list_files and search_files, the tools' own default (the working directory).
+//   - A failed call gets " (failed: <content>)" appended.
+//   - Whitespace is collapsed so the line stays one markdown line.
 func describe(name, args, content string, failed bool) string {
 	var line string
 	switch name {
@@ -252,12 +294,106 @@ func describe(name, args, content string, failed bool) string {
 		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
 			line = name + " : read " + in.Path
 		}
+	case "list_files":
+		var in struct {
+			Path      string `json:"path"`
+			Pattern   string `json:"pattern"`
+			Recursive bool   `json:"recursive"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil {
+			if in.Path == "" {
+				in.Path = "." // the tool's default: the working directory
+			}
+			var extras []string
+			if in.Recursive {
+				extras = append(extras, "recursive")
+			}
+			if in.Pattern != "" {
+				extras = append(extras, fmt.Sprintf("%q", in.Pattern))
+			}
+			line = name + " : list " + in.Path
+			if len(extras) > 0 {
+				line += " (" + strings.Join(extras, ", ") + ")"
+			}
+		}
+	case "search_files":
+		var in struct {
+			Query      string `json:"query"`
+			Path       string `json:"path"`
+			Pattern    string `json:"pattern"`
+			Regex      bool   `json:"regex"`
+			IgnoreCase bool   `json:"ignoreCase"`
+			Skip       int    `json:"skip"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Query != "" {
+			if in.Path == "" {
+				in.Path = "." // the tool's default: the working directory
+			}
+			var extras []string
+			if in.Pattern != "" {
+				extras = append(extras, fmt.Sprintf("%q", in.Pattern))
+			}
+			if in.Regex {
+				extras = append(extras, "regex")
+			}
+			if in.IgnoreCase {
+				extras = append(extras, "ignoreCase")
+			}
+			if in.Skip > 0 {
+				extras = append(extras, fmt.Sprintf("skip %d", in.Skip))
+			}
+			line = fmt.Sprintf("%s : search %q in %s", name, in.Query, in.Path)
+			if len(extras) > 0 {
+				line += " (" + strings.Join(extras, ", ") + ")"
+			}
+		}
+	case "write_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : write " + in.Path
+			if !failed && content != "" {
+				line = name + " : " + oneLine(content, maxArgsChars) // "created x (N bytes)" / "overwrote x (N bytes)"
+			}
+		}
+	case "edit_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : edit " + in.Path
+			if !failed && content != "" {
+				line = name + " : " + oneLine(content, maxArgsChars) // "edited x (N replacements, M bytes)"
+			}
+		}
+	case "copy_file", "move_file":
+		var in struct {
+			Source      string `json:"source"`
+			Destination string `json:"destination"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Source != "" && in.Destination != "" {
+			verb := map[string]string{"copy_file": "copy", "move_file": "move"}[name]
+			line = fmt.Sprintf("%s : %s %s -> %s", name, verb, in.Source, in.Destination)
+			if !failed && content != "" {
+				line = name + " : " + oneLine(content, 2*maxArgsChars) // "copied a -> b (N bytes)"
+			}
+		}
+	case "create_directory":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : mkdir " + in.Path
+		}
 	case "shell", "run_command", "bash":
 		var in struct {
-			Command string `json:"command"`
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
 		}
 		if json.Unmarshal([]byte(args), &in) == nil && in.Command != "" {
-			line = name + " : " + oneLine(in.Command, maxShellChars)
+			// run_command sends the program and its arguments apart; join them so the digest shows the command line
+			line = name + " : " + oneLine(strings.Join(append([]string{in.Command}, in.Args...), " "), maxShellChars)
 		}
 	}
 	if line == "" {
@@ -269,8 +405,12 @@ func describe(name, args, content string, failed bool) string {
 	return strings.Join(strings.Fields(line), " ")
 }
 
-// vetoNote describes one tool_vetoed event for the call's digest line. An override says which rule it overrode,
-// because an override of a safety rule is what a reviewer most needs to see.
+// vetoNote describes one tool_vetoed event for the call's digest line.
+//
+// Notes:
+//   - An override says which rule it overrode, because an override of a safety rule is what a reviewer most needs to
+//     see.
+//   - An unrecognised decision is shown with its raw value.
 func vetoNote(d ToolVetoedData) string {
 	reason := oneLine(d.Reason, maxArgsChars)
 	switch d.Decision {
@@ -278,6 +418,8 @@ func vetoNote(d ToolVetoedData) string {
 		return "allowed once by user over: " + reason
 	case VetoDeniedByUser:
 		return "user said no to: " + reason
+	case VetoAllowedByConfig:
+		return "allowed without asking (allow-all) over: " + reason
 	case VetoDenied:
 		return "vetoed, user not asked: " + reason
 	default:
@@ -286,14 +428,20 @@ func vetoNote(d ToolVetoedData) string {
 }
 
 // oneLine collapses whitespace (so a multi-line value stays one markdown line) and cuts to max characters.
+//
+// Notes:
+//   - It cuts by runes, not bytes, and appends "…" when it cut.
 func oneLine(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "…"
+	if cut, wasCut := textutils.CutRunes(s, max); wasCut {
+		return cut + "…"
 	}
 	return s
 }
 
+// plural returns one when n is 1, otherwise many.
+//
+// Notes: none.
 func plural(n int, one, many string) string {
 	if n == 1 {
 		return one
