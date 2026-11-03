@@ -55,6 +55,11 @@ func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef {
 //   - Order of defences: resolveNewPath (workspace and write-deny checks), openRoot, then openDir: the nearest existing
 //     directory is opened as a Root of its own and must be the one approved, and MkdirAll runs inside it, so a directory
 //     swapped for a symlink to .git after the check can't redirect the write.
+//   - Known gap, accepted: only the nearest existing directory is held by handle. If the path has several missing
+//     components, another process could create one of them as a symlink to .git between the check and MkdirAll, and the
+//     directory would be made under .git. Needs a second process racing in a window of about a millisecond.
+//     Deferred; the fix (make each component with Mkdir, Lstat it, open it as a Root and compare identity) is in
+//     DECISIONS.md § PR #38 review.
 //   - An existing directory is "already exists", not an error (idempotent); an existing file at the path, or as a
 //     parent, is an error.
 //   - Errors name only the requested path, never the absolute one.

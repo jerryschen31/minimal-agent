@@ -37,6 +37,8 @@ const waitDelay = time.Second
 // bypasses every Workspace check (.git, the config file, the deny list, the hard-link refusal); only the dir argument is
 // checked. An allowed interpreter (python3, go, npm) is code execution. What limits it is approval rules and, later, a
 // sandbox. See DECISIONS.md § Command execution: contain, don't detect.
+// On Windows only the program itself is killed when the call ends, not what it started (procutils.KillGroup); a
+// Job Object would fix that and is deferred (DECISIONS.md § PR #38 review).
 type RunCommandTool struct {
 	ws       *Workspace
 	programs map[string]string // name -> absolute path, resolved once at setup
@@ -53,8 +55,11 @@ type RunCommandTool struct {
 //     into workDir later cannot stand in for it. A name that is not found, or resolves to a file inside workDir (a "."
 //     entry on PATH), is left out with a line on warn.
 //   - Returns ErrNoCommands when no program is left.
-//   - maxBytes must be positive.
+//   - ws must not be nil and maxBytes must be positive.
 func NewRunCommandTool(ws *Workspace, names, extraEnv []string, maxBytes int, warn io.Writer) (*RunCommandTool, error) {
+	if ws == nil {
+		return nil, fmt.Errorf("run_command needs a workspace")
+	}
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("run_command max output bytes must be positive, got %d", maxBytes)
 	}

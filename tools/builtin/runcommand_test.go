@@ -98,3 +98,11 @@ func Test_RunCommand_Definition_SortedEnumAndAdvice(t *testing.T) {
 		}
 	}
 }
+
+// - Verify a nil workspace is an error, not a panic, even with a valid program list
+func Test_RunCommand_New_NilWorkspace(t *testing.T) {
+	tool, err := NewRunCommandTool(nil, []string{"sh"}, nil, 100, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "needs a workspace") || tool != nil {
+		t.Errorf("(%v, %v), want a 'needs a workspace' error", tool, err)
+	}
+}

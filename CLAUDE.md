@@ -250,6 +250,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   is checked. Rules: `run_command:<glob>` in `denyRules`/`askRules` match the joined command line (`hooks.ToolRules.LevelFor`);
   rules without that prefix match tool names only; there is no allow list (not matched = runs), so `run_command` is deliberately
   not in the default `askRules`. Unreadable arguments fail closed to ask. A glob over a command line is not a detector.
+  On Windows only the direct process is killed when the call ends (no Job Object), and the hard-link checks of the write tools are
+  skipped (no link count there); both are accepted gaps with the real fix written down (`DECISIONS.md § PR #38 review`).
   **Best-effort argument guard:** `Workspace.checkCommandArgs` refuses (never asks) a call whose arguments, or `--flag=value` values,
   name a file `checkPath` refuses (deny list, `denyPaths`, trace dir), also via symlinks or `..`. It misses directories (`grep -r .`),
   interpreter-built names and `rev:path`; it is a guard against mistakes, not a boundary (`DECISIONS.md § run_command: arguments are checked`).

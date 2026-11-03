@@ -86,6 +86,9 @@ func renameError(source, destination string, err error) error {
 //   - [agent] It is a rename (rename(2)): the same inode under a new name, atomic, any size, mode and mtime kept. The
 //     rename itself goes through the paths, since os.Root can't rename between two directory Roots; the openDir checks
 //     just before it leave a very small window (accepted, as for the other tools).
+//   - A source with more than one name (a hard link) is refused, checked on the file just before the rename: a rename
+//     would keep a protected file (.env, .git/config) under the new, readable name. Skipped where the system gives no
+//     link count (Windows; DECISIONS.md § PR #38 review).
 //   - Files only: a directory is refused, because moving one could take files out from under an anchored deny pattern
 //     (renaming `secrets` to `pub` would expose `secrets/*.env`).
 //   - An existing destination file is replaced (the ask prompt covers it); a destination that is a directory, not a
@@ -167,8 +170,15 @@ func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	default:
 		overwrote = true
 	}
-	if cur, err := root.Lstat(src.rel); err != nil || !os.SameFile(cur, srcInfo) {
+	cur, err := root.Lstat(src.rel)
+	if err != nil || !os.SameFile(cur, srcInfo) {
 		return "", fmt.Errorf("%s was replaced or moved while it was being moved; read it again and retry", params.Source)
+	}
+	// [agent] A rename keeps the file, so a source that is a hard link to a protected file (.env, .git/config) would
+	// reappear under the new, readable name. Checked on the file as it is now, just before the rename, like the other
+	// write tools. Where the system gives no link count (Windows) this is skipped; see DECISIONS.md § PR #38 review.
+	if n, known := linkCount(cur); known && n > 1 {
+		return "", fmt.Errorf("%s has %d names (hard links), so it may also be a protected file under another name; move_file won't move it", params.Source, n)
 	}
 	if err := root.Rename(src.rel, dst.rel); err != nil {
 		return "", renameError(params.Source, params.Destination, err)

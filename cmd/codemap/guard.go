@@ -31,12 +31,15 @@ func codeUnchanged(root, ref string) ([]string, error) {
 		}
 	}
 	// git diff never lists files that are not tracked yet, so a new file nobody has staged would slip through.
-	untracked, err := git(root, "ls-files", "--others", "--exclude-standard", "--full-name", "--", "*.go")
+	// -z: names are separated by NUL and never quoted, so a name with a space (or a non-ASCII character) stays one name
+	untracked, err := git(root, "ls-files", "--others", "--exclude-standard", "--full-name", "-z", "--", "*.go")
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range strings.Fields(untracked) {
-		entries = append(entries, [2]string{"A", name})
+	for _, name := range strings.Split(untracked, "\x00") {
+		if name != "" {
+			entries = append(entries, [2]string{"A", name})
+		}
 	}
 	top, err := git(root, "rev-parse", "--show-toplevel")
 	if err != nil {

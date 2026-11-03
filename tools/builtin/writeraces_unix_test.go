@@ -199,3 +199,33 @@ func Test_StillAtPath(t *testing.T) {
 		t.Errorf("path names another file: error = %v", err)
 	}
 }
+
+// - Verify move_file refuses a source that is a hard link to .env, .git/config or the config file under an allowed name
+// (a rename would keep the protected inode under a readable name), and leaves everything where it was; a file with one
+// name still moves
+func Test_MoveFile_HardLinkedSource_Refused(t *testing.T) {
+	work := t.TempDir()
+	env := writeFile(t, work, ".env", []byte("SECRET"))
+	gitCfg := writeFile(t, work, ".git/config", []byte("SECRET"))
+	cfg := writeFile(t, work, "agent.json", []byte("SECRET"))
+	hardlink(t, env, filepath.Join(work, "notes.txt"))
+	hardlink(t, gitCfg, filepath.Join(work, "gitcfg.txt"))
+	hardlink(t, cfg, filepath.Join(work, "copy.json"))
+	writeFile(t, work, "plain.txt", []byte("OK"))
+	tool := newMoveTool(t, work, "", cfg)
+	for _, alias := range []string{"notes.txt", "gitcfg.txt", "copy.json"} {
+		_, err := moveCall(tool, alias, "moved-"+alias)
+		if err == nil || !strings.Contains(err.Error(), "hard links") {
+			t.Errorf("move %s: error = %v, want a hard-link refusal", alias, err)
+		}
+		if _, statErr := os.Stat(filepath.Join(work, "moved-"+alias)); statErr == nil {
+			t.Errorf("%s was moved", alias)
+		}
+		if _, statErr := os.Stat(filepath.Join(work, alias)); statErr != nil {
+			t.Errorf("%s is gone: %v", alias, statErr)
+		}
+	}
+	if got, err := moveCall(tool, "plain.txt", "plain2.txt"); err != nil || !strings.Contains(got, "moved plain.txt -> plain2.txt") {
+		t.Errorf("single-name file: (%q, %v)", got, err)
+	}
+}
