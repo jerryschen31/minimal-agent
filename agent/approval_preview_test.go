@@ -158,15 +158,19 @@ func Test_Unit_ApprovalPreview_RunCommand_LongArgsCut(t *testing.T) {
 	}
 }
 
-// - Verify a call with command AND path, content or old/new strings is not shown as a command (the shapes are exclusive)
+// - Verify a call with command AND any file field (path, content, old_string/new_string) is never shown as a file preview or
+// as a command: the shapes are exclusive, so it gets a warning and the raw arguments, with the command visible
 func Test_Unit_ApprovalPreview_RunCommand_ShapeIsExclusive(t *testing.T) {
 	for _, args := range []string{
-		`{"command":"ls","path":"a","content":"x"}`,
-		`{"command":"ls","old_string":"a","new_string":"b"}`,
+		`{"command":"rm","args":["-rf","x"],"path":"a","content":"x"}`,
+		`{"command":"rm","args":["-rf","x"],"path":"a"}`,
+		`{"command":"rm","args":["-rf","x"],"content":"x"}`,
+		`{"command":"rm","args":["-rf","x"],"old_string":"a","new_string":"b"}`,
+		`{"command":"rm","args":["-rf","x"],"path":"a","old_string":"a","new_string":"b"}`,
 	} {
 		got := strings.Join(approvalPreview(previewCall(args)), "\n")
-		if strings.HasPrefix(got, "Run:") {
-			t.Errorf("%s shown as a command: %s", args, got)
+		if strings.HasPrefix(got, "Run:") || !strings.HasPrefix(got, "[warning]") || !strings.Contains(got, `command`) || !strings.Contains(got, `-rf`) {
+			t.Errorf("%s:\n%s", args, got)
 		}
 	}
 }

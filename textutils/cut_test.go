@@ -72,6 +72,10 @@ func Test_Unit_CutBytes_Results(t *testing.T) {
 		{"cut inside é backs up", "héllo", 2, "h", true},
 		{"cut after é keeps it", "héllo", 3, "hé", true},
 		{"cut inside emoji", "a😀", 3, "a", true},
+		{"stray continuation byte after a complete character", "é\x80x", 2, "é", true},
+		{"stray continuation byte after a character, cut one earlier", "é\x80x", 1, "", true},
+		{"stray continuation bytes after ascii", "a\x80\x80\x80\x80", 3, "a\x80\x80", true},
+		{"valid character split by a stray byte is still whole", "aé\x80", 2, "a", true},
 		{"negative is zero", "abc", -1, "", true},
 		{"empty", "", 0, "", false},
 	}

@@ -26,20 +26,30 @@ func CutRunes(s string, n int) (string, bool) {
 // Notes:
 //   - A string of limit bytes or fewer is returned as it is.
 //   - A negative limit is treated as 0.
-//   - Only a cut that lands inside a character moves. Bytes that were already invalid UTF-8 are kept as they are, and
-//     the cut backs up at most utf8.UTFMax-1 bytes, so a run of stray continuation bytes does not eat the result.
+//   - Only a cut that lands inside a valid multi-byte character moves, and then to that character's first byte. Bytes
+//     that were already invalid UTF-8 are kept as they are: a stray continuation byte after the cut ("é\x80x" cut at
+//     2) is not part of the é before it, so the é stays.
+//   - The search for the character's first byte goes back at most utf8.UTFMax-1 bytes, so a run of stray continuation
+//     bytes does not eat the result.
 func CutBytes(s string, limit int) (string, bool) {
 	limit = max(limit, 0)
 	if len(s) <= limit {
 		return s, false
 	}
 	cut := limit
-	// s[cut] is the first byte left out; a continuation byte there means the character began earlier
-	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); back++ {
-		cut--
-	}
-	if !utf8.RuneStart(s[cut]) { // no start byte nearby: these bytes are not a character, cut where asked
-		cut = limit
+	// s[limit] is the first byte left out; a continuation byte there may mean a character began earlier
+	if !utf8.RuneStart(s[limit]) {
+		for start := limit - 1; start >= 0 && start >= limit-(utf8.UTFMax-1); start-- {
+			if !utf8.RuneStart(s[start]) {
+				continue
+			}
+			// decode the whole character from its first byte: back up only if it is a valid multi-byte character that
+			// really crosses the cut (an invalid sequence decodes as one byte and is kept)
+			if _, size := utf8.DecodeRuneInString(s[start:]); size > 1 && start+size > limit {
+				cut = start
+			}
+			break
+		}
 	}
 	return s[:cut], true
 }

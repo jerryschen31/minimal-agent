@@ -4194,3 +4194,18 @@ Jerry chose a built-in check against the deny list `read_file` uses, documented 
   So it catches accidents and clumsy prompt injection, not a determined program. Real containment is still the sandbox.
 - **Tests / mutation pass:** `Test_RunCommand_Args_*` (11 refusal cases, one allowed-arguments case). Six mutants killed: check
   not called, flag value ignored, symlinks not resolved, no deny check, relative path not joined to `dir`, outside paths checked.
+
+
+### 2026-11-03 — PR #37 Copilot review: mixed command/file previews, `CutBytes` and stray continuation bytes
+
+- **Approval preview (`agent/approval_preview.go`):** a `run_command` call that also carried `path`/`content`/`old_string`/
+  `new_string` fell through to `writePreview`, so the user approved a file preview while the tool (which ignores unknown keys)
+  ran the command. Same class as the earlier write_file/edit_file mixed shape (`§ Slice 5 built`). Now a call with `command`
+  plus any file field gets the `[warning] …shown as sent:` line and the raw arguments. A command alone is still `commandPreview`.
+- **`textutils.CutBytes`:** `CutBytes("é\x80x", 2)` returned `""`: the backward search treated the é's own continuation byte
+  as part of a longer run and walked to the start, then the "no start byte nearby" test failed. It now finds the nearest start
+  byte within `UTFMax-1` bytes, decodes from there, and backs up only if that is a valid multi-byte character that crosses the
+  cut; otherwise it cuts where asked, so bytes that were already invalid are kept. (The `run_command` output cut was not
+  affected: it uses `TrimPartialRune`.)
+- **Tests:** four new `CutBytes` cases and a five-shape `ShapeIsExclusive` test. Mutation checks: removing the mixed-shape
+  branch, and dropping the "valid and crosses the cut" condition, each fail a test.

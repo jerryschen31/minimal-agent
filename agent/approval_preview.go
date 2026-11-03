@@ -26,7 +26,8 @@ const (
 //   - The shapes are mutually exclusive: a call with both content and old_string/new_string fields is shown raw with a
 //     warning, never as only one of the two (the tool ignores unknown keys, so either half could be the one that runs).
 //   - A call with a string "command" and no path, content or old_string/new_string (run_command) shows the program, its
-//     arguments one by one, and the directory (commandPreview).
+//     arguments one by one, and the directory (commandPreview). With a command AND any of those file fields it is shown
+//     raw with a warning, like the mixed content/old_string shape above, so the command is never hidden behind a file preview.
 //   - Any other call, or arguments that don't parse, show the raw arguments cut at previewMaxArgsChars.
 //   - Everything is quoted with %q because a path or content can hold terminal escape codes.
 //   - Downside: the user approves a preview, not the whole content; the lines after the shown ones are unseen.
@@ -45,8 +46,13 @@ func approvalPreview(call model.ToolCall) []string {
 	}
 	args := call.Function.Arguments
 	err := json.Unmarshal([]byte(args), &in)
-	if err == nil && in.Command != nil && in.Path == nil && in.Content == nil && in.OldString == nil && in.NewString == nil { // run_command
-		return commandPreview(*in.Command, in.Args, in.Dir)
+	if err == nil && in.Command != nil { // run_command
+		if in.Path == nil && in.Content == nil && in.OldString == nil && in.NewString == nil {
+			return commandPreview(*in.Command, in.Args, in.Dir)
+		}
+		// [agent] run_command ignores unknown keys, so a call with a command AND file fields would run the command after
+		// the user approved what looks like a file preview. Say so and show the raw arguments, never one half.
+		return append([]string{"[warning] this call has a command and also path/content/old_string/new_string fields; shown as sent:"}, rawPreview(args)...)
 	}
 	if err == nil && in.Path != nil {
 		hasEditFields := in.OldString != nil || in.NewString != nil
