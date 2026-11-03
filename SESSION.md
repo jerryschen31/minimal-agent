@@ -1101,3 +1101,48 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > review; try the tools live. **Known limits:** the move has a very small window between the `openDir` checks and the
 > rename; a copied file over 100 MB is refused; `read_file` through a hard link to `.env` still allowed; directory
 > copy/move not supported (by design). **Next:** `run_command`, `/reload`, then the autonomous port (Jerry builds it).
+>
+> (2026-11-03, end of session) **Handoff for a fresh session — start `run_command`, then `/reload`.**
+> - **State:** PRs #35 (create_directory, write_file, edit_file, the Copilot fixes) and #36 (copy_file, move_file,
+>   `copyFileMaxBytes`) are **merged into `build`**; local `build` is at c2d7c22, tree clean. Cut a new branch from
+>   `build` for each feature. The file-tool series (slices 0–6) is finished. Details: `DECISIONS.md § Slice 4 built`,
+>   `§ Slice 5 built`, `§ PR #35 Copilot review`, `§ Slice 6 built`.
+> - **Who writes it:** Jerry is rushing to the autonomous port, where he will slow down and write code himself, so for
+>   `run_command` and `/reload` Claude implements the whole slice (design first, Jerry decides, then build + tests +
+>   docs). Jerry commits and opens PRs (base `build`).
+> - **What the file-tool series left that `run_command` / `/reload` can reuse:**
+>   `Workspace.resolvePath` / `resolveNewPath` / `openDir` (a `dir` argument for `run_command`: use `resolvePath`,
+>   the read-side check); `Config.ConfigFile` (the `-config` path, set by `SetDefaultConfig`; `/reload` needs it to
+>   know which file to re-read); `approvalPreview` (`agent/approval_preview.go`; shapes are by key names, exclusive);
+>   `trace.shortenArguments` (cuts file bodies in traces); `describe` in `trace/digest_activity.go` (a `run_command`
+>   case already prints the command verbatim); `PromptAllowDenyCall` / `AskYesNo` / `ToolRules` (deny / ask / run).
+> - **`run_command` — what is already decided** (`DECISIONS.md § Command execution: contain, don't detect`, and the
+>   mvp4 port plan item 3, `§ New built-in tools` item 22): port `mvp4/tools/builtin/runcommand.go`: argv only (no
+>   shell), filtered environment, 3-minute timeout, 32 KB output cap, empty stdin, own process group killed on
+>   timeout and after exit, non-zero exit is a normal result (`[exit status N]`), optional `dir` checked inside
+>   `workDir`. An allow list in config with rules `run_command:<program> <argument prefix>` using the deny-rule matcher;
+>   a program not on the list **asks every time** (no "always"); deny rules reject without asking. **Not yet
+>   decided** (`§ Still open`): what "ask" means with no terminal; one auto-approve switch or one per level; whether
+>   interpreters (`python3`, `go run`, `sh`) are their own always-ask category; whether `run_command` is off by default
+>   until a sandbox exists. **New problem to design:** today `hooks.ToolRules` match tool *names* only
+>   (`§ Tool-name rules are an approval layer`); the `run_command:<program> <args>` form needs rules that see the
+>   arguments, so the rule matcher/`BeforeTool` input has to grow. **Honest limits to state again:** an allowed
+>   interpreter is code execution, not a sandbox, and it bypasses every file-tool check here (`.git`, the config file,
+>   the deny list, hard-link refusal); the file tools' protections do not extend to it. Reuse the
+>   Ctrl+C / process-group invariants in `CLAUDE.md` (nothing a tool spawns outlives the call; `mcpconnect/procgroup_*.go`).
+> - **`/reload` — decided** (same section): re-read the same config file (or defaults) and apply the same flags; build
+>   everything new first and swap only if every step worked; wait for (or refuse during) auto-compaction; an MCP server
+>   that fails to reconnect is warned about as at startup; trace a `config_reloaded` event with the changed field
+>   *names*, never values; trace settings, the context-window strategy and chat history are not reloaded. Where to look:
+>   `main.go` (load: `SetDefaultConfig`, `FlagsOverlay`, `ValidateMode`), `agent.SetupAgent` (builds the tools,
+>   workspace, hooks and MCP connections), the slash-command handling in `agent/chat.go` (`handleUserInput`), and the
+>   Ctrl+C invariants. Note the file tools build their `Workspace` in `SetupBuiltinTools`, so a reload rebuilds it.
+> - **Conventions that held this session:** tests written alongside the code, plus a mutation check (temporarily
+>   disable each new defence and confirm a test fails); `go run ./cmd/codemap` after any signature change, headers on
+>   every function; append dated entries to `DECISIONS.md` and `SESSION.md`; diff test names vs `build` (none were
+>   deleted); new Config fields get a line in `config/doc.go`, `PrintConfig` and a test.
+> - **Known gaps still open:** `read_file` / `search_files` through a hard link to `.env` is allowed (writes and `copy_file`
+>   refuse it); non-atomic in-place writes; edit vs `write_file` of one file not serialized; a very small window
+>   between the `openDir` checks and the `move_file` rename; `copy_file` refuses files over `copyFileMaxBytes`
+>   (100 MB). Older items: welcome-banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused,
+>   `maxSteps` discarding a turn, the autonomous-port warning for `allow-all` with empty `denyRules`.
