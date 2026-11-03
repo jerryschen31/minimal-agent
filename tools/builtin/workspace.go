@@ -58,62 +58,57 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	return w, nil
 }
 
-// resolve turns the model's path (relative to rootDir, or absolute) for a file that must already exist into a path
-// relative to rootDir, with every symlink followed.
-//
-// Notes:
-//   - It returns an error if the path doesn't exist or check refuses it.
-//   - The checks run on the resolved path, so a symlink named notes.txt that points at .env is refused too.
-func (w *Workspace) resolve(requested string) (string, error) {
-	rel, _, err := w.resolveInfo(requested)
-	return rel, err
-}
-
-// resolveInfo is resolve, and also returns the resolved file's identity, taken right after its symlinks were resolved
-// and before it is checked.
+// resolvePath turns the model's path (relative to rootDir, or absolute) for a file that must already exist into a path
+// relative to rootDir, with every symlink followed. The relative file path, info on the file path, and any error encountered are returned.
 //
 // Notes:
 //   - A file tool passes the identity to openFile, which refuses a file that isn't this one.
-//   - [agent] Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in
-//     after the resolve, and the identities won't match.
-//   - Errors name only the requested path, never the absolute one, and keep the cause wrapped so
-//     errors.Is(err, fs.ErrNotExist) still works.
-func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error) {
+//   - Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in after the resolve, and the identities won't match.
+//   - To prevent error messages revealing the absolute path, use errMsgHidePath to wrap the error with only the requested path.
+func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error) {
+	// resolve full candidte path
 	candidate := requested
 	if !filepath.IsAbs(requested) {
 		candidate = filepath.Join(w.rootDir, requested)
 	}
+	// follow symlinks to get the real path
 	real, err := filepath.EvalSymlinks(candidate)
 	if err != nil {
-		// [agent] Go's error names the absolute path ("lstat /Users/<name>/project/x: …"), which would put the home
-		// directory into the model's context and send it to the provider. Name only what the model asked for, and keep
-		// the cause wrapped so errors.Is(err, fs.ErrNotExist) still works.
-		if pe, ok := errors.AsType[*fs.PathError](err); ok {
-			return "", nil, fmt.Errorf("%s: %w", requested, pe.Err)
-		}
-		return "", nil, fmt.Errorf("%s: can't be resolved", requested)
+		// for security, do not reveal absolute file path in the error message
+		return "", nil, errMsgHidePath(requested, err)
 	}
+	// snapshot the file's info - in case the file changes after this point (overwrite, deletion, swap, etc.)
 	info, err := os.Lstat(real)
-	if err != nil { // removed since the resolve; name only the requested path, as above
-		if pe, ok := errors.AsType[*fs.PathError](err); ok {
-			return "", nil, fmt.Errorf("%s: %w", requested, pe.Err)
-		}
-		return "", nil, fmt.Errorf("%s: can't be resolved", requested)
+	if err != nil {
+		return "", nil, errMsgHidePath(requested, err)
 	}
-	rel, err := w.check(requested, real)
+	// check the resolved path against the workspace rules (deny list, trace directory, nothing outside workDir, etc.)
+	rel, err := w.checkPath(requested, real)
 	if err != nil {
 		return "", nil, err
 	}
 	return rel, info, nil
 }
 
-// check refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
+// errMsgHidePath returns an error message that hides the absolute path and only shows the requested path.
+//
+// Notes:
+//   - A *fs.PathError keeps its cause (%w), so errors.Is(err, fs.ErrNotExist) still works; any other error becomes
+//     "can't be resolved".
+func errMsgHidePath(requested string, err error) error {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok {
+		return fmt.Errorf("%s: %w", requested, pe.Err)
+	}
+	return fmt.Errorf("%s: can't be resolved", requested)
+}
+
+// checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
 //
 // Notes:
 //   - requested is used only in error messages.
 //   - real is absolute with symlinks resolved; the result is real relative to rootDir.
 //   - A path that can't be stat'ed counts as a directory for patterns ending in "/" (see the comment in the body).
-func (w *Workspace) check(requested, real string) (rel string, err error) {
+func (w *Workspace) checkPath(requested, real string) (rel string, err error) {
 	rel, err = filepath.Rel(w.rootDir, real)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%s is outside the allowed directory", requested)
@@ -160,7 +155,7 @@ func (w *Workspace) openRoot() (*os.Root, error) {
 }
 
 // openFile opens the regular file rel (relative to rootDir) through root for reading, and refuses it unless it is
-// want: the file the workspace check approved, from resolveInfo or a walk entry's Info.
+// want: the file the workspace check approved, from resolvePath or a walk entry's Info.
 //
 // Notes:
 //   - requested names the file in errors. The caller closes the file.

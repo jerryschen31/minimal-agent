@@ -449,9 +449,9 @@ searchfiles.go
 
 workspace.go
   func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error)
-  func (w *Workspace) resolve(requested string) (string, error)
-  func (w *Workspace) resolveInfo(requested string) (string, os.FileInfo, error)
-  func (w *Workspace) check(requested, real string) (rel string, err error)
+  func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
+  func errMsgHidePath(requested string, err error) error
+  func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
   func resolvePath(p string) (string, error)

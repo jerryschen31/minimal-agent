@@ -170,10 +170,10 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `traceDir` (matched by resolved path, whatever its name). It resolves symlinks first, checks the *resolved*
   path, then opens through `os.Root`; `workDir` defaults to `.` and is set by config or `-workdir`. These rules live
   in `builtin.Workspace` (`tools/builtin/workspace.go`), built once in `SetupBuiltinTools` (even with no file tool
-  enabled) and shared by the file tools. A new file tool must take the `*Workspace` and go through its `resolve` /
-  `check` / `openRoot`, not call `os.Open` on a model-supplied path
+  enabled) and shared by the file tools. A new file tool must take the `*Workspace` and go through its `resolvePath` /
+  `checkPath` / `openRoot`, not call `os.Open` on a model-supplied path
   (`DECISIONS.md § read_file is confined to workDir`, `§ File tools slice 0`). A tool that reads a file opens it with
-  `Workspace.openFile`, passing the identity taken before the check (`resolveInfo`, or a walk entry's `d.Info()`): it
+  `Workspace.openFile`, passing the identity taken before the check (`resolvePath`, or a walk entry's `d.Info()`): it
   opens with `O_NONBLOCK` (opening a named pipe blocks forever), accepts only regular files (checked on the opened
   descriptor) and refuses a file swapped in after the check (`os.SameFile`; `DECISIONS.md § PR #31 review`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
