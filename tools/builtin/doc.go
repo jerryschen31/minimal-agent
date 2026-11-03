@@ -54,7 +54,7 @@
 //	  func cutLine(line []byte, start int) string
 //
 //	workspace.go
-//	  func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error)
+//	  func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspace, error)
 //	  func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
 //	  func errMsgHidePath(requested string, err error) error
 //	  func (w *Workspace) resolveNewPath(requested string) (string, error)
@@ -63,4 +63,10 @@
 //	  func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
 //	  func resolveSymLinks(p string) (string, error)
 //	  func isWithin(dir, p string) bool
+//
+//	writefile.go
+//	  func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
+//	  func (t *WriteFileTool) GetToolDefinition() model.ToolDef
+//	  func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.File, string, error)
 package builtin

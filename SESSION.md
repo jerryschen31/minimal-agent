@@ -1074,3 +1074,10 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > `resolvePath`, `check` → `checkPath`, package `resolvePath` → `resolveSymLinks`. **Next:** `write_file` (`maxWriteBytes`
 > 1 MB, no parent dirs, no overwrite flag, `created`/`overwrote`, `O_EXCL` for new, ask-prompt preview) plus write-deny
 > for the `-config` file (needs its path in `NewWorkspace`). Then a test sub-agent pass (diff test names vs `build`).
+>
+> (2026-11-02) **Slice 4 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 built`):
+> `write_file`, config-file write-deny (`Config.ConfigFile` → `NewWorkspace`), approval preview, digest lines, tests.
+> `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass. Enable with `builtinTools: ["create_directory",
+> "write_file"]`. **Jerry to do:** review; try it live (`go run . -config … `, ask the agent to write a file, read the
+> approval preview); diff test names vs `build` (none deleted here). Not covered by tests: the swap race inside
+> `openForWrite`. **Next:** slice 5 `edit_file` (needs its own result-size check), then 6 `copy_file`/`move_file`.

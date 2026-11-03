@@ -11,6 +11,7 @@ minimal-agent/
 ├── main.go
 ├── agent/
 │   ├── agent.go
+│   ├── approval_preview.go
 │   ├── chat.go
 │   ├── compaction.go
 │   ├── doc.go
@@ -68,7 +69,8 @@ minimal-agent/
 │       ├── pathpattern.go
 │       ├── readfile.go
 │       ├── searchfiles.go
-│       └── workspace.go
+│       ├── workspace.go
+│       └── writefile.go
 └── trace/
     ├── digest.go
     ├── digest_activity.go
@@ -101,6 +103,9 @@ agent.go
   func (agent *Agent) ShutdownAgent(ctx context.Context)
   func checkConfig(cfg config.Config) error
   func createSystemMessage(systemPrompt string) model.ChatMessage
+
+approval_preview.go
+  func approvalPreview(call model.ToolCall) []string
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -454,7 +459,7 @@ searchfiles.go
   func cutLine(line []byte, start int) string
 
 workspace.go
-  func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error)
+  func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspace, error)
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
   func (w *Workspace) resolveNewPath(requested string) (string, error)
@@ -463,6 +468,12 @@ workspace.go
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
   func resolveSymLinks(p string) (string, error)
   func isWithin(dir, p string) bool
+
+writefile.go
+  func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
+  func (t *WriteFileTool) GetToolDefinition() model.ToolDef
+  func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.File, string, error)
 ```
 
 ## trace (package trace)

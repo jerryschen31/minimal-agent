@@ -305,3 +305,23 @@ func Test_Digest_DroppedAndRunLevelMarkers(t *testing.T) {
 		t.Errorf("a dropped model_response was read as an empty reply:\n%s", s)
 	}
 }
+
+func Test_Digest_WriteFileAndCreateDirectoryDescribed(t *testing.T) {
+	tests := []struct {
+		name, tool, args, content string
+		failed                    bool
+		want                      string
+	}{
+		{"created", "write_file", `{"path":"a.txt","content":"hi"}`, "created a.txt (2 bytes)", false, "write_file : created a.txt (2 bytes)"},
+		{"overwrote", "write_file", `{"path":"a.txt","content":"hi"}`, "overwrote a.txt (2 bytes)", false, "write_file : overwrote a.txt (2 bytes)"},
+		{"failed shows the path and the error, not the content", "write_file", `{"path":"a.txt","content":"SECRET BODY"}`, "a.txt is blocked", true, "write_file : write a.txt (failed: a.txt is blocked)"},
+		{"no path falls back to the generic line", "write_file", `{}`, "", false, "write_file : {}"},
+		{"mkdir", "create_directory", `{"path":"docs/x"}`, "created directory docs/x", false, "create_directory : mkdir docs/x"},
+		{"mkdir failed", "create_directory", `{"path":"x"}`, "boom", true, "create_directory : mkdir x (failed: boom)"},
+	}
+	for _, tc := range tests {
+		if got := describe(tc.tool, tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

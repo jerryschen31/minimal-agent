@@ -3894,3 +3894,34 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
 - **`errMsgHidePath`** now keeps `ENOTDIR` ("not a directory") instead of the vague "can't be resolved".
 - Tests: `createdirectory_test.go`, `createdirectory_unix_test.go` (written by Claude, small; a test sub-agent pass for
   more edge cases is still to do).
+
+### 2026-11-02 — Slice 4 built: `write_file`, config-file write-deny, approval preview
+
+- **`write_file`** (`tools/builtin/writefile.go`): args `path`, `content` (empty content is allowed, a missing one is
+  an error). Checks in order: `content` ≤ `maxWriteBytes` (1 MB constant; `tool.maxBytes` is a field only so tests can
+  use a small one), no NUL byte (it writes text, as `read_file` reads text), `resolveNewPath`, `openRoot`, the parent
+  must exist (else "create it with create_directory first"). New file: `O_EXCL`, mode 0644. Existing regular file:
+  `Lstat` → open `O_WRONLY|O_NONBLOCK` **without `O_TRUNC`** → `fstat` + `os.SameFile` against the Lstat → only then
+  `Truncate(0)`; mode kept. A directory, symlink, pipe or socket at the path is refused. Result: `created x (N bytes)` /
+  `overwrote x (N bytes)`. Downside, accepted: the write is not atomic (a disk-full failure leaves a truncated file);
+  temp file + rename would fix it but changes the inode and mode on overwrite.
+- **Not covered:** a hardlink to a deny-listed or write-denied file under an allowed name (checks are by name); the
+  Lstat is taken inside `openForWrite`, so a swap between `resolveNewPath` and that Lstat to a regular file at the same
+  approved name is not detected (harmless: same name). No test stages the swap race (no hook to pause between the steps).
+- **Config file is write-denied.** New `Config.ConfigFile` (`json:"-"`, set by `SetDefaultConfig` from `-config`,
+  never read from a file) is passed to `NewWorkspace(workDir, traceDir, configFile, deny)`, resolved with
+  `resolveSymLinks` (the file need not exist), and compared case-insensitively in `resolveNewPath`. It can still be
+  read. Reason: otherwise the model could rewrite its own `askRules`/`denyRules` for the next run.
+- **Approval preview** (`agent/approval_preview.go`): a call with string `path` and `content` arguments shows the path,
+  size, line count and the first 5 lines (120 chars each), everything quoted with `%q`; any other call shows the raw
+  arguments cut at 500 characters. Replaces printing the whole `Arguments:` (a written file can be 1 MB). Downside: the
+  user approves a preview, not the whole content. Applies to any tool with that argument shape, including an MCP
+  server's write tool.
+- **Digest** (`trace/digest_activity.go`): `write_file : created x (N bytes)` on success (the result text, so the digest can
+  tell created from overwrote), `write_file : write x (failed: …)` on failure (never the content); `create_directory :
+  mkdir x`. One existing test (`Test_Digest_AllowedByConfig_NoteAndFooter`) used `write_file` as a stand-in name and
+  expected the generic line; its expected line was changed on purpose.
+- **Bug the tests caught while building:** the `NewWorkspace` edit that stored `configFile` had not applied, so the
+  config file was not protected until `Test_WriteFile_Refused` failed.
+- Tests: `writefile_test.go`, `writefile_unix_test.go`, `approval_preview_test.go`, plus cases in `tool_test.go`,
+  `config_test.go`, `digest_test.go`. No test was deleted.

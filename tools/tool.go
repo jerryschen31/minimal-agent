@@ -36,7 +36,7 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 	if err != nil {
 		return nil, err
 	}
-	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, deny)
+	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, cfg.ConfigFile, deny)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +68,12 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 				return nil, err
 			}
 			tools = append(tools, createDir)
+		case "write_file":
+			writeFile, err := builtin.NewWriteFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, writeFile)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)

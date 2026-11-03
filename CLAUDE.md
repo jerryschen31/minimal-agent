@@ -176,6 +176,12 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `Workspace.openFile`, passing the identity taken before the check (`resolvePath`, or a walk entry's `d.Info()`): it
   opens with `O_NONBLOCK` (opening a named pipe blocks forever), accepts only regular files (checked on the opened
   descriptor) and refuses a file swapped in after the check (`os.SameFile`; `DECISIONS.md § PR #31 review`).
+  **Write tools** (`create_directory`, `write_file`) use `Workspace.resolveNewPath` (the path may not exist yet), which adds
+  a write-deny on top of `checkPath`: `.git` and the `-config` file (`cfg.ConfigFile`) can be read but never written.
+  `write_file` opens an existing file without `O_TRUNC`, checks it on the descriptor (`os.SameFile`), and only then
+  truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
+  (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
+  (`DECISIONS.md § Slice 4 built`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
   orphaned one, and since a failed turn is not added back, the same bad context is re-sent forever)

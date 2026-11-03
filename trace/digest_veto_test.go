@@ -77,7 +77,7 @@ func Test_Digest_AllowedByConfig_NoteAndFooter(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`- write_file : {"path":"a.txt"} [allowed without asking (allow-all) over: needs approval by rule "write_file"]` + "\n",
+		`- write_file : wrote [allowed without asking (allow-all) over: needs approval by rule "write_file"]` + "\n",
 		`[allowed without asking (allow-all) over: needs approval by rule "*delete*"]` + "\n",
 		`[vetoed, user not asked: denied by rule "*push*"]` + "\n",
 		"vetoes: 3 (allowed once by user: 0, denied by user: 0, denied without asking: 1, allowed by allow-all: 2)\n",

@@ -14,7 +14,7 @@ import (
 // newWorkspace builds a workspace on workDir with traceDir and deny, failing the test on error.
 func newWorkspace(t *testing.T, workDir, traceDir string, deny DenyList) *Workspace {
 	t.Helper()
-	ws, err := NewWorkspace(workDir, traceDir, deny)
+	ws, err := NewWorkspace(workDir, traceDir, "", deny)
 	if err != nil {
 		t.Fatalf("NewWorkspace(%q, %q): %v", workDir, traceDir, err)
 	}
@@ -40,10 +40,10 @@ func Test_Unit_NewWorkspace_InvalidWorkDir_ReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	file := writeFile(t, dir, "plain.txt", []byte("x"))
 
-	if ws, err := NewWorkspace(filepath.Join(dir, "missing"), "", DenyList{}); err == nil || ws != nil {
+	if ws, err := NewWorkspace(filepath.Join(dir, "missing"), "", "", DenyList{}); err == nil || ws != nil {
 		t.Errorf("missing workDir: expected (nil, error), got (%v, %v)", ws, err)
 	}
-	if ws, err := NewWorkspace(file, "", DenyList{}); err == nil || ws != nil || !strings.Contains(err.Error(), "not a directory") {
+	if ws, err := NewWorkspace(file, "", "", DenyList{}); err == nil || ws != nil || !strings.Contains(err.Error(), "not a directory") {
 		t.Errorf("file workDir: expected (nil, 'not a directory' error), got (%v, %v)", ws, err)
 	}
 }
@@ -58,7 +58,7 @@ func Test_Unit_NewWorkspace_TraceDirContainsWorkDir_ReturnsError(t *testing.T) {
 	}
 	for name, traceDir := range map[string]string{"equal": work, "parent": parent} {
 		t.Run(name, func(t *testing.T) {
-			ws, err := NewWorkspace(work, traceDir, DenyList{})
+			ws, err := NewWorkspace(work, traceDir, "", DenyList{})
 			if err == nil || ws != nil || !strings.Contains(err.Error(), "so the file tools could reach nothing") {
 				t.Errorf("expected (nil, 'file tools could reach nothing' error), got (%v, %v)", ws, err)
 			}

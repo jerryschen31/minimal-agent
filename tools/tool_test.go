@@ -580,3 +580,32 @@ func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, m
 	cfg.DenyPaths, cfg.IgnorePaths = denyPaths, ignorePaths
 	return cfg
 }
+
+// - Verify SetupBuiltinTools builds create_directory and write_file, in the order listed, and that the config file path
+// reaches the workspace: write_file refuses to overwrite it and still writes another file
+func Test_SetupBuiltinTools_WriteTools_ConfigFileProtected(t *testing.T) {
+	work := t.TempDir()
+	cfgFile := filepath.Join(work, "agent.json")
+	if err := os.WriteFile(cfgFile, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := builtinCfg([]string{"create_directory", "write_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.ConfigFile = cfgFile
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(built) != 2 || built[0].GetToolDefinition().Function.Name != "create_directory" || built[1].GetToolDefinition().Function.Name != "write_file" {
+		t.Fatalf("unexpected tools: %d", len(built))
+	}
+	ctx := context.Background()
+	if _, err := built[1].CallTool(ctx, json.RawMessage(`{"path":"agent.json","content":"pwned"}`)); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("overwriting the config file: error = %v", err)
+	}
+	if got, err := built[1].CallTool(ctx, json.RawMessage(`{"path":"notes.txt","content":"hi"}`)); err != nil || got != "created notes.txt (2 bytes)" {
+		t.Errorf("write_file = (%q, %v)", got, err)
+	}
+	if got, _ := os.ReadFile(cfgFile); string(got) != "{}" {
+		t.Errorf("config file changed: %q", got)
+	}
+}

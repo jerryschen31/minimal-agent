@@ -345,6 +345,23 @@ func describe(name, args, content string, failed bool) string {
 				line += " (" + strings.Join(extras, ", ") + ")"
 			}
 		}
+	case "write_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : write " + in.Path
+			if !failed && content != "" {
+				line = name + " : " + oneLine(content, maxArgsChars) // "created x (N bytes)" / "overwrote x (N bytes)"
+			}
+		}
+	case "create_directory":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : mkdir " + in.Path
+		}
 	case "shell", "run_command", "bash":
 		var in struct {
 			Command string `json:"command"`

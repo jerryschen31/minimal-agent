@@ -90,7 +90,7 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files", "search_files",
-//	                "create_directory"                                                                     [["read_file"]]
+//	                "create_directory", "write_file"                                                       [["read_file"]]
 //	denyPaths       extra path patterns the file tools never read, list or search, e.g. "*.secret",
 //	                "secrets/", "config/creds.json". Added to the built-in list (.env, .env.*, *.pem,
 //	                *.key, id_rsa*, .ssh, .agent-trace), which can't be removed; .env.example is always

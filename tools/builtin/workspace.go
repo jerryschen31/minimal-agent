@@ -27,7 +27,10 @@ type Workspace struct {
 	deny     DenyList // names never touched (the built-ins plus config denyPaths)
 	// writeDeny: names that may be read but never written, created or deleted by a file tool (see writeDeniedNames)
 	writeDeny []pathPattern
-	rootInfo  os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
+	// configFile: absolute path of the config file passed with -config, with symlinks resolved; "" = none. Read-only
+	// for the file tools, so the model can't rewrite its own approval rules.
+	configFile string
+	rootInfo   os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not
@@ -36,9 +39,11 @@ type Workspace struct {
 // Notes:
 //   - traceDir is relative to the process's directory, like the trace recorder that creates it (not to workDir);
 //     "" = none.
+//   - configFile is the -config path ("" = none). It is relative to the process's directory, need not exist, and is
+//     refused for writing (not for reading) if it is inside workDir.
 //   - deny is the deny list (NewDenyList); the zero value refuses the built-in names only.
 //   - workDir is stored with symlinks resolved, together with its file identity, which openRoot compares later.
-func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
+func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspace, error) {
 	abs, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("workDir %q: %w", workDir, err)
@@ -65,6 +70,11 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 		}
 		if isWithin(w.traceDir, w.rootDir) {
 			return nil, fmt.Errorf("traceDir %q is workDir or contains it, so the file tools could reach nothing", traceDir)
+		}
+	}
+	if configFile != "" {
+		if w.configFile, err = resolveSymLinks(configFile); err != nil {
+			return nil, fmt.Errorf("config file %q: %w", configFile, err)
 		}
 	}
 	return w, nil
@@ -123,7 +133,8 @@ func errMsgHidePath(requested string, err error) error {
 // Notes:
 //   - The longest existing part of the path is resolved (resolveSymLinks) and the missing rest is added back, then
 //     checkPath runs on the whole, so a new file under a symlink that points outside rootDir is refused.
-//   - On top of checkPath's rules, a write is refused for a name in writeDeniedNames (e.g. anything under .git).
+//   - On top of checkPath's rules, a write is refused for a name in writeDeniedNames (e.g. anything under .git) and
+//     for the config file.
 //   - A path that doesn't exist yet counts as a directory for patterns ending in "/" (the safe way to be wrong).
 //   - Errors name only the requested path, as in resolvePath.
 //   - It doesn't create anything and returns no identity; the caller opens through openRoot, which refuses ".." and
@@ -145,6 +156,9 @@ func (w *Workspace) resolveNewPath(requested string) (string, error) {
 	isDir := statErr != nil || info.IsDir()
 	if matchPath(w.writeDeny, rel, isDir, nil) {
 		return "", fmt.Errorf("%s is blocked: it is read-only for the file tools (%s)", requested, strings.Join(writeDeniedNames, ", "))
+	}
+	if w.configFile != "" && strings.EqualFold(real, w.configFile) { // EqualFold: macOS and Windows ignore case
+		return "", fmt.Errorf("%s is blocked: it is the agent's own config file, read-only for the file tools", requested)
 	}
 	return rel, nil
 }
