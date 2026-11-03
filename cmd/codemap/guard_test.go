@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -264,5 +265,20 @@ func Test_Run_CodeUnchangedFlag(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "a.go"), []byte(strings.Replace(guardA, "return x + y", "return 1", 1)), 0o644)
 	if err := run([]string{"-root", dir, "-code-unchanged", "HEAD"}, &out); err == nil || !strings.Contains(err.Error(), "a.go") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// - Verify an untracked file whose name has a space, and one with a non-ASCII character, is reported under its real name
+// (not split at the space, and not as git's quoted form)
+func Test_CodeUnchanged_UntrackedFileNamesWithSpacesAndUnicode(t *testing.T) {
+	dir := guardRepo(t)
+	body := []byte("package p\n\nfunc New() {}\n")
+	os.WriteFile(filepath.Join(dir, "my file.go"), body, 0o644)
+	os.WriteFile(filepath.Join(dir, "café.go"), body, 0o644)
+	got, err := codeUnchanged(dir, "HEAD")
+	want := []string{"café.go (added, contains code)", "my file.go (added, contains code)"}
+	slices.Sort(got)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, %v; want %v", got, err, want)
 	}
 }

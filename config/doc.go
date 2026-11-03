@@ -121,7 +121,8 @@
 //
 // Running commands (run_command). Not a shell: the program starts with an argument list, so pipes, && and $VAR are
 // literal text; stdin is empty, so interactive programs do not work; it runs in its own process group, killed when
-// the call ends, so nothing it starts outlives the call. A non-zero exit is a normal result ("[exit status N]").
+// the call ends, so nothing it starts outlives the call (on Windows only the program itself is killed, not what it
+// started). A non-zero exit is a normal result ("[exit status N]").
 // It is NOT contained: a running program can read and write anything you can, which bypasses every file-tool check
 // (.git, the config file, denyPaths, the hard-link refusal). An allowed interpreter (python3, go, npm) is code
 // execution. cat, head, grep and sed read .env and the other names read_file refuses: do not list them.

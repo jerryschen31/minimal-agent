@@ -4209,3 +4209,57 @@ Jerry chose a built-in check against the deny list `read_file` uses, documented 
   affected: it uses `TrimPartialRune`.)
 - **Tests:** four new `CutBytes` cases and a five-shape `ShapeIsExclusive` test. Mutation checks: removing the mixed-shape
   branch, and dropping the "valid and crosses the cut" condition, each fail a test.
+
+
+### 2026-11-03 — PR #38 Copilot review (build → master): what was fixed, what is accepted, what is deferred
+
+Six inline comments and one finding from the summary. All were checked against the code and are real; two are fixed by
+accepting and documenting a gap.
+
+**Fixed**
+- **`move_file` and hard links** (`movefile.go`): it never looked at the source's link count, so a hard link to `.env` or
+  `.git/config` under an allowed name could be renamed to a name `read_file` allows, and the secret read from there. After the
+  last `Lstat` and just before `Rename` it now refuses a source with more than one name, like `write_file`, `edit_file` and
+  `copy_file`. Test: `Test_MoveFile_HardLinkedSource_Refused`.
+- **Nil workspace** (`runcommand.go`): `NewRunCommandTool(nil, …)` panicked; it returns `run_command needs a workspace`, like
+  the other constructors.
+- **Windows `KillGroup`** (`procutils/procgroup_windows.go`): it was empty, and `run_command` sets `cmd.Cancel = KillGroup`, which
+  replaces Go's default (kill the process), so on Windows even the direct command kept running after a Ctrl+C or timeout. It now
+  kills the direct process. A Windows-only test was added; it was not run here (no Windows machine), only compiled.
+- **`cmd/codemap/guard.go`** (from the review summary): the untracked-file list was split with `strings.Fields`, so `my file.go`
+  became two names and `-code-unchanged` checked the wrong paths. It now uses `git ls-files -z` and splits on NUL (which also
+  stops git quoting non-ASCII names). Test: `Test_CodeUnchanged_UntrackedFileNamesWithSpacesAndUnicode`.
+- Mutation checks: removing the `move_file` check, the nil guard and the NUL split each fail a test.
+
+**Accepted and documented (Jerry's decision): hard links on Windows**
+- *What a link count is:* a file's content is stored once and a filename is a label for it; one file can have several labels
+  (hard links, `ln .env notes.txt`). The link count is how many labels a file has. The file tools protect secrets by name
+  (`.env`, `*.pem`, `.git/…`), and a hard link is a way round a name check: `notes.txt` is not on the deny list but is the same
+  file as `.env`. So `write_file`, `edit_file`, `copy_file` and now `move_file` refuse any file with more than one name.
+- *Windows:* it has hard links too, but Go's `os.FileInfo` exposes the count only on Unix. `linkCount` (`nlink_other.go`)
+  answers "unknown" there and every caller reads "unknown" as "fine". So on Windows the file tools still run (it builds and
+  nothing there has been run or tested) but **without hard-link protection**. Failing closed was rejected for now: it would
+  disable the write tools on Windows, to guard against a hard link that another program must already have made.
+- *Real fix, deferred until Windows is a target:* read `NumberOfLinks` with `syscall.GetFileInformationByHandle`, which needs an
+  open file handle. `linkCount` would take the opened `*os.File` instead of a `FileInfo` (Unix keeps `Stat_t.Nlink`, Windows
+  calls the API on `f.Fd()`). `openExisting` already has the file open; `copy_file` needs a look; `move_file` has no open file,
+  so it would open the source read-only just to count its links. Cannot be tested without a Windows machine.
+
+**Accepted and documented (Jerry's decision): `create_directory` and a symlink swapped in mid-call**
+- *The gap:* `resolveNewPath` and `openDir` pin only the nearest directory that already existed. `MkdirAll` then creates the
+  missing components below it. A second process could create one of those missing components as a symlink to `.git` between the
+  check and `MkdirAll`; `os.Root` stops escapes out of the root, not a redirect to `.git` inside it, so the directory would be
+  made under `.git`.
+- *Likelihood:* very low. Tool calls run one after another, so the model cannot start the racing process mid-call; it must
+  already be running, guess the path, and win a window of about a millisecond. The same class was fixed for the deepest
+  directory in the PR #35 review, so this is a hardening gap, not a new kind of problem.
+- *Fix, deferred:* replace `MkdirAll(tail)` with a loop over the missing components: `Mkdir` the component, `Lstat` it (must be
+  a directory, not a symlink), open it as a `Root`, and require `os.SameFile` between that handle and the `Lstat` result;
+  continue from the handle, never from the path. About 15 lines in `createdirectory.go`, plus a test that swaps a component
+  for a symlink between the steps.
+
+**Deferred: a Windows Job Object for `run_command` and MCP servers.** Only the direct process is killed on Windows now, so a
+grandchild (`node` under `npx`) can outlive the call, which contradicts "nothing a tool spawns outlives the call" there. A Job
+Object (`CreateJobObject`, `AssignProcessToJobObject`, `TerminateJobObject`; `kernel32` calls or `golang.org/x/sys/windows`)
+kills the whole tree; assigning it after `Start` leaves a small window unless the process starts suspended. The qualification
+is stated in `RunCommandTool`, `config/doc.go` and `CLAUDE.md`.

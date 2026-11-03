@@ -458,7 +458,7 @@ func Test_Unit_ToolRules_CommandRules_MatchTheCommandLine(t *testing.T) {
 	checkCall(t, r, runCmd(`{"command":"go","args":["test","./..."]}`), "run_command:go test*")
 	checkCall(t, r, runCmd(`{"command":"go","args":["build","./..."]}`), "")
 	checkCall(t, r, runCmd(`{"command":"RM","args":["x"]}`), "run_command:rm*") // case-insensitive, like tool names
-	checkCall(t, r, runCmd(`{"Command":"rm"}`), "run_command:rm*")             // keys are read as the tool reads them
+	checkCall(t, r, runCmd(`{"Command":"rm"}`), "run_command:rm*")              // keys are read as the tool reads them
 }
 
 // - Verify an ask command rule asks (wraps ErrNeedsApproval) and a command matching no rule runs, so listing a program in
