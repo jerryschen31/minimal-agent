@@ -153,14 +153,44 @@ func (w *Workspace) resolveNewPath(requested string) (string, error) {
 		return "", err
 	}
 	info, statErr := os.Stat(real)
-	isDir := statErr != nil || info.IsDir()
-	if matchPath(w.writeDeny, rel, isDir, nil) {
-		return "", fmt.Errorf("%s is blocked: it is read-only for the file tools (%s)", requested, strings.Join(writeDeniedNames, ", "))
-	}
-	if w.configFile != "" && strings.EqualFold(real, w.configFile) { // EqualFold: macOS and Windows ignore case
-		return "", fmt.Errorf("%s is blocked: it is the agent's own config file, read-only for the file tools", requested)
+	if err := w.checkWritable(requested, rel, statErr != nil || info.IsDir()); err != nil {
+		return "", err
 	}
 	return rel, nil
+}
+
+// resolvePathForWrite is resolvePath for a file that must already exist and will be changed: the same checks, plus
+// the write-deny checks of resolveNewPath.
+//
+// Notes:
+//   - Returns the path relative to rootDir and the file's identity, as resolvePath does, for openExisting.
+//   - Used by tools that edit a file in place (edit_file). A file that doesn't exist is an error, with resolvePath's
+//     message.
+func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error) {
+	rel, info, err := w.resolvePath(requested)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := w.checkWritable(requested, rel, info.IsDir()); err != nil {
+		return "", nil, err
+	}
+	return rel, info, nil
+}
+
+// checkWritable refuses a path (relative to rootDir, symlinks already resolved) that the file tools may read but never
+// change: a name in writeDeniedNames, or the config file.
+//
+// Notes:
+//   - isDir is about rel itself (for patterns ending in "/").
+//   - requested is used only in error messages.
+func (w *Workspace) checkWritable(requested, rel string, isDir bool) error {
+	if matchPath(w.writeDeny, rel, isDir, nil) {
+		return fmt.Errorf("%s is blocked: it is read-only for the file tools (%s)", requested, strings.Join(writeDeniedNames, ", "))
+	}
+	if w.configFile != "" && strings.EqualFold(filepath.Join(w.rootDir, rel), w.configFile) { // EqualFold: macOS and Windows ignore case
+		return fmt.Errorf("%s is blocked: it is the agent's own config file, read-only for the file tools", requested)
+	}
+	return nil
 }
 
 // checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
@@ -220,17 +250,37 @@ func (w *Workspace) openRoot() (*os.Root, error) {
 //
 // Notes:
 //   - requested names the file in errors. The caller closes the file.
+//   - It is openExisting with O_RDONLY; see there for the checks and the reasons.
+func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error) {
+	return w.openExisting(root, requested, rel, want, os.O_RDONLY)
+}
+
+// openExisting opens the regular file rel (relative to rootDir) through root with flag (O_RDONLY, O_WRONLY or O_RDWR,
+// never O_TRUNC or O_CREATE), and refuses it unless it is want: the file the workspace check approved.
+//
+// Notes:
+//   - requested names the file in errors. The caller closes the file.
 //   - [agent] The check approves a name, the open follows that name again, and os.Root follows symlinks that stay
 //     inside rootDir. Something else (another program, an MCP server) can swap a.txt for a symlink to .env in
 //     between, and the open would then return .env. Locks can't stop another process, so instead the opened file is
 //     compared with the checked one (os.SameFile: same device and inode), as openRoot does for rootDir. The opened
 //     file is checked again on its descriptor too: O_NONBLOCK makes opening a named pipe return at once rather than
 //     wait for a writer forever.
+//   - A want that is a directory or not a regular file is refused before the open, so a write open never tries a
+//     directory or a pipe. A write tool truncates only after this returns, so a refused file is never emptied.
 //   - Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want;
 //     both then follow the new directory, so they match. Closing it would need the OS to report the opened file's
 //     real path.
-func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error) {
-	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error) {
+	if want != nil {
+		switch {
+		case want.IsDir():
+			return nil, nil, fmt.Errorf("%s is a directory, not a file", requested)
+		case !want.Mode().IsRegular():
+			return nil, nil, fmt.Errorf("%s is not a regular file (it is a %s)", requested, fileKind(want.Mode()))
+		}
+	}
+	f, err := root.OpenFile(rel, flag|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, err
 	}

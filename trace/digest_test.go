@@ -325,3 +325,20 @@ func Test_Digest_WriteFileAndCreateDirectoryDescribed(t *testing.T) {
 		}
 	}
 }
+
+func Test_Digest_EditFileDescribed(t *testing.T) {
+	tests := []struct {
+		name, args, content string
+		failed              bool
+		want                string
+	}{
+		{"edited", `{"path":"a.go","old_string":"x","new_string":"y"}`, "edited a.go (2 replacements, 90 bytes)", false, "edit_file : edited a.go (2 replacements, 90 bytes)"},
+		{"failed shows path and error, not the strings", `{"path":"a.go","old_string":"SECRET","new_string":"y"}`, "old_string was not found", true, "edit_file : edit a.go (failed: old_string was not found)"},
+		{"no path falls back to the generic line", `{}`, "", false, "edit_file : {}"},
+	}
+	for _, tc := range tests {
+		if got := describe("edit_file", tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -1081,3 +1081,11 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > "write_file"]`. **Jerry to do:** review; try it live (`go run . -config … `, ask the agent to write a file, read the
 > approval preview); diff test names vs `build` (none deleted here). Not covered by tests: the swap race inside
 > `openForWrite`. **Next:** slice 5 `edit_file` (needs its own result-size check), then 6 `copy_file`/`move_file`.
+>
+> (2026-11-02) **Slice 5 built** on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 5 built`):
+> `edit_file`, shared `openExisting`/`checkWritable`/`resolvePathForWrite`, trace body cutting (`trace/shorten.go`),
+> approval summary for edits, digest line. `go vet`, `go test -race ./...`, codemap `-check`/`-lint` pass; `-mode info`
+> lists the three write tools. Enable with `builtinTools: ["create_directory","write_file","edit_file"]`. **Jerry to do:**
+> review; try the write tools live and read the approval questions. **Known limits:** non-atomic in-place writes; mtime
+> granularity; hardlinks (checks are by name); edit vs write_file of one file not serialized. **Next:** slice 6
+> `copy_file`/`move_file`, then `run_command`, `/reload`, then the autonomous port (Jerry builds it himself).
