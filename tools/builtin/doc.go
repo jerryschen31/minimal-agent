@@ -55,6 +55,6 @@
 //	  func (w *Workspace) checkPath(requested, real string) (rel string, err error)
 //	  func (w *Workspace) openRoot() (*os.Root, error)
 //	  func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
-//	  func resolvePath(p string) (string, error)
+//	  func resolveSymLinks(p string) (string, error)
 //	  func isWithin(dir, p string) bool
 package builtin

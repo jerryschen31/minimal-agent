@@ -3854,3 +3854,25 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
   differs from the package's (a `//go:build ignore` script), and names starting with `_` or `.`. The loader no longer
   loads syntax at all, which also makes it faster. Downside: the map shows every variant of a function (the unix and
   windows `startInOwnGroup`, each under its own file), and a package whose files are all for other OSes still fails to load.
+
+### 2026-11-02 — Slice 4 (`write_file` + `create_directory`): Jerry's answers
+
+- **`write_file` does not create parent directories.** A missing parent is an error the model can recover from by
+  calling `create_directory` first. Keeps `create_directory` meaningful and keeps one tool to one effect. Downside: one
+  extra tool call when writing into a new folder.
+- **Overwrite needs no flag; the ask prompt is enough** (`write_file` is in the `askRules` defaults). Downside: under
+  `approval: allow-all` nobody is asked, so a model can overwrite a file silently. Accepted: allow-all is an explicit,
+  confirmed opt-in. The result text says `created` or `overwrote`.
+- **Write-deny list starts with `.git/`, the config file passed to the agent, and `traceDir`.** It is checked on top of
+  the read deny list and config `denyPaths`. `traceDir` is already refused by `checkPath` for reads, so writes inherit it.
+  `Workspace` needs the config file's path to deny it (new argument to `NewWorkspace`, or a field set by setup).
+- **Rename:** the planned `resolveNew` is `resolveNewPath` (the existing `resolve`/`resolveInfo` became `resolvePath`,
+  `check` became `checkPath`).
+- **Size cap (proposed, not yet confirmed):** an unexported constant `maxWriteBytes = 1 << 20` (1 MB) in `writefile.go`,
+  like `maxListEntries`. It equals the `readFileMaxBytes` default, so anything written can be read back in one call.
+  It is a backstop: the model's own output limit is far lower. Downside: not configurable without a code change.
+- **Renames and cap agreed (Jerry, same day):** the package-level `resolvePath(p)` (normalizes any path, tolerates a
+  missing tail, no checks; used for `traceDir`) is now `resolveSymLinks`, so `(w *Workspace) resolvePath` is the only
+  `resolvePath`. `maxWriteBytes = 1 << 20` (1 MB per `write_file` call, unexported constant) is agreed. It bounds one
+  call's content (= the file's final size, since `write_file` replaces the whole file), not total disk use; `edit_file`
+  will need its own result-size check.

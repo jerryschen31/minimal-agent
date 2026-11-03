@@ -48,7 +48,7 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	}
 	w := &Workspace{rootDir: rootDir, deny: deny, rootInfo: info}
 	if traceDir != "" {
-		if w.traceDir, err = resolvePath(traceDir); err != nil {
+		if w.traceDir, err = resolveSymLinks(traceDir); err != nil {
 			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
 		}
 		if isWithin(w.traceDir, w.rootDir) {
@@ -190,13 +190,13 @@ func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileI
 	return f, info, nil
 }
 
-// resolvePath returns p as an absolute path with symlinks resolved, like the paths it is compared with.
+// resolveSymLinks returns p as an absolute path with symlinks resolved, like the paths it is compared with.
 //
 // Notes:
 //   - p need not exist yet (the recorder creates the trace directory when a run starts): the longest existing part is
 //     resolved and the rest is added back unchanged.
 //   - A path that exists as a symlink to a missing target is refused (see the comment in the body).
-func resolvePath(p string) (string, error) {
+func resolveSymLinks(p string) (string, error) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", err
