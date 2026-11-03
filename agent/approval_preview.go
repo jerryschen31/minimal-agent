@@ -22,42 +22,67 @@ const (
 //     server's write_file with the same shape) it shows the path, the size and the first previewMaxLines lines instead.
 //   - A call with string "path", "old_string" and "new_string" (edit_file) shows a one-line summary and the first line
 //     of each side (editPreview): one question per call, never per line.
+//   - The shapes are mutually exclusive: a call with both content and old_string/new_string fields is shown raw with a
+//     warning, never as only one of the two (the tool ignores unknown keys, so either half could be the one that runs).
 //   - Any other call, or arguments that don't parse, show the raw arguments cut at previewMaxArgsChars.
 //   - Everything is quoted with %q because a path or content can hold terminal escape codes.
 //   - Downside: the user approves a preview, not the whole content; the lines after the shown ones are unseen.
 func approvalPreview(call model.ToolCall) []string {
-	var ed struct {
+	// One struct for every shape, decoded the way the tools decode (encoding/json: case-insensitive keys, unknown keys
+	// ignored), so the preview reads the arguments as the tool will. A nil pointer means the key is absent.
+	var in struct {
 		Path       *string `json:"path"`
+		Content    *string `json:"content"`
 		OldString  *string `json:"old_string"`
 		NewString  *string `json:"new_string"`
 		ReplaceAll bool    `json:"replace_all"`
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &ed); err == nil && ed.Path != nil && ed.OldString != nil && ed.NewString != nil {
-		return editPreview(*ed.Path, *ed.OldString, *ed.NewString, ed.ReplaceAll)
-	}
-	var in struct {
-		Path    *string `json:"path"`
-		Content *string `json:"content"`
-	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &in); err == nil && in.Path != nil && in.Content != nil {
-		lines := strings.Split(*in.Content, "\n")
-		out := []string{
-			fmt.Sprintf("Path: %q", *in.Path),
-			fmt.Sprintf("Size: %d bytes, %d lines", len(*in.Content), len(lines)),
-		}
-		for i, l := range lines {
-			if i == previewMaxLines {
-				out = append(out, fmt.Sprintf("... %d more lines not shown", len(lines)-previewMaxLines))
-				break
-			}
-			if r := []rune(l); len(r) > previewMaxLineChars {
-				l = string(r[:previewMaxLineChars]) + "…"
-			}
-			out = append(out, fmt.Sprintf("Content: %q", l))
-		}
-		return out
-	}
 	args := call.Function.Arguments
+	if err := json.Unmarshal([]byte(args), &in); err == nil && in.Path != nil {
+		hasEditFields := in.OldString != nil || in.NewString != nil
+		switch {
+		case in.Content == nil && in.OldString != nil && in.NewString != nil: // edit_file
+			return editPreview(*in.Path, *in.OldString, *in.NewString, in.ReplaceAll)
+		case in.Content != nil && !hasEditFields: // write_file
+			return writePreview(*in.Path, *in.Content)
+		case in.Content != nil && hasEditFields:
+			// [agent] A write_file call may carry extra old_string/new_string keys (the tool ignores unknown keys), and an
+			// edit_file call may carry a content key. Describing it as either would hide the other half, so say so and
+			// show the raw arguments.
+			return append([]string{"[warning] this call has both content and old_string/new_string fields; shown as sent:"}, rawPreview(args)...)
+		}
+	}
+	return rawPreview(args)
+}
+
+// writePreview returns the approval lines for a write_file-shaped call: the path, the size and the first lines.
+//
+// Notes:
+//   - At most previewMaxLines lines, each cut at previewMaxLineChars, quoted with %q.
+func writePreview(path, content string) []string {
+	lines := strings.Split(content, "\n")
+	out := []string{
+		fmt.Sprintf("Path: %q", path),
+		fmt.Sprintf("Size: %d bytes, %d lines", len(content), len(lines)),
+	}
+	for i, l := range lines {
+		if i == previewMaxLines {
+			out = append(out, fmt.Sprintf("... %d more lines not shown", len(lines)-previewMaxLines))
+			break
+		}
+		if r := []rune(l); len(r) > previewMaxLineChars {
+			l = string(r[:previewMaxLineChars]) + "…"
+		}
+		out = append(out, fmt.Sprintf("Content: %q", l))
+	}
+	return out
+}
+
+// rawPreview returns the arguments as one quoted line, cut at previewMaxArgsChars characters.
+//
+// Notes:
+//   - A cut line says how many characters there were in all.
+func rawPreview(args string) []string {
 	if r := []rune(args); len(r) > previewMaxArgsChars {
 		return []string{fmt.Sprintf("Arguments: %q… (%d characters in all)", string(r[:previewMaxArgsChars]), len(r))}
 	}

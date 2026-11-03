@@ -3964,3 +3964,40 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
   `edit x (failed: …)`, never the strings.
 - Tests: `editfile_test.go`, `editfile_unix_test.go`, plus cases in `approval_preview_test.go`, `shorten_test.go`,
   `digest_test.go`, `tool_test.go`. No test was deleted.
+
+### 2026-11-03 — PR #35 Copilot review: four fixes to the write tools
+
+Copilot's four inline comments, each confirmed against the code and given a test that fails without the fix (checked by
+disabling the fix).
+- **Approval preview could describe the wrong operation.** `write_file` ignores unknown keys, so a call with `content`
+  plus `old_string`/`new_string` was previewed as an edit while `content` was what got written (it hid the data from the
+  user). The shapes are now mutually exclusive: an edit has no `content`; a write has no `old_string`/`new_string`; a mix
+  is shown raw with a `[warning]` line. The struct decode is case-insensitive like the tools' own decode.
+- **A directory above a new file could be swapped for a symlink to `.git` after the check.** `os.Root` only stops links
+  that leave `rootDir`; a relative link to `.git` stays inside, so `resolveNewPath`'s write-deny check (on the path as it
+  was) did not hold at the moment of the write. `resolveNewPath` now returns a `newTarget` (path, nearest existing
+  directory above it, and that directory's identity); `create_directory` and `write_file` create only through
+  `openDir`, which opens that directory as its own `os.Root` (tied to the directory, not its path) and refuses it
+  unless `os.SameFile` matches the approved one. Remaining window: between the approval's `Lstat` of that directory and
+  `openDir`'s open, a swap that is undone before the compare is not seen (accepted, as for `openRoot`). `os.Root` itself
+  already refuses a link with an absolute target.
+- **Hard links bypassed the name-based write-deny.** `notes.txt` hard-linked to `.env`, `.git/config` or the config file
+  passed the checks and the same-inode compare then accepted it. Chosen fix (Jerry's call to revisit): `openExisting`
+  refuses to open for writing any file with `st_nlink > 1`. Downside: a legitimately hard-linked file (e.g. a pnpm
+  store) can't be edited by the tools. Not covered: platforms without a link count (non-Unix: check skipped), and
+  **reading** through a hard link to `.env` (`read_file` is still allowed; a separate, older gap, needs the same kind of
+  inode policy if it matters).
+- **A rename after the open sent writes to an unlinked file.** `f.Stat()` is the descriptor's inode, so if another
+  process renamed the file and put another at the path, `edit_file` / `write_file` wrote the old inode and reported
+  success while the path was unchanged. `stillAtPath` compares the open descriptor with what the path names now
+  (`os.SameFile`) just before the truncate in both tools. A tiny window between that check and the truncate remains.
+- Also fixed: the `candidte` typo (summary comment on the PR).
+- **Trace shortening gaps from the same review, fixed (Jerry: yes).** (1) Body keys (`content`, `old_string`,
+  `new_string`) are now matched case-insensitively, as the tools' JSON decode does, so `Content` is cut too. (2) Arguments
+  over 1000 bytes that are not a readable JSON object (invalid or truncated JSON, an array, a string, `null`) are cut
+  as a whole to 1000 characters plus a byte count, so a file body in a malformed call no longer reaches the trace. Two
+  cases in `Test_Unit_ShortenArguments_Untouched` (long invalid JSON, long non-object) expected the old pass-through and
+  were removed on purpose; their replacement is `Test_Unit_ShortenArguments_UnreadableLongArguments_CutWhole`. Downside:
+  a long malformed call is no longer fully visible in the trace (the memory/conversation still has it).
+- Tests: `writeraces_unix_test.go` (hard links, swapped parent, rename after open, `stillAtPath`, accepted directories),
+  two preview tests. No test was deleted.

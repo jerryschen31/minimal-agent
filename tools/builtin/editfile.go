@@ -210,6 +210,9 @@ func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if now.Size() != before.Size() || !now.ModTime().Equal(before.ModTime()) {
 		return "", fmt.Errorf("%s changed while it was being edited; read it again and retry", params.Path)
 	}
+	if err := t.ws.stillAtPath(root, params.Path, rel, f); err != nil {
+		return "", err
+	}
 	if err := f.Truncate(0); err != nil {
 		return "", errMsgHidePath(params.Path, err)
 	}

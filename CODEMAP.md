@@ -67,6 +67,8 @@ minimal-agent/
 │       ├── editfile.go
 │       ├── ignorelist.go
 │       ├── listfiles.go
+│       ├── nlink_other.go
+│       ├── nlink_unix.go
 │       ├── pathpattern.go
 │       ├── readfile.go
 │       ├── searchfiles.go
@@ -108,6 +110,8 @@ agent.go
 
 approval_preview.go
   func approvalPreview(call model.ToolCall) []string
+  func writePreview(path, content string) []string
+  func rawPreview(args string) []string
   func editPreview(path, oldStr, newStr string, all bool) []string
   func previewFirstLine(s string) string
 
@@ -449,6 +453,12 @@ listfiles.go
   func (t *ListFilesTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func matchName(pattern, name string) bool
 
+nlink_other.go
+  func linkCount(fi os.FileInfo) (uint64, bool)
+
+nlink_unix.go
+  func linkCount(fi os.FileInfo) (uint64, bool)
+
 pathpattern.go
   func parsePathPatterns(key string, raw []string) ([]pathPattern, error)
   func parsePathPattern(r string) (pathPattern, error)
@@ -474,13 +484,15 @@ workspace.go
   func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspace, error)
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
-  func (w *Workspace) resolveNewPath(requested string) (string, error)
+  func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+  func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
   func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error)
   func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
   func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)
+  func (w *Workspace) stillAtPath(root *os.Root, requested, rel string, f *os.File) error
   func resolveSymLinks(p string) (string, error)
   func isWithin(dir, p string) bool
 
@@ -488,7 +500,7 @@ writefile.go
   func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
   func (t *WriteFileTool) GetToolDefinition() model.ToolDef
   func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-  func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.File, string, error)
+  func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os.File, string, error)
 ```
 
 ## trace (package trace)
@@ -572,6 +584,8 @@ scope.go
 
 shorten.go
   func shortenArguments(args string) string
+  func isBodyKey(k string) bool
+  func cutChars(s string, n int) string
 
 subscriber.go
   func NewJSONLSubscriber(dir, runID string) (Subscriber, error)

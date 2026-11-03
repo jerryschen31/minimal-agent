@@ -3,6 +3,7 @@ package trace
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -21,30 +22,60 @@ var bodyKeys = []string{"content", "old_string", "new_string"}
 //   - [agent] A write_file or edit_file call carries whole file text (up to 1 MB) that the trace does not need: the
 //     path, the sizes and the result say what happened. Cutting it also keeps secrets pasted into a file out of the
 //     log. The conversation itself (memory) still holds the full call; only the trace is shortened.
-//   - Only string values under bodyKeys longer than bodyKeptChars are cut, and only when the arguments are longer than
-//     shortenAbove, so other tools' arguments (a long shell command the digest shows) are untouched.
-//   - Arguments that are not a JSON object are returned as they are. After a cut the keys come back in sorted order.
+//   - Arguments up to shortenAbove bytes are recorded as they are.
+//   - A JSON object: each string value whose key is in bodyKeys (compared case-insensitively, because the tools decode
+//     keys that way, so "Content" is a body too) and is longer than bodyKeptChars is cut. Other fields, such as a long
+//     shell command the digest shows, are untouched. After a cut the keys come back in sorted order.
+//   - Anything else that long (invalid JSON, which sloppy models emit and which may still hold a whole file; or valid
+//     JSON that isn't an object) is cut as a whole to shortenAbove characters, so nothing oversized reaches the trace
+//     in a shape this function can't read.
 func shortenArguments(args string) string {
 	if len(args) <= shortenAbove {
 		return args
 	}
 	var m map[string]any
-	if json.Unmarshal([]byte(args), &m) != nil {
-		return args
+	if json.Unmarshal([]byte(args), &m) != nil || m == nil { // invalid JSON, or valid but not an object (null decodes to a nil map)
+		return cutChars(args, shortenAbove)
 	}
 	cut := false
-	for _, k := range bodyKeys {
-		if s, ok := m[k].(string); ok && len([]rune(s)) > bodyKeptChars {
-			m[k] = string([]rune(s)[:bodyKeptChars]) + fmt.Sprintf(cutMarkerFmt, len(s))
-			cut = true
+	for k, v := range m {
+		s, ok := v.(string)
+		if !ok || !isBodyKey(k) || len([]rune(s)) <= bodyKeptChars {
+			continue
 		}
+		m[k] = cutChars(s, bodyKeptChars)
+		cut = true
 	}
 	if !cut {
 		return args
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return args
+		return cutChars(args, shortenAbove)
 	}
 	return string(b)
+}
+
+// isBodyKey reports whether an argument name holds file text, ignoring case.
+//
+// Notes: none.
+func isBodyKey(k string) bool {
+	for _, b := range bodyKeys {
+		if strings.EqualFold(k, b) {
+			return true
+		}
+	}
+	return false
+}
+
+// cutChars returns s cut to n characters followed by a marker with its size in bytes.
+//
+// Notes:
+//   - A string of n characters or fewer is returned as it is.
+func cutChars(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + fmt.Sprintf(cutMarkerFmt, len(s))
 }

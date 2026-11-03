@@ -95,7 +95,8 @@ func Test_Unit_Workspace_ResolveNewPath_MissingTail_Resolves(t *testing.T) {
 	writeFile(t, work, "d/old.txt", []byte("x"))
 	ws := newWorkspace(t, work, "", DenyList{})
 	for _, p := range []string{"d/new.txt", "x/y/z.txt", filepath.Join(work, "d", "new.txt")} {
-		rel, err := ws.resolveNewPath(p)
+		target, err := ws.resolveNewPath(p)
+		rel := target.rel
 		if err != nil || rel != filepath.Clean(strings.TrimPrefix(p, work+string(filepath.Separator))) {
 			t.Errorf("resolveNewPath(%q) = (%q, %v)", p, rel, err)
 		}

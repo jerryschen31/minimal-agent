@@ -52,8 +52,9 @@ func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef {
 // CallTool creates the directory (and any missing parents) and says whether it was new.
 //
 // Notes:
-//   - Order of defences: resolveNewPath (workspace and write-deny checks) then openRoot, whose MkdirAll refuses ".."
-//     and symlink escapes at the moment of the write.
+//   - Order of defences: resolveNewPath (workspace and write-deny checks), openRoot, then openDir: the nearest existing
+//     directory is opened as a Root of its own and must be the one approved, and MkdirAll runs inside it, so a directory
+//     swapped for a symlink to .git after the check can't redirect the write.
 //   - An existing directory is "already exists", not an error (idempotent); an existing file at the path, or as a
 //     parent, is an error.
 //   - Errors name only the requested path, never the absolute one.
@@ -70,7 +71,7 @@ func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start writing
 		return "", err
 	}
-	rel, err := t.ws.resolveNewPath(params.Path)
+	target, err := t.ws.resolveNewPath(params.Path)
 	if err != nil {
 		return "", err
 	}
@@ -79,15 +80,20 @@ func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage
 		return "", err
 	}
 	defer root.Close()
+	dir, tail, err := t.ws.openDir(root, params.Path, target) // the directory resolveNewPath approved, not whatever the path names now
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
 
-	shown := filepath.ToSlash(rel)
-	switch info, err := root.Stat(rel); {
+	shown := filepath.ToSlash(target.rel)
+	switch info, err := dir.Stat(tail); {
 	case err == nil && info.IsDir():
 		return fmt.Sprintf("directory %s already exists", shown), nil
 	case err == nil:
 		return "", fmt.Errorf("%s already exists and is a file, not a directory", params.Path)
 	}
-	if err := root.MkdirAll(rel, 0o755); err != nil {
+	if err := dir.MkdirAll(tail, 0o755); err != nil {
 		return "", errMsgHidePath(params.Path, err)
 	}
 	return fmt.Sprintf("created directory %s", shown), nil

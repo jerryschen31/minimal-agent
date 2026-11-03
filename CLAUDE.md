@@ -182,6 +182,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
   (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
   (`DECISIONS.md § Slice 4 built`).
+  A new file or directory is created only through `Workspace.openDir` (the nearest existing directory above it, opened as its
+  own `os.Root` and compared with the identity `resolveNewPath` approved), so a parent swapped for a symlink to `.git`
+  after the check can't redirect the write. `openExisting` refuses to open for writing a file with more than one name
+  (hard link), and `stillAtPath` refuses to truncate a file that was renamed away after it was opened
+  (`DECISIONS.md § PR #35 Copilot review`).
   `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
   match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
   file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file

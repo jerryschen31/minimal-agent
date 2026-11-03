@@ -93,3 +93,35 @@ func Test_Unit_ApprovalPreview_EditFile_ShortLongAndEscapes(t *testing.T) {
 		t.Errorf("raw escape or uncut line:\n%s", got)
 	}
 }
+
+// - Verify a call that mixes content with old_string/new_string is never described as only one of them: it gets a
+// warning and the raw arguments, whichever key order or key case the model used
+func Test_Unit_ApprovalPreview_MixedShapes_WarnAndShowRaw(t *testing.T) {
+	for name, args := range map[string]string{
+		"write with edit fields": `{"path":"a.txt","content":"REAL-DATA","old_string":"x","new_string":"y"}`,
+		"edit with content":      `{"path":"a.txt","old_string":"x","new_string":"y","content":"REAL-DATA"}`,
+		"content and new only":   `{"path":"a.txt","content":"REAL-DATA","new_string":"y"}`,
+		"different key case":     `{"path":"a.txt","CONTENT":"REAL-DATA","Old_String":"x","NEW_STRING":"y"}`,
+	} {
+		got := strings.Join(approvalPreview(previewCall(args)), "\n")
+		if !strings.Contains(got, "[warning]") || !strings.Contains(got, "REAL-DATA") {
+			t.Errorf("%s: preview = %q", name, got)
+		}
+		if strings.Contains(got, "Edit: replace") || strings.Contains(got, "Size:") {
+			t.Errorf("%s: described as one operation: %q", name, got)
+		}
+	}
+}
+
+// - Verify the plain shapes still classify: write, edit and a lone old_string (no new_string) falls back to raw
+func Test_Unit_ApprovalPreview_PlainShapesStillClassified(t *testing.T) {
+	if got := strings.Join(approvalPreview(previewCall(`{"path":"a","content":"c"}`)), "\n"); !strings.Contains(got, "Size: 1 bytes") {
+		t.Errorf("write: %q", got)
+	}
+	if got := strings.Join(approvalPreview(previewCall(`{"path":"a","old_string":"x","new_string":"y"}`)), "\n"); !strings.Contains(got, "Edit: replace") {
+		t.Errorf("edit: %q", got)
+	}
+	if got := strings.Join(approvalPreview(previewCall(`{"path":"a","old_string":"x"}`)), "\n"); !strings.HasPrefix(got, "Arguments:") {
+		t.Errorf("lone old_string: %q", got)
+	}
+}

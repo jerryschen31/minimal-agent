@@ -1089,3 +1089,8 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > review; try the write tools live and read the approval questions. **Known limits:** non-atomic in-place writes; mtime
 > granularity; hardlinks (checks are by name); edit vs write_file of one file not serialized. **Next:** slice 6
 > `copy_file`/`move_file`, then `run_command`, `/reload`, then the autonomous port (Jerry builds it himself).
+>
+> (2026-11-03) PR #35 Copilot's 4 inline comments fixed on `feat/built-in-write-file-and-edit-file-tool`, not committed
+> (`DECISIONS.md § PR #35 Copilot review`): preview shapes exclusive, `openDir` for creates, hard-link refusal for
+> writes, `stillAtPath`. Trace shortening gaps from the PR summary (malformed JSON
+> arguments, case-variant keys) also fixed. **Open:** read-through-hard-link of `.env` by `read_file` is still allowed.

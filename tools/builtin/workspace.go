@@ -88,7 +88,7 @@ func NewWorkspace(workDir, traceDir, configFile string, deny DenyList) (*Workspa
 //   - Lstat, not Stat: the resolved path ends in a real file, so a symlink there now means it was swapped in after the resolve, and the identities won't match.
 //   - To prevent error messages revealing the absolute path, use errMsgHidePath to wrap the error with only the requested path.
 func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error) {
-	// resolve full candidte path
+	// resolve full candidate path
 	candidate := requested
 	if !filepath.IsAbs(requested) {
 		candidate = filepath.Join(w.rootDir, requested)
@@ -127,8 +127,16 @@ func errMsgHidePath(requested string, err error) error {
 	return fmt.Errorf("%s: can't be resolved", requested)
 }
 
-// resolveNewPath turns the model's path for something a write tool will create (it may not exist yet) into a path
-// relative to rootDir, with every symlink in the part that exists followed.
+// newTarget is a path a write tool will create or replace, as resolveNewPath approved it.
+type newTarget struct {
+	rel     string      // the path relative to rootDir ("." = rootDir itself)
+	dirRel  string      // the deepest directory that already existed above rel, relative to rootDir ("." = rootDir)
+	dirInfo os.FileInfo // that directory's identity when it was approved; openDir refuses any other directory
+}
+
+// resolveNewPath turns the model's path for something a write tool will create (it may not exist yet) into a newTarget:
+// the path relative to rootDir, with every symlink in the part that exists followed, and the identity of the deepest
+// directory that exists above it.
 //
 // Notes:
 //   - The longest existing part of the path is resolved (resolveSymLinks) and the missing rest is added back, then
@@ -137,26 +145,78 @@ func errMsgHidePath(requested string, err error) error {
 //     for the config file.
 //   - A path that doesn't exist yet counts as a directory for patterns ending in "/" (the safe way to be wrong).
 //   - Errors name only the requested path, as in resolvePath.
-//   - It doesn't create anything and returns no identity; the caller opens through openRoot, which refuses ".." and
-//     symlink escapes again at the moment of the write.
-func (w *Workspace) resolveNewPath(requested string) (string, error) {
+//   - It doesn't create anything. [agent] Its checks are about the path as it is now; the caller must create through
+//     openDir, which opens dirRel as a descriptor-bound Root and refuses it unless it is dirInfo. Otherwise another
+//     process could swap a directory above the new file for a symlink to .git between this check and the write, and
+//     os.Root would follow it (it only stops symlinks that leave rootDir).
+func (w *Workspace) resolveNewPath(requested string) (newTarget, error) {
 	candidate := requested
 	if !filepath.IsAbs(requested) {
 		candidate = filepath.Join(w.rootDir, requested)
 	}
 	real, err := resolveSymLinks(candidate)
 	if err != nil {
-		return "", errMsgHidePath(requested, err)
+		return newTarget{}, errMsgHidePath(requested, err)
 	}
 	rel, err := w.checkPath(requested, real)
 	if err != nil {
-		return "", err
+		return newTarget{}, err
 	}
 	info, statErr := os.Stat(real)
 	if err := w.checkWritable(requested, rel, statErr != nil || info.IsDir()); err != nil {
-		return "", err
+		return newTarget{}, err
 	}
-	return rel, nil
+	if rel == "." {
+		return newTarget{rel: ".", dirRel: ".", dirInfo: w.rootInfo}, nil
+	}
+	// the deepest directory that exists above real; rootDir exists, so the walk ends there at the latest
+	dir := filepath.Dir(real)
+	var dirInfo os.FileInfo
+	for {
+		if dirInfo, err = os.Lstat(dir); err == nil {
+			break
+		}
+		if dir == w.rootDir {
+			return newTarget{}, errMsgHidePath(requested, err)
+		}
+		dir = filepath.Dir(dir)
+	}
+	if !dirInfo.IsDir() {
+		return newTarget{}, fmt.Errorf("%s: a parent in the path is not a directory", requested)
+	}
+	dirRel, err := filepath.Rel(w.rootDir, dir)
+	if err != nil {
+		return newTarget{}, errMsgHidePath(requested, err)
+	}
+	return newTarget{rel: rel, dirRel: dirRel, dirInfo: dirInfo}, nil
+}
+
+// openDir opens the directory t.dirRel as a Root of its own and refuses it unless it is the directory resolveNewPath
+// approved. It returns that Root and the part of t.rel below it.
+//
+// Notes:
+//   - The caller closes the Root and creates or opens only through it, with the returned path.
+//   - [agent] A Root made by OpenRoot is tied to the directory itself, not its path, so a later swap of any directory
+//     above it can't redirect the write. The one gap is before the open: comparing it with dirInfo (os.SameFile) catches
+//     a swap since the approval, including a symlink to another directory inside rootDir such as .git.
+//   - A tail of "." means t.rel is the directory itself (rootDir, or a directory that already exists).
+//   - requested names the path in errors.
+func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error) {
+	dir, err := root.OpenRoot(t.dirRel)
+	if err != nil {
+		return nil, "", errMsgHidePath(requested, err)
+	}
+	info, err := dir.Stat(".")
+	if err != nil || !os.SameFile(info, t.dirInfo) {
+		dir.Close()
+		return nil, "", fmt.Errorf("%s: a directory in the path was replaced while it was being written; try again", requested)
+	}
+	tail, err := filepath.Rel(t.dirRel, t.rel)
+	if err != nil {
+		dir.Close()
+		return nil, "", errMsgHidePath(requested, err)
+	}
+	return dir, tail, nil
 }
 
 // resolvePathForWrite is resolvePath for a file that must already exist and will be changed: the same checks, plus
@@ -266,6 +326,9 @@ func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileI
 //     compared with the checked one (os.SameFile: same device and inode), as openRoot does for rootDir. The opened
 //     file is checked again on its descriptor too: O_NONBLOCK makes opening a named pipe return at once rather than
 //     wait for a writer forever.
+//   - A file opened for writing (O_WRONLY or O_RDWR) that has more than one name (st_nlink > 1) is refused: the checks are
+//     by name, so a hard link to .env or .git/config under an allowed name would otherwise pass them. Reading such a
+//     file is still allowed. Skipped where the OS gives no link count (linkCount).
 //   - A want that is a directory or not a regular file is refused before the open, so a write open never tries a
 //     directory or a pipe. A write tool truncates only after this returns, so a refused file is never emptied.
 //   - Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want;
@@ -293,12 +356,36 @@ func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.F
 		err = fmt.Errorf("%s is not a regular file (it is a %s)", requested, fileKind(info.Mode()))
 	case want == nil || !os.SameFile(info, want):
 		err = fmt.Errorf("%s was replaced while it was being opened; try again", requested)
+	case flag&(os.O_WRONLY|os.O_RDWR) != 0:
+		if n, known := linkCount(info); known && n > 1 {
+			err = fmt.Errorf("%s has %d names (hard links), so it may also be a protected file under another name; the file tools won't change it", requested, n)
+		}
 	}
 	if err != nil {
 		f.Close()
 		return nil, nil, err
 	}
 	return f, info, nil
+}
+
+// stillAtPath refuses f unless rel (relative to root's directory) still names the file f has open.
+//
+// Notes:
+//   - [agent] f is a descriptor on one inode. If another process renames the file after it was opened and puts a
+//     different file at rel, writing to f would change the old, unlinked inode, report success, and leave rel as it
+//     was. Comparing f with what rel names now (os.SameFile) catches that before anything is truncated.
+//   - Called just before the truncate; a very small window remains between this check and the truncate (accepted).
+//   - requested names the file in errors.
+func (w *Workspace) stillAtPath(root *os.Root, requested, rel string, f *os.File) error {
+	open, err := f.Stat()
+	if err != nil {
+		return errMsgHidePath(requested, err)
+	}
+	cur, err := root.Lstat(rel)
+	if err != nil || !os.SameFile(open, cur) {
+		return fmt.Errorf("%s was replaced or moved while it was being written; read it again and retry", requested)
+	}
+	return nil
 }
 
 // resolveSymLinks returns p as an absolute path with symlinks resolved, like the paths it is compared with.

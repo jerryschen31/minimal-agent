@@ -19,6 +19,8 @@
 //
 //	approval_preview.go
 //	  func approvalPreview(call model.ToolCall) []string
+//	  func writePreview(path, content string) []string
+//	  func rawPreview(args string) []string
 //	  func editPreview(path, oldStr, newStr string, all bool) []string
 //	  func previewFirstLine(s string) string
 //

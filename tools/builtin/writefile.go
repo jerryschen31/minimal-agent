@@ -67,8 +67,9 @@ func (t *WriteFileTool) GetToolDefinition() model.ToolDef {
 // CallTool writes the file and says whether it was created or overwritten.
 //
 // Notes:
-//   - Order of defences: size and NUL checks, resolveNewPath (workspace and write-deny checks), openRoot (os.Root
-//     refuses ".." and symlink escapes at the moment of the write), then the file is opened and checked on its
+//   - Order of defences: size and NUL checks, resolveNewPath (workspace and write-deny checks), openRoot, openDir (the
+//     file's parent is opened as a Root of its own and must be the directory that was approved, so a parent swapped for
+//     a symlink to .git after the check can't redirect the write), then the file is opened and checked on its
 //     descriptor before anything is written.
 //   - The parent directory must exist; a missing one is an error telling the model to call create_directory.
 //   - A new file is created with O_EXCL, so a file that appears after the check is not silently replaced. An existing
@@ -103,11 +104,11 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 	if err := ctx.Err(); err != nil { // the turn was cancelled (e.g. Ctrl+C): don't start writing
 		return "", err
 	}
-	rel, err := t.ws.resolveNewPath(params.Path)
+	target, err := t.ws.resolveNewPath(params.Path)
 	if err != nil {
 		return "", err
 	}
-	if rel == "." {
+	if target.rel == "." {
 		return "", fmt.Errorf("%s is the working directory, not a file", params.Path)
 	}
 	root, err := t.ws.openRoot()
@@ -115,18 +116,16 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 		return "", err
 	}
 	defer root.Close()
-
-	parent := filepath.Dir(rel)
-	switch pinfo, err := root.Stat(parent); {
-	case errors.Is(err, fs.ErrNotExist):
-		return "", fmt.Errorf("the directory %s doesn't exist; create it with create_directory first", filepath.ToSlash(parent))
-	case err != nil:
-		return "", errMsgHidePath(params.Path, err)
-	case !pinfo.IsDir():
-		return "", fmt.Errorf("%s: a parent in the path is a file, not a directory", params.Path)
+	dir, name, err := t.ws.openDir(root, params.Path, target) // the directory resolveNewPath approved, not whatever the path names now
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
+	if filepath.Dir(name) != "." { // the nearest existing directory is above the file's parent, so the parent is missing
+		return "", fmt.Errorf("the directory %s doesn't exist; create it with create_directory first", filepath.ToSlash(filepath.Dir(target.rel)))
 	}
 
-	f, verb, err := t.openForWrite(root, params.Path, rel)
+	f, verb, err := t.openForWrite(dir, params.Path, name)
 	if err != nil {
 		return "", err
 	}
@@ -137,25 +136,26 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 	if err != nil {
 		return "", errMsgHidePath(params.Path, err)
 	}
-	return fmt.Sprintf("%s %s (%d bytes)", verb, filepath.ToSlash(rel), n), nil
+	return fmt.Sprintf("%s %s (%d bytes)", verb, filepath.ToSlash(target.rel), n), nil
 }
 
-// openForWrite opens rel (relative to rootDir) through root for writing and returns the file, positioned at the
-// start and empty, with "created" or "overwrote".
+// openForWrite opens the file name through root for writing and returns the file, positioned at the start and empty,
+// with "created" or "overwrote".
 //
 // Notes:
-//   - requested names the file in errors. The caller closes the file.
-//   - Missing: created with O_EXCL (0644). Regular file: opened without O_TRUNC, checked on its descriptor against the
-//     Lstat taken here, then truncated. Anything else (a directory, a symlink swapped in, a pipe, a socket, a device)
-//     is refused.
-//   - [agent] The Lstat is taken here, not in resolveNewPath, because resolveNewPath returns no identity. A swap
-//     between resolveNewPath and this Lstat shows up as a symlink (refused) or as another regular file at the same
-//     already-approved name (harmless); a swap after the Lstat fails the SameFile check.
-func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.File, string, error) {
-	want, err := root.Lstat(rel)
+//   - root is the Root of the file's parent directory (openDir) and name is the file's name in it; requested names the
+//     file in errors. The caller closes the file.
+//   - Missing: created with O_EXCL (0644). Regular file: opened without O_TRUNC (openExisting: same file as the Lstat
+//     taken here, and not a file with several names), checked to still be at its path (stillAtPath), then truncated.
+//     Anything else (a directory, a symlink swapped in, a pipe, a socket, a device) is refused.
+//   - [agent] The Lstat is taken here because resolveNewPath returns the identity of the directory, not of the file. A
+//     swap between resolveNewPath and this Lstat shows up as a symlink (refused) or as another regular file at the
+//     same already-approved name (harmless); a swap after the Lstat fails the SameFile check.
+func (t *WriteFileTool) openForWrite(root *os.Root, requested, name string) (*os.File, string, error) {
+	want, err := root.Lstat(name)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		f, err := root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if errors.Is(err, fs.ErrExist) {
 			return nil, "", fmt.Errorf("%s was created while it was being written; try again", requested)
 		}
@@ -166,9 +166,13 @@ func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.
 	case err != nil:
 		return nil, "", errMsgHidePath(requested, err)
 	}
-	f, _, err := t.ws.openExisting(root, requested, rel, want, os.O_WRONLY) // no O_TRUNC until the checks pass
+	f, _, err := t.ws.openExisting(root, requested, name, want, os.O_WRONLY) // no O_TRUNC until the checks pass
 	if err != nil {
-		return nil, "", err // our own message, or an os.Root error that names only the relative path
+		return nil, "", err // our own message, or an os.Root error that names only the nameative path
+	}
+	if err := t.ws.stillAtPath(root, requested, name, f); err != nil {
+		f.Close()
+		return nil, "", err
 	}
 	if err := f.Truncate(0); err != nil {
 		f.Close()
