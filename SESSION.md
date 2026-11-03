@@ -1068,3 +1068,9 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > (`DECISIONS.md § PR #34 Copilot review`): `-code-unchanged` now catches added/untracked files with code; the map now
 > includes other-OS files (`procgroup_windows.go` is in `CODEMAP.md`). Tests updated/added in `guard_test.go` and
 > `load_test.go`; the fixture gained `util/util_windows.go` and `util/gen.go`.
+>
+> (2026-11-02) Slice 4 part 1 built on `feat/built-in-write-file-tool`, not committed (`DECISIONS.md § Slice 4 part 1
+> built`): `resolveNewPath`, `.git` write-deny, `create_directory`. Renames done earlier today: `resolve`/`resolveInfo` →
+> `resolvePath`, `check` → `checkPath`, package `resolvePath` → `resolveSymLinks`. **Next:** `write_file` (`maxWriteBytes`
+> 1 MB, no parent dirs, no overwrite flag, `created`/`overwrote`, `O_EXCL` for new, ask-prompt preview) plus write-deny
+> for the `-config` file (needs its path in `NewWorkspace`). Then a test sub-agent pass (diff test names vs `build`).

@@ -60,6 +60,7 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── createdirectory.go
 │       ├── denylist.go
 │       ├── doc.go
 │       ├── ignorelist.go
@@ -408,6 +409,11 @@ tool.go
 `github.com/jerryschen31/minimal-agent/tools/builtin`
 
 ```text
+createdirectory.go
+  func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
+  func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
+  func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+
 denylist.go
   func DeniedNames() []string
   func NewDenyList(extra []string) (DenyList, error)
@@ -451,6 +457,7 @@ workspace.go
   func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error)
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
+  func (w *Workspace) resolveNewPath(requested string) (string, error)
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)

@@ -62,6 +62,12 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 				return nil, err
 			}
 			tools = append(tools, searchFiles)
+		case "create_directory":
+			createDir, err := builtin.NewCreateDirectoryTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, createDir)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)

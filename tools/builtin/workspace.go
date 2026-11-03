@@ -10,16 +10,24 @@ import (
 	"syscall"
 )
 
+// writeDeniedNames are read-only for the file tools: they may be read (unless deny-listed) but a write tool never
+// creates, changes or deletes them. ".git" matches a directory or a file (a submodule's .git is a file) at any depth.
+// [agent] Writing inside .git can plant a hook that runs on the user's next `git commit`, which is code execution
+// outside the agent's approval gate.
+var writeDeniedNames = []string{".git"}
+
 // Workspace is the part of the filesystem the file tools may touch: rootDir and everything below it, except
 // deny-listed names and the trace directory. File tools in a given session share one workspace; it is not changed
 // after NewWorkspace, so sharing is safe.
 // Note this is a check the built-in file tools run on every path, and not a true OS sandbox:
 // code that doesn't use this workspace (a future run_command, an MCP server) can still reach everything.
 type Workspace struct {
-	rootDir  string      // absolute path of the allowed directory (config workDir), with symlinks resolved
-	traceDir string      // absolute path of the trace directory, with symlinks resolved; "" = none configured
-	deny     DenyList    // names never touched (the built-ins plus config denyPaths)
-	rootInfo os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
+	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
+	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
+	deny     DenyList // names never touched (the built-ins plus config denyPaths)
+	// writeDeny: names that may be read but never written, created or deleted by a file tool (see writeDeniedNames)
+	writeDeny []pathPattern
+	rootInfo  os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not
@@ -46,7 +54,11 @@ func NewWorkspace(workDir, traceDir string, deny DenyList) (*Workspace, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("workDir %q is not a directory", workDir)
 	}
-	w := &Workspace{rootDir: rootDir, deny: deny, rootInfo: info}
+	writeDeny, err := parsePathPatterns("writeDeniedNames", writeDeniedNames)
+	if err != nil {
+		return nil, err // the names are fixed in the code, so this is a bug
+	}
+	w := &Workspace{rootDir: rootDir, deny: deny, rootInfo: info, writeDeny: writeDeny}
 	if traceDir != "" {
 		if w.traceDir, err = resolveSymLinks(traceDir); err != nil {
 			return nil, fmt.Errorf("traceDir %q: %w", traceDir, err)
@@ -93,13 +105,48 @@ func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error) {
 // errMsgHidePath returns an error message that hides the absolute path and only shows the requested path.
 //
 // Notes:
-//   - A *fs.PathError keeps its cause (%w), so errors.Is(err, fs.ErrNotExist) still works; any other error becomes
-//     "can't be resolved".
+//   - A *fs.PathError keeps its cause (%w), so errors.Is(err, fs.ErrNotExist) still works; "not a directory" (a parent
+//     is a file) is kept too; any other error becomes "can't be resolved".
 func errMsgHidePath(requested string, err error) error {
 	if pe, ok := errors.AsType[*fs.PathError](err); ok {
 		return fmt.Errorf("%s: %w", requested, pe.Err)
 	}
+	if errors.Is(err, syscall.ENOTDIR) { // a parent in the path is a file
+		return fmt.Errorf("%s: %w", requested, syscall.ENOTDIR)
+	}
 	return fmt.Errorf("%s: can't be resolved", requested)
+}
+
+// resolveNewPath turns the model's path for something a write tool will create (it may not exist yet) into a path
+// relative to rootDir, with every symlink in the part that exists followed.
+//
+// Notes:
+//   - The longest existing part of the path is resolved (resolveSymLinks) and the missing rest is added back, then
+//     checkPath runs on the whole, so a new file under a symlink that points outside rootDir is refused.
+//   - On top of checkPath's rules, a write is refused for a name in writeDeniedNames (e.g. anything under .git).
+//   - A path that doesn't exist yet counts as a directory for patterns ending in "/" (the safe way to be wrong).
+//   - Errors name only the requested path, as in resolvePath.
+//   - It doesn't create anything and returns no identity; the caller opens through openRoot, which refuses ".." and
+//     symlink escapes again at the moment of the write.
+func (w *Workspace) resolveNewPath(requested string) (string, error) {
+	candidate := requested
+	if !filepath.IsAbs(requested) {
+		candidate = filepath.Join(w.rootDir, requested)
+	}
+	real, err := resolveSymLinks(candidate)
+	if err != nil {
+		return "", errMsgHidePath(requested, err)
+	}
+	rel, err := w.checkPath(requested, real)
+	if err != nil {
+		return "", err
+	}
+	info, statErr := os.Stat(real)
+	isDir := statErr != nil || info.IsDir()
+	if matchPath(w.writeDeny, rel, isDir, nil) {
+		return "", fmt.Errorf("%s is blocked: it is read-only for the file tools (%s)", requested, strings.Join(writeDeniedNames, ", "))
+	}
+	return rel, nil
 }
 
 // checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.

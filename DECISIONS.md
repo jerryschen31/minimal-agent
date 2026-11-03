@@ -3876,3 +3876,21 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
   `resolvePath`. `maxWriteBytes = 1 << 20` (1 MB per `write_file` call, unexported constant) is agreed. It bounds one
   call's content (= the file's final size, since `write_file` replaces the whole file), not total disk use; `edit_file`
   will need its own result-size check.
+
+### 2026-11-02 — Slice 4 part 1 built: `resolveNewPath` and `create_directory`
+
+- **`Workspace.resolveNewPath(requested) (rel, err)`**: the write-side `resolvePath`. Joins onto `rootDir`, resolves the
+  longest existing prefix with `resolveSymLinks` and adds the missing tail back, runs `checkPath`, then a **write-deny**
+  check. Returns no identity (nothing to compare yet); the caller writes through `openRoot` (`os.Root`), which refuses
+  `..` and symlink escapes again at write time.
+- **Write-deny list is `writeDeniedNames = [".git"]`** on `Workspace` (matches a directory or file at any depth; a
+  submodule's `.git` is a file). Reason: a planted `.git/hooks/pre-commit` runs on the user's next commit, outside the
+  approval gate. **Not yet done:** the config file passed with `-config` and `traceDir` for writes (`traceDir` is
+  already refused by `checkPath`). The config file's path is not in `Config` today (only `main.go` has it), so it
+  needs a new argument to `NewWorkspace`/`SetupBuiltinTools`; do it with `write_file`.
+- **`create_directory`** (`tools/builtin/createdirectory.go`): arg `path`; `MkdirAll` (0755) through `os.Root`;
+  idempotent (`directory x already exists`), a file in the way is an error, result text `created directory x`. Enabled
+  with `builtinTools: ["create_directory"]`; the ask default already names it.
+- **`errMsgHidePath`** now keeps `ENOTDIR` ("not a directory") instead of the vague "can't be resolved".
+- Tests: `createdirectory_test.go`, `createdirectory_unix_test.go` (written by Claude, small; a test sub-agent pass for
+  more edge cases is still to do).
