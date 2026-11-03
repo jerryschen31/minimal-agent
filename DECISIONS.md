@@ -4172,3 +4172,25 @@ example configs, in `config/doc.go`).
   `askRules`). All killed after the two fixes above.
 - **Not done / known limits:** no sandbox (so no unattended use yet); the output tail is lost past the cap; no Windows
   process-tree kill (as `mcpconnect`); the unix-only tests do not run on Windows (it builds: `GOOS=windows go build ./...`).
+
+
+### 2026-11-03 — `run_command`: arguments are checked against the file tools' deny list (best effort)
+
+Jerry asked whether `cat .env` can be refused. Command rules (`run_command:*.env*`) work on text and also match `.env.example`;
+Jerry chose a built-in check against the deny list `read_file` uses, documented as best effort.
+
+- **What it does** (`Workspace.checkCommandArgs`, called in `CallTool` before the program starts): each argument, and the value
+  after the first `=` of a `-flag=value`, is read as a path relative to `dir` (or absolute), resolved through symlinks as far as
+  it exists (`resolveSymLinks`), and, if it is inside `workDir`, passed to `checkPath`: the deny list (`.env` but not
+  `.env.example`, `*.pem`, `id_rsa*`, `.ssh`, `denyPaths`) and the trace directory. A hit refuses the whole call with
+  `command refused, argument … is blocked: …`. It is an error from the tool, never an approval question (as for the file tools).
+- **Judged by name:** a path that does not exist is judged as written, so `cat .env` is refused whether or not the file is there;
+  a symlink to a protected file and `./sub/../.env` are refused. An argument outside `workDir` (`/etc/hosts`) is not checked.
+- **Where it sits:** inside the tool, after the approval gate, so an approved ask can still be refused; the tool description
+  tells the model so. It reuses `checkPath` rather than a second pattern list, so config `denyPaths` apply to both.
+- **Honest limits (also in `config/doc.go`):** it cannot see a directory that holds a protected file (`grep -r KEY .` is the
+  commonest leak), a name an interpreter or `sh -c` builds, `git show HEAD:.env`, or a path the program obtains another way; an
+  allowed interpreter bypasses it entirely. False positives are possible when a plain word looks like a denied name (`-run X.key`).
+  So it catches accidents and clumsy prompt injection, not a determined program. Real containment is still the sandbox.
+- **Tests / mutation pass:** `Test_RunCommand_Args_*` (11 refusal cases, one allowed-arguments case). Six mutants killed: check
+  not called, flag value ignored, symlinks not resolved, no deny check, relative path not joined to `dir`, outside paths checked.

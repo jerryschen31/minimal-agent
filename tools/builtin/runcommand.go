@@ -91,6 +91,49 @@ func NewRunCommandTool(ws *Workspace, names, extraEnv []string, maxBytes int, wa
 	return &RunCommandTool{ws: ws, programs: programs, env: env, maxBytes: maxBytes}, nil
 }
 
+// checkCommandArgs refuses a command whose arguments name a file that the file tools refuse. It is a guard against
+// mistakes, best effort, not a boundary.
+//
+// Notes:
+//   - Each argument is read as a path relative to dir (or absolute); a flag such as --file=.env is also read as the
+//     part after its first "=". The path is resolved through symlinks as far as it exists (a link to .env is refused),
+//     and one that falls inside rootDir goes through checkPath: the deny list (.env but not .env.example, *.pem, denyPaths
+//     and so on) and the trace directory. An argument that does not exist is judged by its name, so "cat .env" is refused
+//     whether or not the file is there. An argument outside rootDir is not checked (it is no workspace path).
+//   - A hit is an error, never an approval question: the same rule as the file tools.
+//   - [agent] What it cannot see: a directory argument that contains a protected file ("grep -r KEY ."), a name the
+//     program builds itself (an interpreter, "sh -c", a script it runs), a "rev:path" form such as "git show HEAD:.env",
+//     and a file reached by a path the program receives some other way (a config file, an environment variable). An
+//     allowed interpreter bypasses it completely. See DECISIONS.md § run_command: arguments are checked against the deny list.
+func (w *Workspace) checkCommandArgs(dir string, args []string) error {
+	for _, arg := range args {
+		candidates := []string{arg}
+		if _, value, found := strings.Cut(arg, "="); found && strings.HasPrefix(arg, "-") {
+			candidates = append(candidates, value)
+		}
+		for _, c := range candidates {
+			if c == "" || strings.ContainsRune(c, 0) {
+				continue
+			}
+			p := c
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			real, err := resolveSymLinks(p)
+			if err != nil {
+				real = filepath.Clean(p) // cannot be resolved: judge the path as written
+			}
+			if !w.inside(real) {
+				continue
+			}
+			if _, err := w.checkPath(arg, real); err != nil {
+				return fmt.Errorf("command refused, argument %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // inside reports whether path (or where it points, with symlinks followed) is rootDir or below it.
 //
 // Notes:
@@ -128,7 +171,7 @@ func (t *RunCommandTool) GetToolDefinition() model.ToolDef {
 		fmt.Sprintf("Runs a program (one of %s) with arguments in the working directory and returns its combined output and exit status. "+
 			"Use it to build, test and run code, e.g. command=go args=[\"test\",\"./...\"]. "+
 			"It is not a shell: no pipes, redirection, && or environment variables. Stdin is empty, so the program must not wait for input. "+
-			"To read a file, use read_file instead. Output is cut at %d KB and the program is killed past that, so prefer a narrow command "+
+			"To read a file, use read_file instead; an argument naming a file the file tools refuse (such as .env) is refused. Output is cut at %d KB and the program is killed past that, so prefer a narrow command "+
 			"(for example one package, one test) over a noisy one. A call that runs too long is stopped.",
 			strings.Join(names, ", "), t.maxBytes/1024),
 		json.RawMessage(fmt.Sprintf(`{
@@ -150,6 +193,7 @@ func (t *RunCommandTool) GetToolDefinition() model.ToolDef {
 //     a failure of the tool. Only a program that cannot start, or a stopped call, is an error.
 //   - dir goes through Workspace.resolvePath (inside workDir, not deny-listed, symlinks followed). It is a check made
 //     before the program starts; the program itself is not confined (see RunCommandTool).
+//   - Before anything starts, checkCommandArgs refuses an argument that names a file the file tools refuse (best effort).
 //   - The program gets an empty stdin, the filtered environment and its own process group. The group is killed when ctx
 //     ends (Ctrl+C, the tool timeout, the turn timeout) and again after the program exits, so nothing it started outlives
 //     the call.
@@ -180,6 +224,10 @@ func (t *RunCommandTool) CallTool(ctx context.Context, args json.RawMessage) (st
 			return "", fmt.Errorf("%s is not a directory", params.Dir)
 		}
 		dir = filepath.Join(t.ws.rootDir, rel)
+	}
+
+	if err := t.ws.checkCommandArgs(dir, params.Args); err != nil {
+		return "", err
 	}
 
 	runCtx, cancel := context.WithCancel(ctx) // cancelled by the output cap too

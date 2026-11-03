@@ -125,6 +125,11 @@
 // It is NOT contained: a running program can read and write anything you can, which bypasses every file-tool check
 // (.git, the config file, denyPaths, the hard-link refusal). An allowed interpreter (python3, go, npm) is code
 // execution. cat, head, grep and sed read .env and the other names read_file refuses: do not list them.
+// Best-effort guard: before a program starts, each argument (and the value of a --flag=value) that names a file the
+// file tools refuse (the deny list and denyPaths, .env but not .env.example, and the trace directory) refuses the
+// whole call, never asks, whether or not the file exists, and also when a symlink or ".." leads to it. It catches
+// mistakes, not a determined program: it cannot see a directory that holds such a file ("grep -r KEY ."), a name an
+// interpreter or "sh -c" builds, "git show HEAD:.env", or a path the program gets another way. Not a boundary.
 // Choosing runCommands is the consent; the safety nets are deny and ask rules, and later a sandbox.
 //
 // Command rules (denyRules, askRules): a rule starting with "run_command:" applies to run_command calls and is

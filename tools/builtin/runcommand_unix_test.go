@@ -273,3 +273,87 @@ func Test_RunCommand_New_ProgramInsideWorkDirRefused(t *testing.T) {
 		t.Errorf("err = %v, warnings = %q", err, warn.String())
 	}
 }
+
+func newGuardedTool(t *testing.T, work, traceDir string, denyExtra []string) *RunCommandTool {
+	t.Helper()
+	deny, err := NewDenyList(denyExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := NewWorkspace(work, traceDir, "", deny)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool, err := NewRunCommandTool(ws, []string{"sh", "echo"}, nil, 4096, &strings.Builder{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tool
+}
+
+// - Verify an argument naming a file the file tools refuse stops the command before it starts, whether or not the file
+// exists: the plain name, a path that reaches it through "..", an absolute path, a flag value (--file=.env), a name in
+// another dir, a symlink to it, a custom denyPaths pattern, and the trace directory; the error never shows the absolute path
+func Test_RunCommand_Args_DeniedFilesRefused(t *testing.T) {
+	work := t.TempDir()
+	for _, d := range []string{"sub", "traces"} {
+		if err := os.Mkdir(filepath.Join(work, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(work, ".env"), []byte("KEY=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".env", filepath.Join(work, "innocent.txt")); err != nil {
+		t.Fatal(err)
+	}
+	tool := newGuardedTool(t, work, filepath.Join(work, "traces"), []string{"*.secret"})
+	real, _ := filepath.EvalSymlinks(work)
+	cases := []struct {
+		name, dir string
+		args      []string
+	}{
+		{"plain", "", []string{".env"}},
+		{"through ..", "", []string{"./sub/../.env"}},
+		{"absolute", "", []string{filepath.Join(real, ".env")}},
+		{"flag value", "", []string{"--file=.env"}},
+		{"from a subdirectory", "sub", []string{"../.env"}},
+		{"key in a subdirectory", "", []string{"sub/id_rsa"}},
+		{"does not exist", "", []string{"missing/server.pem"}},
+		{"symlink to a protected file", "", []string{"innocent.txt"}},
+		{"custom denyPaths", "", []string{"db.secret"}},
+		{"trace directory", "", []string{"traces/run.jsonl"}},
+		{"second argument", "", []string{"-n", "ok.txt", ".env"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// "sh -c 'touch ran' <arg>" would create "ran" if the command started ($0 is the argument)
+			args := append(sh("touch ran"), c.args...)
+			got, err := tool.CallTool(context.Background(), runArgs("sh", args, c.dir))
+			if err == nil || !strings.Contains(err.Error(), "command refused") || got != "" {
+				t.Fatalf("(%q, %v), want a refusal", got, err)
+			}
+			if c.name != "absolute" && strings.Contains(err.Error(), real) { // an absolute path the model wrote itself may be echoed
+				t.Errorf("error shows the absolute path: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(work, "ran")); statErr == nil {
+				t.Error("the command started")
+			}
+		})
+	}
+}
+
+// - Verify ordinary arguments are not refused: .env.example (allowed by the file tools), plain words and flags, a path
+// outside the workspace, an empty argument, and a flag value that is not a path
+func Test_RunCommand_Args_OrdinaryArgumentsAllowed(t *testing.T) {
+	work := t.TempDir()
+	tool := newGuardedTool(t, work, "", nil)
+	for _, args := range [][]string{
+		{".env.example"}, {"hello", "-n"}, {"/etc/hosts"}, {""}, {"--mode=fast"}, {"TestDelete"}, {"../outside.txt"},
+	} {
+		got, err := tool.CallTool(context.Background(), runArgs("echo", args, ""))
+		if err != nil || !strings.HasSuffix(got, "[exit status 0]") {
+			t.Errorf("%q: (%q, %v)", args, got, err)
+		}
+	}
+}

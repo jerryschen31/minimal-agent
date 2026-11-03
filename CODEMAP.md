@@ -516,6 +516,7 @@ readfile.go
 
 runcommand.go
   func NewRunCommandTool(ws *Workspace, names, extraEnv []string, maxBytes int, warn io.Writer) (*RunCommandTool, error)
+  func (w *Workspace) checkCommandArgs(dir string, args []string) error
   func (w *Workspace) inside(path string) bool
   func resolveSymLinksOrSelf(path string) string
   func (t *RunCommandTool) GetToolDefinition() model.ToolDef

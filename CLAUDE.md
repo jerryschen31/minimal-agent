@@ -250,6 +250,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   is checked. Rules: `run_command:<glob>` in `denyRules`/`askRules` match the joined command line (`hooks.ToolRules.LevelFor`);
   rules without that prefix match tool names only; there is no allow list (not matched = runs), so `run_command` is deliberately
   not in the default `askRules`. Unreadable arguments fail closed to ask. A glob over a command line is not a detector.
+  **Best-effort argument guard:** `Workspace.checkCommandArgs` refuses (never asks) a call whose arguments, or `--flag=value` values,
+  name a file `checkPath` refuses (deny list, `denyPaths`, trace dir), also via symlinks or `..`. It misses directories (`grep -r .`),
+  interpreter-built names and `rev:path`; it is a guard against mistakes, not a boundary (`DECISIONS.md § run_command: arguments are checked`).
 - **Timeouts:** `toolTimeoutSeconds` (default 300) bounds every tool call, MCP included (`executeToolCall`); `turnTimeoutSeconds`
   (default 600) bounds a whole turn (`handleUserInput`) and must not be below the tool limit (`checkConfig`). A tool must honour
   its context. Ctrl+C and the turn timeout are told apart from the tool's own deadline by which context ended.
