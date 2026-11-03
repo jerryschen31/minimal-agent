@@ -1146,3 +1146,50 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 >   between the `openDir` checks and the `move_file` rename; `copy_file` refuses files over `copyFileMaxBytes`
 >   (100 MB). Older items: welcome-banner version, deferred items 2/3/11, `model/anthropic.tmp`, `maxTokens` unused,
 >   `maxSteps` discarding a turn, the autonomous-port warning for `allow-all` with empty `denyRules`.
+
+### 2026-11-02 — `/reload` designed in detail, then deferred
+
+Claude proposed a full `/reload` plan (nothing built). Jerry found it larger than expected and deferred it. Notes kept here
+so a later session can pick it up; the settled part is still `DECISIONS.md § Command execution: contain, don't detect`
+(the `/reload is planned` bullet). The items below are **open** until Jerry answers the four choices.
+
+- **Shape.**
+  - *No other file, structurally:* extract `config.Load(flags)` (`SetDefaultConfig` + `FlagsOverlay` + `ValidateMode`,
+    now inlined in `main.go`); `main` passes the agent a closure `func() (config.Config, error)` capturing the startup
+    flags. `/reload` takes no argument; `/reload foo.json` is a usage error. `ConfigFile` is already `json:"-"`.
+  - *Shared build step:* move `SetupAgent` steps 1, 3.5, 4–7 (provider, tool rules, built-in tools, MCP conns, registry)
+    into `buildRuntime(ctx, cfg, interrupts)` returning new parts without touching live state. Memory, context window
+    and recorder are not rebuilt.
+  - *Flow* (`agent/reload.go`): refuse if compaction is running → load → overlay non-reloadable fields (trace, context
+    window, chat store, `AgentMode`, `InBuffer`/`OutBuffer`/`McpServerStderr`) from the old config → diff → `buildRuntime`
+    → swap `ChatSession` fields in one block (`Config`, `Provider`, `Tools`, `Hooks`, `SystemMsg`, `Output`,
+    `Agent.mcpConns`) → close old MCP conns → trace `config_reloaded`.
+  - *Wiring:* a `cs.Reload func(ctx) error` closure set by the agent (like `PromptAllowDenyCall`), so `chat.go` doesn't
+    learn about `Agent`.
+  - *Diff by reflection* over `Config` json tags, names only; a classification table (reloadable / restart-only) plus a
+    test that fails when a new field isn't classified.
+- **Gotchas.**
+  - Reload can spawn processes (`mcpServers` `command`). The model can't type `/reload`, but the file can be changed by
+    anything that bypasses the file-tool write-deny (an MCP filesystem server, future `run_command`). Proposed: print
+    changed field names and ask y/N when `mcpServers`, `denyRules`, `askRules`, `approval`, `builtinTools`, `workDir` or
+    `denyPaths` changed; no terminal = refuse.
+  - Reset `AllowAskRules` and re-run `confirmAllowAll` on reload, or a lowered guard inherits an earlier "y".
+  - `json:"-"` runtime wiring (`InBuffer`, `OutBuffer`, `McpServerStderr`) must be copied from the old config or a fresh
+    Config has the wrong/nil writers.
+  - Auto-compaction goroutine reads `cs.Config`/`Provider`/`Recorder` → race with the swap; check
+    `ShouldStartCompaction()` and refuse with a retry message. Needs a `-race` test.
+  - Failure atomicity: new MCP conns live in locals until the swap; on error or Ctrl+C reload closes them itself (the
+    startup "kept on agent for ShutdownAgent" rule doesn't apply). Verify the turn's interrupt watcher covers reload.
+  - Build-first means old and new stdio servers briefly run together (a server holding a lock/port may fail to start).
+  - A partial MCP failure still "succeeds" with fewer tools: print tools added/removed and failed servers (URLs hidden
+    via `safeMCPError`).
+  - Fields set by a flag win: say "set by flag, ignored" if the file changed them. Restart-only changes are reported as
+    "needs restart", not applied silently. A `workDir` change does take effect (Workspace is rebuilt).
+  - Also: new trace event + data builder, `handleUserInput` Notes, `WelcomeMsg`, codemap, tests (extra args, deleted /
+    invalid file, bad rules keep old state, buffers kept, `AllowAskRules` reset, compaction refusal, cleanup on failure,
+    classification test) plus mutation checks.
+- **Choices still open (Claude's recommendation first):** (1) y/N confirm on security-relevant changes vs print-and-apply;
+  (2) keep unchanged MCP connections vs always reconnect; (3) refuse during compaction vs wait; (4) reject `/reload`
+  arguments (recommended) vs ignore them.
+- **Status:** deferred by Jerry; nothing in the code. `run_command` is also not started; the autonomous port is next in
+  Jerry's order unless he says otherwise.
