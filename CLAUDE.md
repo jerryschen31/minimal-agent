@@ -182,6 +182,10 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
   (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
   (`DECISIONS.md § Slice 4 built`).
+  `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
+  match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
+  file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file
+  bodies (`trace.shortenArguments`); the approval question is one summary per call (`DECISIONS.md § Slice 5 built`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
   orphaned one, and since a failed turn is not added back, the same bad context is re-sent forever)

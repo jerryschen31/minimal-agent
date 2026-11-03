@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
@@ -166,24 +165,12 @@ func (t *WriteFileTool) openForWrite(root *os.Root, requested, rel string) (*os.
 		return f, "created", nil
 	case err != nil:
 		return nil, "", errMsgHidePath(requested, err)
-	case want.IsDir():
-		return nil, "", fmt.Errorf("%s is a directory, not a file", requested)
-	case !want.Mode().IsRegular():
-		return nil, "", fmt.Errorf("%s is not a regular file (it is a %s)", requested, fileKind(want.Mode()))
 	}
-	f, err := root.OpenFile(rel, os.O_WRONLY|syscall.O_NONBLOCK, 0) // no O_TRUNC until the checks pass
+	f, _, err := t.ws.openExisting(root, requested, rel, want, os.O_WRONLY) // no O_TRUNC until the checks pass
 	if err != nil {
-		return nil, "", errMsgHidePath(requested, err)
+		return nil, "", err // our own message, or an os.Root error that names only the relative path
 	}
-	info, err := f.Stat() // fstat on the descriptor we actually opened
-	switch {
-	case err != nil:
-	case !info.Mode().IsRegular() || !os.SameFile(info, want):
-		err = fmt.Errorf("%s was replaced while it was being opened; try again", requested)
-	default:
-		err = f.Truncate(0)
-	}
-	if err != nil {
+	if err := f.Truncate(0); err != nil {
 		f.Close()
 		return nil, "", errMsgHidePath(requested, err)
 	}

@@ -3925,3 +3925,42 @@ Copilot found two real gaps in the codemap tool (both confirmed against the code
   config file was not protected until `Test_WriteFile_Refused` failed.
 - Tests: `writefile_test.go`, `writefile_unix_test.go`, `approval_preview_test.go`, plus cases in `tool_test.go`,
   `config_test.go`, `digest_test.go`. No test was deleted.
+
+### 2026-11-02 — Slice 5 built: `edit_file`, shared write checks, shorter traces
+
+- **`edit_file`** (`tools/builtin/editfile.go`): args `path`, `old_string` (non-empty), `new_string` (may be empty = delete;
+  must differ), `replace_all` (default false). `old_string` must match exactly once, or `replace_all` replaces every
+  non-overlapping match; zero matches and ambiguous matches are errors that give a count and never print file text. A
+  zero-match error adds a hint when the file uses CRLF and `old_string` uses LF. A missing file is an error pointing at
+  `write_file`; an edit never creates a file. A NUL byte in either string or in the file is refused (text only).
+- **Sizes (Jerry: reuse 1 MB for input file and result):** the file must be ≤ `maxWriteBytes`, each string ≤ it, and the
+  result is computed (`len + n*(len(new)-len(old))`) and refused above it *before* it is built, so `replace_all` with a
+  long `new_string` can't use unbounded memory.
+- **In place, not atomic (Jerry's choice):** the new content is built in memory first (every logical error happens before
+  the file is touched), then `Truncate(0)` + `WriteAt`. Mode and inode are kept. Downside: a disk-full failure part-way
+  leaves a truncated file.
+- **Changed-while-editing guard (Jerry agreed; a small window remains and is accepted):** the file is `Stat`ed again just
+  before the truncate; a different size or mtime refuses the edit ("changed while it was being edited"). mtime is coarse on
+  some filesystems, so a same-size change within the timestamp tick is not seen. The test hook `afterRead` stages this.
+- **Per-path mutex (Jerry: yes):** edits of one file by this tool are serialized (`lockFor`, keyed by the resolved,
+  lowercased relative path), because tool calls in one step run concurrently. An edit and a `write_file` of the same file
+  are not serialized.
+- **Shared code:** `openFile` is now `openExisting(…, flag)` with `O_RDONLY`; `write_file`'s overwrite and `edit_file`
+  use it with write flags. It refuses a directory or non-regular `want` *before* the open (a write open never tries a
+  pipe) and the opened descriptor must be `want` (`os.SameFile`) before anything is truncated. `resolveNewPath`'s
+  write-deny checks became `checkWritable`, shared with the new `resolvePathForWrite` (`resolvePath` + `checkWritable`).
+  Side effect fixed: `write_file` used to turn its own "was replaced while opening" message into "can't be resolved".
+- **Approval is one question per tool call, never per line (Jerry).** `approvalPreview` shows, for a call with
+  `path` + `old_string` + `new_string`: the path, a computed summary line ("replace one match / every match of N lines
+  (X bytes) with M lines (Y bytes)") and the first line of each side (120 chars, `%q`). The summary is computed from the
+  arguments, not written by the model, so it can't misdescribe the edit. Downside: the user does not see the lines after
+  the first.
+- **Traces keep no whole file bodies (Jerry).** `trace.shortenArguments` cuts `content`, `old_string` and `new_string` to
+  200 characters plus "… [N bytes in all, cut for the trace]" when the arguments exceed 1000 bytes. It is applied where
+  arguments are copied: `tool_requested` and the message records of `model_request`/`model_response`. Other fields (path,
+  `replace_all`, a long shell command) are untouched. After a cut the JSON keys come back sorted. Conversation memory still
+  holds the full call; only the trace is shortened. This also covers `write_file`.
+- **Digest says only that a file was edited:** `edit_file : edited x (N replacements, M bytes)`; a failure shows
+  `edit x (failed: …)`, never the strings.
+- Tests: `editfile_test.go`, `editfile_unix_test.go`, plus cases in `approval_preview_test.go`, `shorten_test.go`,
+  `digest_test.go`, `tool_test.go`. No test was deleted.

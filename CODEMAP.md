@@ -64,6 +64,7 @@ minimal-agent/
 │       ├── createdirectory.go
 │       ├── denylist.go
 │       ├── doc.go
+│       ├── editfile.go
 │       ├── ignorelist.go
 │       ├── listfiles.go
 │       ├── pathpattern.go
@@ -80,6 +81,7 @@ minimal-agent/
     ├── recorder.go
     ├── redact.go
     ├── scope.go
+    ├── shorten.go
     └── subscriber.go
 ```
 
@@ -106,6 +108,8 @@ agent.go
 
 approval_preview.go
   func approvalPreview(call model.ToolCall) []string
+  func editPreview(path, oldStr, newStr string, all bool) []string
+  func previewFirstLine(s string) string
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -426,6 +430,14 @@ denylist.go
   func (d DenyList) IsDenied(rel string, isDir bool) bool
   func isEnvExample(name string) bool
 
+editfile.go
+  func NewEditFileTool(ws *Workspace) (*EditFileTool, error)
+  func (t *EditFileTool) GetToolDefinition() model.ToolDef
+  func applyEdit(content, old, new string, all bool, maxBytes int) (string, int, error)
+  func (t *EditFileTool) lockFor(rel string) *sync.Mutex
+  func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func missingFileHint(err error, requested string) error
+
 ignorelist.go
   func NewIgnoreList(patterns []string) (IgnoreList, error)
   func (l IgnoreList) Ignores(rel string, isDir bool) bool
@@ -463,9 +475,12 @@ workspace.go
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
   func (w *Workspace) resolveNewPath(requested string) (string, error)
+  func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error)
+  func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
+  func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)
   func resolveSymLinks(p string) (string, error)
   func isWithin(dir, p string) bool
 
@@ -554,6 +569,9 @@ scope.go
   func OutcomeOf(err error) (status, errText string)
   func (s *Scope) ID() string
   func (s *Scope) End()
+
+shorten.go
+  func shortenArguments(args string) string
 
 subscriber.go
   func NewJSONLSubscriber(dir, runID string) (Subscriber, error)

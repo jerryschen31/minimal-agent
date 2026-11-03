@@ -355,6 +355,16 @@ func describe(name, args, content string, failed bool) string {
 				line = name + " : " + oneLine(content, maxArgsChars) // "created x (N bytes)" / "overwrote x (N bytes)"
 			}
 		}
+	case "edit_file":
+		var in struct {
+			Path string `json:"path"`
+		}
+		if json.Unmarshal([]byte(args), &in) == nil && in.Path != "" {
+			line = name + " : edit " + in.Path
+			if !failed && content != "" {
+				line = name + " : " + oneLine(content, maxArgsChars) // "edited x (N replacements, M bytes)"
+			}
+		}
 	case "create_directory":
 		var in struct {
 			Path string `json:"path"`

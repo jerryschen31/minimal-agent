@@ -19,6 +19,8 @@
 //
 //	approval_preview.go
 //	  func approvalPreview(call model.ToolCall) []string
+//	  func editPreview(path, oldStr, newStr string, all bool) []string
+//	  func previewFirstLine(s string) string
 //
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
