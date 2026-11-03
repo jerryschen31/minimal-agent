@@ -4075,3 +4075,64 @@ Settled with Jerry while planning `run_command`, which needs both helpers. mvp4'
   `mvp3/` and `mvp4/` are separate modules and keep their own copies.
 - **Mutation checks:** no back-up in `CutBytes`; `KillGroup` and `StartInOwnGroup` doing nothing; a module import added to
   `textutils`. Each makes a test fail.
+
+
+### 2026-11-03 — `run_command` plan: shape agreed with Jerry (before the build)
+
+Settled over a Q&A with Jerry on the branch `feat/run-command`. Supersedes the "Still open" list in `§ Command execution:
+contain, don't detect` and the 2026-11-02 planning notes in `SESSION.md`. Built in the next entries.
+
+**The tool** (`tools/builtin/runcommand.go`, ported from `mvp4/tools/builtin/runcommand.go`)
+- Arguments `command` (a bare program name), `args` (list of strings), optional `dir` (checked with `Workspace.resolvePath`:
+  inside `workDir`, not deny-listed). Not a shell: pipes, `&&` and `$VAR` are literal text. Stdin is empty, so interactive
+  programs do not work (on purpose). A non-zero exit is a normal result (`[exit status N]`). Own process group, killed when the
+  context ends and again after exit (`procutils`).
+- **Which programs: the config list `runCommands`, default `[]`, no built-in defaults.** Entries are bare names (no `/`). Each
+  is resolved once at setup to an absolute path from the agent's PATH; a path inside `workDir` is refused (a file the model
+  writes can't stand in for `go`). A missing program is warned about and left out of the tool's `command` enum. The tool is
+  **not set up** when `runCommands` is empty (or none of its programs was found); setup prints a warning, and `-mode info`
+  shows it, so "I enabled it and the model says no such tool" has an explanation. `runCommands` set while `run_command` is
+  not in `builtinTools` also warns (the config does nothing). Both are needed: `builtinTools` names the tool, `runCommands`
+  says which programs. Rejected: failing startup on an empty list (Jerry: a conditional in setup is simpler).
+- **Output cap: `commandMaxOutputBytes`, default 128 KB, a plain cut-off.** The first N bytes are kept (`textutils.CutBytes`
+  so no half character), the program is killed past the cap and the result says so. Jerry dropped the head-and-tail ring
+  buffer for now. Downside, stated: the tail of a long output (a test summary) is lost, and re-running the same command does
+  not page like `read_file`. The description tells the model to read files with `read_file` and to narrow a command instead.
+  A 128 KB result is about 32-40k tokens; `read_file`'s own cap is 1 MB because it pages.
+- **Environment: filtered.** The child gets only the names in `DefaultCommandEnv` (`tools/builtin/commandenv.go`, one exported
+  list, so it is easy to find): `PATH HOME USER TMPDIR LANG LC_ALL TERM GOPATH GOROOT GOCACHE GOMODCACHE GOPROXY GOFLAGS
+  GOTOOLCHAIN VIRTUAL_ENV PYTHONPATH`. The config key **`commandEnv` extends it and never shrinks it** (like `denyPaths`).
+  `ANTHROPIC_API_KEY` and the like are not passed unless someone lists them. The npm example adds `NPM_CONFIG_CACHE` and
+  `NODE_PATH`, not `NODE_OPTIONS` (it can inject code).
+
+**Timeouts, generalised** (new config keys, in seconds like `responseTimeoutSeconds`)
+- `toolTimeoutSeconds` (default 300) bounds every tool call, built-ins and MCP tools alike. Checked 2026-11-03: MCP calls
+  had **no** timeout before (only `responseTimeoutSeconds`, for model calls), so a hung MCP server could freeze a turn.
+  `reActLoop` wraps each call in a context with this limit; expiry is an error observation ("timed out after …") that the
+  model can react to, and `run_command` returns the output so far. `run_command` has no timeout of its own.
+- `turnTimeoutSeconds` (default 600) bounds one whole turn (LLM calls plus tools). Expiry prints `[turn timed out after …]`
+  and adds nothing to memory, like Ctrl+C but with its own message. Both must be positive and `turnTimeoutSeconds <
+  toolTimeoutSeconds` fails setup (otherwise the turn ends at the same moment as the tool and the model never sees the
+  timeout). The parent context ending (Ctrl+C, turn timeout) is told apart from the tool's own deadline by which context ended.
+
+**Approval: no `allowRules` list** (Jerry). The model stays "not in `denyRules` or `askRules` means it runs". Listing a program
+in `runCommands` is the consent to run it, unasked.
+- Rules for commands have the form `run_command:<glob>`. The glob is matched (lowercased, `*` crossing `/` like the existing
+  tool-name matcher) against the call's **joined command line**, `run_command:go test ./...`. A plain `run_command` rule
+  still matches every call. Deny beats ask beats run, as before. `hooks.ToolRules` gets a `LevelFor(call)` that reads the
+  arguments; `Level(name)` stays for info mode. **A `run_command` call whose arguments can't be read fails closed to
+  "ask"** (a deny rule by name still wins).
+- **`run_command` is not in the default `askRules`** (earlier plan reversed): without an allow list, a blanket ask rule could
+  not have exceptions ("ask for everything except `go test`"). The opt-in is `runCommands`, and asks are added by the user.
+- No terminal: an ask is refused unless `approval` is `allow-all` (already how `askRules` work). **One auto-approve switch**
+  (`approval`), no separate one for commands (Jerry).
+- Honest limits (to be in `config/doc.go`): a glob over the command line is not a detector, `go -C dir run x` slips past
+  `run_command:go run*`; an allowed interpreter (`python3`, `go`, `npm`) is code execution, not a sandbox, and bypasses every
+  file-tool protection (`.git`, the config file, the deny list, hard-link refusal); `cat`, `head`, `grep` and `sed` in
+  `runCommands` read `.env` and the other names `read_file` refuses, so the examples leave them out. "Unattended means
+  contained" still applies to the autonomous port.
+- Interpreters get no special category in code, only documented example configs (`python3`, `go`, `npm`) in `config/doc.go`:
+  narrow `runCommands`, with `askRules` such as `run_command:go run*`, `run_command:npm install*`, `run_command:python3*`.
+
+**Tests:** a full mutation-check pass. **Changes to existing tests:** `run_command:rm` is no longer an invalid rule
+(`hooks/toolrules_test.go`, `agent/info_test.go`).
