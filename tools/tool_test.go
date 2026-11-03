@@ -637,3 +637,41 @@ func Test_SetupBuiltinTools_EditFile_ConfigFileProtected(t *testing.T) {
 		t.Errorf("config file changed: %q", b)
 	}
 }
+
+// - Verify SetupBuiltinTools builds copy_file and move_file and the config file path reaches them: copying onto or
+// moving away the config file is refused, and an ordinary copy and move work
+func Test_SetupBuiltinTools_CopyAndMoveFile(t *testing.T) {
+	work := t.TempDir()
+	cfgFile := filepath.Join(work, "agent.json")
+	for f, c := range map[string]string{cfgFile: "{}", filepath.Join(work, "a.txt"): "A"} {
+		if err := os.WriteFile(f, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := builtinCfg([]string{"copy_file", "move_file"}, work, "", 4096, 1000, nil, nil)
+	cfg.ConfigFile = cfgFile
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil || len(built) != 2 || built[0].GetToolDefinition().Function.Name != "copy_file" || built[1].GetToolDefinition().Function.Name != "move_file" {
+		t.Fatalf("(%v, %v)", built, err)
+	}
+	ctx := context.Background()
+	call := func(i int, src, dst string) (string, error) {
+		args, _ := json.Marshal(map[string]string{"source": src, "destination": dst})
+		return built[i].CallTool(ctx, args)
+	}
+	if _, err := call(0, "a.txt", "agent.json"); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("copy onto the config file: error = %v", err)
+	}
+	if _, err := call(1, "agent.json", "b.txt"); err == nil || !strings.Contains(err.Error(), "config file") {
+		t.Errorf("move the config file: error = %v", err)
+	}
+	if got, err := call(0, "a.txt", "copy.txt"); err != nil || got != "copied a.txt -> copy.txt (1 bytes)" {
+		t.Errorf("copy = (%q, %v)", got, err)
+	}
+	if got, err := call(1, "copy.txt", "moved.txt"); err != nil || got != "moved copy.txt -> moved.txt (1 bytes)" {
+		t.Errorf("move = (%q, %v)", got, err)
+	}
+	if b, _ := os.ReadFile(cfgFile); string(b) != "{}" {
+		t.Errorf("config file changed: %q", b)
+	}
+}

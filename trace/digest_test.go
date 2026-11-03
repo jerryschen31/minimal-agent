@@ -342,3 +342,22 @@ func Test_Digest_EditFileDescribed(t *testing.T) {
 		}
 	}
 }
+
+func Test_Digest_CopyAndMoveFileDescribed(t *testing.T) {
+	tests := []struct {
+		name, tool, args, content string
+		failed                    bool
+		want                      string
+	}{
+		{"copied", "copy_file", `{"source":"a","destination":"b"}`, "copied a -> b (3 bytes)", false, "copy_file : copied a -> b (3 bytes)"},
+		{"moved over a file", "move_file", `{"source":"a","destination":"b"}`, "moved a -> b (3 bytes, overwrote existing)", false, "move_file : moved a -> b (3 bytes, overwrote existing)"},
+		{"copy failed", "copy_file", `{"source":"a","destination":"b"}`, "a is blocked", true, "copy_file : copy a -> b (failed: a is blocked)"},
+		{"move failed", "move_file", `{"source":"a","destination":"b"}`, "no such file", true, "move_file : move a -> b (failed: no such file)"},
+		{"missing destination falls back to the generic line", "move_file", `{"source":"a"}`, "", false, `move_file : {"source":"a"}`},
+	}
+	for _, tc := range tests {
+		if got := describe(tc.tool, tc.args, tc.content, tc.failed); got != tc.want {
+			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

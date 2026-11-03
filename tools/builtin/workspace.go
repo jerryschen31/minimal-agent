@@ -166,12 +166,23 @@ func (w *Workspace) resolveNewPath(requested string) (newTarget, error) {
 	if err := w.checkWritable(requested, rel, statErr != nil || info.IsDir()); err != nil {
 		return newTarget{}, err
 	}
+	return w.anchorFor(requested, rel, real)
+}
+
+// anchorFor returns the newTarget for rel (relative to rootDir; real is the same path, absolute): rel together with the
+// deepest directory that exists above it and that directory's identity.
+//
+// Notes:
+//   - For rootDir itself the anchor is rootDir, with the identity NewWorkspace took.
+//   - requested is used only in error messages. An anchor that is not a directory is an error.
+func (w *Workspace) anchorFor(requested, rel, real string) (newTarget, error) {
 	if rel == "." {
 		return newTarget{rel: ".", dirRel: ".", dirInfo: w.rootInfo}, nil
 	}
 	// the deepest directory that exists above real; rootDir exists, so the walk ends there at the latest
 	dir := filepath.Dir(real)
 	var dirInfo os.FileInfo
+	var err error
 	for {
 		if dirInfo, err = os.Lstat(dir); err == nil {
 			break
@@ -219,22 +230,27 @@ func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.R
 	return dir, tail, nil
 }
 
-// resolvePathForWrite is resolvePath for a file that must already exist and will be changed: the same checks, plus
-// the write-deny checks of resolveNewPath.
+// resolvePathForWrite is resolvePath for a file that must already exist and will be changed or removed: the same
+// checks, plus the write-deny checks of resolveNewPath.
 //
 // Notes:
-//   - Returns the path relative to rootDir and the file's identity, as resolvePath does, for openExisting.
-//   - Used by tools that edit a file in place (edit_file). A file that doesn't exist is an error, with resolvePath's
-//     message.
-func (w *Workspace) resolvePathForWrite(requested string) (string, os.FileInfo, error) {
+//   - Returns a newTarget (the path relative to rootDir, and the directory above it with its identity, for openDir) and
+//     the file's identity, for openExisting.
+//   - Used by tools that edit a file in place (edit_file) or take it away (move_file). A file that doesn't exist is an
+//     error, with resolvePath's message.
+func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error) {
 	rel, info, err := w.resolvePath(requested)
 	if err != nil {
-		return "", nil, err
+		return newTarget{}, nil, err
 	}
 	if err := w.checkWritable(requested, rel, info.IsDir()); err != nil {
-		return "", nil, err
+		return newTarget{}, nil, err
 	}
-	return rel, info, nil
+	target, err := w.anchorFor(requested, rel, filepath.Join(w.rootDir, rel))
+	if err != nil {
+		return newTarget{}, nil, err
+	}
+	return target, info, nil
 }
 
 // checkWritable refuses a path (relative to rootDir, symlinks already resolved) that the file tools may read but never

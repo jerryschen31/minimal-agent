@@ -187,6 +187,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   after the check can't redirect the write. `openExisting` refuses to open for writing a file with more than one name
   (hard link), and `stillAtPath` refuses to truncate a file that was renamed away after it was opened
   (`DECISIONS.md § PR #35 Copilot review`).
+  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `openForWrite`, streamed in 256 KB pieces with
+  the context checked, up to `maxTransferBytes` = 100 MB, files only, no hard-linked source) and `move_file`
+  (`resolvePathForWrite` + `resolveNewPath`, `openDir` on both parents, then `os.Root.Rename`: a real rename, no size cap,
+  files only; across filesystems it fails with a message pointing at `copy_file`) check both paths
+  (`DECISIONS.md § Slice 6 built`).
   `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
   match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
   file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file

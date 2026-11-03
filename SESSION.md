@@ -1094,3 +1094,10 @@ Jerry types each file from a skeleton. Prerequisite for reasoning capture: `Chat
 > (`DECISIONS.md § PR #35 Copilot review`): preview shapes exclusive, `openDir` for creates, hard-link refusal for
 > writes, `stillAtPath`. Trace shortening gaps from the PR summary (malformed JSON
 > arguments, case-variant keys) also fixed. **Open:** read-through-hard-link of `.env` by `read_file` is still allowed.
+>
+> (2026-11-03) **Slice 6 built** on `feat/built-in-write-file-and-edit-file-tool`, not committed (`DECISIONS.md § Slice 6
+> built`): `copy_file` (streamed, 100 MB cap constant, files only) and `move_file` (a real `os.Root.Rename`, no size cap,
+> files only, EXDEV points at copy_file). Enable with `builtinTools: [..., "copy_file", "move_file"]`. **Jerry to do:**
+> review; try the tools live. **Known limits:** the move has a very small window between the `openDir` checks and the
+> rename; a copied file over 100 MB is refused; `read_file` through a hard link to `.env` still allowed; directory
+> copy/move not supported (by design). **Next:** `run_command`, `/reload`, then the autonomous port (Jerry builds it).

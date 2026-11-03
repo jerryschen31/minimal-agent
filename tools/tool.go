@@ -80,6 +80,18 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 				return nil, err
 			}
 			tools = append(tools, editFile)
+		case "copy_file":
+			copyFile, err := builtin.NewCopyFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, copyFile)
+		case "move_file":
+			moveFile, err := builtin.NewMoveFileTool(ws)
+			if err != nil {
+				return nil, err
+			}
+			tools = append(tools, moveFile)
 		// add more built-in tools here as needed
 		default:
 			return nil, fmt.Errorf("unsupported built-in tool: %s", t)
