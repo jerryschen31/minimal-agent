@@ -4046,3 +4046,32 @@ disabling the fix).
   the configured size. The constant was removed; the default lives in `GetDefaultConfig`. No flag was added.
 - Tests: `Test_SetupBuiltinTools_CopyFile_MaxBytes`, `Test_Unit_SetDefaultConfig_CopyFileMaxBytes`, and the constructor
   cases in `copyfile_test.go`.
+
+
+### 2026-11-02 — Two helper packages: `procutils` and `textutils`
+
+Settled with Jerry while planning `run_command`, which needs both helpers. mvp4's tool only had them inline.
+
+- **Why:** `run_command` must start a command in its own process group and kill the group, as `mcpconnect` already did.
+  `tools/builtin` cannot import `mcpconnect` (`mcpconnect` imports `tools`, which imports `builtin`), and Jerry does not
+  want duplicated helpers. Text was cut in five places, each its own way, and `run_command`'s output cap would be a sixth.
+- **Rule:** a helper package imports only the standard library: no package of this module, no third-party module. It is
+  checked by `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`).
+- **Names:** one `utils/` package was proposed first and dropped. Go style discourages `util`/`helpers` packages (the name says
+  nothing and they collect unrelated code), so there are two packages named for what they do. **Downside:** a new kind of
+  helper means a new package, or a pause to ask whether it fits one of these.
+- **`procutils`** (`procgroup_unix.go`, `procgroup_windows.go`): `StartInOwnGroup`, `KillGroup`, moved from `mcpconnect` and
+  exported. Behaviour is unchanged, so the earlier decisions (item 14, item 17: no tree kill on Windows) still hold.
+  `mcpconnect`'s two process-group tests stay in `mcpconnect` because they test the server connection; `procutils` has its
+  own, which use `sh` with a background `sleep` and read EOF on the stdout pipe to know the child is gone.
+- **`textutils`** (`cut.go`): `CutRunes(s, n)` and `CutBytes(s, limit)` return the cut text and whether they cut; the caller adds
+  its own marker. `TrimPartialRune` moved from `tools/builtin/readfile.go`. Callers moved over: `trace.cutChars`,
+  `trace.oneLine`, `agent.previewFirstLine`, `mcpconnect` (`flattenMCPResult`), `read_file`.
+- **One behaviour change:** `flattenMCPResult` used to cut at `maxBytes` and then call `ToValidUTF8`, which also deleted bytes that
+  were already invalid in the tool's output. `CutBytes` backs up only when the cut lands inside a character (at most 3
+  bytes), so other invalid bytes are kept. The existing test (no half characters) still passes.
+- **Left where they are:** `searchfiles.cutLine` (cuts a window around a match and drops invalid bytes on purpose), and the
+  single-caller helpers `plural`, `safeText`, `firstLine` and `linkCount`. They move when a second package needs them.
+  `mvp3/` and `mvp4/` are separate modules and keep their own copies.
+- **Mutation checks:** no back-up in `CutBytes`; `KillGroup` and `StartInOwnGroup` doing nothing; a module import added to
+  `textutils`. Each makes a test fail.

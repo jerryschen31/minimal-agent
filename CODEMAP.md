@@ -44,8 +44,6 @@ minimal-agent/
 ├── mcpconnect/
 │   ├── conn.go
 │   ├── doc.go
-│   ├── procgroup_unix.go
-│   ├── procgroup_windows.go
 │   └── tools.go
 ├── memory/
 │   ├── doc.go
@@ -57,6 +55,13 @@ minimal-agent/
 │   └── modeltest/
 │       ├── doc.go
 │       └── fake_provider.go
+├── procutils/
+│   ├── doc.go
+│   ├── procgroup_unix.go
+│   └── procgroup_windows.go
+├── textutils/
+│   ├── cut.go
+│   └── doc.go
 ├── tools/
 │   ├── doc.go
 │   ├── tool.go
@@ -343,14 +348,6 @@ conn.go
   func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error)
   func (s *McpConnection) Close() error
 
-procgroup_unix.go
-  func startInOwnGroup(cmd *exec.Cmd)
-  func killGroup(cmd *exec.Cmd)
-
-procgroup_windows.go
-  func startInOwnGroup(cmd *exec.Cmd)
-  func killGroup(cmd *exec.Cmd)
-
 tools.go
   func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
   func hintsFrom(a *mcp.ToolAnnotations) ToolHints
@@ -401,6 +398,31 @@ fake_provider.go
   func AssistantToolCall(callID, toolName, args string) model.ChatMessage
   func Msg(role, id, content string) model.ChatMessage
   func Msgs(n int) []model.ChatMessage
+```
+
+## procutils (package procutils)
+
+`github.com/jerryschen31/minimal-agent/procutils`
+
+```text
+procgroup_unix.go
+  func StartInOwnGroup(cmd *exec.Cmd)
+  func KillGroup(cmd *exec.Cmd)
+
+procgroup_windows.go
+  func StartInOwnGroup(cmd *exec.Cmd)
+  func KillGroup(cmd *exec.Cmd)
+```
+
+## textutils (package textutils)
+
+`github.com/jerryschen31/minimal-agent/textutils`
+
+```text
+cut.go
+  func CutRunes(s string, n int) (string, bool)
+  func CutBytes(s string, limit int) (string, bool)
+  func TrimPartialRune(b []byte) []byte
 ```
 
 ## tools (package tools)
@@ -486,7 +508,6 @@ readfile.go
   func fileKind(mode os.FileMode) string
   func (t *ReadFileTool) GetToolDefinition() model.ToolDef
   func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-  func trimPartialRune(b []byte) []byte
 
 searchfiles.go
   func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*SearchFilesTool, error)

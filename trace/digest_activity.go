@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // ActivityDigest is the first Digester: "what did the agent do and change", for a quick human review (a PR review, an audit).
@@ -429,8 +431,8 @@ func vetoNote(d ToolVetoedData) string {
 //   - It cuts by runes, not bytes, and appends "…" when it cut.
 func oneLine(s string, max int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if r := []rune(s); len(r) > max {
-		return string(r[:max]) + "…"
+	if cut, wasCut := textutils.CutRunes(s, max); wasCut {
+		return cut + "…"
 	}
 	return s
 }

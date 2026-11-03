@@ -1193,3 +1193,24 @@ so a later session can pick it up; the settled part is still `DECISIONS.md § Co
   arguments (recommended) vs ignore them.
 - **Status:** deferred by Jerry; nothing in the code. `run_command` is also not started; the autonomous port is next in
   Jerry's order unless he says otherwise.
+
+
+### 2026-11-02 — `procutils` and `textutils` created; `run_command` still waiting on Jerry's answers
+
+Done (see `DECISIONS.md § Two helper packages: procutils and textutils`): the process-group files moved from `mcpconnect` to
+`procutils` (exported `StartInOwnGroup`, `KillGroup`); `textutils` has `CutRunes`, `CutBytes`, `TrimPartialRune` and five
+callers moved to it; an import-rule test; codemap regenerated; all tests pass with `-race`. Not committed.
+
+Next: `run_command`, per the plan in the "Handoff for a fresh session" entry plus the 2026-11-02 planning notes below. Jerry
+has not answered the four open choices yet:
+1. A new `allowRules` list (recommended) vs one rule list with a level per entry.
+2. Interpreters (`python3`, `go run`, `sh`): no special category in code, just a documented example config (recommended).
+3. Timeout, output cap and environment as constants (recommended) vs config fields.
+4. Full mutation-check pass (recommended).
+
+Plan summary: `tools/builtin/runcommand.go` takes the `*Workspace`; `command` is a bare program name (no `/`) looked up on
+the agent's PATH at call time and refused if it resolves inside `workDir`; `cmd.Cancel` kills the whole group; the output cap
+uses `textutils.CutBytes`; rules `run_command:<program> <argument prefix>` match token by token, so `hooks.ToolRules` must
+read the call's arguments and unparseable arguments fail closed (ask); precedence deny > allow > ask > run; `run_command`
+joins the default `askRules`; `approvalPreview` gets a `command` + `args` shape. The test that treats `run_command:rm` as an
+invalid rule (`agent/info_test.go`, `hooks/toolrules_test.go`) has to change.

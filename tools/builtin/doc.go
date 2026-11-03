@@ -71,7 +71,6 @@
 //	  func fileKind(mode os.FileMode) string
 //	  func (t *ReadFileTool) GetToolDefinition() model.ToolDef
 //	  func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-//	  func trimPartialRune(b []byte) []byte
 //
 //	searchfiles.go
 //	  func NewSearchFilesTool(ws *Workspace, maxVisits int, ignore IgnoreList) (*SearchFilesTool, error)

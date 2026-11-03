@@ -141,6 +141,11 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools/builtin/` (`ReadFileTool`), `mcpconnect/` (MCP client connections + the adapter that
   wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
+- **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
+  package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
+  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
+  what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
+  `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
@@ -212,7 +217,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   exits and its deferred `ShutdownAgent` closes the servers that had connected. At the prompt, the line editor
   treats Ctrl+C as a key and clears the input. Each turn gets `createInterruptWatcher(ctx, interrupts)`: a child
   context cancelled by Ctrl+C; `stop()` cancels it and waits for the watcher to exit, so nothing that outlives the
-  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`mcpconnect/procgroup_*.go`),
+  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`procutils/procgroup_*.go`, called from `mcpconnect/conn.go`),
   so the terminal's Ctrl+C never reaches them; `McpConnection.Close` kills the group. `discardStrayInterrupts` runs *before* the watcher
   starts. A cancelled turn prints `[interrupted]` and adds nothing to memory. **Anything long-lived
   started from a turn (auto-compaction) must get the root context**, which is why `maybeStartAutoCompaction`

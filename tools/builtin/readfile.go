@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // ReadFileTool reads text files only within the workspace (i.e., within rootDir, excluding deny-listed files and the trace directory if it's within rootDir's path)
@@ -171,7 +172,7 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		data, start = data[1:], start+1
 	}
 	if more {
-		data = trimPartialRune(data)
+		data = textutils.TrimPartialRune(data)
 	}
 	// Nothing left after trimming means the limit is smaller than one character. Saying "continue at offset=N" would hand
 	// back the same offset forever (and burn the ReAct step budget), so fail with something the model can act on.
@@ -184,21 +185,4 @@ func (t *ReadFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	return string(bytes.ToValidUTF8(data, nil)) +
 		fmt.Sprintf("\n[truncated: showed bytes %d-%d of %d; call read_file again with offset=%d to continue]", start, end, info.Size(), end), nil
-}
-
-// trimPartialRune drops an incomplete multi-byte character from the end of b.
-//
-// Notes:
-//   - Looks back at most utf8.UTFMax bytes; a complete final character, or no start byte in that range, leaves b
-//     unchanged.
-func trimPartialRune(b []byte) []byte {
-	for i := 1; i <= utf8.UTFMax && i <= len(b); i++ {
-		if utf8.RuneStart(b[len(b)-i]) {
-			if !utf8.FullRune(b[len(b)-i:]) {
-				return b[:len(b)-i]
-			}
-			return b
-		}
-	}
-	return b
 }

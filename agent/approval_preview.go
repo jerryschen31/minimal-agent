@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 const (
@@ -114,9 +115,8 @@ func editPreview(path, oldStr, newStr string, all bool) []string {
 // Notes: none.
 func previewFirstLine(s string) string {
 	line, rest, more := strings.Cut(s, "\n")
-	r := []rune(line)
-	if len(r) > previewMaxLineChars {
-		return string(r[:previewMaxLineChars]) + "…"
+	if cut, wasCut := textutils.CutRunes(line, previewMaxLineChars); wasCut {
+		return cut + "…"
 	}
 	if more && rest != "" {
 		return line + "…"

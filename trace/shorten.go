@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 const (
@@ -73,9 +75,9 @@ func isBodyKey(k string) bool {
 // Notes:
 //   - A string of n characters or fewer is returned as it is.
 func cutChars(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
+	cut, wasCut := textutils.CutRunes(s, n)
+	if !wasCut {
 		return s
 	}
-	return string(r[:n]) + fmt.Sprintf(cutMarkerFmt, len(s))
+	return cut + fmt.Sprintf(cutMarkerFmt, len(s))
 }
