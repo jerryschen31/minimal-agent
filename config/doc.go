@@ -41,6 +41,8 @@
 //	                model sees "tool timed out". Positive                                                  [300]
 //	turnTimeoutSeconds  most seconds one whole turn (model calls plus tools) may take; the turn is stopped
 //	                and nothing is added to memory. Positive and not less than toolTimeoutSeconds          [600]
+//	mcpConnectTimeoutSeconds  most seconds one MCP server may take to connect at startup; a server that takes
+//	                longer is stopped and skipped (the others keep their tools). Positive                  [120]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
 //	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
@@ -98,7 +100,8 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files", "search_files",
-//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"   [["read_file"]]
+//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"
+//	                [every tool except "run_command", which must be listed by hand together with runCommands]
 //	runCommands     programs run_command may start: bare names, looked up on PATH once at startup. The
 //	                only way to enable run_command: with [] (the default) the tool is not set up, and a
 //	                warning says so. A listed program runs unasked unless a deny or ask rule matches

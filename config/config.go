@@ -44,10 +44,11 @@ type Config struct {
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
 	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
 
-	ResponseTimeoutSeconds int  `json:"responseTimeoutSeconds"` // most seconds one model call may take; must be positive (default 300)
-	ToolTimeoutSeconds     int  `json:"toolTimeoutSeconds"`     // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
-	TurnTimeoutSeconds     int  `json:"turnTimeoutSeconds"`     // most seconds one whole turn (model calls plus tools) may take; must be positive and at least toolTimeoutSeconds (default 600)
-	Debug                  bool `json:"debug"`                  // print the context window each turn and log MCP protocol traffic to stderr
+	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
+	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
+	TurnTimeoutSeconds       int  `json:"turnTimeoutSeconds"`       // most seconds one whole turn (model calls plus tools) may take; must be positive and at least toolTimeoutSeconds (default 600)
+	McpConnectTimeoutSeconds int  `json:"mcpConnectTimeoutSeconds"` // most seconds one MCP server may take to connect at startup; must be positive (default 120)
+	Debug                    bool `json:"debug"`                    // print the context window each turn and log MCP protocol traffic to stderr
 
 	// I/O configuration for the chat session
 	InBuffer  io.Reader `json:"-"` // runtime wiring, never read from a config file
@@ -189,17 +190,18 @@ func GetDefaultConfig() Config {
 		ChatStoreType: "in-memory",
 		InBuffer:      os.Stdin,
 		OutBuffer:     os.Stdout,
-		BuiltinTools:  []string{"read_file", "write_file", "edit_file", "create_directory", "copy_file", "move_file", "list_files", "search_files", "run_command"},
+		BuiltinTools:  []string{"read_file", "write_file", "edit_file", "create_directory", "copy_file", "move_file", "list_files", "search_files"},
 		MaxSteps:      10,
 
-		ResponseTimeoutSeconds: 300, // 5 minutes; slow local models may need more
-		ToolTimeoutSeconds:     300, // 5 minutes; a cold `go test` or an MCP call can be slow
-		TurnTimeoutSeconds:     600, // 10 minutes; must be at least ToolTimeoutSeconds
-		TraceEnabled:           true,
-		DigestEnabled:          true,
-		RedactionLevel:         "standard",
-		AskRules:               []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"},
-		Approval:               ApprovalAsk,
+		ResponseTimeoutSeconds:   300, // 5 minutes; slow local models may need more
+		ToolTimeoutSeconds:       300, // 5 minutes; a cold `go test` or an MCP call can be slow
+		TurnTimeoutSeconds:       600, // 10 minutes; must be at least ToolTimeoutSeconds
+		McpConnectTimeoutSeconds: 120, // 2 minutes; an `npx -y` server may download its package on first start
+		TraceEnabled:             true,
+		DigestEnabled:            true,
+		RedactionLevel:           "standard",
+		AskRules:                 []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"},
+		Approval:                 ApprovalAsk,
 
 		ContextWindowMessages: 50,
 		ContextStrategy:       "offset",
@@ -307,6 +309,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
 	fmt.Fprintf(w, "  turnTimeoutSeconds: %d\n", cfg.TurnTimeoutSeconds)
+	fmt.Fprintf(w, "  mcpConnectTimeoutSeconds: %d\n", cfg.McpConnectTimeoutSeconds)
 	fmt.Fprintf(w, "  debug:         %t\n", cfg.Debug)
 	fmt.Fprintf(w, "  systemPrompt:  %q\n", cfg.SystemPrompt)
 	fmt.Fprintf(w, "  chatStoreType: %s\n", cfg.ChatStoreType)

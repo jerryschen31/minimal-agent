@@ -314,6 +314,25 @@ func TestHelperMCPServer(t *testing.T) {
 			os.Exit(1)
 		}
 	}
+	// a test can ask the child to create a file once it is up, so another server can wait for it
+	if readyFile := os.Getenv("GO_MCP_HELPER_READYFILE"); readyFile != "" {
+		if err := os.WriteFile(readyFile, nil, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "helper MCP server:", err)
+			os.Exit(1)
+		}
+	}
+	// a test can ask the child to hold its handshake until a file exists (never answering if it never appears); the
+	// 60 s cap only stops a child that a broken test failed to kill from running forever
+	if waitFor := os.Getenv("GO_MCP_HELPER_WAITFOR"); waitFor != "" {
+		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+			if _, err := os.Stat(waitFor); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				os.Exit(1)
+			}
+		}
+	}
 	if err := newFakeMCPServer().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		fmt.Fprintln(os.Stderr, "helper MCP server:", err)
 		os.Exit(1)
@@ -379,6 +398,38 @@ func Test_Unit_SetupMCPConns_CancelledContext_StartsNoServer(t *testing.T) {
 	}
 	if _, statErr := os.Stat(pidFile); statErr == nil {
 		t.Error("a server process was started although the context was already cancelled")
+	}
+}
+
+// - Verify SetupMCPConns connects the servers at the same time (PR #40 review): a-waits holds its handshake until
+// b-ready has started. Connected one after another, a-waits would wait for a server that is never started and fail at
+// its timeout, so this test fails if the loop is ever made serial again. No sleeps or timing assumptions.
+func Test_Unit_SetupMCPConns_ConnectsServersAtTheSameTime(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	t.Setenv("GO_WANT_MCP_HELPER", "1")
+	readyFile := filepath.Join(t.TempDir(), "b-ready")
+	helper := []string{"-test.run=^TestHelperMCPServer$"}
+	cfg := config.Config{
+		McpConnectTimeoutSeconds: 20, // only reached if the servers are connected one after another
+		McpServers: map[string]config.McpServerConfig{
+			"a-waits": {Command: exe, Args: helper, Env: map[string]string{"GO_MCP_HELPER_WAITFOR": readyFile}},
+			"b-ready": {Command: exe, Args: helper, Env: map[string]string{"GO_MCP_HELPER_READYFILE": readyFile}},
+		},
+	}
+
+	conns, err := SetupMCPConns(context.Background(), cfg)
+	for _, c := range conns {
+		defer c.Close()
+	}
+
+	if err != nil || len(conns) != 2 {
+		t.Fatalf("expected both servers connected, got %d connections, err %v", len(conns), err)
+	}
+	if conns[0].Name != "a-waits" || conns[1].Name != "b-ready" {
+		t.Errorf("expected the connections in name order, got %s, %s", conns[0].Name, conns[1].Name)
 	}
 }
 

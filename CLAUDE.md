@@ -258,6 +258,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 - **Timeouts:** `toolTimeoutSeconds` (default 300) bounds every tool call, MCP included (`executeToolCall`); `turnTimeoutSeconds`
   (default 600) bounds a whole turn (`handleUserInput`) and must not be below the tool limit (`checkConfig`). A tool must honour
   its context. Ctrl+C and the turn timeout are told apart from the tool's own deadline by which context ended.
+  `mcpConnectTimeoutSeconds` (default 120) bounds each MCP server's connect at startup (`SetupMCPConns`, which connects all
+  servers at once); a server that runs out is skipped, not a reason to abort setup. Listing tools (`SetupMCPTools`) is not bounded.
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.

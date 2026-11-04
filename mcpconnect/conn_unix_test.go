@@ -73,3 +73,52 @@ func Test_Unit_SetupMCPConns_ServerFails_SkipsItAndKeepsTheOthers(t *testing.T) 
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// - Verify a server that never finishes its handshake is stopped at mcpConnectTimeoutSeconds (PR #40 review): setup
+// returns, the other server is connected, the error names the slow server and the setting, and the slow server's
+// process is gone. The parent context is not cancelled, so the caller treats it as one failed server, not a Ctrl+C.
+func Test_Unit_SetupMCPConns_HungServer_TimesOutAndIsStopped(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	t.Setenv("GO_WANT_MCP_HELPER", "1")
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "hung.pid")
+	helper := []string{"-test.run=^TestHelperMCPServer$"}
+	cfg := config.Config{
+		McpConnectTimeoutSeconds: 1,
+		McpServers: map[string]config.McpServerConfig{
+			// waits for a file that is never created, so it never answers the handshake
+			"a-hung": {Command: exe, Args: helper, Env: map[string]string{
+				"GO_MCP_HELPER_WAITFOR": filepath.Join(dir, "never"), "GO_MCP_HELPER_PIDFILE": pidFile}},
+			"b-good": {Command: exe, Args: helper},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conns, err := SetupMCPConns(ctx, cfg)
+	for _, c := range conns {
+		defer c.Close()
+	}
+
+	if len(conns) != 1 || conns[0].Name != "b-good" {
+		t.Fatalf("expected only b-good connected, got %d connections (err %v)", len(conns), err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "a-hung") || !strings.Contains(err.Error(), "mcpConnectTimeoutSeconds") {
+		t.Errorf("expected an error naming a-hung and mcpConnectTimeoutSeconds, got %v", err)
+	}
+	if ctx.Err() != nil {
+		t.Errorf("expected the parent context still live, got %v", ctx.Err())
+	}
+	pid := readPid(t, pidFile)
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil { // signal 0 checks that a process exists
+		if time.Now().After(deadline) {
+			syscall.Kill(pid, syscall.SIGKILL) // don't leave the leaked child behind
+			t.Fatalf("the hung server (pid %d) is still running after its connect timed out", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
