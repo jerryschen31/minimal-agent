@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/procutils"
@@ -25,35 +26,32 @@ type McpConnection struct {
 	cmd     *exec.Cmd // the server process for a local (stdio) server, nil for a remote one; Close kills its process group
 }
 
-// SetupMCPConns connects to every MCP server listed in the config, in name order, and returns one connection per server
-// that connected.
+// SetupMCPConns connects to every MCP server listed in the config. Each connection is attempted concurrently, and failures are collected.
 //
 // Notes:
 //   - A server that fails is skipped: its error (naming the server) is collected and the next server is tried, so one
 //     bad server does not take the others' tools away. The returned error joins every failure (nil if all connected).
 //   - The connections are returned even when the error is non-nil, and the caller must close them.
-//   - Names are sorted because map order is random; sorted names make the connection order and the error order
-//     repeatable.
-//   - Setup stops once ctx is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
-//     context (exec.Command ignores it), so trying the rest would launch processes only to tear them down.
+//   - A Ctrl+C cancel signal will cancel the context, causing in-progress connections to stop and return a cancel error.
 func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
-	var mcpConns []*McpConnection
-	var errs []error
-	// map order is random; sorted names make the connection order and the error order repeatable
-	for _, sname := range slices.Sorted(maps.Keys(cfg.McpServers)) {
-		// stop once setup is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
-		// context (exec.Command ignores it), so trying the rest would launch processes only to tear them down
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, fmt.Errorf("MCP setup stopped before server %s: %w", sname, err))
-			break
-		}
-		mcpConn, err := ConnectMCPServer(ctx, sname, cfg)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		mcpConns = append(mcpConns, mcpConn)
+	serverNames := slices.Sorted(maps.Keys(cfg.McpServers))
+	mcpConns := make([]*McpConnection, len(serverNames))
+	errs := make([]error, len(serverNames))
+
+	var wg sync.WaitGroup
+	for i, sname := range serverNames {
+		wg.Add(1)
+		go func(i int, sname string) {
+			defer wg.Done()
+			if err := ctx.Err(); err != nil {
+				errs[i] = fmt.Errorf("setup cancelled for server %s before startup: %w", sname, err)
+				return
+			}
+			mcpConns[i], errs[i] = ConnectMCPServer(ctx, sname, cfg)
+		}(i, sname)
 	}
+	wg.Wait()
+	mcpConns = slices.DeleteFunc(mcpConns, func(c *McpConnection) bool { return c == nil })
 	return mcpConns, errors.Join(errs...)
 }
 
