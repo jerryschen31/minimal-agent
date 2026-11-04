@@ -484,7 +484,8 @@ func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
 	}
 }
 
-// - Verify a config SetupAgent would refuse (maxSteps, responseTimeoutSeconds or mcpResultMaxBytes not positive, or a context window
+// - Verify a config SetupAgent would refuse (maxSteps, responseTimeoutSeconds, mcpResultMaxBytes or mcpConnectTimeoutSeconds not
+// positive, or a context window
 // setting contextwindow.CheckConfig rejects) prints
 // "Configuration: FAILED" naming the field, still lists the built-in tools, starts no MCP server, and returns InfoFailed
 func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
@@ -497,6 +498,7 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 		{"responseTimeoutSeconds 0", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = 0 }},
 		{"responseTimeoutSeconds -1", "responseTimeoutSeconds", func(c *config.Config) { c.ResponseTimeoutSeconds = -1 }},
 		{"mcpResultMaxBytes 0", "mcpResultMaxBytes", func(c *config.Config) { c.MCPResultMaxBytes = 0 }},
+		{"mcpConnectTimeoutSeconds 0", "mcpConnectTimeoutSeconds", func(c *config.Config) { c.McpConnectTimeoutSeconds = 0 }},
 		{"contextWindowMessages 2", "contextWindowMessages", func(c *config.Config) { c.ContextWindowMessages = 2 }},
 		{"approval unknown", `approval must be "ask" or "allow-all", got "bogus"`, func(c *config.Config) { c.Approval = "bogus" }},
 	}

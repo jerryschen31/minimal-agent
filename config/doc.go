@@ -41,6 +41,8 @@
 //	                model sees "tool timed out". Positive                                                  [300]
 //	turnTimeoutSeconds  most seconds one whole turn (model calls plus tools) may take; the turn is stopped
 //	                and nothing is added to memory. Positive and not less than toolTimeoutSeconds          [600]
+//	mcpConnectTimeoutSeconds  most seconds one MCP server may take to connect at startup; a server that takes
+//	                longer is stopped and skipped (the others keep their tools). Positive                  [120]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
 //	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
