@@ -768,11 +768,17 @@ func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
 	}
 }
 
-// - Verify the defaults name the built-in tool by its model-facing name, and give each model call 300 seconds
+// - Verify the defaults enable every built-in tool except run_command, by model-facing name, and give each model call
+// 300 seconds
 func Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout(t *testing.T) {
 	cfg := GetDefaultConfig()
-	if !slices.Equal(cfg.BuiltinTools, []string{"read_file"}) {
-		t.Errorf("expected BuiltinTools [read_file], got %v", cfg.BuiltinTools)
+	want := []string{"read_file", "write_file", "edit_file", "create_directory", "copy_file", "move_file", "list_files", "search_files"}
+	if !slices.Equal(cfg.BuiltinTools, want) {
+		t.Errorf("expected BuiltinTools %v, got %v", want, cfg.BuiltinTools)
+	}
+	// [agent] run_command is opt-in: in the default list it would only print a warning (runCommands is empty by default)
+	if slices.Contains(cfg.BuiltinTools, "run_command") {
+		t.Errorf("expected run_command not in the default BuiltinTools")
 	}
 	if cfg.ResponseTimeoutSeconds != 300 {
 		t.Errorf("expected ResponseTimeoutSeconds 300, got %d", cfg.ResponseTimeoutSeconds)

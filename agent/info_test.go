@@ -122,8 +122,9 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 	if code != InfoOK {
 		t.Errorf("expected exit code %d, got %d", InfoOK, code)
 	}
-	if !strings.Contains(out, "Built-in tools (1)\n") {
-		t.Errorf("expected Built-in tools (1) in output:\n%s", out)
+	// [agent] count taken from the config, so a change to the default tool list does not break this test
+	if want := "Built-in tools (" + strconv.Itoa(len(cfg.BuiltinTools)) + ")\n"; !strings.Contains(out, want) {
+		t.Errorf("expected %q in output:\n%s", want, out)
 	}
 	var toolLine, neverLine string
 	for line := range strings.Lines(out) {
@@ -520,7 +521,7 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 			if lineWith(out, "Configuration: FAILED", tt.field) == "" {
 				t.Errorf("expected Configuration: FAILED naming %s in output:\n%s", tt.field, out)
 			}
-			if !strings.Contains(out, "Built-in tools (1)\n") {
+			if !strings.Contains(out, "Built-in tools (") || lineWith(out, "read_file") == "" {
 				t.Errorf("expected the built-in tools still listed in output:\n%s", out)
 			}
 			if !strings.Contains(out, "MCP servers: not started (fix the configuration error above first)\n") {
@@ -768,7 +769,7 @@ func Test_Unit_PrintInfo_ToolRules_Invalid_Fails(t *testing.T) {
 	if lineWith(out, "Tool rules: FAILED: invalid deny rule", "*delete[") == "" {
 		t.Errorf("expected Tool rules: FAILED naming *delete[ in output:\n%s", out)
 	}
-	if !strings.Contains(out, "Built-in tools (1)\n") || lineWith(out, "read_file") == "" {
+	if !strings.Contains(out, "Built-in tools (") || lineWith(out, "read_file") == "" {
 		t.Errorf("expected the built-in tools still listed in output:\n%s", out)
 	}
 	if lineWith(out, "docs_lookup") == "" || lineWith(out, "docs_write") == "" {
@@ -784,7 +785,7 @@ func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
 	cfg.MCPResultMaxBytes = -1
-	cfg.DenyRules = []string{"*move*"}
+	cfg.DenyRules = []string{"*frobnicate*"} // [agent] must match no built-in tool, whatever the default list is
 
 	code, out := runInfo(t, cfg, "")
 	if code != InfoFailed {
@@ -793,8 +794,8 @@ func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
 	if !strings.Contains(out, "(some tools could not be listed above, so a rule may match a tool not shown)") {
 		t.Errorf("expected the some-tools-not-listed note in output:\n%s", out)
 	}
-	if lineWith(out, "*move*", "config", "matches nothing among the tools listed") == "" {
-		t.Errorf("expected *move* matches nothing among the tools listed in output:\n%s", out)
+	if lineWith(out, "*frobnicate*", "config", "matches nothing among the tools listed") == "" {
+		t.Errorf("expected *frobnicate* matches nothing among the tools listed in output:\n%s", out)
 	}
 	if strings.Contains(out, "warning") {
 		t.Errorf("expected no warning in output:\n%s", out)
@@ -805,6 +806,7 @@ func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
 func Test_Unit_PrintInfo_ToolRules_MatchesMCPTool(t *testing.T) {
 	cfg := config.GetDefaultConfig()
 	cfg.WorkDir = t.TempDir()
+	cfg.BuiltinTools = []string{"read_file"} // [agent] so *write* can match only the MCP tool, not the built-in write_file
 	cfg.DenyRules = []string{"*write*", "docs_*", "write"}
 	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
 

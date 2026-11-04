@@ -4263,3 +4263,29 @@ grandchild (`node` under `npx`) can outlive the call, which contradicts "nothing
 Object (`CreateJobObject`, `AssignProcessToJobObject`, `TerminateJobObject`; `kernel32` calls or `golang.org/x/sys/windows`)
 kills the whole tree; assigning it after `Start` leaves a small window unless the process starts suspended. The qualification
 is stated in `RunCommandTool`, `config/doc.go` and `CLAUDE.md`.
+
+### 2026-11-04 — Default `builtinTools`: every built-in tool except `run_command`
+
+**Decision.** `GetDefaultConfig()` now enables `read_file`, `write_file`, `edit_file`, `create_directory`, `copy_file`,
+`move_file`, `list_files` and `search_files` (was `["read_file"]` only). `run_command` is **not** in the default list.
+
+**Why the eight file tools are on by default.** They are all contained by `builtin.Workspace` (inside `workDir`, deny list,
+trace dir, write-deny on `.git` and the config file), and the five that change files are in the default `askRules`, so each
+write still needs the user's approval.
+
+**Why `run_command` is left out.** It is opt-in by design and is set up only when `runCommands` is non-empty, and
+`runCommands` defaults to `[]`. In the default list it therefore added no tool, only
+`[warning] run_command is in builtinTools but runCommands is empty` on every start, chat mode included. A warning that
+appears when nothing is wrong teaches the user to ignore warnings. Commit `619e0fb` had briefly added it; this entry
+reverses that part.
+- *Downside:* enabling `run_command` takes two config keys (`builtinTools` and `runCommands`) instead of one.
+- *Rejected alternative:* keep it in the default list and stay quiet unless the user listed it. That needs setup to know
+  whether `builtinTools` came from the defaults or the config file, which costs more code than writing one word in a config.
+
+**Tests.** Four `agent/info_test.go` tests depended on the default tool list without being about it (`Built-in tools (1)`
+as a stand-in for "built-ins listed", rules `*move*`/`*write*` that now also match built-in tools). They now either check
+without the count, use a rule that matches no built-in (`*frobnicate*`), or set `cfg.BuiltinTools` themselves. Only tests
+about the defaults (`Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout`, `Test_Unit_PrintInfo_BuiltinTools_Default`,
+`Test_Unit_PrintInfo_ToolRules_Default`) should change when the default list changes.
+
+Files: `config/config.go`, `config/doc.go`, `config/config_test.go`, `agent/info_test.go`.

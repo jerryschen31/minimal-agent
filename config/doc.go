@@ -98,7 +98,8 @@
 //
 //	builtinTools    built-in tools to enable, by the name the model sees: "read_file" ("ReadFile",
 //	                the old spelling, still works), "list_files", "search_files",
-//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"   [["read_file"]]
+//	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"
+//	                [every tool except "run_command", which must be listed by hand together with runCommands]
 //	runCommands     programs run_command may start: bare names, looked up on PATH once at startup. The
 //	                only way to enable run_command: with [] (the default) the tool is not set up, and a
 //	                warning says so. A listed program runs unasked unless a deny or ask rule matches
