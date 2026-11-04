@@ -435,7 +435,8 @@ is a Copilot comment on PR #9 (the line editor / per-turn Ctrl+C work).
       `xcontext.Detach`), and `SetupRecorder` ignores its `ctx`.
     - *Downside:* a Ctrl+C right as setup finishes either aborts or is discarded, depending on timing.
 
-16. **Connecting MCP servers in parallel** (`mcpconnect/conn.go`, `SetupMCPConns`; noted 2026-10-23).
+16. **Connecting MCP servers in parallel** (`mcpconnect/conn.go`, `SetupMCPConns`; noted 2026-10-23). **Done 2026-11-04**,
+    with the connect timeout: see `§ PR #40 review` at the end of the log.
     - *Today:* sequential, so a slow server delays the next, and a hung one blocks startup.
     - *Rules for the parallel loop:* one goroutine per `ConnectMCPServer`; results in a slice indexed by the server's
       sorted position (repeatable order); **wait for every goroutine before returning, even when cancelled**, or a
@@ -4263,3 +4264,78 @@ grandchild (`node` under `npx`) can outlive the call, which contradicts "nothing
 Object (`CreateJobObject`, `AssignProcessToJobObject`, `TerminateJobObject`; `kernel32` calls or `golang.org/x/sys/windows`)
 kills the whole tree; assigning it after `Start` leaves a small window unless the process starts suspended. The qualification
 is stated in `RunCommandTool`, `config/doc.go` and `CLAUDE.md`.
+
+### 2026-11-04 — Default `builtinTools`: every built-in tool except `run_command`
+
+**Decision.** `GetDefaultConfig()` now enables `read_file`, `write_file`, `edit_file`, `create_directory`, `copy_file`,
+`move_file`, `list_files` and `search_files` (was `["read_file"]` only). `run_command` is **not** in the default list.
+
+**Why the eight file tools are on by default.** They are all contained by `builtin.Workspace` (inside `workDir`, deny list,
+trace dir, write-deny on `.git` and the config file), and the five that change files are in the default `askRules`, so each
+write still needs the user's approval.
+
+**Why `run_command` is left out.** It is opt-in by design and is set up only when `runCommands` is non-empty, and
+`runCommands` defaults to `[]`. In the default list it therefore added no tool, only
+`[warning] run_command is in builtinTools but runCommands is empty` on every start, chat mode included. A warning that
+appears when nothing is wrong teaches the user to ignore warnings. Commit `619e0fb` had briefly added it; this entry
+reverses that part.
+- *Downside:* enabling `run_command` takes two config keys (`builtinTools` and `runCommands`) instead of one.
+- *Rejected alternative:* keep it in the default list and stay quiet unless the user listed it. That needs setup to know
+  whether `builtinTools` came from the defaults or the config file, which costs more code than writing one word in a config.
+
+**Tests.** Four `agent/info_test.go` tests depended on the default tool list without being about it (`Built-in tools (1)`
+as a stand-in for "built-ins listed", rules `*move*`/`*write*` that now also match built-in tools). They now either check
+without the count, use a rule that matches no built-in (`*frobnicate*`), or set `cfg.BuiltinTools` themselves. Only tests
+about the defaults (`Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout`, `Test_Unit_PrintInfo_BuiltinTools_Default`,
+`Test_Unit_PrintInfo_ToolRules_Default`) should change when the default list changes.
+
+Files: `config/config.go`, `config/doc.go`, `config/config_test.go`, `agent/info_test.go`.
+
+### 2026-11-04 — PR #40 review (parallel MCP setup): connect timeout added, test for overlap, shared stderr writer deferred
+
+PR #40 makes `SetupMCPConns` connect every server at once (one goroutine per server, results stored by the server's sorted
+position, wait for all before returning). This closes `§ Deferred for Later`, item 16. Copilot left three comments.
+
+**1. Shared `McpServerStderr` writer: deferred (Jerry's decision).**
+- *The issue:* every local server's `cmd.Stderr` is the same `cfg.McpServerStderr`. If that is not an `*os.File`, `os/exec`
+  starts one goroutine per server to copy the child's stderr into it, so two servers can call `Write` at the same time. A
+  `bytes.Buffer` is not safe for that.
+- *Why it can wait:* no current caller hits it. Chat mode leaves it nil (`os.Stderr`, a file: the child writes to it
+  directly and no Go code copies), and info mode uses `io.Discard` (its `Write` does nothing). It is also not new with this
+  PR: two servers already running print at the same time with serial setup too; parallel setup only makes it more likely.
+- *Fix when needed:* a `syncWriter` (a mutex around `Write`, about 10 lines) wrapped around `cfg.McpServerStderr` once at the
+  top of `SetupMCPConns`, leaving nil alone. It stops corruption, not interleaving in the middle of a line (mvp4's
+  `lineWriter` does that). It stays unexported in `mcpconnect` until a second package needs it (likely parallel
+  autonomous tasks); then it moves to a small stdlib-only helper package, not `textutils`.
+- *Until then:* `SetupMCPConns` Notes say the writer is shared and not locked.
+
+**2. Per-server connect timeout: added, `mcpConnectTimeoutSeconds`, default 120.**
+- Item 16 had said to add it together with parallel setup; the first version of the PR left it out. Without it, only
+  Ctrl+C or SIGTERM can stop a server that starts but never finishes its handshake.
+- *Why 120 s (Jerry's choice, over the 60 s first suggested):* an `npx -y` server may download its package on first start,
+  which on a slow network can take most of a minute; a limit that fails a slow-but-working server is worse than waiting.
+- *How:* each goroutine connects with `context.WithTimeout(ctx, …)`, a child of the setup context. A Ctrl+C still cancels
+  every server; one server running out of time affects only itself and is skipped like any other failed server (the parent
+  context stays live, so `SetupAgent` continues instead of aborting). The error names the server and the setting:
+  `MCP server X did not connect within 2m0s (mcpConnectTimeoutSeconds): …`. `cancel()` after connecting is safe because
+  the session does not keep the connect context (item 15).
+- Config: field + default (`config/config.go`), line in `config/doc.go`, printed by info mode, `checkConfig` refuses 0 or
+  less (0 would fail every server at once). In a hand-built test config, 0 means no limit, as with `toolTimeoutSeconds`.
+- *Cost:* a server that times out takes the timeout **plus up to 5 s**: on a failed handshake the SDK closes the server's
+  stdin and waits up to 5 s before SIGTERM. A server that ignores stdin (the hung test helper) uses all 5 s.
+- *Deferred:* `SetupMCPTools` (`tools/list` after connecting) still has no limit, so a server that connects and then hangs
+  while listing its tools still holds up setup. Same fix, same setting, when needed.
+
+**3. A test that fails if setup is serial: added.**
+- The existing `SetupMCPConns` tests passed whether the loop was serial or parallel. The helper server (`TestHelperMCPServer`)
+  has two new hooks, set per server through the config's `Env`: `GO_MCP_HELPER_READYFILE` (create a file once started) and
+  `GO_MCP_HELPER_WAITFOR` (hold the handshake until a file exists; capped at 60 s so a leaked child cannot run forever).
+- `Test_Unit_SetupMCPConns_ConnectsServersAtTheSameTime`: `a-waits` waits for the file `b-ready` creates. Serial, `a` runs
+  first and waits for a server that never starts. No sleeps or timing assumptions. Mutation check: adding `wg.Wait()` inside
+  the loop fails it (`a-waits did not connect within 20s`).
+- `Test_Unit_SetupMCPConns_HungServer_TimesOutAndIsStopped` (Unix, uses `kill(pid, 0)`): with a 1 s timeout, the hung
+  server is reported by name and setting, the other connects, the parent context stays live, and the hung process is gone.
+- `Test_Unit_PrintInfo_BadConfig_StartsNoServer` gained a `mcpConnectTimeoutSeconds 0` case.
+
+Files: `mcpconnect/conn.go`, `mcpconnect/conn_test.go`, `mcpconnect/conn_unix_test.go`, `config/config.go`, `config/doc.go`,
+`agent/agent.go`, `agent/agent_test.go`, `agent/info_test.go`, `CLAUDE.md`.

@@ -1226,3 +1226,41 @@ mutation pass found: `DECISIONS.md § run_command built`.
 Next: Jerry commits and opens the PR (base `build`); then `/reload` (plan in the "`/reload` designed in detail, then deferred"
 entry; it is deferred, ask first), then Jerry's autonomous port. Worth trying by hand: a config with `runCommands: ["go"]`,
 `builtinTools` incl. `run_command`, ask rule `run_command:go run*`, then ask the agent to run `go test ./...` and `go run .`.
+
+
+### 2026-11-03 (end of session) — run_command shipped, PR #37 and #38 reviews done; handoff for a fresh session
+
+**State:** local `build` is at 9f8217f (PR #39 merged: the PR #38 fixes). PR #37 (`run_command`, `procutils`, `textutils`) is
+merged into `build`. **PR #38 (`build` → `master`) is open**; its six Copilot comments are addressed by #39 (replies on GitHub
+not posted by Claude). One uncommitted change in the tree, by Jerry: `config/config.go` makes the default `builtinTools` all
+seven tools (`read_file`, `write_file`, `edit_file`, `create_directory`, `copy_file`, `move_file`, `run_command`). Note that
+`run_command` without `runCommands` is skipped with a warning, so that default is safe; if kept, the `builtinTools` default in
+`config/doc.go` and the default-config tests need updating (not done yet). Old branches (`feat/run-command`,
+`fix/pr38-review`, ...) can be deleted.
+
+**What was built this session** (details: `DECISIONS.md § run_command plan`, `§ run_command built`, `§ run_command: arguments
+are checked against the deny list`, `§ PR #37 ... review`, `§ PR #38 ... review`):
+- `run_command`: `runCommands` list (default empty = tool not set up, with a warning), no shell, empty stdin, filtered env
+  (`DefaultCommandEnv` + extend-only `commandEnv`), own process group, `commandMaxOutputBytes` 128 KB plain cut-off,
+  `run_command:<glob>` rules over the joined command line in `denyRules`/`askRules` (`ToolRules.LevelFor`), not in the default
+  `askRules`, unreadable args ask. Best-effort guard `Workspace.checkCommandArgs` refuses arguments naming deny-listed files.
+- `toolTimeoutSeconds` (300, all tools incl. MCP) and `turnTimeoutSeconds` (600, must be >= tool timeout).
+- PR #37 review: mixed command/file approval previews show a warning + raw args; `textutils.CutBytes` stray-continuation fix.
+- PR #38 review: `move_file` refuses hard-linked sources; Windows `KillGroup` kills the direct process; nil-workspace guard;
+  `guard.go` uses `git ls-files -z`.
+
+**Accepted / deferred, with the fix written down (`DECISIONS.md § PR #38 review`):** no hard-link count on Windows (write tools
+unprotected there; fix = `GetFileInformationByHandle`); `create_directory` symlink swap between check and `MkdirAll` (fix =
+per-component `Mkdir` + `Lstat` + `OpenRoot` + `SameFile`); Windows Job Object for `run_command`/MCP; output tail lost past the
+128 KB cap; a tool that ignores its context is not stopped by `toolTimeoutSeconds`; a glob over a command line is not a detector.
+
+**Process notes for next time:**
+- Jerry preferred plain, jargon-free explanations ("what a link count is" landed after two tries); explain the concept first, then the fix.
+- Jerry pushes back on fixes for extreme edge cases: state likelihood honestly and offer "accept and document" next to the fix.
+- Copilot's comments were all accurate this time; verify each against the code, then explain before changing anything (Jerry asked for that order).
+- Mutation checks found two real test weaknesses this session (a cap on a character boundary, `go test`'s stdin being /dev/null); keep doing them.
+
+**Next, in order:** (1) decide the default `builtinTools` change above and finish it or revert it; (2) `/reload` (designed in the
+"`/reload` designed in detail, then deferred" entry; deferred, so ask Jerry first; `Config.ConfigFile` exists for it); (3) Jerry's
+own autonomous-mode port, which needs a sandbox/worktree before commands run unattended ("unattended means contained");
+(4) try `run_command` by hand with a real model (`runCommands: ["go"]`, ask rule `run_command:go run*`).

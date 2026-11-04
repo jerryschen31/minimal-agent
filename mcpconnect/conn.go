@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/procutils"
@@ -25,35 +27,56 @@ type McpConnection struct {
 	cmd     *exec.Cmd // the server process for a local (stdio) server, nil for a remote one; Close kills its process group
 }
 
-// SetupMCPConns connects to every MCP server listed in the config, in name order, and returns one connection per server
-// that connected.
+// SetupMCPConns connects to every MCP server listed in the config, all at once (one goroutine per server), and returns
+// one connection per server that connected, in name order.
 //
 // Notes:
-//   - A server that fails is skipped: its error (naming the server) is collected and the next server is tried, so one
-//     bad server does not take the others' tools away. The returned error joins every failure (nil if all connected).
+//   - A server that fails is skipped: its error (naming the server) is collected, and the other servers are not
+//     affected, so one bad server does not take the others' tools away. The returned error joins every failure (nil if
+//     all connected).
+//   - Each server gets cfg.McpConnectTimeoutSeconds to connect (0 = no limit, only in a hand-built test config;
+//     checkConfig makes real configs positive). A server that takes longer is stopped and skipped like any other
+//     failure; the parent ctx is not cancelled, so the caller can tell a timeout (setup continues) from Ctrl+C (abort).
+//   - Waits for every goroutine before returning, also when ctx is cancelled: a connection that finishes late is still
+//     returned, so the caller can close it and its process does not leak.
 //   - The connections are returned even when the error is non-nil, and the caller must close them.
-//   - Names are sorted because map order is random; sorted names make the connection order and the error order
-//     repeatable.
-//   - Setup stops once ctx is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
-//     context (exec.Command ignores it), so trying the rest would launch processes only to tear them down.
+//   - Results are stored by the server's position in the sorted names, so the order of connections and errors is
+//     repeatable whichever server finishes first.
+//   - A ctx cancelled before setup starts launches no process (exec.Command ignores the context, so a process would
+//     start only to be torn down). A cancel during setup (Ctrl+C) fails the handshakes in flight instead.
+//   - cfg.McpServerStderr is shared by every local server and is not locked; see DECISIONS.md § PR #40 review.
 func SetupMCPConns(ctx context.Context, cfg config.Config) ([]*McpConnection, error) {
-	var mcpConns []*McpConnection
-	var errs []error
-	// map order is random; sorted names make the connection order and the error order repeatable
-	for _, sname := range slices.Sorted(maps.Keys(cfg.McpServers)) {
-		// stop once setup is cancelled (SIGTERM, deadline): a local server's process starts even with a cancelled
-		// context (exec.Command ignores it), so trying the rest would launch processes only to tear them down
-		if err := ctx.Err(); err != nil {
-			errs = append(errs, fmt.Errorf("MCP setup stopped before server %s: %w", sname, err))
-			break
-		}
-		mcpConn, err := ConnectMCPServer(ctx, sname, cfg)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		mcpConns = append(mcpConns, mcpConn)
+	serverNames := slices.Sorted(maps.Keys(cfg.McpServers))
+	mcpConns := make([]*McpConnection, len(serverNames))
+	errs := make([]error, len(serverNames))
+	timeout := time.Duration(cfg.McpConnectTimeoutSeconds) * time.Second
+
+	var wg sync.WaitGroup
+	for i, sname := range serverNames {
+		wg.Add(1)
+		go func(i int, sname string) {
+			defer wg.Done()
+			if err := ctx.Err(); err != nil {
+				errs[i] = fmt.Errorf("setup cancelled for server %s before startup: %w", sname, err)
+				return
+			}
+			// [agent] each server gets its own deadline, a child of ctx: a Ctrl+C still cancels them all, while one
+			// slow server running out of time affects only itself
+			connCtx := ctx
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				connCtx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel() // safe once connected: the session does not keep the connect context
+			}
+			mcpConns[i], errs[i] = ConnectMCPServer(connCtx, sname, cfg)
+			// name the setting, so the user knows what to raise; only when it was our deadline, not a Ctrl+C
+			if errs[i] != nil && ctx.Err() == nil && errors.Is(connCtx.Err(), context.DeadlineExceeded) {
+				errs[i] = fmt.Errorf("MCP server %s did not connect within %s (mcpConnectTimeoutSeconds): %w", sname, timeout, errs[i])
+			}
+		}(i, sname)
 	}
+	wg.Wait()
+	mcpConns = slices.DeleteFunc(mcpConns, func(c *McpConnection) bool { return c == nil })
 	return mcpConns, errors.Join(errs...)
 }
 

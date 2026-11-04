@@ -194,6 +194,7 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 //   - Shared by SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
 //   - ResponseTimeoutSeconds of 0 would time out every model call at once.
 //   - toolTimeoutSeconds and turnTimeoutSeconds must be positive, and the turn's limit at least the tool's.
+//   - mcpConnectTimeoutSeconds must be positive: 0 would fail every MCP server at once.
 //   - mcpResultMaxBytes is checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad
 //     cap would silently drop every MCP tool.
 //   - A typo in a safety setting (approval) fails setup rather than silently meaning something else.
@@ -216,6 +217,10 @@ func checkConfig(cfg config.Config) error {
 	}
 	if cfg.TurnTimeoutSeconds < cfg.ToolTimeoutSeconds {
 		return fmt.Errorf("turnTimeoutSeconds (%d) must not be less than toolTimeoutSeconds (%d)", cfg.TurnTimeoutSeconds, cfg.ToolTimeoutSeconds)
+	}
+	// 0 would fail every MCP server at once
+	if cfg.McpConnectTimeoutSeconds <= 0 {
+		return fmt.Errorf("mcpConnectTimeoutSeconds must be a positive integer, got %d", cfg.McpConnectTimeoutSeconds)
 	}
 	// checked here, not per tool: MCP tool setup only warns and skips a tool that fails, so a bad cap would silently drop every MCP tool
 	if cfg.MCPResultMaxBytes <= 0 {
