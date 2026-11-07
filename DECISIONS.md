@@ -4339,3 +4339,25 @@ position, wait for all before returning). This closes `§ Deferred for Later`, i
 
 Files: `mcpconnect/conn.go`, `mcpconnect/conn_test.go`, `mcpconnect/conn_unix_test.go`, `config/config.go`, `config/doc.go`,
 `agent/agent.go`, `agent/agent_test.go`, `agent/info_test.go`, `CLAUDE.md`.
+
+### 2026-11-07 — Plan mode before autonomous mode; autonomous mode requires `## Tasks`
+
+Decided with Jerry. Not built. Plan: `PLAN-plan-mode.md`.
+
+- **`-mode plan` (the `terraform plan` step):** takes `-objective`/`-obj draft.md`, or asks for the objective, and talks
+  it through with the user until it can write a complete objective file with `## Tasks`. The user approves the file
+  before it is saved. Autonomous mode is the `apply` step.
+- **Autonomous mode requires `## Tasks`** (Jerry): no in-run PLAN phase, no `set_tasks`. A file without tasks is a
+  startup error pointing at `-mode plan`. *Why:* a person reviews the tasks before anything runs unattended, and
+  autonomous mode gets simpler. *Downside:* every new objective costs a planning session first; mitigated by the
+  planner proposing at once when the draft is already clear, and by a saved plan being reusable for later runs. A
+  one-command plan-confirm-apply path is deferred, not rejected.
+- **Sections:** `# Objective`, `## Instructions` and `## Tasks` required; `## Constraints` and `## Context` optional.
+  `## Instructions` replaces mvp4's `## Quality bar` and absorbs `## Done when` (no separate done section).
+- **Never overwrite:** if `<name>-full.md` exists, the user is asked for a new name, suggested default
+  `<name>-full-<timestamp>.md`.
+- **Tasks are plain bullets** for now (no IDs or `depends_on`).
+- **Order:** plan mode is built before autonomous mode (Claude's recommendation, accepted): its output runs with mvp4's
+  binary today, it has no unattended-execution problem, and it settles the objective format (`objective/` package:
+  parse + render) that autonomous mode then reuses. *Downside:* the headline feature arrives later, and the planner's
+  idea of a good task is written before Jerry's own director exists.

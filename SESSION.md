@@ -1264,3 +1264,17 @@ per-component `Mkdir` + `Lstat` + `OpenRoot` + `SameFile`); Windows Job Object f
 "`/reload` designed in detail, then deferred" entry; deferred, so ask Jerry first; `Config.ConfigFile` exists for it); (3) Jerry's
 own autonomous-mode port, which needs a sandbox/worktree before commands run unattended ("unattended means contained");
 (4) try `run_command` by hand with a real model (`runCommands: ["go"]`, ask rule `run_command:go run*`).
+
+### 2026-11-07 — autonomous mode planned; plan mode comes first
+
+Shape of autonomous mode (from mvp3/mvp4) and of a new `-mode plan` discussed with Jerry. Decisions:
+`DECISIONS.md § 2026-11-07 — Plan mode before autonomous mode`. Plan: `PLAN-plan-mode.md`.
+
+**Open (proposed by Claude, not yet confirmed):** fold `## Quality bar` / `## Done…` of a draft into Instructions when
+reading; output written next to the draft (`objective-full.md` in the current directory without one); a separate
+`objective/` package rather than objective parsing inside `director/`; a `planner/` package.
+
+**Still open for autonomous mode:** `run_command` unattended (proposal: refuse to start with it enabled until a
+worktree/sandbox exists); what `approval: allow-all` means with nobody to confirm it; rounds (`maxIterations`) deferred?
+
+**Next:** `PLAN-plan-mode.md` step 1, the `objective/` package (Jerry types it from a skeleton).
