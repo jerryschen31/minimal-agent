@@ -1302,3 +1302,7 @@ stays a struct (`§ Objective stays a plain struct`). Uncommitted: the objective
 `objective/testdata/fuzz/` (8 regression inputs from fuzzing; keep them), `CODEMAP.md`, `DECISIONS.md`.
 **Next:** `PLAN-plan-mode.md` step 2, `-mode plan` wiring and flags (then the `planner/` package: `proposeArgs` +
 `toObjective`). Still deferred: the format reference + example file (end of step 1).
+
+**2026-11-07, later:** format reference `docs/objective-format.md` and example `examples/objective-example.md` written
+(linked from README); two tests keep them in step with the code (the example must be exactly what `Markdown` writes;
+the doc's before/after example must be what `Cleanup` does). Step 1 of `PLAN-plan-mode.md` is done; next is step 2.

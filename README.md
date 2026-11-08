@@ -18,7 +18,8 @@ If you want to use a remote-hosted model, make sure you configure API keys for y
 
 [Running thoughts](THOUGHTS.md)<br>
 [Running decisions](DECISIONS.md)<br>
-[Running session notes](SESSION.md)
+[Running session notes](SESSION.md)<br>
+[Objective file format](docs/objective-format.md) Objective files are used to drive autonomous mode. [example](examples/objective-example.md))
 
 [MVP 1](mvp1/): I planned, coding agent wrote code (Fable 5.1)<br>
 [MVP 2](mvp2/learn/): I designed and coded several iterations, with a coding agent as thinking partner and pair programmer (Sonnet 5.5)<br>
@@ -26,4 +27,4 @@ If you want to use a remote-hosted model, make sure you configure API keys for y
 [e5ba43a](https://github.com/jerryschen31/minimal-agent/tree/e5ba43a6b77e8571d24dcd16df0ab085cbc87ab2): Added an interactive line editor for a better chat prompt UX and added a debug mode<br>
 [b6d73eb](https://github.com/jerryschen31/minimal-agent/tree/b6d73ebd7d312245717a2fcd13987dfe87ee275b): I planned and guided an agent to build an autonomous mode MVP - works well. I'll use this MVP code as a guide for the full build out.
 
-Chat mode is built. Currently working on a full build of autonomous mode with support for more tools (built-in and MCP server). Also looking into implementing a built-in tracing harness component, that you could still swap out with a third-party tracing tool if desired.
+Chat mode is built. Implemented built-in agent traces and trace summaries (digests). Currently working on a full build of autonomous mode with support for more tools (built-in and MCP server). 

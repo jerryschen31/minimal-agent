@@ -356,6 +356,61 @@ func Test_Unit_ApprovalStatus(t *testing.T) {
 	}
 }
 
+// --- Documentation ---
+
+// Test_Unit_ExampleFile: examples/objective-example.md is in the standard form (zero fixes), ready to run, and round-
+// trips, so the example people copy from stays valid.
+func Test_Unit_ExampleFile(t *testing.T) {
+	data, err := os.ReadFile("../examples/objective-example.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, fixes := mustCleanup(t, string(data))
+	checkFixes(t, fixes, nil)
+	if err := o.CheckComplete(20); err != nil {
+		t.Errorf("CheckComplete: %v", err)
+	}
+	if got := o.Markdown(); got != string(data) {
+		t.Errorf("the example is not exactly what Markdown writes:\n%s", got)
+	}
+}
+
+// Test_Unit_DocHandWrittenExample: the before/after example in docs/objective-format.md is what Cleanup does.
+func Test_Unit_DocHandWrittenExample(t *testing.T) {
+	o, fixes := mustCleanup(t, fileOf(
+		"#Objective",
+		"Build a tiny Go program that prints the first 10 Fibonacci numbers.",
+		"",
+		"## Task",
+		"- Write fib.go and run it with go run .",
+		"- Write fib_test.go and run go test ./...",
+		"",
+		"## Instruction",
+		"-   go test ./... passes and go run . prints 0 1 1 2 3 5 8 13 21 34,",
+		"one per line.",
+	))
+	want := fileOf(
+		"# Objective",
+		"Build a tiny Go program that prints the first 10 Fibonacci numbers.",
+		"",
+		"## Instructions",
+		"- go test ./... passes and go run . prints 0 1 1 2 3 5 8 13 21 34,",
+		"  one per line.",
+		"",
+		"## Tasks",
+		"",
+		"### t1: Write fib.go and run it with go run .",
+		"",
+		"### t2: Write fib_test.go and run go test ./...",
+	)
+	if got := o.body(); got != want {
+		t.Errorf("body:\n%s\nwant:\n%s", got, want)
+	}
+	if len(fixes) != 7 {
+		t.Errorf("%d fixes; the doc says 7: %v", len(fixes), fixes)
+	}
+}
+
 // --- Fuzzing ---
 
 // FuzzCleanup: for any input, Cleanup never panics, and when it succeeds, Cleanup(o.Markdown()) succeeds with zero
