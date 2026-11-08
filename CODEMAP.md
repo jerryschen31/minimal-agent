@@ -55,6 +55,11 @@ minimal-agent/
 │   └── modeltest/
 │       ├── doc.go
 │       └── fake_provider.go
+├── objective/
+│   ├── cleanup.go
+│   ├── doc.go
+│   ├── objective.go
+│   └── render.go
 ├── procutils/
 │   ├── doc.go
 │   ├── procgroup_unix.go
@@ -403,6 +408,41 @@ fake_provider.go
   func AssistantToolCall(callID, toolName, args string) model.ChatMessage
   func Msg(role, id, content string) model.ChatMessage
   func Msgs(n int) []model.ChatMessage
+```
+
+## objective (package objective)
+
+`github.com/jerryschen31/minimal-agent/objective`
+
+```text
+cleanup.go
+  func Cleanup(data []byte) (Objective, []Fix, error)
+  func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
+  func splitSections(lines []line) ([]rawSection, []Fix, error)
+  func isCodeBlockFence(s string) bool
+  func readHeading(s string) (level int, text string, ok bool)
+  func sectionName(text string) (string, bool)
+  func taskHeading(text string) (id, title string, hasID bool)
+  func parseTasks(lines []line) (tasks []Task, notes string, heads []int, fixes []Fix, err error)
+  func parseDepends(s string) (ids []string, ok bool)
+  func normalizeTaskID(s string) (string, bool)
+  func tidyBody(lines []line) (string, []Fix)
+
+objective.go
+  func (f Fix) String() string
+  func (o Objective) BodyHash() string
+  func (o Objective) ApprovalStatus() string
+  func (o Objective) CheckComplete(maxTasks int) error
+  func AssignTaskIDs(tasks []Task) []int
+  func taskNumber(id string) (int, bool)
+  func findCycle(tasks []Task) []string
+
+render.go
+  func (o Objective) Markdown() string
+  func (o Objective) frontMatter() string
+  func (o Objective) body() string
+  func writeSection(b *strings.Builder, heading, body string)
+  func writeTask(b *strings.Builder, t Task)
 ```
 
 ## procutils (package procutils)

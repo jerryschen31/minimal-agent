@@ -1270,11 +1270,29 @@ own autonomous-mode port, which needs a sandbox/worktree before commands run una
 Shape of autonomous mode (from mvp3/mvp4) and of a new `-mode plan` discussed with Jerry. Decisions:
 `DECISIONS.md § 2026-11-07 — Plan mode before autonomous mode`. Plan: `PLAN-plan-mode.md`.
 
-**Open (proposed by Claude, not yet confirmed):** fold `## Quality bar` / `## Done…` of a draft into Instructions when
-reading; output written next to the draft (`objective-full.md` in the current directory without one); a separate
+**Open (proposed by Claude, not yet confirmed):** output written next to the draft (`objective-full.md` in the current directory without one); a separate
 `objective/` package rather than objective parsing inside `director/`; a `planner/` package.
 
 **Still open for autonomous mode:** `run_command` unattended (proposal: refuse to start with it enabled until a
 worktree/sandbox exists); what `approval: allow-all` means with nobody to confirm it; rounds (`maxIterations`) deferred?
 
 **Next:** `PLAN-plan-mode.md` step 1, the `objective/` package (Jerry types it from a skeleton).
+
+**2026-11-07, later:** format v1 decided (`DECISIONS.md § Objective file format v1`): front-matter version, `### tN:` task
+sections, `Cleanup()` before `CheckComplete()`. Open questions put to Jerry: Cleanup as the lenient reader (replacing
+`Parse`) vs text-to-text; renumbering must rewrite `depends`; task-body newlines kept vs joined; `depends:` line syntax.
+The `objective/` skeleton (`parse.go`, tests) is written for the old bullet format and needs redoing once these are answered.
+
+**2026-11-07, review pass on the plan/objective shape — open items (not decided):**
+- Format: unknown front-matter keys error or warn (forward compatibility); BOM and `~~~` fences; `### tN:` headings
+  outside `## Tasks` / a missing `## Tasks` heading; `depends` leniency (`depends on:`, bare `1`).
+- Autonomous scheduling with `depends`: next = first ready task in file order; a failed task blocks its dependents
+  (new `blocked` status) — stop the run or continue independent tasks?
+- Plan mode: which worker tools the planner sees (MCP servers would have to start); no-LLM shortcut when the draft is
+  already complete; show a diff against the draft; cap printed fixes; `x-full.md` as input naming.
+- Trust: a file edited after approval runs unreviewed (option: body hash in front matter, warn on mismatch); plan and
+  apply should use the same `workDir`.
+- Tests/docs: `FuzzCleanup` (no panic; round trip with zero fixes); a user-facing format reference + example file.
+
+**2026-11-07, review pass answered:** items 1–4, 11, 13, 14 decided (`DECISIONS.md § Objective format v1: review pass`); the
+rest deferred to their steps (`PLAN-plan-mode.md § Deferred`). Skeleton in `objective/` updated; Jerry fills it in next.

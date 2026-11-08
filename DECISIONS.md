@@ -4361,3 +4361,79 @@ Decided with Jerry. Not built. Plan: `PLAN-plan-mode.md`.
   binary today, it has no unattended-execution problem, and it settles the objective format (`objective/` package:
   parse + render) that autonomous mode then reuses. *Downside:* the headline feature arrives later, and the planner's
   idea of a good task is written before Jerry's own director exists.
+
+### 2026-11-07 — `objective/` package: no legacy folding; `Parse` is syntax only, `CheckComplete` lives with the type
+
+Decided with Jerry while scaffolding step 1 of `PLAN-plan-mode.md`. Files: `objective/objective.go`, `parse.go`, `render.go`.
+
+- **No folding of `## Quality bar` / `## Done…` into Instructions** (Jerry): the mvp4 examples are not a format to support.
+  Those headings are ordinary unknown sections, kept in `Objective.Other`. Claude's proposed `kindFold` marker is dropped.
+- **`Parse` checks syntax only; `CheckComplete(maxTasks)` checks readiness to run**, so a rough draft (only
+  `# Objective`, or too many tasks) still loads in plan mode. `CheckComplete` is a method in `objective.go` next to the
+  type, not in `parse.go`: it also checks objectives built from the planner's tool arguments, which are never parsed.
+- **`Markdown()` renders the struct** so Go, not the model, decides the file layout; `Parse(o.Markdown()) == o` is the
+  test that what the user approves is what autonomous mode reads.
+- A second `## Instructions` (or any known section twice) stays a parse error.
+
+### 2026-11-07 — Objective file format v1: version, task sections, Cleanup
+
+Decided with Jerry (after `§ objective/ package` above, which this extends). Plan: `PLAN-plan-mode.md`.
+
+- **Version in front matter:** `format: minagent-objective/v1`. A hand-written file may leave it out (missing = v1, never
+  "latest", so an old draft keeps its meaning when v2 exists); `Markdown()` always writes it; an unknown version is an
+  error listing the supported ones. Like the `go` line in `go.mod`. *Downside:* a header-less file using newer syntax is
+  read as v1; mitigated by a hint.
+- **Tasks are subsections from the start**, not bullets: `## Tasks` holds `### t1: <title>`, `### t2: …`, so task IDs
+  and dependencies exist in v1 (Jerry). Bullets under `## Tasks` are a malformed form that Cleanup converts.
+- **`Cleanup()`** tidies slightly malformed files (Jerry's list): wrong heading level for a known section
+  (`## Objective`, `### Constraints`), no space after `#` (`#Objective`), singular names (`## Instruction`), extra spaces
+  after a bullet dash, a stray line that belongs to the item above; for tasks: task headings at `###`, missing `tN`
+  IDs added, IDs made sequential.
+- **`CheckComplete` runs only after Cleanup** and reports what is still wrong or missing.
+- **Plan mode runs Cleanup** on the draft and on its own output. **Autonomous mode (later) runs Cleanup + CheckComplete**
+  on the given file, writes **no** new file, warns the user that fixes were made (listing them), and traces the
+  objective's sections and fixes at the start of the run.
+- Open, asked 2026-11-07 (see `SESSION.md`): Cleanup's shape (lenient reader returning the `Objective` and its fixes,
+  vs a text-to-text pass before a strict parser); renumbering vs `depends` references; whether lines inside a task are
+  joined; the `depends:` syntax.
+
+### 2026-11-07 — Objective format v1: open points settled (task IDs, newlines, `depends`, Cleanup replaces Parse)
+
+Answers to the open points of the entry above (Jerry). This **reverses** that entry's "IDs made sequential".
+
+- **Task IDs are never renumbered.** If every task has an ID, Cleanup leaves them as they are (gaps and file order
+  included). A task without one gets the next number after the **highest** existing ID (none → t1, t2, …), in file
+  order. *Why:* an ID that changes on every edit breaks `depends` and makes old traces misleading. *Downside:* IDs can
+  look out of order (`t1, t4, t2`). Only `t<digits>` counts as an ID; a duplicate ID is an error, not a fix.
+- **Newlines inside a task are kept:** the lines under `### tN: title` are the task's body (lists, code, paragraphs).
+- **`depends: t1, t2`** is an optional line straight under the task heading; later per-task fields use the same
+  `key: value` form.
+- **`Cleanup` replaces `Parse`**: the one reader, returning the `Objective` and the fixes it made. `Markdown()` is the
+  one writer; a file it wrote cleans up with zero fixes.
+- **Flows:**
+  - plan mode: (draft → Cleanup, fixes shown →) planner conversation → `propose_objective` builds an `Objective` →
+    `CheckComplete` → `Markdown()` → Cleanup must make zero fixes (else a bug) → show → `[y/N]` → write.
+  - autonomous mode: Cleanup → fixes printed as warnings and traced (`objective_loaded`) → `CheckComplete` → stop on
+    any error (exit 2, pointing at `-mode plan`), else run. No file is written.
+
+### 2026-11-07 — Objective format v1: review pass (front matter, task headings, depends, approval hash)
+
+Decided with Jerry after Claude's review of the plan/objective shape. Files: `objective/*.go`, `PLAN-plan-mode.md`.
+
+- **Unknown front-matter keys are warned about and ignored** (a `Fix` with `Now: ""`), not errors, so a newer file
+  still runs on an older binary. **The version is bumped only when the file's shape changes** (a new required section,
+  a new named optional section the parser reads); a new front-matter key is not a bump.
+- **A task heading outside `## Tasks` is an error** (Jerry), not a fix: "every task must be under ## Tasks".
+- **Flexible `depends`:** `depends:` or `depends on:`; `t1`, `T1`, `task1`, `Task 1` and a bare `1` all mean `t1`.
+  Task headings accept the same forms (`### Task 2: x` → `t2`). An item that still isn't an ID is kept for
+  `CheckComplete` to report.
+- **A UTF-8 byte-order mark is stripped; `~~~` fences count like ```** (simplified: any fence line toggles).
+- **Approval hash:** plan mode writes `approved: sha256:<hex>`, the hash of the body in the standard layout (so a
+  cosmetic fix is not an edit, and the front matter is left out). `ApprovalStatus` → `approved` / `edited` /
+  `unplanned`; autonomous mode warns on the last two and still runs (Jerry). *Downside, stated in the code:* a
+  fingerprint, not a signature; whoever edits the file can recompute it.
+- **`FuzzCleanup`** (Go fuzzing): no panic on any input; a successful Cleanup round-trips through Markdown with zero
+  fixes.
+- **A user-facing format reference and an example file** are part of step 1 (locations proposed in the plan).
+- **Deferred to their steps:** depends-aware scheduling and `blocked` status, which worker tools the planner sees, the
+  no-LLM save, a diff against the draft, capping printed fixes, `x-full.md` naming, same `workDir` for plan and apply.
