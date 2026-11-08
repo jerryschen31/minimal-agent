@@ -4456,3 +4456,35 @@ by Cleanup's tests); comment fixes in `render.go`. `Markdown`, `CheckComplete`, 
 - **Checks done:** 23 test functions (89 cases) pass with `-race`; mutation checks (no sort, no BOM strip, no bullet
   fix, heading indentation, level-4 tasks, continuation exclusions) each fail a test; a 30-second panic-only fuzz run
   (~4M inputs) found nothing. The real `FuzzCleanup` (round trip) waits for `Markdown`.
+
+### 2026-11-07 — `Objective` stays a plain struct; the planner converts tool arguments in one function
+
+Jerry asked whether `Objective` should be an interface with setters (`SetObjective`, `SetTask`, …) to hide the struct
+from the planner. Decided (Jerry, on a subagent's review): **no**.
+
+- *Why:* `Objective` is data, one-to-one with the file's sections; the real contract between plan and autonomous mode
+  is the versioned file format, so a new section changes the struct, `Markdown` and `Cleanup` either way. A setter
+  interface would have one implementation, need getters too (autonomous mode reads `Tasks`, `Depends`, `Approved`),
+  lose struct literals in tests, and raise questions fields don't (does `SetTask` append or replace?). Go convention:
+  the consumer defines an interface, for behaviour it needs to swap ("accept interfaces, return structs").
+- *Downside:* any package can build an invalid `Objective`; `CheckComplete` runs on every one before it is written.
+- **Planner shape:** a private `proposeArgs` struct (the tool's JSON arguments, owned by `planner`, since the wording is
+  for the LLM) and one function `toObjective(proposeArgs) objective.Objective`, the only place the planner touches the
+  struct's fields. An interface in `planner` is for its side effects (asking the user, writing the file), not the data.
+- Revisit if a second implementation appears; add the interface then, in the package that uses it.
+
+### 2026-11-07 — `objective/` package complete: render, checks, approval hash; six round-trip bugs found by fuzzing
+
+Claude finished `render.go` and `objective.go` at Jerry's request; all unit tests pass with `-race`. Files:
+`objective/render.go`, `objective.go`, `cleanup.go`, `objective_test.go`, `cleanup_test.go`, `doc.go`; the failing fuzz
+inputs are kept as regression cases in `objective/testdata/fuzz/FuzzCleanup/`.
+
+- `writeSection` / `writeTask` became `sectionBlock` / `taskBlock`, returning strings joined with one blank line.
+- `CheckComplete` names a task by its ID, or by position and title when the ID is the problem; a self-dependency is
+  reported once, not also as a loop.
+- **`FuzzCleanup` found six real bugs, each fixed with a test:** (1) an empty `depends:` line is now body text, not a
+  depends line (dropping it let a second one move up); (2) a lone `\r` is a line break; (3) heading text of only `#`s
+  is not a heading; (4) closing `#` runs are stripped repeatedly and from every title (`stripClosingHashes`), since a
+  title is written back as a heading; (5) a code fence left open at the end of a section is closed (a fix), since
+  Markdown reorders sections; (6) `dedent` leaves a bullet task's body alone if dedenting would create a heading.
+- Fuzzing ended with a 4-minute clean run; a longer run was skipped (Jerry).

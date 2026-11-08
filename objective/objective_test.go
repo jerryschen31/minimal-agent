@@ -1,7 +1,11 @@
 package objective
 
 import (
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -9,10 +13,88 @@ import (
 
 // complete is a hand-built objective that passes CheckComplete and uses every field.
 func complete() Objective {
-	// TODO: Format FormatV1, every section, TaskNotes, three tasks (t1, t2 depends t1, t3 with a multi-line body
-	//   holding a bullet list and a code fence), two Other sections
-	// Hint: a body with leading/trailing blank lines is one Cleanup can't produce, so the round trip would fail
-	return Objective{}
+	return Objective{
+		Format:       FormatV1,
+		ObjText:      "Build a tiny CLI that prints Fibonacci numbers.",
+		Instructions: "- go test ./... passes.\n- Keep it small:\n  one file per concern.",
+		Constraints:  "- Standard library only.",
+		Context:      "The module path is example.com/fib.",
+		TaskNotes:    "Work through these in order.",
+		Tasks: []Task{
+			{ID: "t1", Title: "Create the module", Body: "Run go mod init example.com/fib."},
+			{ID: "t2", Title: "Write fib", Depends: []string{"t1"}, Body: "Write fib.go with fib(n int) []int."},
+			{ID: "t3", Title: "Write the tests", Depends: []string{"t1", "t2"},
+				Body: "Steps:\n\n- table-driven test\n- run it\n\n```go\nfunc TestFib(t *testing.T) {}\n```"},
+		},
+		Other: []Section{{"Notes", "Keep the README short."}, {"References", "- https://go.dev/doc/"}},
+	}
+}
+
+// completeMarkdown is complete().Markdown(), written out by hand.
+var completeMarkdown = strings.Join([]string{
+	"---",
+	"format: minagent-objective/v1",
+	"---",
+	"",
+	"# Objective",
+	"Build a tiny CLI that prints Fibonacci numbers.",
+	"",
+	"## Instructions",
+	"- go test ./... passes.",
+	"- Keep it small:",
+	"  one file per concern.",
+	"",
+	"## Constraints",
+	"- Standard library only.",
+	"",
+	"## Context",
+	"The module path is example.com/fib.",
+	"",
+	"## Notes",
+	"Keep the README short.",
+	"",
+	"## References",
+	"- https://go.dev/doc/",
+	"",
+	"## Tasks",
+	"Work through these in order.",
+	"",
+	"### t1: Create the module",
+	"",
+	"Run go mod init example.com/fib.",
+	"",
+	"### t2: Write fib",
+	"depends: t1",
+	"",
+	"Write fib.go with fib(n int) []int.",
+	"",
+	"### t3: Write the tests",
+	"depends: t1, t2",
+	"",
+	"Steps:",
+	"",
+	"- table-driven test",
+	"- run it",
+	"",
+	"```go",
+	"func TestFib(t *testing.T) {}",
+	"```",
+}, "\n") + "\n"
+
+// checkRoundTrip fails the test unless Cleanup(o.Markdown()) makes no fix and gives back o.
+func checkRoundTrip(t *testing.T, o Objective) {
+	t.Helper()
+	md := o.Markdown()
+	o2, fixes, err := Cleanup([]byte(md))
+	if err != nil {
+		t.Fatalf("Cleanup(Markdown()): %v\nmarkdown:\n%s", err, md)
+	}
+	if len(fixes) != 0 {
+		t.Errorf("Cleanup(Markdown()) made fixes: %v\nmarkdown:\n%s", fixes, md)
+	}
+	if !reflect.DeepEqual(o2, o) {
+		t.Errorf("round trip changed the objective:\n got  %#v\n want %#v\nmarkdown:\n%s", o2, o, md)
+	}
 }
 
 // --- Task IDs ---
@@ -53,19 +135,54 @@ func Test_Unit_AssignTaskIDs(t *testing.T) {
 // --- Markdown ---
 
 // Test_Unit_Markdown_RoundTrip: for every testdata file and complete(), Cleanup(o.Markdown()) gives back o with
-// zero fixes; objective-deepwiki.md itself cleans up with zero fixes, objective-fib.md with some.
+// zero fixes.
 func Test_Unit_Markdown_RoundTrip(t *testing.T) {
-	// TODO 1: files, _ := filepath.Glob("testdata/*.md"); fail if none (a wrong path would pass silently)
-	// TODO 2: per file (t.Run): os.ReadFile → mustCleanup → o; then o2, fixes := mustCleanup(t, o.Markdown())
-	//         want len(fixes) == 0 (else t.Errorf listing them) and reflect.DeepEqual(o2, o)
-	// TODO 3: the same for complete()
-	// Hint: DeepEqual tells nil and empty slices apart (Tasks, Depends): pick one in Cleanup and stick to it
+	files, err := filepath.Glob("testdata/*.md")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no testdata files (err %v)", err)
+	}
+	for _, f := range files {
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			o, _ := mustCleanup(t, string(data))
+			checkRoundTrip(t, o)
+		})
+	}
+	t.Run("complete", func(t *testing.T) { checkRoundTrip(t, complete()) })
+	t.Run("complete, approved", func(t *testing.T) {
+		o := complete()
+		o.Approved = o.BodyHash()
+		checkRoundTrip(t, o)
+	})
+	t.Run("empty Other section", func(t *testing.T) {
+		o := complete()
+		o.Other = []Section{{Heading: "Notes"}}
+		checkRoundTrip(t, o)
+	})
+	t.Run("task notes only", func(t *testing.T) {
+		checkRoundTrip(t, Objective{Format: FormatV1, ObjText: "x", TaskNotes: "No tasks yet."})
+	})
 }
 
 // Test_Unit_Markdown_Layout: front matter first; sections in order; empty optional sections left out; a task with
 // and without depends; the file ends with exactly one "\n".
 func Test_Unit_Markdown_Layout(t *testing.T) {
-	// TODO: compare complete().Markdown() with a hand-written want string (the layout in Markdown's header)
+	if got := complete().Markdown(); got != completeMarkdown {
+		t.Errorf("Markdown():\n%s\nwant:\n%s", got, completeMarkdown)
+	}
+
+	o := Objective{ObjText: "x", Approved: "sha256:abc", Tasks: []Task{{ID: "t1", Title: "Only"}}}
+	want := "---\nformat: minagent-objective/v1\napproved: sha256:abc\n---\n\n# Objective\nx\n\n## Tasks\n\n### t1: Only\n"
+	if got := o.Markdown(); got != want {
+		t.Errorf("minimal Markdown():\n%q\nwant:\n%q", got, want)
+	}
+
+	if got, want := (Objective{}).Markdown(), "---\nformat: minagent-objective/v1\n---\n\n# Objective\n"; got != want {
+		t.Errorf("empty Markdown() = %q; want %q", got, want)
+	}
 }
 
 // --- CheckComplete ---
@@ -79,22 +196,100 @@ func Test_Unit_CheckComplete(t *testing.T) {
 		edit     func(o *Objective) // changes complete() to break it; nil = leave it complete
 		wantSubs []string           // substrings the error must contain; empty = want nil
 	}{
-		// TODO: complete → nil · ObjText "" · Instructions "" · Tasks nil · maxTasks+1 tasks
-		//   task ID "" · ID "setup" · duplicate ID · blank Title
-		//   depends on "t9" (no such task) · depends on itself · cycle t1 → t2 → t1 (error shows the cycle)
-		//   Instructions "" and Tasks nil together → both substrings
+		{"complete", nil, nil},
+		{"no objective text", func(o *Objective) { o.ObjText = " \n" }, []string{`"# Objective" is missing or empty`}},
+		{"no instructions", func(o *Objective) { o.Instructions = "" }, []string{`"## Instructions" is missing or empty`}},
+		{"no tasks", func(o *Objective) { o.Tasks = nil }, []string{`"## Tasks" has no tasks`}},
+		{"too many tasks", func(o *Objective) {
+			o.Tasks = append(o.Tasks, Task{ID: "t4", Title: "a"}, Task{ID: "t5", Title: "b"})
+		}, []string{"there are 5 tasks; the limit is 4"}},
+		{"missing ID", func(o *Objective) { o.Tasks[0].ID = "" },
+			[]string{`task 1 ("Create the module"): ID "" is not t<number>`}},
+		{"non-numeric ID", func(o *Objective) { o.Tasks[0].ID = "setup" }, []string{`ID "setup" is not t<number>`}},
+		{"duplicate ID", func(o *Objective) { o.Tasks[2].ID = "t1"; o.Tasks[2].Depends = nil },
+			[]string{"task ID t1 is used by more than one task"}},
+		{"blank title", func(o *Objective) { o.Tasks[1].Title = "  " }, []string{"task t2 has no title"}},
+		{"depends on a missing task", func(o *Objective) { o.Tasks[1].Depends = []string{"t9"} },
+			[]string{`task t2 depends on "t9", which is not a task in this file`}},
+		{"depends on itself", func(o *Objective) { o.Tasks[1].Depends = []string{"t2"} },
+			[]string{"task t2 depends on itself"}},
+		{"cycle", func(o *Objective) { o.Tasks[0].Depends = []string{"t2"} },
+			[]string{"in a loop (t1 → t2 → t1)"}},
+		{"two problems at once", func(o *Objective) { o.Instructions = ""; o.Tasks = nil },
+			[]string{`"## Instructions" is missing or empty`, `"## Tasks" has no tasks`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// TODO: o := complete(); if tt.edit != nil { tt.edit(&o) }; err := o.CheckComplete(maxTasks)
-			//   no wantSubs → err must be nil; otherwise err != nil and contains every substring
+			o := complete()
+			if tt.edit != nil {
+				tt.edit(&o)
+			}
+			err := o.CheckComplete(maxTasks)
+			if len(tt.wantSubs) == 0 {
+				if err != nil {
+					t.Errorf("CheckComplete = %v; want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("CheckComplete = nil; want an error containing %q", tt.wantSubs)
+			}
+			for _, sub := range tt.wantSubs {
+				if !strings.Contains(err.Error(), sub) {
+					t.Errorf("CheckComplete = %v; want it to contain %q", err, sub)
+				}
+			}
 		})
+	}
+}
+
+// Test_Unit_CheckComplete_SelfDependencyIsNotACycle: depending on itself is reported once, not also as a loop.
+func Test_Unit_CheckComplete_SelfDependencyIsNotACycle(t *testing.T) {
+	o := complete()
+	o.Tasks[0].Depends = []string{"t1"}
+	err := o.CheckComplete(4)
+	if err == nil || strings.Contains(err.Error(), "loop") {
+		t.Errorf("CheckComplete = %v; want only the self-dependency", err)
+	}
+}
+
+// Test_Unit_FindCycle: no cycle, a two-task cycle, a longer one reached from an earlier task, and missing tasks.
+func Test_Unit_FindCycle(t *testing.T) {
+	task := func(id string, deps ...string) Task { return Task{ID: id, Depends: deps} }
+	tests := []struct {
+		name  string
+		tasks []Task
+		want  []string
+	}{
+		{"none", []Task{task("t1"), task("t2", "t1"), task("t3", "t1", "t2")}, nil},
+		{"two tasks", []Task{task("t1", "t2"), task("t2", "t1")}, []string{"t1", "t2", "t1"}},
+		{"three tasks, entered from outside", []Task{task("t1", "t2"), task("t2", "t3"), task("t3", "t4"),
+			task("t4", "t2")}, []string{"t2", "t3", "t4", "t2"}},
+		{"missing and self dependencies are skipped", []Task{task("t1", "t9", "t1"), task("t2", "t1")}, nil},
+	}
+	for _, tt := range tests {
+		if got := findCycle(tt.tasks); !slices.Equal(got, tt.want) {
+			t.Errorf("%s: findCycle = %v; want %v", tt.name, got, tt.want)
+		}
 	}
 }
 
 // Test_Unit_Fix_String: with and without a line number; Was "" (added) and Now "" (ignored).
 func Test_Unit_Fix_String(t *testing.T) {
-	// TODO
+	tests := []struct {
+		fix  Fix
+		want string
+	}{
+		{Fix{7, "### Constraints", "## Constraints"}, `line 7: "### Constraints" → "## Constraints"`},
+		{Fix{2, "", "# Objective"}, `line 2: added "# Objective"`},
+		{Fix{3, "name: fib", ""}, `line 3: ignored "name: fib"`},
+		{Fix{0, "a", "b"}, `"a" → "b"`},
+	}
+	for _, tt := range tests {
+		if got := tt.fix.String(); got != tt.want {
+			t.Errorf("%#v.String() = %q; want %q", tt.fix, got, tt.want)
+		}
+	}
 }
 
 // --- Approval ---
@@ -102,13 +297,63 @@ func Test_Unit_Fix_String(t *testing.T) {
 // Test_Unit_BodyHash: the same for objectives that differ only in front matter (Format, Approved); different when
 // any section or task changes; stable for a file and its cleaned-up copy (a cosmetic fix is not an edit).
 func Test_Unit_BodyHash(t *testing.T) {
-	// TODO
+	base := complete()
+	h := base.BodyHash()
+	if !strings.HasPrefix(h, "sha256:") || len(h) != len("sha256:")+64 {
+		t.Fatalf("BodyHash = %q; want sha256:<64 hex digits>", h)
+	}
+
+	frontOnly := complete()
+	frontOnly.Format, frontOnly.Approved = "", "sha256:whatever"
+	if frontOnly.BodyHash() != h {
+		t.Error("the hash changed with the front matter")
+	}
+
+	for name, edit := range map[string]func(o *Objective){
+		"objective":   func(o *Objective) { o.ObjText += "!" },
+		"other":       func(o *Objective) { o.Other[0].Body = "changed" },
+		"task body":   func(o *Objective) { o.Tasks[0].Body = "changed" },
+		"task depend": func(o *Objective) { o.Tasks[2].Depends = []string{"t2"} },
+	} {
+		o := complete()
+		edit(&o)
+		if o.BodyHash() == h {
+			t.Errorf("%s: the hash did not change", name)
+		}
+	}
+
+	tidy, _ := mustCleanup(t, fileOf("# Objective", "x", "", "## Instructions", "- a"))
+	messy, fixes := mustCleanup(t, fileOf("#Objective", "x", "", "### Instruction", "-   a"))
+	if len(fixes) == 0 || tidy.BodyHash() != messy.BodyHash() {
+		t.Errorf("a cosmetic difference changed the hash (fixes %v)", fixes)
+	}
 }
 
 // Test_Unit_ApprovalStatus: no Approved → unplanned; Approved = BodyHash() → approved; then change a task's Body →
 // edited; a malformed Approved ("sha256:zz") → edited.
 func Test_Unit_ApprovalStatus(t *testing.T) {
-	// TODO
+	o := complete()
+	if got := o.ApprovalStatus(); got != ApprovalUnplanned {
+		t.Errorf("no Approved: %q; want %q", got, ApprovalUnplanned)
+	}
+	o.Approved = o.BodyHash()
+	if got := o.ApprovalStatus(); got != ApprovalApproved {
+		t.Errorf("Approved = BodyHash(): %q; want %q", got, ApprovalApproved)
+	}
+
+	saved, _ := mustCleanup(t, o.Markdown())
+	if got := saved.ApprovalStatus(); got != ApprovalApproved {
+		t.Errorf("after writing and reading back: %q; want %q", got, ApprovalApproved)
+	}
+
+	o.Tasks[0].Body = "edited by hand"
+	if got := o.ApprovalStatus(); got != ApprovalEdited {
+		t.Errorf("after an edit: %q; want %q", got, ApprovalEdited)
+	}
+	o.Approved = "sha256:zz"
+	if got := o.ApprovalStatus(); got != ApprovalEdited {
+		t.Errorf("malformed Approved: %q; want %q", got, ApprovalEdited)
+	}
 }
 
 // --- Fuzzing ---
@@ -116,11 +361,31 @@ func Test_Unit_ApprovalStatus(t *testing.T) {
 // FuzzCleanup: for any input, Cleanup never panics, and when it succeeds, Cleanup(o.Markdown()) succeeds with zero
 // fixes and gives back o. Run: go test ./objective -run XXX -fuzz FuzzCleanup -fuzztime 30s
 func FuzzCleanup(f *testing.F) {
-	// TODO 1: f.Add each testdata file's bytes, complete().Markdown(), and a few small strings ("", "# Objective\nx")
+	files, _ := filepath.Glob("testdata/*.md")
+	for _, p := range files {
+		if data, err := os.ReadFile(p); err == nil {
+			f.Add(data)
+		}
+	}
+	for _, s := range []string{
+		completeMarkdown,
+		"",
+		"# Objective\nx\n",
+		"Build it.\n## Tasks\n- a\n  more\n- [x] b\n### t5: c\ndepends on: task1, 3\n",
+		"## Context\n```\nunclosed\n## Tasks\n### t1: x\n",
+	} {
+		f.Add([]byte(s))
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// TODO 2: o, _, err := Cleanup(data); err != nil → return (rejecting is fine; panicking is not)
-		// TODO 3: o2, fixes, err := Cleanup([]byte(o.Markdown())); want err nil, len(fixes) == 0, reflect.DeepEqual
-		// Hint: expect it to find real cases (e.g. a body line Markdown writes that Cleanup then reads as a heading);
-		//   each one becomes a normal test row once fixed
+		o, fixes, err := Cleanup(data)
+		if err != nil {
+			return // rejecting an input is fine; panicking is not
+		}
+		for _, x := range fixes {
+			if x.Was == x.Now {
+				t.Fatalf("a fix that changes nothing: %#v", x)
+			}
+		}
+		checkRoundTrip(t, o)
 	})
 }

@@ -1296,3 +1296,9 @@ The `objective/` skeleton (`parse.go`, tests) is written for the old bullet form
 
 **2026-11-07, review pass answered:** items 1–4, 11, 13, 14 decided (`DECISIONS.md § Objective format v1: review pass`); the
 rest deferred to their steps (`PLAN-plan-mode.md § Deferred`). Skeleton in `objective/` updated; Jerry fills it in next.
+
+**2026-11-07, end of day:** `objective/` is complete and tested (`DECISIONS.md § objective/ package complete`); `Objective`
+stays a struct (`§ Objective stays a plain struct`). Uncommitted: the objective files (partly staged by Jerry),
+`objective/testdata/fuzz/` (8 regression inputs from fuzzing; keep them), `CODEMAP.md`, `DECISIONS.md`.
+**Next:** `PLAN-plan-mode.md` step 2, `-mode plan` wiring and flags (then the `planner/` package: `proposeArgs` +
+`toObjective`). Still deferred: the format reference + example file (end of step 1).

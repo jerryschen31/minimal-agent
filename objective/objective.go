@@ -1,6 +1,11 @@
 package objective
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -63,8 +68,17 @@ type Fix struct {
 // Notes:
 //   - Was "" → `added "…"`; Now "" → `ignored "…"`; leave out "line N: " when Line is 0.
 func (f Fix) String() string {
-	// TODO: a switch on which of Was / Now is empty; fmt.Sprintf with %q
-	return ""
+	prefix := ""
+	if f.Line > 0 {
+		prefix = fmt.Sprintf("line %d: ", f.Line)
+	}
+	switch {
+	case f.Was == "":
+		return prefix + fmt.Sprintf("added %q", f.Now)
+	case f.Now == "":
+		return prefix + fmt.Sprintf("ignored %q", f.Was)
+	}
+	return prefix + fmt.Sprintf("%q → %q", f.Was, f.Now)
 }
 
 // Approval states of a file, from ApprovalStatus; autonomous mode warns on anything but ApprovalApproved.
@@ -83,8 +97,8 @@ const (
 //   - [agent] a fingerprint, not a signature: whoever edits the file can recompute it. It catches edits nobody
 //     re-planned, not someone set on hiding them.
 func (o Objective) BodyHash() string {
-	// TODO: sha256.Sum256([]byte(o.body())); "sha256:" + hex.EncodeToString(sum[:])
-	return ""
+	sum := sha256.Sum256([]byte(o.body()))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ApprovalStatus reports whether o was saved by plan mode and is unchanged since (ApprovalApproved), changed since
@@ -93,8 +107,13 @@ func (o Objective) BodyHash() string {
 // Notes:
 //   - Plan mode sets o.Approved = o.BodyHash() just before it writes the file.
 func (o Objective) ApprovalStatus() string {
-	// TODO: Approved "" → unplanned; Approved == o.BodyHash() → approved; else edited
-	return ""
+	switch o.Approved {
+	case "":
+		return ApprovalUnplanned
+	case o.BodyHash():
+		return ApprovalApproved
+	}
+	return ApprovalEdited
 }
 
 // CheckComplete reports everything that stops o from being run: plan mode's output and autonomous mode's input.
@@ -104,15 +123,50 @@ func (o Objective) ApprovalStatus() string {
 //     task IDs too.
 //   - Returns every problem at once (errors.Join): the planner LLM fixes them all in one go.
 //   - The wording is read by a person and by the planner LLM: say what to add or change.
+//   - A task is named by its ID, or by its position and title when the ID is the problem.
 func (o Objective) CheckComplete(maxTasks int) error {
-	// TODO 1: var errs []error
-	// TODO 2: sections: ObjText empty · Instructions empty (strings.TrimSpace)
-	// TODO 3: tasks: none · more than maxTasks
-	// TODO 4: each task: ID not "t<digits>" (taskNumber) · ID seen before (a map) · Title blank
-	// TODO 5: each depends entry: names no task · names the task itself
-	// TODO 6: if findCycle(o.Tasks) returns a cycle, one error naming it ("t2 → t3 → t2")
-	// TODO 7: return errors.Join(errs...)  (nil when the slice is empty)
-	return nil
+	var errs []error
+	if strings.TrimSpace(o.ObjText) == "" {
+		errs = append(errs, errors.New(`"# Objective" is missing or empty: say what to achieve and why`))
+	}
+	if strings.TrimSpace(o.Instructions) == "" {
+		errs = append(errs, errors.New(`"## Instructions" is missing or empty: say how to work and how to tell `+
+			`that the objective is done`))
+	}
+	switch {
+	case len(o.Tasks) == 0:
+		errs = append(errs, errors.New(`"## Tasks" has no tasks: add at least one "### t1: <title>" task`))
+	case len(o.Tasks) > maxTasks:
+		errs = append(errs, fmt.Errorf("there are %d tasks; the limit is %d: merge some", len(o.Tasks), maxTasks))
+	}
+
+	ids := map[string]bool{}
+	for i, t := range o.Tasks {
+		if _, ok := taskNumber(t.ID); !ok {
+			errs = append(errs, fmt.Errorf("task %d (%q): ID %q is not t<number> (t1, t2, …)", i+1, t.Title, t.ID))
+		} else if ids[t.ID] {
+			errs = append(errs, fmt.Errorf("task ID %s is used by more than one task: give each task its own ID", t.ID))
+		}
+		ids[t.ID] = true
+		if strings.TrimSpace(t.Title) == "" {
+			errs = append(errs, fmt.Errorf("task %s has no title: write one after \"### %s: \"", t.ID, t.ID))
+		}
+	}
+	for _, t := range o.Tasks {
+		for _, d := range t.Depends {
+			switch {
+			case d == t.ID:
+				errs = append(errs, fmt.Errorf("task %s depends on itself: remove %s from its depends line", t.ID, d))
+			case !ids[d]:
+				errs = append(errs, fmt.Errorf("task %s depends on %q, which is not a task in this file", t.ID, d))
+			}
+		}
+	}
+	if cycle := findCycle(o.Tasks); cycle != nil {
+		errs = append(errs, fmt.Errorf("tasks depend on each other in a loop (%s): remove one of these dependencies",
+			strings.Join(cycle, " → ")))
+	}
+	return errors.Join(errs...)
 }
 
 // AssignTaskIDs gives every task without an ID the next number after the highest existing one, in file order, and
@@ -162,13 +216,51 @@ func taskNumber(id string) (int, bool) {
 // findCycle returns one dependency cycle as IDs ("t2", "t3", "t2"), or nil when there is none.
 //
 // Notes:
-//   - Depends entries naming no task are skipped here (CheckComplete reports them separately).
+//   - Depends entries naming no task, and a task depending on itself, are skipped here (CheckComplete reports them
+//     separately).
 //   - [agent] a depth-first search with three states: unvisited, on the current path, done. Reaching a task that is
 //     "on the current path" means a cycle; the path from that task to here is the cycle.
 func findCycle(tasks []Task) []string {
-	// TODO 1: byID := map[string]Task; state := map[string]int (0 unvisited, 1 on path, 2 done); var path []string
-	// TODO 2: a recursive visit(id) func: state 1 → cycle found (cut path from where id first appears, append id);
-	//         state 2 → return; else mark 1, push id, visit each depends, pop, mark 2
-	// TODO 3: visit every task in file order; return the first cycle
+	byID := map[string]Task{}
+	for _, t := range tasks {
+		if _, dup := byID[t.ID]; !dup {
+			byID[t.ID] = t // [agent] with a duplicate ID the first task wins; CheckComplete reports the duplicate
+		}
+	}
+	const (
+		unvisited = iota
+		onPath
+		done
+	)
+	state := map[string]int{}
+	var path, cycle []string
+	var visit func(id string) bool
+	visit = func(id string) bool {
+		switch state[id] {
+		case onPath:
+			cycle = append(slices.Clone(path[slices.Index(path, id):]), id)
+			return true
+		case done:
+			return false
+		}
+		state[id] = onPath
+		path = append(path, id)
+		for _, d := range byID[id].Depends {
+			if _, exists := byID[d]; !exists || d == id {
+				continue
+			}
+			if visit(d) {
+				return true
+			}
+		}
+		path = path[:len(path)-1]
+		state[id] = done
+		return false
+	}
+	for _, t := range tasks {
+		if visit(t.ID) {
+			return cycle
+		}
+	}
 	return nil
 }

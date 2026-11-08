@@ -418,11 +418,13 @@ fake_provider.go
 cleanup.go
   func Cleanup(data []byte) (Objective, []Fix, error)
   func firstTextLine(lines []line) int
+  func lastTextLine(lines []line) int
   func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
   func splitSections(lines []line) ([]rawSection, []Fix, error)
   func headingLine(name string) string
   func isCodeBlockFence(s string) bool
   func readHeading(s string) (level int, text string, ok bool)
+  func stripClosingHashes(s string) string
   func sectionName(text string) (string, bool)
   func taskHeading(text string) (id, title string, hasID bool)
   func taskIDFromDigits(digits string) string
@@ -447,8 +449,8 @@ render.go
   func (o Objective) Markdown() string
   func (o Objective) frontMatter() string
   func (o Objective) body() string
-  func writeSection(b *strings.Builder, heading, body string)
-  func writeTask(b *strings.Builder, t Task)
+  func sectionBlock(heading, body string) string
+  func taskBlock(t Task) string
 ```
 
 ## procutils (package procutils)

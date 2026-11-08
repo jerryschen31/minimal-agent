@@ -163,9 +163,9 @@ func Test_Unit_Cleanup_BOM(t *testing.T) {
 	}
 }
 
-// Test_Unit_Cleanup_CRLF: Windows line endings read the same as "\n", with no fix.
+// Test_Unit_Cleanup_CRLF: Windows ("\r\n") and old Mac ("\r") line endings read the same as "\n", with no fix.
 func Test_Unit_Cleanup_CRLF(t *testing.T) {
-	o, fixes := mustCleanup(t, "# Objective\r\nx\r\n\r\n## Instructions\r\n- a\r\n")
+	o, fixes := mustCleanup(t, "# Objective\r\nx\r\n\r\n## Instructions\r- a\r\n")
 	if o.ObjText != "x" || o.Instructions != "- a" {
 		t.Errorf("ObjText %q, Instructions %q", o.ObjText, o.Instructions)
 	}
@@ -306,6 +306,16 @@ func Test_Unit_Cleanup_BodyNotContinuation(t *testing.T) {
 	}
 }
 
+// Test_Unit_Cleanup_UnclosedFence: a code fence left open at the end of a section is closed, with one fix; the
+// headings after it in the file were already part of the code.
+func Test_Unit_Cleanup_UnclosedFence(t *testing.T) {
+	o, fixes := mustCleanup(t, fileOf("# Objective", "x", "## Context", "```", "code", "## Tasks", "### t1: a", ""))
+	if o.Context != "```\ncode\n## Tasks\n### t1: a\n```" || o.Tasks != nil {
+		t.Errorf("Context %q, Tasks %#v", o.Context, o.Tasks)
+	}
+	checkFixes(t, fixes, []Fix{{Line: 7, Now: "```"}})
+}
+
 // --- Cleanup: tasks ---
 
 // Test_Unit_Cleanup_TaskHeadings: "## t2: x", "#### t2: x", "### T2 - x", "### Task 2: x" all become ID "t2",
@@ -341,7 +351,7 @@ func Test_Unit_Cleanup_TaskHeadings(t *testing.T) {
 }
 
 // Test_Unit_Cleanup_Depends: the depends line is read and fixed when not standard; "depends: setup" keeps "setup"
-// (for CheckComplete); an empty "depends:" is dropped.
+// (for CheckComplete); an empty "depends:" is not a depends line and stays in the body.
 func Test_Unit_Cleanup_Depends(t *testing.T) {
 	tests := []struct {
 		line string
@@ -357,7 +367,6 @@ func Test_Unit_Cleanup_Depends(t *testing.T) {
 		{"  depends: t1", []string{"t1"}, "depends: t1", true},
 		{"depends: setup", []string{"setup"}, "", false},
 		{"depends: t1 setup", []string{"t1 setup"}, "", false},
-		{"depends:", nil, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.line, func(t *testing.T) {
@@ -370,6 +379,22 @@ func Test_Unit_Cleanup_Depends(t *testing.T) {
 			checkFixes(t, fixes, want)
 		})
 	}
+
+	t.Run("dedenting would create a heading", func(t *testing.T) {
+		o, _ := mustCleanup(t, fileOf("# Objective", "x", "## Tasks", "- a", "    # not a heading", "    more"))
+		checkTasks(t, o.Tasks, []Task{{ID: "t1", Title: "a", Body: "    # not a heading\n    more"}})
+	})
+
+	t.Run("closing hashes in a bullet title", func(t *testing.T) {
+		o, _ := mustCleanup(t, fileOf("# Objective", "x", "## Tasks", "- Ship it ##", "- #", "- C#"))
+		checkTasks(t, o.Tasks, []Task{{ID: "t1", Title: "Ship it"}, {ID: "t2"}, {ID: "t3", Title: "C#"}})
+	})
+
+	t.Run("empty depends stays in the body", func(t *testing.T) {
+		o, fixes := mustCleanup(t, fileOf("# Objective", "x", "## Tasks", "### t3: x", "depends:", "", "depends:"))
+		checkTasks(t, o.Tasks, []Task{{ID: "t3", Title: "x", Body: "depends:\n\ndepends:"}})
+		checkFixes(t, fixes, nil)
+	})
 }
 
 // Test_Unit_Cleanup_TaskBody: body newlines are kept; a "#### Steps" subheading, bullets and a fence (even one holding
@@ -515,11 +540,15 @@ func Test_Unit_ReadHeading(t *testing.T) {
 		{"   # three spaces", 1, "three spaces", true},
 		{"    # four spaces", 0, "", false},
 		{"#Objective", 1, "Objective", true},
+		{"#Objective ##", 1, "Objective", true},
 		{"###t2: x", 3, "t2: x", true},
 		{"#hashtag", 0, "", false},
 		{"#", 0, "", false},
 		{"# ", 0, "", false},
 		{"## ##", 0, "", false},
+		{"# # #", 0, "", false},
+		{"## x # #", 2, "x", true},
+		{"# ## x", 1, "## x", true},
 		{"plain", 0, "", false},
 	}
 	for _, tt := range tests {
@@ -558,6 +587,8 @@ func Test_Unit_TaskHeading(t *testing.T) {
 		{"t2", "t2", "", true},
 		{"t1: 3 things", "t1", "3 things", true},
 		{"t1: : odd", "t1", ": odd", true},
+		{"t2:#", "t2", "", true},
+		{"t2: C#", "t2", "C#", true},
 		{"Test the API", "", "Test the API", false},
 		{"Tasks", "", "Tasks", false},
 		{"t2x title", "", "t2x title", false},

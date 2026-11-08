@@ -11,43 +11,77 @@ import "strings"
 //   - An empty Format is written as FormatV1 (an Objective built from tool arguments has none).
 //   - The "approved:" line is written only when o.Approved is set.
 func (o Objective) Markdown() string {
-	// TODO: o.frontMatter() + "\n" + o.body()
-	return ""
+	return o.frontMatter() + "\n" + o.body()
 }
 
 // frontMatter renders the "---" block: format, then approved if set.
 //
 // Notes: none.
 func (o Objective) frontMatter() string {
-	// TODO: "---\nformat: …\n" + ("approved: …\n" if set) + "---\n"
-	return ""
+	format := o.Format
+	if format == "" {
+		format = FormatV1
+	}
+	s := "---\nformat: " + format + "\n"
+	if o.Approved != "" {
+		s += "approved: " + o.Approved + "\n"
+	}
+	return s + "---\n"
 }
 
 // body renders everything after the front matter; BodyHash hashes exactly this.
 //
 // Notes:
 //   - Ends with exactly one "\n".
+//   - "# Objective" is always written, even with no text, so the file has the heading CheckComplete asks to fill in.
 func (o Objective) body() string {
-	// TODO 1: "# Objective" + ObjText
-	// TODO 2: writeSection for Instructions, Constraints, Context, then each Other section
-	// TODO 3: if tasks or notes: "## Tasks", TaskNotes, then writeTask for each task
-	// Hint: build a list of blocks and strings.Join(blocks, "\n\n") + "\n": easier than tracking blank lines
-	return ""
+	blocks := []string{sectionBlock(headingLine(HeadingObjective), o.ObjText)}
+	for _, s := range []Section{
+		{HeadingInstructions, o.Instructions},
+		{HeadingConstraints, o.Constraints},
+		{HeadingContext, o.Context},
+	} {
+		if s.Body != "" {
+			blocks = append(blocks, sectionBlock(headingLine(s.Heading), s.Body))
+		}
+	}
+	for _, s := range o.Other {
+		blocks = append(blocks, sectionBlock("## "+s.Heading, s.Body))
+	}
+	if len(o.Tasks) > 0 || o.TaskNotes != "" {
+		blocks = append(blocks, sectionBlock(headingLine(HeadingTasks), o.TaskNotes))
+		for _, t := range o.Tasks {
+			blocks = append(blocks, taskBlock(t))
+		}
+	}
+	return strings.Join(blocks, "\n\n") + "\n"
 }
 
-// writeSection writes "## heading" and body.
+// sectionBlock returns a heading line followed by its body, or just the heading when the body is empty.
 //
 // Notes:
-//   - Leave Instructions, Constraints and Context out when empty (the caller checks), but write an Other section even
-//     with an empty body: Cleanup keeps it, so leaving it out would break the round trip.
-func writeSection(b *strings.Builder, heading, body string) {
-	// TODO
+//   - The caller leaves out an empty Instructions, Constraints or Context, but writes an Other section even with an
+//     empty body: Cleanup keeps it, so leaving it out would break the round trip.
+func sectionBlock(heading, body string) string {
+	if body == "" {
+		return heading
+	}
+	return heading + "\n" + body
 }
 
-// writeTask writes one "### tN: title" subsection: heading, the depends line if any, a blank line, the body.
+// taskBlock returns one "### tN: title" subsection: the heading, the depends line if any, then a blank line and the
+// body if any.
 //
-// Notes: none.
-func writeTask(b *strings.Builder, t Task) {
-	// TODO: taskHeadingLine(t); dependsLine(t.Depends) if non-empty; a blank line and the body if non-empty
-	// Hint: use the helpers in cleanup.go, so the reader and the writer share one definition of each line
+// Notes:
+//   - Uses taskHeadingLine and dependsLine from cleanup.go, so the reader and the writer share one definition of each
+//     line.
+func taskBlock(t Task) string {
+	s := taskHeadingLine(t)
+	if d := dependsLine(t.Depends); d != "" {
+		s += "\n" + d
+	}
+	if t.Body != "" {
+		s += "\n\n" + t.Body
+	}
+	return s
 }

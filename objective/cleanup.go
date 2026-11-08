@@ -39,6 +39,7 @@ type rawSection struct {
 //     a duplicate task ID; a task heading outside "## Tasks"; text before the first heading when the file also has
 //     "# Objective".
 //   - A UTF-8 byte-order mark (added by some Windows editors) is dropped without a fix.
+//   - Line endings "\r\n" and a lone "\r" are read as "\n", without a fix.
 //   - Not its job: whether the file is complete or the depends are valid. CheckComplete runs after it.
 //   - A file with no "# Objective" heading but text before its first heading is a draft: that text becomes the
 //     Objective (one fix). A file of plain text is the simplest case.
@@ -51,6 +52,7 @@ func Cleanup(data []byte) (Objective, []Fix, error) {
 	}
 	text := strings.TrimPrefix(string(data), "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n") // [agent] a lone "\r" (old Mac line ending) is a line break too
 	if strings.TrimSpace(text) == "" {
 		return Objective{}, nil, errors.New("objective file is empty")
 	}
@@ -131,6 +133,18 @@ func firstTextLine(lines []line) int {
 	for _, l := range lines {
 		if strings.TrimSpace(l.text) != "" {
 			return l.num
+		}
+	}
+	return 0
+}
+
+// lastTextLine returns the line number of the last non-blank line, or 0 when all are blank.
+//
+// Notes: none.
+func lastTextLine(lines []line) int {
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i].text) != "" {
+			return lines[i].num
 		}
 	}
 	return 0
@@ -281,7 +295,7 @@ func isCodeBlockFence(s string) bool {
 //   - A closing "#" run after a space is dropped ("## Tasks ##" → "Tasks"); "### C#" keeps its "#".
 //   - No space after the "#"s counts only when the rest is a known section name or a task ID ("#Objective",
 //     "###t2: x"), so "#hashtag" stays text.
-//   - Seven or more "#", or a heading with no text ("# "), is not a heading.
+//   - Seven or more "#", or a heading with no text ("# ") or only "#"s as text ("# # #"), is not a heading.
 func readHeading(s string) (level int, text string, ok bool) {
 	trimmed := strings.TrimLeft(s, " ")
 	if len(s)-len(trimmed) > 3 {
@@ -296,19 +310,14 @@ func readHeading(s string) (level int, text string, ok bool) {
 	rest := trimmed[level:]
 
 	if rest != "" && (rest[0] == ' ' || rest[0] == '\t') {
-		text = strings.TrimSpace(rest)
-		if t := strings.TrimRight(text, "#"); t == "" {
-			text = "" // [agent] "## ##": only hashes, no text
-		} else if t != text && (strings.HasSuffix(t, " ") || strings.HasSuffix(t, "\t")) {
-			text = strings.TrimSpace(t)
-		}
-		if text == "" {
-			return 0, "", false
+		text = stripClosingHashes(rest)
+		if strings.Trim(text, "#") == "" {
+			return 0, "", false // [agent] no text, or only "#"s ("# # #"), which "## #" could not be read back as
 		}
 		return level, text, true
 	}
 
-	text = strings.TrimSpace(rest)
+	text = stripClosingHashes(rest)
 	if _, known := sectionName(text); known {
 		return level, text, true
 	}
@@ -316,6 +325,28 @@ func readHeading(s string) (level int, text string, ok bool) {
 		return level, text, true
 	}
 	return 0, "", false
+}
+
+// stripClosingHashes trims s and drops closing runs of "#" after a space ("Tasks ##" → "Tasks", "x # #" → "x"); text
+// that is only "#"s becomes "".
+//
+// Notes:
+//   - "C#" keeps its "#" (no space before it).
+//   - Used for every heading and for bullet task titles, because a title is written back as a heading: any "#" run
+//     this would drop must already be gone, or the round trip changes the title.
+func stripClosingHashes(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		t := strings.TrimRight(s, "#")
+		switch {
+		case t == "":
+			return ""
+		case t != s && (strings.HasSuffix(t, " ") || strings.HasSuffix(t, "\t")):
+			s = strings.TrimSpace(t) // [agent] and again: "x # #" → "x #" → "x"
+		default:
+			return s
+		}
+	}
 }
 
 // sectionName maps heading text to a Heading* constant, or reports false for an unknown section.
@@ -353,13 +384,14 @@ var taskIDOnlyRe = regexp.MustCompile(`^(?i:task\s*|t)?(\d+)$`)
 // Notes:
 //   - "Test the API" and "Tasks" have no ID: a digit must follow "t" or "task" (the regexp needs it).
 //   - Leading zeros are dropped: "t02" → "t2".
+//   - The title goes through stripClosingHashes ("t2:#" → title ""), since it is written back after "### t2: ".
 func taskHeading(text string) (id, title string, hasID bool) {
 	text = strings.TrimSpace(text)
 	m := taskIDRe.FindStringSubmatch(text)
 	if m == nil {
 		return "", text, false
 	}
-	return taskIDFromDigits(m[1]), strings.TrimSpace(m[2]), true
+	return taskIDFromDigits(m[1]), stripClosingHashes(m[2]), true
 }
 
 // taskIDFromDigits builds a task ID from its digits, dropping leading zeros ("03" → "t3", "0" → "t0").
@@ -417,7 +449,7 @@ var bulletSpacingRe = regexp.MustCompile(`^([ \t]*)([-*+]|\d+[.)])([ \t]+)(\S.*)
 //     are body text.
 //   - Other text before the first task is TaskNotes.
 //   - The first non-blank body line "depends: …" or "depends on: …" fills Depends (parseDepends); a fix when it
-//     isn't exactly "depends: t1, t2" (an empty list is dropped).
+//     isn't exactly "depends: t1, t2".
 //   - The body keeps its newlines (tidyBody); a duplicate ID → error naming both lines.
 func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error) {
 	type rawTask struct {
@@ -463,7 +495,7 @@ func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes [
 			startTask(l, text, false)
 		case !isHeading && !sawHeading && bulletRe.MatchString(l.text):
 			m := bulletRe.FindStringSubmatch(l.text)
-			startTask(l, strings.TrimSpace(checkboxRe.ReplaceAllString(m[1], "")), true)
+			startTask(l, stripClosingHashes(checkboxRe.ReplaceAllString(m[1], "")), true)
 		default:
 			addLine(l)
 		}
@@ -515,6 +547,7 @@ func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes [
 //
 // Notes:
 //   - Blank lines shorter than that indentation become empty.
+//   - Returns the lines unchanged if dedenting would turn one of them into a heading.
 func dedent(lines []line) []line {
 	indent := -1
 	for _, l := range lines {
@@ -536,6 +569,9 @@ func dedent(lines []line) []line {
 		} else {
 			l.text = ""
 		}
+		if _, _, isHeading := readHeading(l.text); isHeading {
+			return lines // [agent] "    # x" is code; dedented it would become a heading (found by FuzzCleanup)
+		}
 		out[i] = l
 	}
 	return out
@@ -548,7 +584,8 @@ func dedent(lines []line) []line {
 //     "depends on: task1, 3" gives t1, t3. An item that isn't one ID ("t1 t2") is split on spaces and used if every
 //     part is an ID.
 //   - An item that still isn't an ID is kept as written: CheckComplete reports it as naming no task.
-//   - An empty list is still a depends line (Depends nil).
+//   - A line with no items ("depends:") is not a depends line: it stays in the body as written. Dropping it would let
+//     a second "depends:" line under it move up and be read as the depends line next time (found by FuzzCleanup).
 //   - [agent] a task body whose first line happens to start "Depends: …" is read as a depends line; CheckComplete then
 //     reports the words as unknown tasks, which tells the author.
 func parseDepends(s string) (ids []string, ok bool) {
@@ -582,7 +619,7 @@ func parseDepends(s string) (ids []string, ok bool) {
 			ids = append(ids, item)
 		}
 	}
-	return ids, true
+	return ids, len(ids) > 0
 }
 
 // normalizeTaskID turns "t3", "T3", "task3", "Task 3", "3" or "t03" into "t3", and reports false for anything else.
@@ -602,6 +639,7 @@ func normalizeTaskID(s string) (string, bool) {
 //   - Outside fences only (isCodeBlockFence): "-    x" → "- x" (at any indentation); a non-blank, unindented,
 //     non-bullet line straight after a bullet item (Markdown reads it as part of that item) is indented by two spaces
 //     so it visibly belongs there. Lines starting with "#", ">" or "|" are not treated as such a continuation.
+//   - A code fence still open at the end is closed with a "```" line (a fix on the last non-blank line).
 //   - Leading and trailing blank lines are dropped; newlines inside are kept.
 //   - Makes no fix on its own output, so a file Markdown wrote cleans up with zero fixes.
 //   - [agent] a "* * *" rule straight before a paragraph counts as a bullet, so that paragraph gets indented; rare.
@@ -645,5 +683,12 @@ func tidyBody(lines []line) (string, []Fix) {
 	for end > start && strings.TrimSpace(out[end-1]) == "" {
 		end--
 	}
-	return strings.Join(out[start:end], "\n"), fixes
+	out = out[start:end]
+	if inFence {
+		// [agent] close a fence left open, or Markdown (which writes sections in its own order) would put the next
+		// section inside it (found by FuzzCleanup)
+		out = append(out, "```")
+		fixes = append(fixes, Fix{Line: lastTextLine(lines), Now: "```"})
+	}
+	return strings.Join(out, "\n"), fixes
 }
