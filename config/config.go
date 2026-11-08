@@ -38,7 +38,7 @@ type Config struct {
 	// run configuration
 	AgentName    string `json:"agentName"`
 	AgentVersion string `json:"agentVersion"`
-	AgentMode    string `json:"agentMode"`   // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info"
+	AgentMode    string `json:"agentMode"`   // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info" | "plan"
 	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
 	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
@@ -69,6 +69,10 @@ type Config struct {
 	AutoCompact           bool    `json:"autoCompact"`           // summarize the context automatically when it gets full; false = only /compact does (default true)
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
+
+	// per-run files, set only by flags (an objective is input to one run, not a setting to keep in a config file)
+	ObjectiveFile string `json:"-"` // -objective/-obj: the objective file; in plan mode the draft, "" = ask at the prompt
+	OutFile       string `json:"-"` // -out: where plan mode saves the objective file, "" = the default name (step 4)
 
 	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
 

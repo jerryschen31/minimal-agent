@@ -29,7 +29,8 @@
 //	userId          who the chat session belongs to                                                       ["default_user"]
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
-//	agentMode       "chat" | "info" | "autonomous" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
+//	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat and info run; plan is
+//	                a stub so far (prints the draft, saves nothing)                                        ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]
@@ -195,6 +196,8 @@
 //	-config <file>   the config file to load (none = defaults only)
 //	-q, -query       the query; required for, and only used in, oneshot mode
 //	--json           JSON output; oneshot and headless modes only
+//	-obj, -objective the objective file; plan mode only (its draft; none = asked at the prompt)
+//	-out <file>      where plan mode saves the objective file; plan mode only; never overwritten
 //
 // # Codemap (auto-generated)
 //

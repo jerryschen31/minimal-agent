@@ -18,6 +18,7 @@ minimal-agent/
 │   ├── info.go
 │   ├── input.go
 │   ├── output.go
+│   ├── planmode.go
 │   ├── react.go
 │   └── session.go
 ├── cmd/
@@ -181,6 +182,10 @@ output.go
   func (o chatOutput) System(text string)
   func (o chatOutput) Error(what string, err error)
   func (o chatOutput) Interrupted()
+
+planmode.go
+  func RunPlanMode(ctx context.Context, cfg config.Config) error
+  func planStub(ctx context.Context, cfg config.Config, reader promptReader) error
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)

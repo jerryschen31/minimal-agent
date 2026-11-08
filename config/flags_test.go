@@ -176,6 +176,10 @@ func Test_Unit_ValidateMode(t *testing.T) {
 		{"config info with -mission", withMode(ModeInfo), Flags{Mission: new("mission.md")}, "-mission only applies"},
 		{"config info alone", withMode(ModeInfo), Flags{}, ""},
 		{"config chat alone", withMode(ModeChat), Flags{}, ""},
+		{"config plan alone", withMode(ModePlan), Flags{}, ""},
+		{"config plan with -objective", withMode(ModePlan), Flags{Objective: new("draft.md")}, ""},
+		{"config chat with -objective", withMode(ModeChat), Flags{Objective: new("draft.md")}, "-objective only applies"},
+		{"config chat with -out", withMode(ModeChat), Flags{Out: new("full.md")}, "-out only applies"},
 		{"config bogus", withMode("bogus"), Flags{}, "-mode must be one of"},
 		{"-mode info overlaid, with --json", FlagsOverlay(GetDefaultConfig(), Flags{Mode: new(ModeInfo)}),
 			Flags{Mode: new(ModeInfo), JSON: new(true)}, "--json only applies"},
@@ -252,5 +256,56 @@ func Test_Unit_FlagsOverlay_Approve(t *testing.T) {
 	}
 	if got := FlagsOverlay(GetDefaultConfig(), Flags{Approve: new(ApprovalAllowAll)}).Approval; got != ApprovalAllowAll {
 		t.Errorf("expected -approve allow-all to win over the default, got %q", got)
+	}
+}
+
+// - Verify -objective/-obj (one flag, existing file) and -out: plan mode only, and FlagsOverlay copies them
+func Test_Unit_ParseFlags_PlanMode(t *testing.T) {
+	dir := t.TempDir()
+	draft := filepath.Join(dir, "draft.md")
+	if err := os.WriteFile(draft, []byte("# Objective\nx\n"), 0o644); err != nil {
+		t.Fatalf("writing %s: %v", draft, err)
+	}
+
+	for _, name := range []string{"-objective", "-obj", "--obj"} {
+		flags, err := ParseFlags([]string{"-mode", "plan", name, draft, "-out", "full.md"}, io.Discard)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if flags.Objective == nil || *flags.Objective != draft || flags.Out == nil || *flags.Out != "full.md" {
+			t.Fatalf("%s: Objective %v, Out %v", name, flags.Objective, flags.Out)
+		}
+		cfg := FlagsOverlay(GetDefaultConfig(), flags)
+		if cfg.AgentMode != ModePlan || cfg.ObjectiveFile != draft || cfg.OutFile != "full.md" {
+			t.Errorf("%s: overlay gave mode %q, ObjectiveFile %q, OutFile %q", name, cfg.AgentMode, cfg.ObjectiveFile, cfg.OutFile)
+		}
+	}
+
+	// plan mode alone is fine: it asks for the objective at the prompt
+	flags, err := ParseFlags([]string{"-mode", "plan"}, io.Discard)
+	if err != nil || flags.Objective != nil || flags.Out != nil {
+		t.Errorf("-mode plan alone: flags %+v, err %v", flags, err)
+	}
+
+	cases := map[string]struct {
+		args    []string
+		wantErr string
+	}{
+		"missing objective file": {[]string{"-mode", "plan", "-obj", filepath.Join(dir, "nope.md")}, "no such file"},
+		"objective is a dir":     {[]string{"-mode", "plan", "-obj", dir}, "is a directory"},
+		"empty objective":        {[]string{"-mode", "plan", "-objective", " "}, "must not be empty"},
+		"different values":       {[]string{"-mode", "plan", "-objective", draft, "-obj", "other.md"}, "different values"},
+		"empty out":              {[]string{"-mode", "plan", "-out", ""}, "must not be empty"},
+		"objective in chat":      {[]string{"-mode", "chat", "-obj", draft}, "-objective only applies"},
+		"out in info":            {[]string{"-mode", "info", "-out", "x.md"}, "-out only applies"},
+		"json in plan":           {[]string{"-mode", "plan", "--json"}, "--json only applies"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseFlags(tc.args, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("expected an error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }

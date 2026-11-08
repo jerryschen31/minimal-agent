@@ -86,7 +86,8 @@ none of autonomous mode's "unattended means contained" questions.
    (`Cleanup(o.Markdown())` = o with zero fixes) over `objective/testdata/`, `FuzzCleanup`. Then the user-facing format
    reference and an example file (`docs/objective-format.md`, `examples/objective-example.md`). **Done 2026-11-07**;
    `Test_Unit_ExampleFile` and `Test_Unit_DocHandWrittenExample` keep both in step with the code.
-2. `-mode plan` wiring and flags; a stub that prints the parsed draft or asks for the objective.
+2. `-mode plan` wiring and flags; a stub that prints the parsed draft or asks for the objective. **Done 2026-11-07**
+   (`agent/planmode.go`; `-objective`/`-obj`, `-out`; flag-only `cfg.ObjectiveFile`, `cfg.OutFile`).
 3. `ErrEndTurn` in `reActLoop`.
 4. `propose_objective` + output-path chooser, tested with a fake asker (yes / no / invalid / file exists).
 5. Planner prompt, session setup, `chatLoop` stop check. Smoke test: plan here, apply with mvp4's binary.

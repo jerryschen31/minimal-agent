@@ -4488,3 +4488,24 @@ inputs are kept as regression cases in `objective/testdata/fuzz/FuzzCleanup/`.
   title is written back as a heading; (5) a code fence left open at the end of a section is closed (a fix), since
   Markdown reorders sections; (6) `dedent` leaves a bullet task's body alone if dedenting would create a heading.
 - Fuzzing ended with a 4-minute clean run; a longer run was skipped (Jerry).
+
+### 2026-11-07 — `-mode plan` wired (step 2): flags, config fields, a stub that prints the draft
+
+Claude built step 2 of `PLAN-plan-mode.md` at Jerry's request. Files: `config/flags.go`, `config/config.go`,
+`config/doc.go`, `config/flags_test.go`, `agent/planmode.go` (new), `agent/planmode_test.go` (new), `main.go`.
+
+- **Flags:** `-objective` with alias `-obj` (one flag, like `-q`/`-query`; both with different values is an error; the
+  file must exist) and `-out` (only checked for being non-empty: whether it exists is a runtime question, since plan mode
+  never overwrites and will ask for another name, step 4). Both are refused outside `-mode plan`; autonomous mode will
+  accept `-objective` too. `--json` is refused in plan mode.
+- **Flag-only config fields:** `Config.ObjectiveFile` and `Config.OutFile` are `json:"-"`, like `ConfigFile`. An objective
+  is input to one run, not a setting, and an `"objectiveFile"` in a config file would make plain `go run .` quietly
+  pick up a stale draft. *Downside:* unlike `missionFile`, it can't be set from a config file; add a key if that's ever
+  wanted.
+- **The terminal check is in `agent.RunPlanMode`, not `validateMode`:** `validateMode` looks at flags only, and the
+  question is about stdin, which `agent` already tests (`isTerminal`). Piped stdin is an error (exit 1): plan mode asks
+  questions and asks before saving, so there is nobody to answer.
+- **The stub runs before `SetupAgent`** (like info mode): no model call, MCP server or trace. With a draft it prints
+  `Cleanup`'s fixes and `o.Markdown()`; without one it asks "What do you want to build?" and prints that as the
+  objective. Nothing is written. Step 5 replaces the end of `planStub` with the planner session, and plan mode then
+  calls `SetupAgent`.
