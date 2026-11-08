@@ -1,19 +1,11 @@
 package objective
 
 import (
+	"slices"
 	"testing"
 )
 
-// [agent] testdata/: objective-fib.md is hand-written with mistakes Cleanup fixes; objective-deepwiki.md is in the
-// standard layout (front matter, "### tN:" tasks, depends, an unknown "## Notes" section) and cleans up with zero
-// fixes; the two objective-build-* files are drafts without tasks.
-
-// mustCleanup cleans up s and fails the test on an error.
-func mustCleanup(t *testing.T, s string) (Objective, []Fix) {
-	t.Helper()
-	// TODO: o, fixes, err := Cleanup([]byte(s)); t.Fatalf on err (include the input); return o, fixes
-	return Objective{}, nil
-}
+// [agent] the Cleanup tests (and mustCleanup, fileOf, checkFixes, checkTasks) are in cleanup_test.go.
 
 // complete is a hand-built objective that passes CheckComplete and uses every field.
 func complete() Objective {
@@ -23,115 +15,7 @@ func complete() Objective {
 	return Objective{}
 }
 
-// --- Cleanup: reading and errors ---
-
-// Test_Unit_Cleanup_MinimalDraft: only "# Objective" cleans up with no fixes; Format is FormatV1; the rest is empty.
-func Test_Unit_Cleanup_MinimalDraft(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_NoHeadings: a file of plain text becomes the Objective, with one fix (Now "# Objective").
-func Test_Unit_Cleanup_NoHeadings(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_Errors: what Cleanup can't decide is an error naming the problem.
-func Test_Unit_Cleanup_Errors(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantSub string // a substring the error must contain, so the test fails if the wrong check fires
-	}{
-		// TODO: empty · whitespace only · too big (strings.Repeat("x", MaxBytes+1))
-		//   "# Objective" twice · "## Instructions" twice (also "## Instruction" + "### Instructions": same section)
-		//   duplicate task ID ("### t1: a" and "### t1: b") · text before the first heading plus "# Objective"
-		//   a task heading outside "## Tasks" ("### t1: x" under "## Instructions"; also "## Task 2: x" before Tasks)
-		//   front matter: unknown format · a line without ":" · no closing "---"
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// TODO: _, _, err := Cleanup([]byte(tt.input)); want err != nil and strings.Contains(err.Error(), tt.wantSub)
-		})
-	}
-}
-
-// Test_Unit_Cleanup_FrontMatter: no front matter or no format line → FormatV1 and no fix; "format: …v1" and
-// "approved: sha256:…" read as is; an unknown key ("name: x") is one fix with Now "" and is not kept.
-func Test_Unit_Cleanup_FrontMatter(t *testing.T) {
-	// TODO: table of inputs → want Format, Approved, and the fixes
-}
-
-// Test_Unit_Cleanup_BOM: a file starting with a UTF-8 byte-order mark reads the same as without it (front matter
-// and "# Objective" found), with no fix.
-func Test_Unit_Cleanup_BOM(t *testing.T) {
-	// TODO: "\uFEFF---\nformat: …\n---\n# Objective\nx\n" and "\uFEFF# Objective\nx\n"
-}
-
-// --- Cleanup: the fixes ---
-
-// Test_Unit_Cleanup_HeadingFixes: each heading mistake fills the right field and makes exactly one fix.
-func Test_Unit_Cleanup_HeadingFixes(t *testing.T) {
-	tests := []struct {
-		name    string
-		input   string
-		wantFix Fix                  // Line, Was and Now
-		check   func(Objective) bool // the field the section went to
-	}{
-		// TODO: "## Objective" → "# Objective" · "#Objective" → "# Objective" · "### Constraints" → "## Constraints"
-		//   "## Instruction" → "## Instructions" · "## Tasks:" → "## Tasks" · "## tasks" → "## Tasks"
-		//   "# Notes" (unknown, level 1) → "## Notes" in Other
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// TODO: mustCleanup; exactly one fix, equal to wantFix; tt.check(o)
-		})
-	}
-}
-
-// Test_Unit_Cleanup_NotHeadings: "#hashtag", "####### seven", and a "## Tasks" line inside a ``` or ~~~ fence stay
-// text.
-func Test_Unit_Cleanup_NotHeadings(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_UnknownSections: "## Notes" and "## References" go to Other as written, in file order, with no
-// fix; a "### Details" subheading stays in the body of the section above it.
-func Test_Unit_Cleanup_UnknownSections(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_BodyFixes: "-    instruction 1" → "- instruction 1"; an unindented line straight after a bullet
-// is indented under it; a line after a blank line is left alone; nothing inside a ``` fence changes.
-func Test_Unit_Cleanup_BodyFixes(t *testing.T) {
-	// TODO: check the resulting Instructions text and the fixes (line numbers included)
-}
-
-// --- Cleanup: tasks ---
-
-// Test_Unit_Cleanup_TaskHeadings: "## t2: x", "#### t2: x", "### T2 - x", "### Task 2: x" all become ID "t2",
-// title "x", with a fix; "### t2: x" makes none; "### Test the API" is a task without an ID (gets one from AssignTaskIDs).
-func Test_Unit_Cleanup_TaskHeadings(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_TaskBody: the depends line is read and fixed when not standard ("Depends:T1,t2",
-// "depends on: task1, 3", "depends: t1 t2" → t1, t2 / t1, t3 / t1, t2); "depends: setup" keeps "setup" (for
-// CheckComplete); body newlines are kept; a "#### Steps" subheading and bullets stay in the body.
-func Test_Unit_Cleanup_TaskBody(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_BulletTasks: bullets under "## Tasks" become tasks t1, t2, … (title from the bullet, checkbox
-// stripped, continuation lines as the body) with fixes; text before the first bullet is TaskNotes.
-func Test_Unit_Cleanup_BulletTasks(t *testing.T) {
-	// TODO
-}
-
-// Test_Unit_Cleanup_TaskIDs: missing IDs get the highest + 1 in file order, existing IDs never change, and each new
-// ID is a fix on its heading's line.
-func Test_Unit_Cleanup_TaskIDs(t *testing.T) {
-	// TODO: "### t1", "### (none)", "### t5", "### (none)" → t1, t6, t5, t7; two fixes, line numbers right
-}
+// --- Task IDs ---
 
 // Test_Unit_AssignTaskIDs: the rule on its own (it is also used by plan mode's propose_objective).
 func Test_Unit_AssignTaskIDs(t *testing.T) {
@@ -141,19 +25,29 @@ func Test_Unit_AssignTaskIDs(t *testing.T) {
 		want        []string
 		wantChanged []int
 	}{
-		// TODO: none → t1,t2,t3 · all set (t1,t5,t2) → unchanged, nil · mixed (t1,"",t5,"") → t1,t6,t5,t7
-		//   a non-"t<digits>" ID ("setup","") → kept, the empty one becomes t1 · empty slice → nil
+		{"none have IDs", []string{"", "", ""}, []string{"t1", "t2", "t3"}, []int{0, 1, 2}},
+		{"all have IDs, out of order", []string{"t1", "t5", "t2"}, []string{"t1", "t5", "t2"}, nil},
+		{"mixed", []string{"t1", "", "t5", ""}, []string{"t1", "t6", "t5", "t7"}, []int{1, 3}},
+		{"non-numeric ID is kept and ignored", []string{"setup", ""}, []string{"setup", "t1"}, []int{1}},
+		{"too long to be a number", []string{"t1234567890", ""}, []string{"t1234567890", "t1"}, []int{1}},
+		{"empty", nil, nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// TODO: build []Task from ids, AssignTaskIDs, compare IDs and the returned indexes (slices.Equal)
+			var tasks []Task
+			for _, id := range tt.ids {
+				tasks = append(tasks, Task{ID: id})
+			}
+			changed := AssignTaskIDs(tasks)
+			var got []string
+			for _, task := range tasks {
+				got = append(got, task.ID)
+			}
+			if !slices.Equal(got, tt.want) || !slices.Equal(changed, tt.wantChanged) {
+				t.Errorf("IDs %v, changed %v; want %v, %v", got, changed, tt.want, tt.wantChanged)
+			}
 		})
 	}
-}
-
-// Test_Unit_NormalizeTaskID: "t3", "T3", "task3", "Task 3", "3", "t03" → "t3"; "", "t", "setup", "t-1", "3a" → false.
-func Test_Unit_NormalizeTaskID(t *testing.T) {
-	// TODO: table
 }
 
 // --- Markdown ---

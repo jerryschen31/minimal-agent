@@ -35,9 +35,11 @@ func (o Objective) body() string {
 	return ""
 }
 
-// writeSection writes "## heading" and body, or nothing when body is empty.
+// writeSection writes "## heading" and body.
 //
-// Notes: none.
+// Notes:
+//   - Leave Instructions, Constraints and Context out when empty (the caller checks), but write an Other section even
+//     with an empty body: Cleanup keeps it, so leaving it out would break the round trip.
 func writeSection(b *strings.Builder, heading, body string) {
 	// TODO
 }
@@ -46,5 +48,6 @@ func writeSection(b *strings.Builder, heading, body string) {
 //
 // Notes: none.
 func writeTask(b *strings.Builder, t Task) {
-	// TODO: "### " + t.ID + ": " + t.Title; "depends: " + strings.Join(t.Depends, ", "); body if non-empty
+	// TODO: taskHeadingLine(t); dependsLine(t.Depends) if non-empty; a blank line and the body if non-empty
+	// Hint: use the helpers in cleanup.go, so the reader and the writer share one definition of each line
 }

@@ -4437,3 +4437,22 @@ Decided with Jerry after Claude's review of the plan/objective shape. Files: `ob
 - **A user-facing format reference and an example file** are part of step 1 (locations proposed in the plan).
 - **Deferred to their steps:** depends-aware scheduling and `blocked` status, which worker tools the planner sees, the
   no-LLM save, a diff against the draft, capping printed fixes, `x-full.md` naming, same `workDir` for plan and apply.
+
+### 2026-11-07 — `Cleanup` built (Claude, at Jerry's request), with these details settled while coding
+
+Files: `objective/cleanup.go`, `objective/cleanup_test.go`; `AssignTaskIDs` and `taskNumber` in `objective.go` (needed
+by Cleanup's tests); comment fixes in `render.go`. `Markdown`, `CheckComplete`, `Fix.String`, the hash functions and
+`findCycle` are still Jerry's to write.
+
+- **One fix per changed line:** a task line without an ID (a bullet or a `### title` heading) gets a single fix,
+  written after `AssignTaskIDs` (Was = the line as written, Now = `### tN: title`). Replaces the "two fixes" in the
+  skeleton notes. **Fixes are sorted by line number.**
+- **Also errors:** a file that isn't UTF-8.
+- **Leniency added:** up to three leading spaces before a heading (four is a Markdown code block); "Objectives" and the
+  other singular/plural forms; a closing `#` run (`## Notes ##`); an unknown heading not exactly `## <text>` is fixed.
+  A digit must end at a separator, space or end of text to be a task ID (`t2x` is not one).
+- **`taskNumber` accepts at most 9 digits**, so `AssignTaskIDs`' "highest + 1" can't overflow on a silly ID.
+- **`Markdown` must write an `Other` section even with an empty body** (Cleanup keeps it); noted in `writeSection`.
+- **Checks done:** 23 test functions (89 cases) pass with `-race`; mutation checks (no sort, no BOM strip, no bullet
+  fix, heading indentation, level-4 tasks, continuation exclusions) each fail a test; a 30-second panic-only fuzz run
+  (~4M inputs) found nothing. The real `FuzzCleanup` (round trip) waits for `Markdown`.

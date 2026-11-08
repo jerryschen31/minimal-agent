@@ -1,5 +1,10 @@
 package objective
 
+import (
+	"strconv"
+	"strings"
+)
+
 const MaxBytes = 1024 * 1024 // 1 MB
 
 // FormatV1 is the current file format, written in the front matter as "format: minagent-objective/v1".
@@ -119,19 +124,39 @@ func (o Objective) CheckComplete(maxTasks int) error {
 //   - Only "t<digits>" counts when finding the highest; other IDs (from tool arguments) are left for CheckComplete.
 //   - Shared by Cleanup and plan mode's propose_objective, so a draft and a proposal follow the same rule.
 func AssignTaskIDs(tasks []Task) []int {
-	// TODO 1: highest := 0; for each task with taskNumber(ID) ok → highest = max(highest, n)
-	// TODO 2: for i, t := range tasks: if t.ID == "" → highest++; tasks[i].ID = fmt.Sprintf("t%d", highest); remember i
-	// Hint: write through tasks[i], not t (t is a copy)
-	return nil
+	highest := 0
+	for _, t := range tasks {
+		if n, ok := taskNumber(t.ID); ok {
+			highest = max(highest, n)
+		}
+	}
+	var changed []int
+	for i := range tasks {
+		if tasks[i].ID == "" {
+			highest++
+			tasks[i].ID = "t" + strconv.Itoa(highest)
+			changed = append(changed, i)
+		}
+	}
+	return changed
 }
 
-// taskNumber returns n for an ID "t<n>" (n ≥ 1), and false for anything else.
+// taskNumber returns n for an ID "t<n>" (1 ≤ n, at most 9 digits), and false for anything else.
 //
 // Notes:
 //   - IDs are lower-case here: Cleanup lower-cases "T3" before storing it.
+//   - Digits only (strconv.Atoi alone would accept "+3"); the 9-digit cap keeps AssignTaskIDs' "highest + 1" from
+//     overflowing on a silly ID. A longer number is not an ID CheckComplete accepts.
 func taskNumber(id string) (int, bool) {
-	// TODO: strings.CutPrefix(id, "t"), then strconv.Atoi; reject n < 1 and a leading "+"/"-" (Atoi accepts them)
-	return 0, false
+	digits, ok := strings.CutPrefix(id, "t")
+	if !ok || digits == "" || len(digits) > 9 || strings.Trim(digits, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
 }
 
 // findCycle returns one dependency cycle as IDs ("t2", "t3", "t2"), or nil when there is none.

@@ -23,13 +23,22 @@
 //
 // How an objective file is processed (unmarshaled) into an Objective struct object:
 //
-//	file bytes ─► Cleanup ─► (strip BOM) ─► readFrontMatter ─► splitSections ─► per section:
-//	                                                          (readHeading,      tidyBody                  (Instructions, Constraints, Context, Other)
-//	                                                           sectionName,      parseTasks ─► taskHeading, parseDepends ─► normalizeTaskID, tidyBody   (Tasks)
-//	                                                           taskHeading)
-//	              ─► AssignTaskIDs ─► (Objective, []Fix, error)
+//	objective file (bytes)
+//	   │
+//	   ▼
+//	Cleanup
+//	   1. read the front matter          → Format, Approved
+//	   2. split the file into sections   (one per heading; heading mistakes fixed here)
+//	   3. fill in each section:
+//	        # Objective, ## Instructions,
+//	        ## Constraints, ## Context    → text fields
+//	        ## Tasks                      → []Task (ID, title, depends, body)
+//	        any other heading             → Other
+//	   4. give each task without an ID the next free number
+//	   │
+//	   ▼
+//	(Objective, []Fix, error)            every fix made along the way; an error if the file can't be read
 //
-// /
 // How an Objective struct object is converted (marshaled) into a markdown file:
 //
 //	Objective ─► Markdown() = frontMatter() + body()        (body: writeSection, writeTask)
@@ -83,13 +92,19 @@
 //
 //	cleanup.go
 //	  func Cleanup(data []byte) (Objective, []Fix, error)
+//	  func firstTextLine(lines []line) int
 //	  func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
 //	  func splitSections(lines []line) ([]rawSection, []Fix, error)
+//	  func headingLine(name string) string
 //	  func isCodeBlockFence(s string) bool
 //	  func readHeading(s string) (level int, text string, ok bool)
 //	  func sectionName(text string) (string, bool)
 //	  func taskHeading(text string) (id, title string, hasID bool)
-//	  func parseTasks(lines []line) (tasks []Task, notes string, heads []int, fixes []Fix, err error)
+//	  func taskIDFromDigits(digits string) string
+//	  func taskHeadingLine(t Task) string
+//	  func dependsLine(ids []string) string
+//	  func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
+//	  func dedent(lines []line) []line
 //	  func parseDepends(s string) (ids []string, ok bool)
 //	  func normalizeTaskID(s string) (string, bool)
 //	  func tidyBody(lines []line) (string, []Fix)
