@@ -30,7 +30,7 @@
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
 //	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat and info run; plan is
-//	                a stub so far (prints the draft, saves nothing)                                        ["chat"]
+//	                a stub so far (prints the objective, saves nothing)                                        ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]

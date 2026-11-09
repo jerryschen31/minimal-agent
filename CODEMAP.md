@@ -46,6 +46,9 @@ minimal-agent/
 │   ├── conn.go
 │   ├── doc.go
 │   └── tools.go
+├── mdscan/
+│   ├── doc.go
+│   └── mdscan.go
 ├── memory/
 │   ├── doc.go
 │   └── msghistory.go
@@ -57,9 +60,13 @@ minimal-agent/
 │       ├── doc.go
 │       └── fake_provider.go
 ├── objective/
-│   ├── cleanup.go
 │   ├── doc.go
 │   ├── objective.go
+│   └── parse.go
+├── plan/
+│   ├── cleanup.go
+│   ├── doc.go
+│   ├── plan.go
 │   └── render.go
 ├── procutils/
 │   ├── doc.go
@@ -374,6 +381,20 @@ tools.go
   func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error)
 ```
 
+## mdscan (package mdscan)
+
+`github.com/jerryschen31/minimal-agent/mdscan`
+
+```text
+mdscan.go
+  func Lines(data []byte, what string) ([]Line, error)
+  func FirstTextLine(lines []Line) int
+  func LastTextLine(lines []Line) int
+  func IsCodeBlockFence(s string) bool
+  func ReadHeading(s string, known func(text string) bool) (level int, text string, ok bool)
+  func StripClosingHashes(s string) string
+```
+
 ## memory (package memory)
 
 `github.com/jerryschen31/minimal-agent/memory`
@@ -420,40 +441,62 @@ fake_provider.go
 `github.com/jerryschen31/minimal-agent/objective`
 
 ```text
+objective.go
+  func (o Objective) Markdown() string
+  func sectionBlock(heading, body string) string
+  func (o Objective) Hash() string
+  func (o Objective) ChangedSections(old Objective) []string
+
+parse.go
+  func Parse(data []byte) (Objective, error)
+  func sectionLevel(lines []mdscan.Line) int
+  func splitSections(lines []mdscan.Line, topLevel int) []section
+  func sectionName(text string) (string, bool)
+  func isKnownName(text string) bool
+  func sectionText(lines []mdscan.Line, keepLeading bool) string
+  func joinNonEmpty(parts []string) string
+```
+
+## plan (package plan)
+
+`github.com/jerryschen31/minimal-agent/plan`
+
+```text
 cleanup.go
-  func Cleanup(data []byte) (Objective, []Fix, error)
-  func firstTextLine(lines []line) int
-  func lastTextLine(lines []line) int
+  func Cleanup(data []byte) (Plan, []Fix, error)
   func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
   func splitSections(lines []line) ([]rawSection, []Fix, error)
   func headingLine(name string) string
-  func isCodeBlockFence(s string) bool
-  func readHeading(s string) (level int, text string, ok bool)
-  func stripClosingHashes(s string) string
+  func titleLine(title string) string
+  func planTitle(text string) (string, bool)
   func sectionName(text string) (string, bool)
+  func knownHeading(text string) bool
   func taskHeading(text string) (id, title string, hasID bool)
   func taskIDFromDigits(digits string) string
   func taskHeadingLine(t Task) string
-  func dependsLine(ids []string) string
+  func fieldLines(t Task) []string
+  func readField(s string) (key, value string, depends []string, ok bool)
+  func parseFields(body []line, t *Task) (rest []line, fixes []Fix)
   func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
   func dedent(lines []line) []line
-  func parseDepends(s string) (ids []string, ok bool)
+  func parseDepends(value string) (ids []string, ok bool)
   func normalizeTaskID(s string) (string, bool)
   func tidyBody(lines []line) (string, []Fix)
 
-objective.go
+plan.go
   func (f Fix) String() string
-  func (o Objective) BodyHash() string
-  func (o Objective) ApprovalStatus() string
-  func (o Objective) CheckComplete(maxTasks int) error
-  func AssignTaskIDs(tasks []Task) []int
+  func (t Task) External() bool
+  func (t Task) DefinitionHash() string
+  func (p Plan) IsStale(objectiveHash string) bool
+  func (p Plan) CheckComplete(maxTasks int) error
+  func AssignTaskIDs(tasks []Task, nextID int) []int
   func taskNumber(id string) (int, bool)
   func findCycle(tasks []Task) []string
 
 render.go
-  func (o Objective) Markdown() string
-  func (o Objective) frontMatter() string
-  func (o Objective) body() string
+  func (p Plan) Markdown() string
+  func (p Plan) frontMatter() string
+  func (p Plan) body() string
   func sectionBlock(heading, body string) string
   func taskBlock(t Task) string
 ```

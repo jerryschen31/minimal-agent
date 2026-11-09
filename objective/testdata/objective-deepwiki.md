@@ -1,7 +1,3 @@
----
-format: minagent-objective/v1
----
-
 # Objective
 Find out how the modelcontextprotocol/go-sdk repository implements the client side of the streamable
 HTTP transport, and write a one-page explanation to NOTES.md for a Go developer.
@@ -16,7 +12,7 @@ HTTP transport, and write a one-page explanation to NOTES.md for a Go developer.
   the repository's paths; read_file and write_file are only for the working directory.
 
 ## Notes
-An extra section with a name the parser does not know, kept in Other as written.
+An extra section with a name the parser does not know: it is added to Instructions with its heading.
 
 ## Tasks
 

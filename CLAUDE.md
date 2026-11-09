@@ -125,8 +125,8 @@ go run . [-config file] [-model m] [-workdir dir] [-debug]  # bare `go run .` = 
                                                  # -debug (or "debug": true): per-turn context dump + MCP protocol log on stderr
 go run . -mode info [-config file]               # print config, built-in + MCP tools (model-facing names), then exit;
                                                  # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
-go run . -mode plan [-obj draft.md] [-out f.md]  # plan mode (stub so far): prints the cleaned-up draft, or asks for the
-                                                 # objective; needs a terminal; writes nothing yet
+go run . -mode plan [-obj objective.md]          # plan mode (stub so far): prints the objective as the planner will see
+                                                 # it, or asks for one; needs a terminal; writes nothing yet
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.

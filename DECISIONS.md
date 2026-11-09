@@ -4342,6 +4342,8 @@ Files: `mcpconnect/conn.go`, `mcpconnect/conn_test.go`, `mcpconnect/conn_unix_te
 
 ### 2026-11-07 — Plan mode before autonomous mode; autonomous mode requires `## Tasks`
 
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
 Decided with Jerry. Not built. Plan: `PLAN-plan-mode.md`.
 
 - **`-mode plan` (the `terraform plan` step):** takes `-objective`/`-obj draft.md`, or asks for the objective, and talks
@@ -4377,6 +4379,8 @@ Decided with Jerry while scaffolding step 1 of `PLAN-plan-mode.md`. Files: `obje
 
 ### 2026-11-07 — Objective file format v1: version, task sections, Cleanup
 
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
 Decided with Jerry (after `§ objective/ package` above, which this extends). Plan: `PLAN-plan-mode.md`.
 
 - **Version in front matter:** `format: minagent-objective/v1`. A hand-written file may leave it out (missing = v1, never
@@ -4399,6 +4403,8 @@ Decided with Jerry (after `§ objective/ package` above, which this extends). Pl
 
 ### 2026-11-07 — Objective format v1: open points settled (task IDs, newlines, `depends`, Cleanup replaces Parse)
 
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
 Answers to the open points of the entry above (Jerry). This **reverses** that entry's "IDs made sequential".
 
 - **Task IDs are never renumbered.** If every task has an ID, Cleanup leaves them as they are (gaps and file order
@@ -4417,6 +4423,8 @@ Answers to the open points of the entry above (Jerry). This **reverses** that en
     any error (exit 2, pointing at `-mode plan`), else run. No file is written.
 
 ### 2026-11-07 — Objective format v1: review pass (front matter, task headings, depends, approval hash)
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
 
 Decided with Jerry after Claude's review of the plan/objective shape. Files: `objective/*.go`, `PLAN-plan-mode.md`.
 
@@ -4491,6 +4499,8 @@ inputs are kept as regression cases in `objective/testdata/fuzz/FuzzCleanup/`.
 
 ### 2026-11-07 — `-mode plan` wired (step 2): flags, config fields, a stub that prints the draft
 
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
 Claude built step 2 of `PLAN-plan-mode.md` at Jerry's request. Files: `config/flags.go`, `config/config.go`,
 `config/doc.go`, `config/flags_test.go`, `agent/planmode.go` (new), `agent/planmode_test.go` (new), `main.go`.
 
@@ -4509,3 +4519,133 @@ Claude built step 2 of `PLAN-plan-mode.md` at Jerry's request. Files: `config/fl
   `Cleanup`'s fixes and `o.Markdown()`; without one it asks "What do you want to build?" and prints that as the
   objective. Nothing is written. Step 5 replaces the end of `planStub` with the planner session, and plan mode then
   calls `SetupAgent`.
+
+### 2026-11-08 — Plan/apply redesign: objective (you) → plan file (planner + Go) → state; iterate by diff
+
+Jerry and Claude, after Jerry found the plan-mode shape too heavy for users. Plan: `PLAN-plan-apply.md` (supersedes
+`PLAN-plan-mode.md`). New requirements: as few user steps as possible; tool-agnostic tasks that name the capability
+they need; easy objective files; long-running multi-step work; **version-controlled iteration**, where a new run
+deploys only the difference.
+
+- **Three files, three owners** (the Terraform model): `objective.md` (you; config), `objective.plan.md` (planner LLM +
+  Go; execution plan), `.minagent/<objective>/state.json` (Go only; tfstate). Formal tasks are only ever written by the
+  planner + Go. *Why:* the user writes prose; machine-checked structure lives where the user doesn't have to write it.
+  *Downside:* two files to keep in step; handled by `objective_sha256` in the plan (stale = replan).
+- **Objective file v2:** only `# Objective` required; `# Instructions` and `# Context` optional; Constraints, other
+  sections and informal tasks fold into Instructions; no front matter. *Why:* a one-line objective must be runnable
+  (and it allows `/plan <text>` in chat). The planner states missing "done when" rules as Assumptions, shown before the run.
+- **Plan file is Markdown** (`minagent-plan/v1`), reusing the built task code; new task fields `reason`, `gate`, `needs`
+  (capabilities, free text), `done when`. *Why Markdown over JSON:* it's read at the confirm prompt and diffs well in git.
+- **Apply = reconcile against state:** `+` new, `~` changed (worker told what changed), `↻` dependents re-run, `-`
+  removed (nothing undone), unchanged + done skipped. First run, iteration and resume are one operation. **Go computes
+  the diff** by task ID + definition hash; the LLM only keeps IDs stable and gives reasons. IDs are never reused
+  (`next_id`). Irreversible (gated) tasks never re-run automatically.
+- **State records the environment** (harness version + commit; provider, model and prompt hash per role; tool
+  definitions and MCP `serverInfo` versions; run-affecting config), never secrets. Changes are shown, re-run nothing by
+  themselves; `-replace tN` forces a re-run.
+- **Commands:** `-mode autonomous -objective x.md` is the one command (plan if needed → summary → confirm → apply);
+  `-mode plan -objective x.md` only plans, non-interactively; **`/plan` in chat** is the LLM-assisted way to write an
+  objective (interview → `objective.md` → plan → background run). The earlier objection to `/plan` (a plan leaning on
+  chat context) no longer applies, since its output is a file the planner reads cold.
+- **Workers are per task and finish**; long-lived services (start/restart/stop on the same diff) are deferred.
+- **Refactor:** `objective/` shrinks to the v2 reader; a new `plan/` package takes the task code (IDs, depends, cycles,
+  Cleanup/Markdown round trip, fuzzing); new `state/`. `-out` and `ApprovalStatus` go; `-objective` stays.
+
+### 2026-11-08 — Plan mode confirms by default; one planning session behind four entry points
+
+Jerry's clarification of the commands in `PLAN-plan-apply.md § Commands`.
+
+- `-mode plan` shows a new or refreshed plan and asks `Accept this plan? [Y/n]`; **n** opens an interactive planning
+  session until you accept; after saving, `Run now? [y/N]` (N prints the command for later). `-yes` answers the plan
+  and run questions (never a gate), so scripts still work.
+- `-objective` takes a file or text; text is saved to an objective file first (never overwriting), since iteration
+  needs a file. A missing path-like value is an error, not text.
+- `-mode plan` with no objective, `/plan` in chat, and "change" at the plan or run prompt are **the same planning
+  session** (chat loop, planner prompt, read-only tools, `propose_plan`, `edit_objective`), with different starts.
+- Confirmed by Jerry: changes asked for in the session go into `objective.md` (diff shown, approved),
+  then the plan is redone, so the objective stays the one source of intent across iterations.
+
+### 2026-11-08 — A fully governed harness is tabled; state is a run snapshot/journal, checked against reality before reuse
+
+Claude's critique of the Terraform analogy: state is only trustworthy when the agents own the environment exclusively,
+and a shared project (humans and other agents changing things) breaks that. Jerry weighed making the harness a fully
+governed one (every change only through the plan, state protected like Terraform's) and **tabled it**: too much effort,
+and Terraform-style adoption can't be assumed.
+
+- The plan file and state are **a snapshot and journal of a run**, for provenance, logging, evals, resuming a stalled or
+  failed run, and continuing with more work. They are not a claim to own the environment.
+- Iterating on the same plan reuses the previous plan + state to re-run only what changed, **after checking state
+  against reality** (drift since the last run).
+- Tabled for later (with Claude's analysis): declared managed resources with per-resource drift policy and `adopt`;
+  git as the gate (runs on branches); a hash-chained journal as source of truth; policy as code; containment of what
+  agents may write.
+
+### 2026-11-08 — Simplified plan/run shape agreed; step 1 is the three formats
+
+Jerry and Claude, closing the day's redesign. `PLAN-plan-apply.md` rewritten to this shape.
+
+- **You pass `objective.md`; the plan follows it.** When the objective changes, Go finds the plan stale, and the planner
+  updates `objective.plan.md` using the previous objective, plan and state; only what changed is re-run. (Jerry first
+  wrote "pass the existing plan"; he meant the objective file.)
+- **`propose_plan` on an update takes operations** (`keep`, `change`, `add`, `remove`); Go copies kept tasks exactly, and
+  every existing task must be named. *Why:* a planner that rewords unchanged tasks would cause needless re-runs.
+- **State is one snapshot per run** (`.minagent/<objective>/runs/NNNN/state.json`, frozen at the end), checked against
+  reality (file hashes) before a done task is skipped. Separate snapshots avoid merge conflicts.
+- **Accepted from Claude's critique:** idempotency keys for external effects (a resume can't repeat a trade);
+  per-task recorded file reads/writes (catch dependencies the planner didn't list, and feed the drift check); a lock file
+  per objective; build a complete serial run before the iteration machinery.
+- **Accepted defaults:** director tasks are children (`t3.1`) in state only; the summary shows cascade size and the
+  planner may mark a dependent unaffected; a gate pauses only what depends on it; objective edits replace in place; a
+  minimal environment record; `kind` in state from the start.
+- **New task line `effects: external`**, and the definition hash leaves out `reason`.
+- **Shared Markdown helpers go to a new helper package `mdscan/`** (standard library only), since `objective/` and
+  `plan/` both need them; it joins the helper-package import test.
+
+### 2026-11-08 — `mdscan/` and `plan/` built (step 1, first half)
+
+Claude built them at Jerry's request; `go test -race ./...`, vet, gofmt and codemap check/lint pass; a 90-second
+`FuzzCleanup` run on `plan/` found nothing; three mutation checks (reason in the hash, `nextID` ignored, a repeated
+field key) each failed a test.
+
+- **`mdscan/`** (helper, standard library only, added to the import test): `Lines` (size, UTF-8, BOM, line endings,
+  empty), `ReadHeading(s, known)`, `IsCodeBlockFence`, `StripClosingHashes`, `FirstTextLine`, `LastTextLine`, moved from
+  `objective/cleanup.go`. `ReadHeading` takes a `known` callback because "#Name" without a space counts only for names
+  the caller knows (section names, task IDs), which differ between objective and plan files.
+- **`plan/`**: the task code moved from `objective/` (Cleanup, Markdown, CheckComplete, AssignTaskIDs, findCycle, the
+  round trip and `FuzzCleanup` with its corpus), plus: front matter `format`, `objective`, `objective_hash`,
+  `plan_version`; a `# Plan: <title>` heading with an optional summary under it; `## Assumptions`; task field lines
+  `depends`, `reason`, `effects`, `gate`, `needs`, `done when` (read in any case, `-`/`_` for spaces, any order; written
+  in standard order; the block ends at a blank line, a repeated key, or a non-field line; an empty value stays body
+  text); `Task.DefinitionHash` (without `reason`); `Plan.IsStale`; `AssignTaskIDs(tasks, nextID)`.
+- **Front-matter key is `objective_hash`, not `objective_sha256`** as first written in the plan: the value is already
+  `sha256:<hex>` (as from `objective.Hash`), so the key doesn't repeat the algorithm. `PLAN-plan-apply.md` updated.
+- **Text before the first heading is an error in a plan file** (an objective file reads it as the objective): a plan is
+  written by Go, so stray text means a hand edit went wrong.
+- **`objective/` is still v1 for now**, switched to `mdscan` (its own `readHeading` etc. removed; `Test_Unit_ReadHeading`
+  moved to `mdscan`), so it keeps a copy of the task code until v2 replaces it. Nothing else removed.
+
+### 2026-11-08 — `objective/` v2 built: three sections, no task code; the section level is the deepest known heading
+
+Claude built it at Jerry's request. `go test -race ./...`, vet, gofmt and codemap check/lint pass; `FuzzParse` ran 60s
+clean after one fix.
+
+- **`objective/` is now:** `Objective{ObjText, Instructions, Context}`, `Parse` (no fixes: Go never rewrites the file),
+  `Markdown` (standard form, `# ` headings), `Hash` (sha256 of `Markdown`), `ChangedSections`. Deleted: `cleanup.go`,
+  `render.go`, `cleanup_test.go`, front matter, tasks, `Constraints`, `Other`, `Fix`, `CheckComplete`, `BodyHash`,
+  `ApprovalStatus` (the task parts live on in `plan/`). Testdata: `objective-fib.md` (v1 task syntax) removed,
+  `objective-deepwiki.md` lost its front matter; the v1 fuzz corpus removed (a copy is in `plan/`).
+- **Which other headings become sections, decided while coding.** The first rule ("at the current section's level or
+  above") put `## Constraints` inside the objective in a real draft that uses `# Objective` + `## Instructions` (the
+  old standard layout, still common). The rule is now: compared with **the deepest known heading in the file**; at
+  that level or above, a section added to Instructions (heading kept, after Instructions' own text, in file order);
+  deeper, a subheading. With none of the three known headings, every heading starts such a section. *Downside:* in
+  `# Objective` + `## Background` + `## Instructions`, Background goes to Instructions, not the objective; the planner
+  reads all of it either way.
+- **`FuzzParse` found one bug:** a folded section with an empty body followed by a deeper one ("# 0", then "## 0")
+  merged on the second read and lost a blank line. Folded sections now keep the blank lines between heading and body.
+  Regression input kept in `objective/testdata/fuzz/FuzzParse/`.
+- **Text before the first heading** stays an error when the file has `# Objective` (otherwise it is the objective).
+- **Docs:** `docs/objective-format.md` rewritten for v2; new `docs/plan-format.md`; `examples/objective-example.md` in
+  v2 form (its steps are informal, under Instructions) and new `examples/objective-example.plan.md`, which tests keep
+  in the standard form and not stale against the example objective. The plan-mode stub reads with `objective.Parse`.
+

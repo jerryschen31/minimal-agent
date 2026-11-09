@@ -23,11 +23,11 @@ func planStubFixture(t *testing.T, file, input string) (string, error) {
 	return out.String(), err
 }
 
-// - Verify a draft is cleaned up, its fixes are printed, and it is printed in the standard layout with nothing written
+// - Verify an objective file is parsed and printed in the standard form, with nothing written
 func Test_Unit_PlanStub_Draft(t *testing.T) {
 	dir := t.TempDir()
-	draft := filepath.Join(dir, "draft.md")
-	if err := os.WriteFile(draft, []byte("#Objective\nBuild fib.\n\n## Task\n- Write fib.go\n"), 0o644); err != nil {
+	draft := filepath.Join(dir, "objective.md")
+	if err := os.WriteFile(draft, []byte("##Objective\nBuild fib.\n\n## Tasks\n- Write fib.go\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, err := planStubFixture(t, draft, "")
@@ -35,11 +35,8 @@ func Test_Unit_PlanStub_Draft(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"(3 fixes)",
-		`fixed line 1: "#Objective" → "# Objective"`,
-		"format: minagent-objective/v1",
-		"# Objective\nBuild fib.\n",
-		"### t1: Write fib.go",
+		"Read the objective " + draft,
+		"# Objective\nBuild fib.\n\n# Instructions\n## Tasks\n- Write fib.go\n",
 		"nothing was written",
 	} {
 		if !strings.Contains(out, want) {
@@ -51,7 +48,7 @@ func Test_Unit_PlanStub_Draft(t *testing.T) {
 	}
 }
 
-// - Verify a draft Cleanup refuses is an error that names the file
+// - Verify an objective file Parse refuses is an error that names the file
 func Test_Unit_PlanStub_BadDraft(t *testing.T) {
 	draft := filepath.Join(t.TempDir(), "bad.md")
 	if err := os.WriteFile(draft, []byte("# Objective\na\n\n## Context\nb\n\n## Context\nc\n"), 0o644); err != nil {

@@ -1,129 +1,60 @@
-// Package objective is used to define an objective for an autonomous agent.
+// Package objective reads objective files: what the user wants an autonomous run to achieve, in their own words.
 //
-// An objective represents a goal or task that the autonomous agent aims to achieve.
-// It encapsulates the desired outcome and includes criteria for success, constraints, and other relevant information.
-// Most importantly, an objective file contains clear and specific tasks that are executed to achieve the desired objective.
-// These tasks are actionable steps that worker agents carry out to accomplish the objective.
+// An objective file is the user's: written by hand, with an LLM's help in plan mode, or anything in between. Go never
+// rewrites it on its own. The planner LLM turns it into formal tasks in a separate plan file (package plan); when the
+// objective changes, its Hash changes and the plan is redone. See PLAN-plan-apply.md and docs/objective-format.md.
 //
-// The objective file serves as a blueprint and contract between plan mode (which writes a complete file) and autonomous mode (which runs one).
-// It ensures that the plan mode provides a complete and actionable set of tasks, while autonomous mode executes them reliably.
-//
-// Sections: "# Objective" and "## Instructions" and "## Tasks" are required in a complete file;
-// "## Constraints" and "## Context" are optional; any other "##" section is kept as written. Each task is a
-// "### tN: title" subsection of "## Tasks", with an optional "depends: t1, t2" line under its heading.
-// An optional front matter block names the format version ("format: minagent-objective/v1"; without one, v1) and,
-// in a file saved by plan mode, "approved: sha256:<hex>", the hash of the body as approved (ApprovalStatus). Unknown
-// keys are warned about and ignored.
-//
-// Reading and writing: Cleanup is the one reader. It fixes small mistakes in hand-written files and reports each fix;
-// CheckComplete then says whether the file is ready to run. Markdown is the one writer, and Cleanup reads its output
-// back unchanged with zero fixes. The package writes no files.
+// The format (v2): only "# Objective" is required; "# Instructions" and "# Context" are optional. Any other top-level
+// section (Constraints, Notes, informal Tasks) is added to Instructions with its heading. There is no front matter and
+// no task syntax.
 //
 // Shape:
-//
-// How an objective file is processed (unmarshaled) into an Objective struct object:
 //
 //	objective file (bytes)
 //	   │
 //	   ▼
-//	Cleanup
-//	   1. read the front matter          → Format, Approved
-//	   2. split the file into sections   (one per heading; heading mistakes fixed here)
-//	   3. fill in each section:
-//	        # Objective, ## Instructions,
-//	        ## Constraints, ## Context    → text fields
-//	        ## Tasks                      → []Task (ID, title, depends, body)
-//	        any other heading             → Other
-//	   4. give each task without an ID the next free number
+//	Parse
+//	   1. check and split the input (mdscan)
+//	   2. find the section level: the deepest of the three known headings
+//	   3. split into sections: a known heading starts its section; another heading at the section level or above
+//	      starts a section that goes to Instructions; a deeper one stays where it is
+//	   4. text before the first heading is the objective when there is no "# Objective"
 //	   │
 //	   ▼
-//	(Objective, []Fix, error)            every fix made along the way; an error if the file can't be read
+//	(Objective, error)
 //
-// How an Objective struct object is converted (marshaled) into a markdown file:
+//	Objective ─► Markdown()            the standard form, for Hash and the planner's prompt; Parse reads it back unchanged
+//	Objective ─► Hash()                sha256 of Markdown(): a plan's objective_hash
+//	Objective ─► ChangedSections(old)  which sections changed, for the plan summary
 //
-//	Objective ─► Markdown() = frontMatter() + body()        (body: sectionBlock, taskBlock)
-//
-// How an Objective struct object is checked for completeness and status:
-//
-//	Objective ─► CheckComplete(maxTasks) error              (taskNumber, findCycle)
-//	Objective ─► BodyHash() = sha256 of body()
-//	Objective ─► ApprovalStatus() ─► approved | edited | unplanned
-//
-// The planner (separate package) is responsible for generating an Objective struct object, after LLM-backed back-and-forth with the user.
-//
-// Full workflow for plan mode and autonomous mode:
-//
-//	plan mode:   planner tool args ─► Objective ─► AssignTaskIDs ─► CheckComplete ─► Markdown ─► Cleanup (must report 0 fixes)
-//	             ─► Approved = BodyHash() ─► Markdown ─► user approves ─► write file
-//	autonomous:  file ─► Cleanup (print + trace fixes) ─► CheckComplete (error → stop) ─► ApprovalStatus (warn unless approved) ─► run
-//
-// The standard layout (what Markdown writes):
-//
-//	---
-//	format: minagent-objective/v1
-//	approved: sha256:<hex>   (only in a file saved by plan mode)
-//	---
+// The standard form (what Markdown writes):
 //
 //	# Objective
 //	<text>
 //
-//	## Instructions
+//	# Instructions      (if any; other top-level sections follow its own text, headings kept)
 //	<text>
 //
-//	## Constraints        (optional)
-//	## Context            (optional)
-//	## <any other name>   (kept as written, in file order)
-//
-//	## Tasks
-//	<notes, optional>
-//
-//	### t1: <title>
-//	<body>
-//
-//	### t2: <title>
-//	depends: t1
-//
-//	<body>
+//	# Context           (if any)
+//	<text>
 //
 // # Codemap (auto-generated)
 //
 // Generated by `go run ./cmd/codemap` from the code; do not edit by hand. Each file lists its function and
 // method signatures in source order.
 //
-//	cleanup.go
-//	  func Cleanup(data []byte) (Objective, []Fix, error)
-//	  func firstTextLine(lines []line) int
-//	  func lastTextLine(lines []line) int
-//	  func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
-//	  func splitSections(lines []line) ([]rawSection, []Fix, error)
-//	  func headingLine(name string) string
-//	  func isCodeBlockFence(s string) bool
-//	  func readHeading(s string) (level int, text string, ok bool)
-//	  func stripClosingHashes(s string) string
-//	  func sectionName(text string) (string, bool)
-//	  func taskHeading(text string) (id, title string, hasID bool)
-//	  func taskIDFromDigits(digits string) string
-//	  func taskHeadingLine(t Task) string
-//	  func dependsLine(ids []string) string
-//	  func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
-//	  func dedent(lines []line) []line
-//	  func parseDepends(s string) (ids []string, ok bool)
-//	  func normalizeTaskID(s string) (string, bool)
-//	  func tidyBody(lines []line) (string, []Fix)
-//
 //	objective.go
-//	  func (f Fix) String() string
-//	  func (o Objective) BodyHash() string
-//	  func (o Objective) ApprovalStatus() string
-//	  func (o Objective) CheckComplete(maxTasks int) error
-//	  func AssignTaskIDs(tasks []Task) []int
-//	  func taskNumber(id string) (int, bool)
-//	  func findCycle(tasks []Task) []string
-//
-//	render.go
 //	  func (o Objective) Markdown() string
-//	  func (o Objective) frontMatter() string
-//	  func (o Objective) body() string
 //	  func sectionBlock(heading, body string) string
-//	  func taskBlock(t Task) string
+//	  func (o Objective) Hash() string
+//	  func (o Objective) ChangedSections(old Objective) []string
+//
+//	parse.go
+//	  func Parse(data []byte) (Objective, error)
+//	  func sectionLevel(lines []mdscan.Line) int
+//	  func splitSections(lines []mdscan.Line, topLevel int) []section
+//	  func sectionName(text string) (string, bool)
+//	  func isKnownName(text string) bool
+//	  func sectionText(lines []mdscan.Line, keepLeading bool) string
+//	  func joinNonEmpty(parts []string) string
 package objective

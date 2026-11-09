@@ -12,10 +12,9 @@ import (
 	"github.com/jerryschen31/minimal-agent/objective"
 )
 
-// [agent] Plan mode (-mode plan), step 2 of PLAN-plan-mode.md: the wiring only. It reads the draft (or asks for the
-// objective), prints it the way the objective package reads it, and saves nothing. Later steps replace the end of
-// planStub with the planner conversation (a chat session with read-only tools and propose_objective), which is
-// when plan mode starts calling SetupAgent.
+// [agent] Plan mode (-mode plan) is still a stub (PLAN-plan-apply.md step 2 replaces it): it reads the objective file
+// (or asks for the objective), prints it the way the objective package reads it, and saves nothing. The planner
+// (propose_plan) comes next, and plan mode then starts calling SetupAgent.
 
 // RunPlanMode runs plan mode on the real terminal and returns when it is done.
 //
@@ -30,13 +29,13 @@ func RunPlanMode(ctx context.Context, cfg config.Config) error {
 	return planStub(ctx, cfg, newPromptReader(ctx, cfg.InBuffer, cfg.OutBuffer))
 }
 
-// planStub reads the draft named by cfg.ObjectiveFile, or asks for the objective, and prints it as an objective file.
+// planStub reads the objective file named by cfg.ObjectiveFile, or asks for the objective, and prints it.
 //
 // Notes:
-//   - A draft goes through objective.Cleanup; each fix is printed. A draft Cleanup refuses is an error naming the file.
-//   - Without a draft, the answer to "What do you want to build?" becomes the objective's text. Ctrl+D, end of input or
+//   - The objective file goes through objective.Parse; a file Parse refuses is an error naming the file.
+//   - Without an objective file, the answer to "What do you want to build?" becomes the objective's text. Ctrl+D, end of input or
 //     a blank answer ends plan mode without an error.
-//   - What it prints is o.Markdown(): the draft in the standard layout, exactly what a later step would save.
+//   - What it prints is o.Markdown(): the objective in the standard form, as the planner will see it.
 //   - The reader is passed in so tests can use a plainReader; RunPlanMode passes the terminal one.
 func planStub(ctx context.Context, cfg config.Config, reader promptReader) error {
 	w := cfg.OutBuffer
@@ -47,15 +46,11 @@ func planStub(ctx context.Context, cfg config.Config, reader promptReader) error
 		if err != nil {
 			return err
 		}
-		var fixes []objective.Fix
-		o, fixes, err = objective.Cleanup(data)
+		o, err = objective.Parse(data)
 		if err != nil {
 			return fmt.Errorf("%s: %w", cfg.ObjectiveFile, err)
 		}
-		fmt.Fprintf(w, "Read the draft %s (%d fixes).\n", cfg.ObjectiveFile, len(fixes))
-		for _, f := range fixes {
-			fmt.Fprintf(w, "  fixed %s\n", f)
-		}
+		fmt.Fprintf(w, "Read the objective %s.\n", cfg.ObjectiveFile)
 	} else {
 		fmt.Fprintln(w, "What do you want to build?")
 		line, err := reader.ReadPrompt(ctx)
@@ -73,7 +68,7 @@ func planStub(ctx context.Context, cfg config.Config, reader promptReader) error
 		}
 	}
 
-	fmt.Fprintln(w, "\nThe draft, as plan mode reads it:")
+	fmt.Fprintln(w, "\nThe objective, as plan mode reads it:")
 	fmt.Fprintln(w)
 	fmt.Fprint(w, o.Markdown())
 	fmt.Fprintln(w, "\n[plan mode] The planner is not built yet; nothing was written.")

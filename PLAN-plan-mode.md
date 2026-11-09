@@ -1,5 +1,7 @@
 # PLAN: plan mode (`-mode plan`)
 
+> **Superseded 2026-11-08 by `PLAN-plan-apply.md`.** Kept for history; steps 1–2 below were built and are refactored there.
+
 Status: **shape agreed 2026-11-07, not built.** Decisions: `DECISIONS.md § 2026-11-07 — Plan mode before autonomous mode`,
 `§ objective/ package`, `§ Objective file format v1: version, task sections, Cleanup`,
 `§ Objective format v1: open points settled`,

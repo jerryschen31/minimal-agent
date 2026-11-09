@@ -1310,3 +1310,21 @@ the doc's before/after example must be what `Cleanup` does). Step 1 of `PLAN-pla
 **2026-11-07, step 2 done:** `-mode plan` with `-objective`/`-obj` and `-out` is wired; `agent/planmode.go` is a stub that
 prints the cleaned-up draft (or asks for the objective) and writes nothing (`DECISIONS.md § -mode plan wired`).
 **Next:** step 3, `ErrEndTurn` in `reActLoop`; then step 4, `propose_objective` + the output-path chooser (uses `cfg.OutFile`).
+
+**2026-11-08, redesign:** the plan-mode shape was too heavy. New shape agreed: `objective.md` (you) → `objective.plan.md`
+(planner + Go) → `state.json` (Go), applied by diff like Terraform; see `PLAN-plan-apply.md` and
+`DECISIONS.md § 2026-11-08 — Plan/apply redesign`. The built `objective/` code and `-mode plan` stub get refactored
+(step 1 of the new plan). **Next:** step 1, split `objective/` into `objective/` (v2) + `plan/`, add `state/`.
+
+**2026-11-08, later:** full governance tabled (`DECISIONS.md § A fully governed harness is tabled`). Open before rewriting
+`PLAN-plan-apply.md`: one plan file holding the objective vs two files, and the remaining critique points (see chat).
+
+**2026-11-08, end:** `PLAN-plan-apply.md` rewritten to the simplified shape (`DECISIONS.md § Simplified plan/run shape
+agreed`). **Next:** step 1 (formats): `mdscan/`, `objective/` v2, `plan/`, `state/`; Jerry types from Claude's skeleton.
+
+**2026-11-08, mdscan/ + plan/ built** (`DECISIONS.md § mdscan/ and plan/ built`). **Next (rest of step 1):** `objective/`
+v2 (delete its task code), `state/`, docs + examples, the stub on `objective.Parse`.
+
+**2026-11-08, objective/ v2 built** (`DECISIONS.md § objective/ v2 built`), with docs and example files. **Next (end of
+step 1):** `state/`, from the skeleton (Jerry reviewing it; Claude proposed adding `ObjectiveText` to the snapshot).
+

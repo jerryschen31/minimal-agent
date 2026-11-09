@@ -3,419 +3,298 @@ package objective
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// [agent] the Cleanup tests (and mustCleanup, fileOf, checkFixes, checkTasks) are in cleanup_test.go.
+// [agent] testdata/: objective-build-*.md are real drafts ("## Constraints" next to "## Instructions");
+// objective-deepwiki.md has "## Notes" and an informal "## Tasks" section with "### t1:" subheadings. All of them go
+// through the "other top-level sections are added to Instructions" rule.
 
-// complete is a hand-built objective that passes CheckComplete and uses every field.
-func complete() Objective {
-	return Objective{
-		Format:       FormatV1,
-		ObjText:      "Build a tiny CLI that prints Fibonacci numbers.",
-		Instructions: "- go test ./... passes.\n- Keep it small:\n  one file per concern.",
-		Constraints:  "- Standard library only.",
-		Context:      "The module path is example.com/fib.",
-		TaskNotes:    "Work through these in order.",
-		Tasks: []Task{
-			{ID: "t1", Title: "Create the module", Body: "Run go mod init example.com/fib."},
-			{ID: "t2", Title: "Write fib", Depends: []string{"t1"}, Body: "Write fib.go with fib(n int) []int."},
-			{ID: "t3", Title: "Write the tests", Depends: []string{"t1", "t2"},
-				Body: "Steps:\n\n- table-driven test\n- run it\n\n```go\nfunc TestFib(t *testing.T) {}\n```"},
-		},
-		Other: []Section{{"Notes", "Keep the README short."}, {"References", "- https://go.dev/doc/"}},
+// fileOf joins its arguments into a file, one per line, ending in "\n", so a test can count line numbers.
+func fileOf(ls ...string) string { return strings.Join(ls, "\n") + "\n" }
+
+// mustParse parses s and fails the test on an error.
+func mustParse(t *testing.T, s string) Objective {
+	t.Helper()
+	o, err := Parse([]byte(s))
+	if err != nil {
+		t.Fatalf("Parse: %v\ninput:\n%s", err, s)
+	}
+	return o
+}
+
+// checkObjective fails the test unless got equals want, showing both.
+func checkObjective(t *testing.T, got, want Objective) {
+	t.Helper()
+	if got != want {
+		t.Errorf("got  %#v\nwant %#v", got, want)
 	}
 }
 
-// completeMarkdown is complete().Markdown(), written out by hand.
-var completeMarkdown = strings.Join([]string{
-	"---",
-	"format: minagent-objective/v1",
-	"---",
-	"",
-	"# Objective",
-	"Build a tiny CLI that prints Fibonacci numbers.",
-	"",
-	"## Instructions",
-	"- go test ./... passes.",
-	"- Keep it small:",
-	"  one file per concern.",
-	"",
-	"## Constraints",
-	"- Standard library only.",
-	"",
-	"## Context",
-	"The module path is example.com/fib.",
-	"",
-	"## Notes",
-	"Keep the README short.",
-	"",
-	"## References",
-	"- https://go.dev/doc/",
-	"",
-	"## Tasks",
-	"Work through these in order.",
-	"",
-	"### t1: Create the module",
-	"",
-	"Run go mod init example.com/fib.",
-	"",
-	"### t2: Write fib",
-	"depends: t1",
-	"",
-	"Write fib.go with fib(n int) []int.",
-	"",
-	"### t3: Write the tests",
-	"depends: t1, t2",
-	"",
-	"Steps:",
-	"",
-	"- table-driven test",
-	"- run it",
-	"",
-	"```go",
-	"func TestFib(t *testing.T) {}",
-	"```",
-}, "\n") + "\n"
-
-// checkRoundTrip fails the test unless Cleanup(o.Markdown()) makes no fix and gives back o.
+// checkRoundTrip fails the test unless Parse(o.Markdown()) gives back o.
 func checkRoundTrip(t *testing.T, o Objective) {
 	t.Helper()
 	md := o.Markdown()
-	o2, fixes, err := Cleanup([]byte(md))
+	o2, err := Parse([]byte(md))
 	if err != nil {
-		t.Fatalf("Cleanup(Markdown()): %v\nmarkdown:\n%s", err, md)
+		t.Fatalf("Parse(Markdown()): %v\nmarkdown:\n%s", err, md)
 	}
-	if len(fixes) != 0 {
-		t.Errorf("Cleanup(Markdown()) made fixes: %v\nmarkdown:\n%s", fixes, md)
-	}
-	if !reflect.DeepEqual(o2, o) {
+	if o2 != o {
 		t.Errorf("round trip changed the objective:\n got  %#v\n want %#v\nmarkdown:\n%s", o2, o, md)
 	}
 }
 
-// --- Task IDs ---
+// --- Parse ---
 
-// Test_Unit_AssignTaskIDs: the rule on its own (it is also used by plan mode's propose_objective).
-func Test_Unit_AssignTaskIDs(t *testing.T) {
+// - Verify a file with no headings is all objective, blank lines around it dropped
+func Test_Unit_Parse_NoHeadings(t *testing.T) {
+	o := mustParse(t, fileOf("", "Build a CLI.", "It should be fast.", ""))
+	checkObjective(t, o, Objective{ObjText: "Build a CLI.\nIt should be fast."})
+}
+
+// - Verify the three known headings are found at any level, in any case, singular or plural, with a trailing ":", and
+// without a space after the "#"s
+func Test_Unit_Parse_KnownHeadingsAnyLevel(t *testing.T) {
+	o := mustParse(t, fileOf("## Objectives:", "a", "#Instruction", "b", "  ### CONTEXT", "c"))
+	checkObjective(t, o, Objective{ObjText: "a", Instructions: "b", Context: "c"})
+}
+
+// - Verify text before the first heading is the objective when there is no "# Objective" section
+func Test_Unit_Parse_TextBeforeHeadings(t *testing.T) {
+	o := mustParse(t, fileOf("Build a CLI.", "", "## Instructions", "- Go only"))
+	checkObjective(t, o, Objective{ObjText: "Build a CLI.", Instructions: "- Go only"})
+}
+
+// - Verify a deeper heading of another name stays in the section it is in
+func Test_Unit_Parse_SubheadingsStayInSection(t *testing.T) {
+	o := mustParse(t, fileOf("# Objective", "a", "## Background", "b", "# Context", "c", "### Details", "d"))
+	checkObjective(t, o, Objective{ObjText: "a\n## Background\nb", Context: "c\n### Details\nd"})
+}
+
+// - Verify the level that counts is the deepest known heading: with "# Objective" and "## Instructions", "## Constraints"
+// is a section (goes to Instructions); with only "# Objective", "## Background" is a subheading of it; with no known
+// heading, every heading starts a section
+func Test_Unit_Parse_SectionLevelIsTheDeepestKnownHeading(t *testing.T) {
+	o := mustParse(t, fileOf("# Objective", "a", "## Constraints", "x", "### Details", "d", "## Instructions", "y"))
+	checkObjective(t, o, Objective{ObjText: "a", Instructions: "y\n\n## Constraints\nx\n### Details\nd"})
+	checkRoundTrip(t, o)
+
+	o = mustParse(t, fileOf("# Objective", "a", "## Background", "b"))
+	checkObjective(t, o, Objective{ObjText: "a\n## Background\nb"})
+
+	o = mustParse(t, fileOf("Build X.", "", "## Steps", "- a", "# More", "m"))
+	checkObjective(t, o, Objective{ObjText: "Build X.", Instructions: "## Steps\n- a\n\n# More\nm"})
+	checkRoundTrip(t, o)
+
+	o = mustParse(t, fileOf("# Objective", "a", "```", "#### Instructions", "```", "## Notes", "n"))
+	checkObjective(t, o, Objective{ObjText: "a\n```\n#### Instructions\n```\n## Notes\nn"})
+}
+
+// - Verify another heading at the same level as the current section or above starts a top-level section that is added
+// to Instructions after its own text, in file order, heading line kept; also one before any known heading
+func Test_Unit_Parse_OtherTopLevelGoesToInstructions(t *testing.T) {
+	o := mustParse(t, fileOf(
+		"## Notes", "n",
+		"## Objective", "a",
+		"## Constraints", "- Go only",
+		"### Hard limits", "- no network",
+		"## Instructions", "- tests pass",
+		"# Tasks", "- write it",
+		"## Context", "c",
+	))
+	checkObjective(t, o, Objective{
+		ObjText:      "a",
+		Instructions: "- tests pass\n\n## Notes\nn\n\n## Constraints\n- Go only\n### Hard limits\n- no network\n\n# Tasks\n- write it",
+		Context:      "c",
+	})
+	checkRoundTrip(t, o)
+}
+
+// - Verify headings inside a ``` or ~~~ code block are text, "#hashtag" and a 4-space indented "#" are text, and a
+// code block left open at the end of a section is closed
+func Test_Unit_Parse_CodeBlocksAndNotHeadings(t *testing.T) {
+	o := mustParse(t, fileOf("# Objective", "a", "#hashtag", "    # code", "```", "# Instructions", "```",
+		"~~~", "## Context", "~~~", "# Context", "```", "open"))
+	checkObjective(t, o, Objective{
+		ObjText: "a\n#hashtag\n    # code\n```\n# Instructions\n```\n~~~\n## Context\n~~~",
+		Context: "```\nopen\n```",
+	})
+	checkRoundTrip(t, o)
+}
+
+// - Verify what Parse can't decide is an error naming the problem
+func Test_Unit_Parse_Errors(t *testing.T) {
 	tests := []struct {
-		name        string
-		ids         []string // "" = no ID
-		want        []string
-		wantChanged []int
+		name, input, wantSub string
 	}{
-		{"none have IDs", []string{"", "", ""}, []string{"t1", "t2", "t3"}, []int{0, 1, 2}},
-		{"all have IDs, out of order", []string{"t1", "t5", "t2"}, []string{"t1", "t5", "t2"}, nil},
-		{"mixed", []string{"t1", "", "t5", ""}, []string{"t1", "t6", "t5", "t7"}, []int{1, 3}},
-		{"non-numeric ID is kept and ignored", []string{"setup", ""}, []string{"setup", "t1"}, []int{1}},
-		{"too long to be a number", []string{"t1234567890", ""}, []string{"t1234567890", "t1"}, []int{1}},
-		{"empty", nil, nil, nil},
+		{"empty", "", "objective file is empty"},
+		{"not UTF-8", "# Objective\n\xff\n", "not UTF-8"},
+		{"two Objective sections", fileOf("# Objective", "a", "## Objectives", "b"),
+			`line 3: a second "# Objective" section (the first is on line 1)`},
+		{"two Instructions sections", fileOf("# Objective", "a", "## Instruction", "b", "### Instructions", "c"),
+			`line 5: a second "# Instructions" section (the first is on line 3)`},
+		{"text before the first heading", fileOf("Note to self", "# Objective", "x"), "line 1: text before the first heading"},
+		{"empty objective section", fileOf("# Objective", "", "# Instructions", "x"), "the objective is empty"},
+		{"only other sections", fileOf("## Notes", "x"), "the objective is empty"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var tasks []Task
-			for _, id := range tt.ids {
-				tasks = append(tasks, Task{ID: id})
-			}
-			changed := AssignTaskIDs(tasks)
-			var got []string
-			for _, task := range tasks {
-				got = append(got, task.ID)
-			}
-			if !slices.Equal(got, tt.want) || !slices.Equal(changed, tt.wantChanged) {
-				t.Errorf("IDs %v, changed %v; want %v, %v", got, changed, tt.want, tt.wantChanged)
+			if _, err := Parse([]byte(tt.input)); err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("err = %v; want it to contain %q", err, tt.wantSub)
 			}
 		})
 	}
 }
 
-// --- Markdown ---
-
-// Test_Unit_Markdown_RoundTrip: for every testdata file and complete(), Cleanup(o.Markdown()) gives back o with
-// zero fixes.
-func Test_Unit_Markdown_RoundTrip(t *testing.T) {
-	files, err := filepath.Glob("testdata/*.md")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("no testdata files (err %v)", err)
+// - Verify the testdata drafts read as expected: "## Constraints" and "## Tasks" end up in Instructions
+func Test_Unit_Parse_Testdata(t *testing.T) {
+	for _, name := range []string{"objective-build-checksum-checker.md", "objective-build-minisearch.md",
+		"objective-deepwiki.md"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			o := mustParse(t, string(data))
+			if o.ObjText == "" || !strings.Contains(o.Instructions, "\n## ") {
+				t.Errorf("ObjText %q; Instructions lacks a folded section:\n%s", o.ObjText, o.Instructions)
+			}
+		})
 	}
+	data, _ := os.ReadFile("testdata/objective-deepwiki.md")
+	o := mustParse(t, string(data))
+	if !strings.Contains(o.Instructions, "## Tasks\n\n### t1: Find the transport code") || o.Context == "" {
+		t.Errorf("deepwiki: Instructions:\n%s\nContext %q", o.Instructions, o.Context)
+	}
+}
+
+// --- Markdown, Hash, ChangedSections ---
+
+// - Verify Markdown writes "# Objective" always and the other sections when not empty, one blank line apart, ending in
+// one "\n"
+func Test_Unit_Markdown_Layout(t *testing.T) {
+	tests := []struct {
+		o    Objective
+		want string
+	}{
+		{Objective{ObjText: "a", Instructions: "b", Context: "c"}, "# Objective\na\n\n# Instructions\nb\n\n# Context\nc\n"},
+		{Objective{ObjText: "a", Context: "c"}, "# Objective\na\n\n# Context\nc\n"},
+		{Objective{ObjText: "a"}, "# Objective\na\n"},
+		{Objective{}, "# Objective\n"},
+	}
+	for _, tt := range tests {
+		if got := tt.o.Markdown(); got != tt.want {
+			t.Errorf("%#v.Markdown() = %q; want %q", tt.o, got, tt.want)
+		}
+	}
+}
+
+// - Verify Parse(o.Markdown()) gives back o for every testdata file and the example
+func Test_Unit_Markdown_RoundTrip(t *testing.T) {
+	files, _ := filepath.Glob("testdata/*.md")
+	files = append(files, "../examples/objective-example.md")
 	for _, f := range files {
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			data, err := os.ReadFile(f)
 			if err != nil {
 				t.Fatal(err)
 			}
-			o, _ := mustCleanup(t, string(data))
-			checkRoundTrip(t, o)
-		})
-	}
-	t.Run("complete", func(t *testing.T) { checkRoundTrip(t, complete()) })
-	t.Run("complete, approved", func(t *testing.T) {
-		o := complete()
-		o.Approved = o.BodyHash()
-		checkRoundTrip(t, o)
-	})
-	t.Run("empty Other section", func(t *testing.T) {
-		o := complete()
-		o.Other = []Section{{Heading: "Notes"}}
-		checkRoundTrip(t, o)
-	})
-	t.Run("task notes only", func(t *testing.T) {
-		checkRoundTrip(t, Objective{Format: FormatV1, ObjText: "x", TaskNotes: "No tasks yet."})
-	})
-}
-
-// Test_Unit_Markdown_Layout: front matter first; sections in order; empty optional sections left out; a task with
-// and without depends; the file ends with exactly one "\n".
-func Test_Unit_Markdown_Layout(t *testing.T) {
-	if got := complete().Markdown(); got != completeMarkdown {
-		t.Errorf("Markdown():\n%s\nwant:\n%s", got, completeMarkdown)
-	}
-
-	o := Objective{ObjText: "x", Approved: "sha256:abc", Tasks: []Task{{ID: "t1", Title: "Only"}}}
-	want := "---\nformat: minagent-objective/v1\napproved: sha256:abc\n---\n\n# Objective\nx\n\n## Tasks\n\n### t1: Only\n"
-	if got := o.Markdown(); got != want {
-		t.Errorf("minimal Markdown():\n%q\nwant:\n%q", got, want)
-	}
-
-	if got, want := (Objective{}).Markdown(), "---\nformat: minagent-objective/v1\n---\n\n# Objective\n"; got != want {
-		t.Errorf("empty Markdown() = %q; want %q", got, want)
-	}
-}
-
-// --- CheckComplete ---
-
-// Test_Unit_CheckComplete: a complete objective passes; each problem is named; several problems give one joined
-// error.
-func Test_Unit_CheckComplete(t *testing.T) {
-	const maxTasks = 4
-	tests := []struct {
-		name     string
-		edit     func(o *Objective) // changes complete() to break it; nil = leave it complete
-		wantSubs []string           // substrings the error must contain; empty = want nil
-	}{
-		{"complete", nil, nil},
-		{"no objective text", func(o *Objective) { o.ObjText = " \n" }, []string{`"# Objective" is missing or empty`}},
-		{"no instructions", func(o *Objective) { o.Instructions = "" }, []string{`"## Instructions" is missing or empty`}},
-		{"no tasks", func(o *Objective) { o.Tasks = nil }, []string{`"## Tasks" has no tasks`}},
-		{"too many tasks", func(o *Objective) {
-			o.Tasks = append(o.Tasks, Task{ID: "t4", Title: "a"}, Task{ID: "t5", Title: "b"})
-		}, []string{"there are 5 tasks; the limit is 4"}},
-		{"missing ID", func(o *Objective) { o.Tasks[0].ID = "" },
-			[]string{`task 1 ("Create the module"): ID "" is not t<number>`}},
-		{"non-numeric ID", func(o *Objective) { o.Tasks[0].ID = "setup" }, []string{`ID "setup" is not t<number>`}},
-		{"duplicate ID", func(o *Objective) { o.Tasks[2].ID = "t1"; o.Tasks[2].Depends = nil },
-			[]string{"task ID t1 is used by more than one task"}},
-		{"blank title", func(o *Objective) { o.Tasks[1].Title = "  " }, []string{"task t2 has no title"}},
-		{"depends on a missing task", func(o *Objective) { o.Tasks[1].Depends = []string{"t9"} },
-			[]string{`task t2 depends on "t9", which is not a task in this file`}},
-		{"depends on itself", func(o *Objective) { o.Tasks[1].Depends = []string{"t2"} },
-			[]string{"task t2 depends on itself"}},
-		{"cycle", func(o *Objective) { o.Tasks[0].Depends = []string{"t2"} },
-			[]string{"in a loop (t1 → t2 → t1)"}},
-		{"two problems at once", func(o *Objective) { o.Instructions = ""; o.Tasks = nil },
-			[]string{`"## Instructions" is missing or empty`, `"## Tasks" has no tasks`}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			o := complete()
-			if tt.edit != nil {
-				tt.edit(&o)
-			}
-			err := o.CheckComplete(maxTasks)
-			if len(tt.wantSubs) == 0 {
-				if err != nil {
-					t.Errorf("CheckComplete = %v; want nil", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("CheckComplete = nil; want an error containing %q", tt.wantSubs)
-			}
-			for _, sub := range tt.wantSubs {
-				if !strings.Contains(err.Error(), sub) {
-					t.Errorf("CheckComplete = %v; want it to contain %q", err, sub)
-				}
-			}
+			checkRoundTrip(t, mustParse(t, string(data)))
 		})
 	}
 }
 
-// Test_Unit_CheckComplete_SelfDependencyIsNotACycle: depending on itself is reported once, not also as a loop.
-func Test_Unit_CheckComplete_SelfDependencyIsNotACycle(t *testing.T) {
-	o := complete()
-	o.Tasks[0].Depends = []string{"t1"}
-	err := o.CheckComplete(4)
-	if err == nil || strings.Contains(err.Error(), "loop") {
-		t.Errorf("CheckComplete = %v; want only the self-dependency", err)
-	}
-}
-
-// Test_Unit_FindCycle: no cycle, a two-task cycle, a longer one reached from an earlier task, and missing tasks.
-func Test_Unit_FindCycle(t *testing.T) {
-	task := func(id string, deps ...string) Task { return Task{ID: id, Depends: deps} }
-	tests := []struct {
-		name  string
-		tasks []Task
-		want  []string
-	}{
-		{"none", []Task{task("t1"), task("t2", "t1"), task("t3", "t1", "t2")}, nil},
-		{"two tasks", []Task{task("t1", "t2"), task("t2", "t1")}, []string{"t1", "t2", "t1"}},
-		{"three tasks, entered from outside", []Task{task("t1", "t2"), task("t2", "t3"), task("t3", "t4"),
-			task("t4", "t2")}, []string{"t2", "t3", "t4", "t2"}},
-		{"missing and self dependencies are skipped", []Task{task("t1", "t9", "t1"), task("t2", "t1")}, nil},
-	}
-	for _, tt := range tests {
-		if got := findCycle(tt.tasks); !slices.Equal(got, tt.want) {
-			t.Errorf("%s: findCycle = %v; want %v", tt.name, got, tt.want)
-		}
-	}
-}
-
-// Test_Unit_Fix_String: with and without a line number; Was "" (added) and Now "" (ignored).
-func Test_Unit_Fix_String(t *testing.T) {
-	tests := []struct {
-		fix  Fix
-		want string
-	}{
-		{Fix{7, "### Constraints", "## Constraints"}, `line 7: "### Constraints" → "## Constraints"`},
-		{Fix{2, "", "# Objective"}, `line 2: added "# Objective"`},
-		{Fix{3, "name: fib", ""}, `line 3: ignored "name: fib"`},
-		{Fix{0, "a", "b"}, `"a" → "b"`},
-	}
-	for _, tt := range tests {
-		if got := tt.fix.String(); got != tt.want {
-			t.Errorf("%#v.String() = %q; want %q", tt.fix, got, tt.want)
-		}
-	}
-}
-
-// --- Approval ---
-
-// Test_Unit_BodyHash: the same for objectives that differ only in front matter (Format, Approved); different when
-// any section or task changes; stable for a file and its cleaned-up copy (a cosmetic fix is not an edit).
-func Test_Unit_BodyHash(t *testing.T) {
-	base := complete()
-	h := base.BodyHash()
+// - Verify Hash is sha256 of the standard form: heading spelling, level and blank lines don't change it; any change to
+// the words does
+func Test_Unit_Hash(t *testing.T) {
+	tidy := mustParse(t, fileOf("# Objective", "a", "", "# Instructions", "- b"))
+	h := tidy.Hash()
 	if !strings.HasPrefix(h, "sha256:") || len(h) != len("sha256:")+64 {
-		t.Fatalf("BodyHash = %q; want sha256:<64 hex digits>", h)
+		t.Fatalf("Hash = %q; want sha256:<64 hex digits>", h)
 	}
-
-	frontOnly := complete()
-	frontOnly.Format, frontOnly.Approved = "", "sha256:whatever"
-	if frontOnly.BodyHash() != h {
-		t.Error("the hash changed with the front matter")
+	messy := mustParse(t, fileOf("", "#objective:", "", "a", "", "", "### Instruction", "- b", ""))
+	if messy.Hash() != h {
+		t.Error("a formatting difference changed the hash")
 	}
-
-	for name, edit := range map[string]func(o *Objective){
-		"objective":   func(o *Objective) { o.ObjText += "!" },
-		"other":       func(o *Objective) { o.Other[0].Body = "changed" },
-		"task body":   func(o *Objective) { o.Tasks[0].Body = "changed" },
-		"task depend": func(o *Objective) { o.Tasks[2].Depends = []string{"t2"} },
+	for _, edited := range []Objective{
+		{ObjText: "a!", Instructions: "- b"},
+		{ObjText: "a", Instructions: "- b "},
+		{ObjText: "a", Instructions: "- b", Context: "c"},
 	} {
-		o := complete()
-		edit(&o)
-		if o.BodyHash() == h {
-			t.Errorf("%s: the hash did not change", name)
+		if edited.Hash() == h {
+			t.Errorf("%#v: the hash did not change", edited)
 		}
-	}
-
-	tidy, _ := mustCleanup(t, fileOf("# Objective", "x", "", "## Instructions", "- a"))
-	messy, fixes := mustCleanup(t, fileOf("#Objective", "x", "", "### Instruction", "-   a"))
-	if len(fixes) == 0 || tidy.BodyHash() != messy.BodyHash() {
-		t.Errorf("a cosmetic difference changed the hash (fixes %v)", fixes)
 	}
 }
 
-// Test_Unit_ApprovalStatus: no Approved → unplanned; Approved = BodyHash() → approved; then change a task's Body →
-// edited; a malformed Approved ("sha256:zz") → edited.
-func Test_Unit_ApprovalStatus(t *testing.T) {
-	o := complete()
-	if got := o.ApprovalStatus(); got != ApprovalUnplanned {
-		t.Errorf("no Approved: %q; want %q", got, ApprovalUnplanned)
+// - Verify ChangedSections names the sections whose text differs, in standard order
+func Test_Unit_ChangedSections(t *testing.T) {
+	old := Objective{ObjText: "a", Instructions: "b"}
+	if got := old.ChangedSections(old); got != nil {
+		t.Errorf("unchanged: %v", got)
 	}
-	o.Approved = o.BodyHash()
-	if got := o.ApprovalStatus(); got != ApprovalApproved {
-		t.Errorf("Approved = BodyHash(): %q; want %q", got, ApprovalApproved)
-	}
-
-	saved, _ := mustCleanup(t, o.Markdown())
-	if got := saved.ApprovalStatus(); got != ApprovalApproved {
-		t.Errorf("after writing and reading back: %q; want %q", got, ApprovalApproved)
-	}
-
-	o.Tasks[0].Body = "edited by hand"
-	if got := o.ApprovalStatus(); got != ApprovalEdited {
-		t.Errorf("after an edit: %q; want %q", got, ApprovalEdited)
-	}
-	o.Approved = "sha256:zz"
-	if got := o.ApprovalStatus(); got != ApprovalEdited {
-		t.Errorf("malformed Approved: %q; want %q", got, ApprovalEdited)
+	now := Objective{ObjText: "a", Instructions: "b2", Context: "c"}
+	if got, want := now.ChangedSections(old), []string{"# Instructions", "# Context"}; !slices.Equal(got, want) {
+		t.Errorf("ChangedSections = %v; want %v", got, want)
 	}
 }
 
 // --- Documentation ---
 
-// Test_Unit_ExampleFile: examples/objective-example.md is in the standard form (zero fixes), ready to run, and round-
-// trips, so the example people copy from stays valid.
+// - Verify examples/objective-example.md parses and is already in the standard form
 func Test_Unit_ExampleFile(t *testing.T) {
 	data, err := os.ReadFile("../examples/objective-example.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	o, fixes := mustCleanup(t, string(data))
-	checkFixes(t, fixes, nil)
-	if err := o.CheckComplete(20); err != nil {
-		t.Errorf("CheckComplete: %v", err)
-	}
+	o := mustParse(t, string(data))
 	if got := o.Markdown(); got != string(data) {
-		t.Errorf("the example is not exactly what Markdown writes:\n%s", got)
+		t.Errorf("the example is not in the standard form:\n%s", got)
 	}
 }
 
-// Test_Unit_DocHandWrittenExample: the before/after example in docs/objective-format.md is what Cleanup does.
+// - Verify the before/after example in docs/objective-format.md is what Parse does
 func Test_Unit_DocHandWrittenExample(t *testing.T) {
-	o, fixes := mustCleanup(t, fileOf(
-		"#Objective",
+	o := mustParse(t, fileOf(
+		"## Objective",
 		"Build a tiny Go program that prints the first 10 Fibonacci numbers.",
 		"",
-		"## Task",
-		"- Write fib.go and run it with go run .",
-		"- Write fib_test.go and run go test ./...",
+		"## Constraints",
+		"- Standard library only.",
 		"",
-		"## Instruction",
-		"-   go test ./... passes and go run . prints 0 1 1 2 3 5 8 13 21 34,",
-		"one per line.",
+		"## Instructions",
+		"- go test ./... passes and go run . prints them one per line.",
+		"",
+		"## Tasks",
+		"- Write fib.go",
+		"- Write fib_test.go",
 	))
 	want := fileOf(
 		"# Objective",
 		"Build a tiny Go program that prints the first 10 Fibonacci numbers.",
 		"",
-		"## Instructions",
-		"- go test ./... passes and go run . prints 0 1 1 2 3 5 8 13 21 34,",
-		"  one per line.",
+		"# Instructions",
+		"- go test ./... passes and go run . prints them one per line.",
+		"",
+		"## Constraints",
+		"- Standard library only.",
 		"",
 		"## Tasks",
-		"",
-		"### t1: Write fib.go and run it with go run .",
-		"",
-		"### t2: Write fib_test.go and run go test ./...",
+		"- Write fib.go",
+		"- Write fib_test.go",
 	)
-	if got := o.body(); got != want {
-		t.Errorf("body:\n%s\nwant:\n%s", got, want)
-	}
-	if len(fixes) != 7 {
-		t.Errorf("%d fixes; the doc says 7: %v", len(fixes), fixes)
+	if got := o.Markdown(); got != want {
+		t.Errorf("Markdown:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 // --- Fuzzing ---
 
-// FuzzCleanup: for any input, Cleanup never panics, and when it succeeds, Cleanup(o.Markdown()) succeeds with zero
-// fixes and gives back o. Run: go test ./objective -run XXX -fuzz FuzzCleanup -fuzztime 30s
-func FuzzCleanup(f *testing.F) {
+// FuzzParse: for any input, Parse never panics, and when it succeeds, Parse(o.Markdown()) gives back o.
+// Run: go test ./objective -run XXX -fuzz FuzzParse -fuzztime 30s
+func FuzzParse(f *testing.F) {
 	files, _ := filepath.Glob("testdata/*.md")
 	for _, p := range files {
 		if data, err := os.ReadFile(p); err == nil {
@@ -423,23 +302,18 @@ func FuzzCleanup(f *testing.F) {
 		}
 	}
 	for _, s := range []string{
-		completeMarkdown,
 		"",
-		"# Objective\nx\n",
-		"Build it.\n## Tasks\n- a\n  more\n- [x] b\n### t5: c\ndepends on: task1, 3\n",
-		"## Context\n```\nunclosed\n## Tasks\n### t1: x\n",
+		"Build it.\n",
+		"## Notes\nn\n## Objective\na\n### Sub\n## Tasks\n- x\n",
+		"# Objective\na\n# Context\n```\nopen\n# Instructions\n",
+		"#objective\n#Instructions:\n  ## Context\n####### x\n",
 	} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		o, fixes, err := Cleanup(data)
+		o, err := Parse(data)
 		if err != nil {
 			return // rejecting an input is fine; panicking is not
-		}
-		for _, x := range fixes {
-			if x.Was == x.Now {
-				t.Fatalf("a fix that changes nothing: %#v", x)
-			}
 		}
 		checkRoundTrip(t, o)
 	})

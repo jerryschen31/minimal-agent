@@ -19,7 +19,7 @@ If you want to use a remote-hosted model, make sure you configure API keys for y
 [Running thoughts](THOUGHTS.md)<br>
 [Running decisions](DECISIONS.md)<br>
 [Running session notes](SESSION.md)<br>
-[Objective file format](docs/objective-format.md) Objective files are used to drive autonomous mode. [example](examples/objective-example.md))
+[Objective file format](docs/objective-format.md) and [plan file format](docs/plan-format.md): you write the objective, the planner turns it into a plan, autonomous mode runs the plan ([example objective](examples/objective-example.md), [its plan](examples/objective-example.plan.md)).
 
 [MVP 1](mvp1/): I planned, coding agent wrote code (Fable 5.1)<br>
 [MVP 2](mvp2/learn/): I designed and coded several iterations, with a coding agent as thinking partner and pair programmer (Sonnet 5.5)<br>
