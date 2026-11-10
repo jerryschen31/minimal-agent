@@ -1264,3 +1264,75 @@ per-component `Mkdir` + `Lstat` + `OpenRoot` + `SameFile`); Windows Job Object f
 "`/reload` designed in detail, then deferred" entry; deferred, so ask Jerry first; `Config.ConfigFile` exists for it); (3) Jerry's
 own autonomous-mode port, which needs a sandbox/worktree before commands run unattended ("unattended means contained");
 (4) try `run_command` by hand with a real model (`runCommands: ["go"]`, ask rule `run_command:go run*`).
+
+### 2026-11-07 — autonomous mode planned; plan mode comes first
+
+Shape of autonomous mode (from mvp3/mvp4) and of a new `-mode plan` discussed with Jerry. Decisions:
+`DECISIONS.md § 2026-11-07 — Plan mode before autonomous mode`. Plan: `PLAN-plan-mode.md`.
+
+**Open (proposed by Claude, not yet confirmed):** output written next to the draft (`objective-full.md` in the current directory without one); a separate
+`objective/` package rather than objective parsing inside `director/`; a `planner/` package.
+
+**Still open for autonomous mode:** `run_command` unattended (proposal: refuse to start with it enabled until a
+worktree/sandbox exists); what `approval: allow-all` means with nobody to confirm it; rounds (`maxIterations`) deferred?
+
+**Next:** `PLAN-plan-mode.md` step 1, the `objective/` package (Jerry types it from a skeleton).
+
+**2026-11-07, later:** format v1 decided (`DECISIONS.md § Objective file format v1`): front-matter version, `### tN:` task
+sections, `Cleanup()` before `CheckComplete()`. Open questions put to Jerry: Cleanup as the lenient reader (replacing
+`Parse`) vs text-to-text; renumbering must rewrite `depends`; task-body newlines kept vs joined; `depends:` line syntax.
+The `objective/` skeleton (`parse.go`, tests) is written for the old bullet format and needs redoing once these are answered.
+
+**2026-11-07, review pass on the plan/objective shape — open items (not decided):**
+- Format: unknown front-matter keys error or warn (forward compatibility); BOM and `~~~` fences; `### tN:` headings
+  outside `## Tasks` / a missing `## Tasks` heading; `depends` leniency (`depends on:`, bare `1`).
+- Autonomous scheduling with `depends`: next = first ready task in file order; a failed task blocks its dependents
+  (new `blocked` status) — stop the run or continue independent tasks?
+- Plan mode: which worker tools the planner sees (MCP servers would have to start); no-LLM shortcut when the draft is
+  already complete; show a diff against the draft; cap printed fixes; `x-full.md` as input naming.
+- Trust: a file edited after approval runs unreviewed (option: body hash in front matter, warn on mismatch); plan and
+  apply should use the same `workDir`.
+- Tests/docs: `FuzzCleanup` (no panic; round trip with zero fixes); a user-facing format reference + example file.
+
+**2026-11-07, review pass answered:** items 1–4, 11, 13, 14 decided (`DECISIONS.md § Objective format v1: review pass`); the
+rest deferred to their steps (`PLAN-plan-mode.md § Deferred`). Skeleton in `objective/` updated; Jerry fills it in next.
+
+**2026-11-07, end of day:** `objective/` is complete and tested (`DECISIONS.md § objective/ package complete`); `Objective`
+stays a struct (`§ Objective stays a plain struct`). Uncommitted: the objective files (partly staged by Jerry),
+`objective/testdata/fuzz/` (8 regression inputs from fuzzing; keep them), `CODEMAP.md`, `DECISIONS.md`.
+**Next:** `PLAN-plan-mode.md` step 2, `-mode plan` wiring and flags (then the `planner/` package: `proposeArgs` +
+`toObjective`). Still deferred: the format reference + example file (end of step 1).
+
+**2026-11-07, later:** format reference `docs/objective-format.md` and example `examples/objective-example.md` written
+(linked from README); two tests keep them in step with the code (the example must be exactly what `Markdown` writes;
+the doc's before/after example must be what `Cleanup` does). Step 1 of `PLAN-plan-mode.md` is done; next is step 2.
+
+**2026-11-07, step 2 done:** `-mode plan` with `-objective`/`-obj` and `-out` is wired; `agent/planmode.go` is a stub that
+prints the cleaned-up draft (or asks for the objective) and writes nothing (`DECISIONS.md § -mode plan wired`).
+**Next:** step 3, `ErrEndTurn` in `reActLoop`; then step 4, `propose_objective` + the output-path chooser (uses `cfg.OutFile`).
+
+**2026-11-08, redesign:** the plan-mode shape was too heavy. New shape agreed: `objective.md` (you) → `objective.plan.md`
+(planner + Go) → `state.json` (Go), applied by diff like Terraform; see `PLAN-plan-apply.md` and
+`DECISIONS.md § 2026-11-08 — Plan/apply redesign`. The built `objective/` code and `-mode plan` stub get refactored
+(step 1 of the new plan). **Next:** step 1, split `objective/` into `objective/` (v2) + `plan/`, add `state/`.
+
+**2026-11-08, later:** full governance tabled (`DECISIONS.md § A fully governed harness is tabled`). Open before rewriting
+`PLAN-plan-apply.md`: one plan file holding the objective vs two files, and the remaining critique points (see chat).
+
+**2026-11-08, end:** `PLAN-plan-apply.md` rewritten to the simplified shape (`DECISIONS.md § Simplified plan/run shape
+agreed`). **Next:** step 1 (formats): `mdscan/`, `objective/` v2, `plan/`, `state/`; Jerry types from Claude's skeleton.
+
+**2026-11-08, mdscan/ + plan/ built** (`DECISIONS.md § mdscan/ and plan/ built`). **Next (rest of step 1):** `objective/`
+v2 (delete its task code), `state/`, docs + examples, the stub on `objective.Parse`.
+
+**2026-11-08, objective/ v2 built** (`DECISIONS.md § objective/ v2 built`), with docs and example files. **Next (end of
+step 1):** `state/`, from the skeleton (Jerry reviewing it; Claude proposed adding `ObjectiveText` to the snapshot).
+
+
+**2026-11-09, step 2 built** (`DECISIONS.md § 2026-11-09 — Step 2 built`): plan mode through `SetupAgent`/`RunAgent`,
+the objective chat (`update_objective`, `/save`, `/edit`), the planner run (`propose_plan`, `ErrEndTurn`), `Accept?` and
+revise, `-objective` file or text, `-yes`/`-y`, per-mode defaults, `agent/planner/`. Not committed (Jerry commits).
+`state/` was moved after step 2 (a first plan never reads state); its skeleton still waits for Jerry's review, with
+`ObjectiveText` added. **Next:** try plan mode against a real model; then step 3 (one complete serial run) with
+`state/`. Open: `/plan` in chat and `Run now?` are left of step 5. Follow-ups done the same day: `Save over <file>?`,
+one user message at a time, `maxPlanTasks` (`DECISIONS.md § Plan mode follow-ups`).

@@ -39,7 +39,7 @@ func Test_Unit_PrintInfo_WorkDir_ResolvesSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = link
 
 	code, out := runInfo(t, cfg, "")
@@ -53,7 +53,7 @@ func Test_Unit_PrintInfo_WorkDir_ResolvesSymlink(t *testing.T) {
 
 // - Verify the config file line shows the given path, or "none, defaults only" when there is none
 func Test_Unit_PrintInfo_ConfigFileLine(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	for configFile, want := range map[string]string{
 		"my-config.json": "config file:  my-config.json\n",
@@ -69,7 +69,7 @@ func Test_Unit_PrintInfo_ConfigFileLine(t *testing.T) {
 func Test_Unit_PrintInfo_ApiKeyLine(t *testing.T) {
 	const name = "MINAGENT_TEST_INFO_API_KEY"
 	const fakeKey = "sk-test-not-a-real-key-123"
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.ApiKeyName = name
 
@@ -97,7 +97,7 @@ func Test_Unit_PrintInfo_ApiKeyLine(t *testing.T) {
 func Test_Unit_PrintInfo_DoesNotLeakMcpSecrets(t *testing.T) {
 	secrets := []string{"FAKE_SECRET_ARG_123", "FAKE_SECRET_ENV_123", "FAKE_SECRET_URL_123", "FAKE_SECRET_HDR_123",
 		"FAKE_SECRET_USERINFO_123", "FAKE_SECRET_QUERY_123"}
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BaseURL = "https://user:" + secrets[4] + "@llm.example.invalid/v1?key=" + secrets[5]
 	cfg.McpServers = map[string]config.McpServerConfig{
@@ -115,7 +115,7 @@ func Test_Unit_PrintInfo_DoesNotLeakMcpSecrets(t *testing.T) {
 
 // - Verify the default config lists read_file with a "never reads:" line naming every deny-list entry, and returns 0
 func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 
 	code, out := runInfo(t, cfg, "")
@@ -150,7 +150,7 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 
 // - Verify read_file gets a "never reads: anything in the trace directory (...)" line naming a configured TraceDir
 func Test_Unit_PrintInfo_BuiltinTools_TraceDirLine(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.TraceDir = filepath.Join(t.TempDir(), "fake-traces")
 
@@ -165,7 +165,7 @@ func Test_Unit_PrintInfo_BuiltinTools_TraceDirLine(t *testing.T) {
 
 // - Verify an empty TraceDir prints no trace-directory line
 func Test_Unit_PrintInfo_BuiltinTools_NoTraceDir_NoLine(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.TraceDir = ""
 
@@ -180,7 +180,7 @@ func Test_Unit_PrintInfo_BuiltinTools_NoTraceDir_NoLine(t *testing.T) {
 
 // - Verify an empty BuiltinTools list prints "Built-in tools (0)" and returns 0
 func Test_Unit_PrintInfo_BuiltinTools_None(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BuiltinTools = []string{}
 
@@ -196,7 +196,7 @@ func Test_Unit_PrintInfo_BuiltinTools_None(t *testing.T) {
 // - Verify a workDir that does not exist fails info mode even with no built-in tools enabled (the file tools'
 // workspace is checked regardless), printing "Built-in tools: FAILED" and returning InfoFailed
 func Test_Unit_PrintInfo_BuiltinTools_None_BadWorkDir_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = filepath.Join(t.TempDir(), "missing")
 	cfg.BuiltinTools = []string{}
 
@@ -211,7 +211,7 @@ func Test_Unit_PrintInfo_BuiltinTools_None_BadWorkDir_Fails(t *testing.T) {
 
 // - Verify an unknown built-in tool prints a FAILED row after the config section and returns InfoFailed
 func Test_Unit_PrintInfo_BuiltinTools_Unknown_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BuiltinTools = []string{"Bogus"}
 
@@ -279,7 +279,7 @@ func lineWith(out string, parts ...string) string {
 // - Verify a working MCP server is shown as connected with its name, version and tool count, and each tool is
 // listed by its model-facing name with its hint label and only the first sentence of its description
 func Test_Unit_PrintInfo_MCP_ConnectedServerAndTools(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
 
@@ -307,7 +307,7 @@ func Test_Unit_PrintInfo_MCP_ConnectedServerAndTools(t *testing.T) {
 // - Verify a stdio server that can't start shows its command and arg count and FAILED, never its args or env,
 // the working server is still listed with its tools, and the exit code is InfoFailed
 func Test_Unit_PrintInfo_MCP_FailedStdioServer_OthersStillListed(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{
 		"broken": {Command: "does-not-exist-minagent-test", Args: []string{"--token=FAKE_SECRET_ARG_123"},
@@ -337,7 +337,7 @@ func Test_Unit_PrintInfo_MCP_FailedStdioServer_OthersStillListed(t *testing.T) {
 
 // - Verify a remote server that can't be reached shows FAILED without leaking the token in its URL or headers
 func Test_Unit_PrintInfo_MCP_FailedRemoteServer_HidesURLAndHeaders(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{
 		"remote": {URL: "http://127.0.0.1:1/mcp?token=FAKE_SECRET_URL_123",
@@ -395,7 +395,7 @@ func Test_Unit_HideURL(t *testing.T) {
 // "not started (interrupted)", "interrupted" is printed, and the exit code is InfoInterrupted
 func Test_Unit_PrintInfo_ContextAlreadyCancelled_StartsNoServer(t *testing.T) {
 	url := startInfoMCPServer(t)
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{"a": {URL: url}, "b": {URL: url}}
 	var out bytes.Buffer
@@ -438,7 +438,7 @@ func Test_Unit_PrintInfo_CtrlC_WhileServerStarts(t *testing.T) {
 	t.Cleanup(hung.Close)
 	t.Cleanup(func() { close(release) })
 
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{"a": {URL: hung.URL}, "b": {URL: startInfoMCPServer(t)}}
 	var out bytes.Buffer
@@ -470,7 +470,7 @@ func Test_Unit_PrintInfo_CtrlC_WhileServerStarts(t *testing.T) {
 
 // - Verify a built-in tool failure still returns InfoFailed when every MCP server connects
 func Test_Unit_PrintInfo_BuiltinsFail_ServersFine_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BuiltinTools = []string{"Bogus"}
 	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
@@ -511,7 +511,7 @@ func Test_Unit_PrintInfo_BadConfig_StartsNoServer(t *testing.T) {
 				http.Error(w, "should not be contacted", http.StatusInternalServerError)
 			}))
 			t.Cleanup(srv.Close)
-			cfg := config.GetDefaultConfig()
+			cfg := config.GetDefaultConfig(config.ModeChat)
 			cfg.WorkDir = t.TempDir()
 			cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: srv.URL}}
 			tt.set(&cfg)
@@ -710,7 +710,7 @@ func Test_Unit_PrintToolRules_InvalidRule_Fails(t *testing.T) {
 // - Verify the default config shows no deny rules and the seven default ask rules (no warning), then "Approval: ask",
 // after the MCP tools section, and returns InfoOK
 func Test_Unit_PrintInfo_ToolRules_Default(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 
 	code, out := runInfo(t, cfg, "")
@@ -741,7 +741,7 @@ func Test_Unit_PrintInfo_ToolRules_Default(t *testing.T) {
 
 // - Verify a config deny rule matching the built-in read_file shows that match and returns InfoOK
 func Test_Unit_PrintInfo_ToolRules_ConfigRuleMatchesBuiltin(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules = []string{"READ_*"}
 
@@ -759,7 +759,7 @@ func Test_Unit_PrintInfo_ToolRules_ConfigRuleMatchesBuiltin(t *testing.T) {
 
 // - Verify an invalid rule returns InfoFailed with a FAILED line, and the built-in and MCP tools are still listed
 func Test_Unit_PrintInfo_ToolRules_Invalid_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules = []string{"*delete["}
 	cfg.McpServers = map[string]config.McpServerConfig{"docs": {URL: startInfoMCPServer(t)}}
@@ -784,7 +784,7 @@ func Test_Unit_PrintInfo_ToolRules_Invalid_Fails(t *testing.T) {
 
 // - Verify a config error (MCP not started) shows the "some tools could not be listed" note on the rules and no warning
 func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.MCPResultMaxBytes = -1
 	cfg.DenyRules = []string{"*frobnicate*"} // [agent] must match no built-in tool, whatever the default list is
@@ -806,7 +806,7 @@ func Test_Unit_PrintInfo_ToolRules_BadConfig_ShowsNote(t *testing.T) {
 
 // - Verify rules are matched against MCP tools by their model-facing names (server prefix included)
 func Test_Unit_PrintInfo_ToolRules_MatchesMCPTool(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BuiltinTools = []string{"read_file"} // [agent] so *write* can match only the MCP tool, not the built-in write_file
 	cfg.DenyRules = []string{"*write*", "docs_*", "write"}
@@ -831,7 +831,7 @@ func Test_Unit_PrintInfo_ToolRules_MatchesMCPTool(t *testing.T) {
 // - Verify empty denyRules and askRules lists in the config print the two "none" lines, then the approval line, and
 // return InfoOK
 func Test_Unit_PrintInfo_ToolRules_Empty(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyRules, cfg.AskRules = []string{}, []string{}
 
@@ -846,7 +846,7 @@ func Test_Unit_PrintInfo_ToolRules_Empty(t *testing.T) {
 
 // - Verify approval "allow-all" in the config shows the allow-all line in info mode and is not a failure
 func Test_Unit_PrintInfo_ToolRules_AllowAll(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.Approval = config.ApprovalAllowAll
 
@@ -881,7 +881,7 @@ func Test_Unit_PrintInfo_MCP_ToolsListFails_ToolRulesNoteIncomplete(t *testing.T
 	}))
 	t.Cleanup(srv.Close)
 
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{"broken": {URL: srv.URL}}
 	cfg.DenyRules = []string{"broken_*"}
@@ -933,7 +933,7 @@ func Test_Unit_PrintInfo_MCP_ControlCharsAreQuoted(t *testing.T) {
 	}, nil))
 	t.Cleanup(srv.Close)
 
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{"evil": {URL: srv.URL}}
 	_, out := runInfo(t, cfg, "")
@@ -1011,7 +1011,7 @@ func Test_Unit_SafeMCPError_StdioServers_Unchanged(t *testing.T) {
 
 // - Verify read_file gets an "also never reads (denyPaths): ..." line listing the config's extra patterns
 func Test_Unit_PrintInfo_BuiltinTools_DenyPathsLine(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyPaths = []string{"*.secret", "creds.json"}
 
@@ -1028,7 +1028,7 @@ func Test_Unit_PrintInfo_BuiltinTools_DenyPathsLine(t *testing.T) {
 func Test_Unit_PrintInfo_BuiltinTools_NoDenyPaths_NoLine(t *testing.T) {
 	for name, names := range map[string][]string{"nil": nil, "empty": {}} {
 		t.Run(name, func(t *testing.T) {
-			cfg := config.GetDefaultConfig()
+			cfg := config.GetDefaultConfig(config.ModeChat)
 			cfg.WorkDir = t.TempDir()
 			cfg.DenyPaths = names
 
@@ -1048,7 +1048,7 @@ func Test_Unit_PrintInfo_BuiltinTools_NoDenyPaths_NoLine(t *testing.T) {
 
 // - Verify a bad denyPaths pattern makes info mode print Built-in tools: FAILED and return InfoFailed
 func Test_Unit_PrintInfo_BuiltinTools_BadDenyPaths_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.DenyPaths = []string{"[abc"}
 
@@ -1064,7 +1064,7 @@ func Test_Unit_PrintInfo_BuiltinTools_BadDenyPaths_Fails(t *testing.T) {
 // - Verify info mode passes maxSearchFiles to list_files: 0 with list_files enabled prints "Built-in tools: FAILED"
 // with the "must be positive" reason and returns InfoFailed
 func Test_Unit_PrintInfo_ListFiles_ZeroMaxSearchFiles_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.BuiltinTools, cfg.MaxSearchFiles = []string{"list_files"}, 0
 
@@ -1079,7 +1079,7 @@ func Test_Unit_PrintInfo_ListFiles_ZeroMaxSearchFiles_Fails(t *testing.T) {
 
 // - Verify a bad ignorePaths pattern makes info mode print Built-in tools: FAILED and return InfoFailed
 func Test_Unit_PrintInfo_BuiltinTools_BadIgnorePaths_Fails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.IgnorePaths = []string{"[abc"}
 

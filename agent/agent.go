@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
@@ -28,6 +29,7 @@ type Agent struct {
 // registry, trace recorder and chat session, in that order.
 //
 // Notes:
+//   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode).
 //   - A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent then returns context.Canceled, and
 //     the MCP servers that had already connected are kept in agent.mcpConns, so ShutdownAgent closes them. A nil
 //     interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
@@ -124,6 +126,13 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	chatSession.Hooks = []hooks.Hook{toolRules}
 	agent.session = chatSession
 
+	// 10. plan mode: adds plan mode details into the session and adds update_objective tool to the tool list
+	if cfg.AgentMode == config.ModePlan {
+		if err := setupPlanMode(chatSession, slices.Concat(builtinTools, mcpTools)); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -131,8 +140,8 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 //
 // Notes:
 //   - intsigChRecv of type <-chan os.Signal only receives OS interrupt signals (e.g., Ctrl+C).
-//   - Only "chat" mode is supported; any other agent mode returns an "unsupported agent mode" error. This function
-//     needs to be updated to handle headless and oneshot modes, not just chat mode.
+//   - Chat and plan modes are supported; any other agent mode returns an "unsupported agent mode" error. This function
+//     needs to be updated to handle headless and oneshot modes.
 //   - Records run_start now. run_end is recorded by ShutdownAgent, not here: background work such as auto-compaction
 //     can still be running when this function returns, and its events must land before run_end.
 //   - Returns ctx's error at once if ctx is already cancelled.
@@ -145,8 +154,10 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 	agent.runTrace = trace.StartRun(agent.session.Recorder, agent.session.Config)
 	// select agent mode
 	var err error
-	if agent.agentMode == "chat" {
+	if agent.agentMode == config.ModeChat {
 		err = runChatLoop(ctx, intsigChRecv, agent.session)
+	} else if agent.agentMode == config.ModePlan {
+		err = runPlanMode(ctx, intsigChRecv, agent.session)
 	} else {
 		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
@@ -202,6 +213,10 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
+	}
+	// only plan mode reads it; 0 would refuse every plan
+	if cfg.AgentMode == config.ModePlan && cfg.MaxPlanTasks <= 0 {
+		return fmt.Errorf("maxPlanTasks must be a positive integer in plan mode, got %d", cfg.MaxPlanTasks)
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

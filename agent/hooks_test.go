@@ -74,7 +74,7 @@ func Test_RunToolCall_HookVetoes_ToolNotRunAndErrorObserved(t *testing.T) {
 	spy := &recorderSpy{}
 	fx.Session.Recorder = spy
 
-	got := runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), deleteCall())
+	got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), deleteCall())
 
 	if tool.calls != 0 {
 		t.Errorf("expected the tool not to run, but CallTool ran %d time(s)", tool.calls)
@@ -105,7 +105,7 @@ func Test_RunToolCall_HookAllows_ToolRuns(t *testing.T) {
 	hook := &fakeHook{}
 	fx, tool := newHookFixture(t, hook)
 
-	got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+	got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 	if tool.calls != 1 || got.Content != "deleted" {
 		t.Errorf("expected the tool to run once and return %q; ran %d time(s), content %q", "deleted", tool.calls, got.Content)
@@ -126,7 +126,7 @@ func Test_RunToolCall_MultipleHooks(t *testing.T) {
 		second := &fakeHook{name: "second", order: &order}
 		fx, tool := newHookFixture(t, first, second)
 
-		got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+		got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 		if !slices.Equal(order, []string{"first"}) {
 			t.Errorf("expected only the first hook to be called, got %v", order)
@@ -141,7 +141,7 @@ func Test_RunToolCall_MultipleHooks(t *testing.T) {
 		second := &fakeHook{name: "second", order: &order}
 		fx, tool := newHookFixture(t, first, second)
 
-		got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+		got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 		if !slices.Equal(order, []string{"first", "second"}) {
 			t.Errorf("expected both hooks in order, got %v", order)
@@ -156,7 +156,7 @@ func Test_RunToolCall_MultipleHooks(t *testing.T) {
 func Test_RunToolCall_NoHooks_ToolRuns(t *testing.T) {
 	fx, tool := newHookFixture(t) // fx.Session.Hooks is nil
 
-	got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+	got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 	if tool.calls != 1 || got.Content != "deleted" {
 		t.Errorf("expected the tool to run once and return %q; ran %d time(s), content %q", "deleted", tool.calls, got.Content)
@@ -176,7 +176,7 @@ func Test_RunToolCall_HooksSkippedForInvalidCalls(t *testing.T) {
 			fx, tool := newHookFixture(t, hook)
 			call := model.ToolCall{ID: "call_1", Function: fn}
 
-			got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call)
+			got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call)
 
 			if len(hook.seen) != 0 {
 				t.Errorf("expected the hook not to be called, got %d call(s)", len(hook.seen))

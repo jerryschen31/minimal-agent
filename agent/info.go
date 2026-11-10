@@ -103,7 +103,7 @@ func printToolRules(w io.Writer, cfg config.Config, toolNames []string, allListe
 		fmt.Fprintf(w, "Tool rules: FAILED: %v\n", err)
 		return false
 	}
-	defaults := config.GetDefaultConfig()
+	defaults := config.GetDefaultConfig(cfg.AgentMode) // the rule defaults are the same in every mode today
 	printRules(w, "Deny rules", "refused, never asked", toolRules.DenyRules(), defaults.DenyRules, toolNames, allListed)
 	printRules(w, "Ask rules", "need your approval", toolRules.AskRules(), defaults.AskRules, toolNames, allListed)
 	switch cfg.Approval {

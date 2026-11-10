@@ -31,11 +31,19 @@ type ChatSession struct {
 	// AllowAskRules runs ask-rule calls without asking: approval "allow-all", confirmed by the user at chat startup
 	// (confirmAllowAll). It never affects deny rules.
 	AllowAskRules bool
+	// ModeDetails holds what one mode keeps on the session: *planModeDetails in plan mode, nil in chat mode. Code that
+	// needs a mode's fields checks for its type (cs.ModeDetails.(*planModeDetails)), so the session itself stays
+	// mode-agnostic.
+	ModeDetails ModeDetails
 	// Output reports to the user (a turn's progress, notices, errors); reActLoop and chat mode never print directly,
 	// except what Output's doc comment lists. NewChatSession sets chat mode's chatOutput on OutBuffer; code that swaps
 	// OutBuffer must set Output too.
 	Output Output
 }
+
+// ModeDetails is what one mode keeps on a ChatSession (ChatSession.ModeDetails); each mode that needs any has its own
+// struct. ModeName names the mode, so not just any value can be put there.
+type ModeDetails interface{ ModeName() string }
 
 // NewChatSession builds a ChatSession from its parts, with chat mode's Output on cfg.OutBuffer.
 //

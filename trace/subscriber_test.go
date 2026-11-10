@@ -53,7 +53,7 @@ func Test_JSONL_RefusesToReuseAFileOrAPathInTheRunID(t *testing.T) {
 }
 
 func Test_SetupRecorder_WritesATraceFile(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
 	rec, err := SetupRecorder(t.Context(), cfg)
 	if err != nil {
@@ -81,7 +81,7 @@ func Test_SetupRecorder_WritesATraceFile(t *testing.T) {
 }
 
 func Test_SetupRecorder_DisabledWritesNothing_UncreatableDirFails(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
 	cfg.TraceEnabled = false
 	rec, err := SetupRecorder(t.Context(), cfg)

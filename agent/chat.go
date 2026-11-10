@@ -26,6 +26,10 @@ import (
 // Notes:
 //   - Slash commands are /exit and /quit (return true), /clear, /summary (or /summarize), /compact and /config. An
 //     unrecognized command prints a notice. Empty or all-space lines are skipped.
+//   - Plan mode: a pending /edit note (planModeDetails.editNote) is put at the start of the message sent to the model,
+//     and cleared once the turn succeeds.
+//   - /save exists only in plan mode (cs.ModeDetails is *planModeDetails): it writes the draft objective and returns
+//     true, ending the chat; if there is nothing to save or the write fails it says so and the chat goes on.
 //   - msgContext is read once at the top, before /clear runs, and the context-cleared event records its size.
 //   - /compact first checks ShouldStartCompaction, so a second compaction is never triggered while one is in progress.
 //   - A prompt is traced as a task: task_start now, task_end (with status and duration) when this function returns. A
@@ -84,6 +88,18 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			cs.Output.System("Compaction complete. Chat summary: " + summaryMsg.Content)
 		case "/config":
 			config.PrintConfig(cs.Config)
+		case "/save":
+			// plan mode only: write the draft objective and end the chat (saveObjective)
+			pd, ok := cs.ModeDetails.(*planModeDetails)
+			if !ok {
+				cs.Output.System("Unrecognized command: " + lineFirst)
+				return false
+			}
+			if err := saveObjective(cs, pd); err != nil {
+				cs.Output.System(err.Error())
+				return false
+			}
+			return true
 		default:
 			// if the command is not recognized, print an error message
 			cs.Output.System("Unrecognized command: " + lineFirst)
@@ -94,6 +110,13 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// [debug] print the current chat context before sending the prompt to the chat provider
 	if cs.Config.Debug {
 		contextwindow.DebugChatContext(cs.OutBuffer, msgContext)
+	}
+
+	// plan mode: a pending /edit note goes at the start of this message (one user message, never two in a row)
+	editNote := ""
+	if pd, ok := cs.ModeDetails.(*planModeDetails); ok && pd.editNote != "" {
+		editNote = pd.editNote
+		line = editNote + "\n\n" + line
 	}
 
 	// initial user message
@@ -125,6 +148,9 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// add new messages to history and context
 	cs.MsgHistory.Append(turnMsgs)
 	cs.MsgContext.AddMessages(turnMsgs)
+	if pd, ok := cs.ModeDetails.(*planModeDetails); ok && editNote != "" && pd.editNote == editNote {
+		pd.editNote = "" // the model has it now; a failed turn keeps it for the next one
+	}
 
 	return false
 }
@@ -199,6 +225,8 @@ func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSes
 //     cs.PromptAllowDenyCall; tool name and arguments are printed with %q because a name from an MCP server could hold
 //     terminal escape codes.
 //   - io.EOF from the reader (Ctrl+D or end of piped input) is a normal quit, not a failure.
+//   - The next line comes from nextChatLine (plan mode can queue the first one). In plan mode, /edit is handled here,
+//     because it needs the reader; /save is in handleUserInput.
 //   - Each turn runs under createInterruptWatcher, after discardStrayInterrupts. stop is called when the turn is done;
 //     it releases the watcher so it can't take a later interrupt.
 //   - If the root context was cancelled (SIGTERM) the loop returns its error.
@@ -220,12 +248,19 @@ func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSessio
 	confirmAllowAll(ctx, cs, tty)
 
 	for {
-		line, err := reader.ReadPrompt(ctx)
+		line, err := nextChatLine(ctx, cs, reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) { // Ctrl+D or end of piped input is a normal quit, not a failure
 				return nil
 			}
 			return err
+		}
+
+		// plan mode's /edit needs the reader (the prompt is filled with the draft), so it is handled here, not in
+		// handleUserInput; it makes no model call
+		if pd, ok := cs.ModeDetails.(*planModeDetails); ok && strings.TrimSpace(line) == "/edit" {
+			editObjective(ctx, cs, pd, reader)
+			continue
 		}
 
 		// this is here to drain any stray Ctrl+C presses from the previous turn (e.g., the user gets impatient when canceling a turn and presses Ctrl+C a bunch of times; the 1-buffer channel absorbs that second press and ignores the rest)
@@ -246,6 +281,20 @@ func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSessio
 		// use non-interruptible root context; this way, interrupting a turn with Ctrl+C doesn't affect background compaction
 		maybeStartAutoCompaction(ctx, cs)
 	}
+}
+
+// nextChatLine returns the user's next input: a line the mode queued, else the next prompt read.
+//
+// Notes:
+//   - Plan mode queues the answer to "What is your objective? : " (planModeDetails.queued), so the chat's first turn
+//     starts with it; it is taken once.
+func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error) {
+	if pd, ok := cs.ModeDetails.(*planModeDetails); ok && pd.queued != "" {
+		line := pd.queued
+		pd.queued = ""
+		return line, nil
+	}
+	return reader.ReadPrompt(ctx)
 }
 
 // discardStrayInterrupts drops a stray Ctrl+C key press left over from before this turn.

@@ -125,6 +125,10 @@ go run . [-config file] [-model m] [-workdir dir] [-debug]  # bare `go run .` = 
                                                  # -debug (or "debug": true): per-turn context dump + MCP protocol log on stderr
 go run . -mode info [-config file]               # print config, built-in + MCP tools (model-facing names), then exit;
                                                  # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
+go run . -mode plan                              # write a new objective in a chat (/save, /edit, /exit), then plan it
+go run . -mode plan -obj <file|text> [-y]        # plan an objective file (or text, saved to objective.md first); writes
+                                                 # <name>.plan.md after "Accept this plan? [Y/n]" (-y accepts; then no
+                                                 # terminal needed). Own defaults: GetDefaultConfig("plan")
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
@@ -146,6 +150,10 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
   what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
   `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
+- **`agent/planner/`** holds plan mode's prompts and its two tools (`update_objective`, `propose_plan`). It is imported
+  only by `agent` and never imports it (that would be a cycle); the tools get the draft and a show function as
+  arguments. Plan mode's state lives in `ChatSession.ModeDetails` (`*planModeDetails`, nil in chat); `/save` and `/edit`
+  exist only when it is set.
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
