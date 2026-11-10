@@ -28,6 +28,7 @@ import (
 //     unrecognized command prints a notice. Empty or all-space lines are skipped.
 //   - Plan mode: a pending /edit note (planModeDetails.editNote) is put at the start of the message sent to the model,
 //     and cleared once the turn succeeds.
+//   - /view exists only in plan mode: it prints the current draft, with no model call.
 //   - /save exists only in plan mode (cs.ModeDetails is *planModeDetails): it writes the draft objective and returns
 //     true, ending the chat; if there is nothing to save or the write fails it says so and the chat goes on.
 //   - msgContext is read once at the top, before /clear runs, and the context-cleared event records its size.
@@ -88,6 +89,14 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			cs.Output.System("Compaction complete. Chat summary: " + summaryMsg.Content)
 		case "/config":
 			config.PrintConfig(cs.Config)
+		case "/view":
+			// plan mode only: show the current draft (showObjective); no model call
+			pd, ok := cs.ModeDetails.(*planModeDetails)
+			if !ok {
+				cs.Output.System("Unrecognized command: " + lineFirst)
+				return false
+			}
+			showObjective(cs, pd)
 		case "/save":
 			// plan mode only: write the draft objective and end the chat (saveObjective)
 			pd, ok := cs.ModeDetails.(*planModeDetails)

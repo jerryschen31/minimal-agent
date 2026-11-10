@@ -16,17 +16,19 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/objective"
 	"github.com/jerryschen31/minimal-agent/plan"
+	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
 // Plan mode (-mode plan) runs through SetupAgent and RunAgent like chat. Two ways in:
 // with -objective <file|text> it plans that objective; without, it writes a new objective with the user in a chat
-// (update_objective, /save, /edit) and then plans it. The plan step runs the planner (propose_plan), shows the summary
+// (update_objective, present_objective, /view, /save, /edit) and then plans it. The plan step runs the planner (propose_plan), shows the summary
 // and asks Accept? [Y/n]; turning a plan down can reopen the chat to revise the objective, then the plan is made again.
 
-// planFooter is shown under the draft each time it changes.
-const planFooter = "Type /save to save it and start planning, /edit to change it yourself, or tell me what to change."
+// planFooter is the reminder of how to go on. It is shown only when the objective chat starts and under the final draft
+// (present_objective), not after every change: repeating it mid-conversation was distracting.
+const planFooter = "Type /view to see the current objective, /save to save it and start planning, /edit to change it yourself, or tell me what to add or change."
 
 // planModeDetails is what plan mode keeps on the session (ChatSession.ModeDetails).
 type planModeDetails struct {
@@ -44,16 +46,23 @@ type planModeDetails struct {
 // Notes: none.
 func (*planModeDetails) ModeName() string { return config.ModePlan }
 
-// setupPlanMode adds plan mode's details to cs and registers the update_objective tool.
+// setupPlanMode adds plan mode's details and output to cs and registers the update_objective and present_objective
+// tools.
 //
 // Notes:
 //   - Called by SetupAgent in plan mode, after the session is built. baseTools (the built-in and MCP tools) is kept for
-//     the planner run, which gets them without update_objective.
-//   - The draft starts empty; update_objective shows it (showObjective) after each change.
+//     the planner run, which gets them without plan mode's chat tools.
+//   - The draft starts empty. update_objective changes it silently; present_objective shows it with the reminder
+//     (presentObjective).
+//   - The session's Output becomes planOutput: no "[assistant]"/"[system]" labels, tool calls only with -debug.
 func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error {
 	pd := &planModeDetails{Objective: &objective.Objective{}, plannerTools: baseTools}
 	cs.ModeDetails = pd
-	return cs.Tools.Register(planner.NewUpdateObjective(pd.Objective, func() { showObjective(cs, pd) }))
+	cs.Output = newPlanOutput(cs.OutBuffer, cs.Config.Debug)
+	if err := cs.Tools.Register(planner.NewUpdateObjective(pd.Objective)); err != nil {
+		return err
+	}
+	return cs.Tools.Register(planner.NewPresentObjective(pd.Objective, func() { presentObjective(cs, pd) }))
 }
 
 // runPlanMode runs plan mode on the session's input and output.
@@ -191,6 +200,7 @@ func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 //     be read back is an error naming it. Without fromFlag the user chose to write the objective anew, so an existing
 //     plan is replaced.
 //   - The old plan file is only replaced when a new plan is accepted (writeFileAtomic).
+//   - A new plan is shown in full (p.Body(): the file without its front matter), then plan.Summary, before the question.
 //   - -yes (AssumeYes) accepts without asking. Otherwise "Accept this plan? [Y/n]: "; no asks
 //     "Enter chat mode to discuss and revise the plan (Y/n)? : ". Yes there asks "What would you like to change in the
 //     plan? " and reopens the objective chat with one message holding the turned-down plan and the change
@@ -238,7 +248,7 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 		if err != nil {
 			return err
 		}
-		fmt.Fprint(w, "\n"+plan.Summary(p))
+		fmt.Fprint(w, "\n"+p.Body()+"\n"+plan.Summary(p)) // the plan as its file will read (no front matter), then the summary
 
 		accept := cs.Config.AssumeYes
 		if !accept {
@@ -288,15 +298,27 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 // errPlannerInterrupted is returned by runPlanner when Ctrl+C stopped the planner run.
 var errPlannerInterrupted = errors.New("planner run interrupted")
 
+// plannerReminders is how many times runPlanner reminds a planner that replied with text instead of calling
+// propose_plan. [agent] Small models often announce a tool call ("I'll now call propose_plan") without making it.
+const plannerReminders = 2
+
+// plannerReplyMax is how many characters of the planner's last reply the no-plan error shows.
+const plannerReplyMax = 800
+
 // runPlanner runs the planner on the saved objective in pd and returns the plan propose_plan accepted.
 //
 // Notes:
 //   - It runs one ReAct turn on a copy of cs with planner.PlanPrompt as the system message, no prior messages (the
 //     planner sees only the saved objective, not the chat), and its own tools: the built-in and MCP tools
 //     (pd.plannerTools, without update_objective) plus a new propose_plan for this objective.
+//   - The planner's reply text is hidden (planOutput.hideReplies; -debug shows it): planStep shows the checked plan.
 //   - The turn is traced as a task "plan", is limited by turnTimeoutSeconds like a chat turn, and is cancelled by
 //     Ctrl+C (then it returns errPlannerInterrupted).
-//   - A turn that ends without an accepted plan (the model stopped calling tools, or ran out of steps) is an error.
+//   - When the model replies with text and no propose_plan call, it is reminded (planner.ProposeReminder, as the next
+//     user message after its reply) up to plannerReminders times, each a new ReAct loop over the messages so far. All
+//     of it is one task and shares the turn timeout.
+//   - Running out of steps is an error. Still no plan after the reminders is an error that shows the planner's last
+//     reply (its text is hidden while it runs) and how to plan the saved objective again (plannerNoPlanError).
 func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error) {
 	pd := cs.ModeDetails.(*planModeDetails)
 	propose := planner.NewProposePlan(pd.ObjectivePath, *pd.Objective, cs.Config.MaxPlanTasks)
@@ -307,6 +329,10 @@ func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessio
 	pcs := *cs // [agent] a shallow copy: same provider, recorder, hooks and output; its own system message and tools
 	pcs.Tools = registry
 	pcs.SystemMsg = createSystemMessage(planner.PlanPrompt)
+	if po, ok := cs.Output.(planOutput); ok {
+		po.hideReplies = true // [agent] the planner's prose isn't for the user; the checked plan is shown by planStep
+		pcs.Output = po
+	}
 
 	cs.Output.System("Making the plan for " + pd.ObjectivePath + " ...")
 	taskTrace := trace.StartTask(cs.Recorder, "plan "+pd.ObjectivePath)
@@ -321,20 +347,46 @@ func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessio
 		defer cancel()
 	}
 
-	userMsg := model.CreateChatMessage("user", "user", planner.PlanMessage(pd.ObjectivePath, *pd.Objective), "", nil)
-	if _, err := reActLoop(turnCtx, &pcs, taskTrace, nil, userMsg); err != nil {
-		taskTrace.Fail(err)
-		if ctx.Err() == nil && errors.Is(err, context.Canceled) {
-			return plan.Plan{}, errPlannerInterrupted
+	var msgs []model.ChatMessage // the run so far, the context of the next loop
+	next := model.CreateChatMessage("user", "user", planner.PlanMessage(pd.ObjectivePath, *pd.Objective), "", nil)
+	for reminded := 0; ; reminded++ {
+		turnMsgs, err := reActLoop(turnCtx, &pcs, taskTrace, msgs, next)
+		if err != nil {
+			taskTrace.Fail(err)
+			if ctx.Err() == nil && errors.Is(err, context.Canceled) {
+				return plan.Plan{}, errPlannerInterrupted
+			}
+			return plan.Plan{}, fmt.Errorf("the planner failed: %w", err)
 		}
-		return plan.Plan{}, fmt.Errorf("the planner failed: %w", err)
+		if propose.Accepted != nil {
+			return *propose.Accepted, nil
+		}
+		// [agent] no error and no plan: the loop ended on a reply without tool calls (the last message)
+		if reminded == plannerReminders {
+			err := plannerNoPlanError(turnMsgs[len(turnMsgs)-1].Content, reminded, pd.ObjectivePath)
+			taskTrace.Fail(err)
+			return plan.Plan{}, err
+		}
+		msgs = append(msgs, turnMsgs...)
+		next = model.CreateChatMessage("user", "user", planner.ProposeReminder, "", nil)
 	}
-	if propose.Accepted == nil {
-		err := errors.New("the planner stopped without proposing a plan")
-		taskTrace.Fail(err)
-		return plan.Plan{}, err
+}
+
+// plannerNoPlanError returns the error for a planner that never called propose_plan: the planner's last reply
+// (indented, cut to plannerReplyMax characters), and how to plan the saved objective again.
+//
+// Notes:
+//   - The reply is shown because the planner's text is hidden while it runs; without it the error says nothing about why.
+func plannerNoPlanError(lastReply string, reminded int, objectivePath string) error {
+	reply := strings.TrimSpace(lastReply)
+	if reply == "" {
+		reply = "(no text)"
+	} else if cut, wasCut := textutils.CutRunes(reply, plannerReplyMax); wasCut {
+		reply = cut + " …"
 	}
-	return *propose.Accepted, nil
+	return fmt.Errorf("the planner stopped without proposing a plan (reminded %d times). Its last reply:\n  %s\n"+
+		"The objective is saved; to plan it again: minagent -mode plan -objective %s",
+		reminded, strings.ReplaceAll(reply, "\n", "\n  "), objectivePath)
 }
 
 // askObjectivePath asks where to save the new objective until it gets a usable answer, and returns the path.
@@ -421,23 +473,36 @@ func askLineNotBlank(ctx context.Context, reader promptReader, prompt string) (s
 // /save wrote the objective.
 //
 // Notes:
-//   - It is chatLoop with plan mode's details on the session: first is queued (chatLoop takes it before asking), /save
-//     and /edit work, and update_objective changes the draft.
+//   - It is chatLoop with plan mode's details on the session: first is queued (chatLoop takes it before asking), /view,
+//     /save and /edit work, and update_objective changes the draft.
+//   - The reminder (planFooter) is printed once here, at the start; the next time is under the final draft.
 //   - /exit, /quit or Ctrl+D leave without saving: saved is false and nothing is written.
 func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error) {
 	pd := cs.ModeDetails.(*planModeDetails)
 	pd.queued = first
-	cs.Output.System("Type /save to save the objective and start planning, /edit to change it yourself, or /exit to leave without saving.")
+	cs.Output.System(planFooter + " /exit leaves without saving.")
 	err := chatLoop(ctx, interrupts, cs, reader)
 	return pd.saved, err
 }
 
-// showObjective prints the draft and how to save or edit it.
+// showObjective prints the draft (plan mode's /view), or says there is none yet.
 //
 // Notes:
-//   - Called by update_objective after each change and after /edit.
+//   - The draft is empty until the model's first update_objective (or an /edit).
 func showObjective(cs *ChatSession, pd *planModeDetails) {
-	cs.Output.System(fmt.Sprintf("Here is the objective (%s, not saved yet):\n\n%s\n%s", pd.ObjectivePath, pd.Objective.Markdown(), planFooter))
+	if *pd.Objective == (objective.Objective{}) {
+		cs.Output.System("Nothing in the draft yet.")
+		return
+	}
+	cs.Output.System(fmt.Sprintf("Here is the objective (%s, not saved yet):\n\n%s", pd.ObjectivePath, pd.Objective.Markdown()))
+}
+
+// presentObjective prints the final draft and the reminder of how to go on (present_objective).
+//
+// Notes: none.
+func presentObjective(cs *ChatSession, pd *planModeDetails) {
+	showObjective(cs, pd)
+	cs.Output.System(planFooter)
 }
 
 // saveObjective writes the draft to pd.ObjectivePath (plan mode's /save) and marks it saved.
@@ -472,8 +537,9 @@ func saveObjective(cs *ChatSession, pd *planModeDetails) error {
 // Notes:
 //   - Ctrl+D (or a cancelled context) leaves the draft unchanged.
 //   - The text goes through objective.Parse: an error is shown and the draft is unchanged.
-//   - On success the draft is shown again, and a note saying what the draft now is (pd.editNote) is put at the start of
-//     the user's next message, so the model sees the change on its next turn. No model call is made now.
+//   - On success it says "Draft updated." (the user just saw the text, so it is not shown again), and a note saying what
+//     the draft now is (pd.editNote) is put at the start of the user's next message, so the model sees the change on its
+//     next turn. No model call is made now.
 func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader) {
 	text, err := reader.ReadPromptFilled(ctx, strings.Split(strings.TrimSuffix(pd.Objective.Markdown(), "\n"), "\n"))
 	if err != nil {
@@ -486,7 +552,7 @@ func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, re
 		return
 	}
 	*pd.Objective = o
-	showObjective(cs, pd)
+	cs.Output.System("Draft updated.")
 	// told to the model at the start of the user's next message (handleUserInput), not as a message of its own: two user
 	// messages in a row would be refused by some providers (Anthropic)
 	pd.editNote = "I edited the objective draft myself. It is now:\n\n" + o.Markdown()

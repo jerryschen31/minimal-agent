@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,12 +20,12 @@ import (
 
 // validPlanArgs are propose_plan arguments for a two-task plan that passes every check.
 const validPlanArgs = `{"title":"Word counter","summary":"Write it, then test it.","tasks":[` +
-	`{"id":"t1","title":"Write wc.go","needs":"write files in the working directory","done_when":"wc.go exists"},` +
-	`{"id":"t2","title":"Test it","depends":["t1"],"needs":"run go test","done_when":"go test passes"}]}`
+	`{"id":"t1","title":"Write wc.go","needs":"write files in the working directory","done_when":"wc.go exists","body":"Count words on stdin."},` +
+	`{"id":"t2","title":"Test it","depends":["t1"],"needs":"run go test","done_when":"go test passes","body":"Run go test."}]}`
 
 // oneTaskPlanArgs are propose_plan arguments for a one-task plan that passes every check.
 const oneTaskPlanArgs = `{"title":"Line counter","summary":"Write it.","tasks":[` +
-	`{"id":"t1","title":"Write lc.go","needs":"write files in the working directory","done_when":"lc.go exists"}]}`
+	`{"id":"t1","title":"Write lc.go","needs":"write files in the working directory","done_when":"lc.go exists","body":"Count lines on stdin."}]}`
 
 // proposeCall returns an assistant reply that calls propose_plan with args.
 func proposeCall(id, args string) model.ChatMessage {
@@ -442,6 +443,37 @@ func Test_Unit_PlanMode_Accept_Writes(t *testing.T) {
 	}
 }
 
+// - Verify the new plan is shown in full (its file without the front matter) before the summary and the question
+// - Verify the planner's reply text (here the plan as JSON) is not printed, and is printed with -debug
+func Test_Unit_PlanMode_ShowsPlanBodyNotPlannerText(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		t.Run(fmt.Sprintf("debug=%v", debug), func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			if debug {
+				fx.Session.Output = newPlanOutput(fx.Out, true)
+			}
+			call := proposeCall("call_1", validPlanArgs)
+			call.Content = "```json\n{\"title\": \"Word counter\"}\n```"
+			fx.Provider.Script = []model.ChatMessage{call}
+			if err := runPlanModeWith(t, fx, "y\n"); err != nil {
+				t.Fatalf("planMode: %v", err)
+			}
+			out := fx.Out.String()
+			body := acceptedPlan(t, path, countObjective, validPlanArgs).Body()
+			bodyAt, summaryAt, askAt := strings.Index(out, body), strings.Index(out, "Plan 1 (Word counter)"), strings.Index(out, "Accept this plan?")
+			if bodyAt < 0 || !(bodyAt < summaryAt && summaryAt < askAt) {
+				t.Errorf("want the plan body, then the summary, then the question:\n%s", out)
+			}
+			if strings.Contains(out, "objective_hash") {
+				t.Errorf("output shows the front matter:\n%s", out)
+			}
+			if got := strings.Contains(out, "```json"); got != debug {
+				t.Errorf("planner text shown = %v, want %v:\n%s", got, debug, out)
+			}
+		})
+	}
+}
+
 // - Verify declining the plan, then declining the chat, or Ctrl+D at Accept, the chat question or the change question writes nothing
 // - Verify each prints the No-plan-written line and returns no error, and a blank change answer asks again
 func Test_Unit_PlanMode_Decline_NoPlanWritten(t *testing.T) {
@@ -735,17 +767,69 @@ func Test_Unit_PlanMode_NewObjective_OldPlanKeptUntilAccepted(t *testing.T) {
 
 // ---- runPlanner ----
 
-// - Verify a planner that replies with text and never calls propose_plan is the error "stopped without proposing a plan", with nothing written
+//   - Verify a planner that replies with text and never calls propose_plan is reminded plannerReminders times, then is
+//     the error "stopped without proposing a plan" showing its last reply and how to plan again, with nothing written
+//   - Verify each reminder is one user message after the planner's reply (never two user messages in a row)
 func Test_Unit_PlanMode_PlannerNoProposal(t *testing.T) {
 	fx, _, path := newFlagPlanFixture(t, countObjective)
 	fx.Session.Config.AssumeYes = true
-	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("Here is my plan: do it.")}
-	err := runPlanModeWith(t, fx, "")
-	if err == nil || !strings.Contains(err.Error(), "stopped without proposing a plan") {
-		t.Errorf("err = %v, want stopped without proposing a plan", err)
+	fx.Provider.Script = []model.ChatMessage{
+		modeltest.AssistantText("I'll now call propose_plan."),
+		modeltest.AssistantText("Calling it now."),
+		modeltest.AssistantText("Here is my plan:\ndo it."),
 	}
+	err := runPlanModeWith(t, fx, "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"stopped without proposing a plan", "reminded 2 times", "Its last reply:\n  Here is my plan:\n  do it.",
+		"-mode plan -objective " + path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err lacks %q:\n%v", want, err)
+		}
+	}
+	if len(fx.Provider.Calls) != 1+plannerReminders {
+		t.Fatalf("model calls = %d, want %d", len(fx.Provider.Calls), 1+plannerReminders)
+	}
+	last := fx.Provider.Calls[plannerReminders]
+	if m := last[len(last)-1]; m.Role != "user" || m.Content != planner.ProposeReminder {
+		t.Errorf("last request ends with %s %q, want the reminder", m.Role, m.Content)
+	}
+	checkNoConsecutiveUserMessages(t, fx)
 	if _, err := os.Stat(plan.PathFor(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a plan file was written (%v)", err)
+	}
+}
+
+// - Verify a planner that replies with text, then calls propose_plan after one reminder, gets its plan written
+func Test_Unit_PlanMode_PlannerRemindedThenProposes(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	fx.Session.Config.AssumeYes = true
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("I'll now call propose_plan."), proposeCall("call_1", validPlanArgs)}
+	if err := runPlanModeWith(t, fx, ""); err != nil {
+		t.Fatalf("planMode: %v", err)
+	}
+	if len(fx.Provider.Calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(fx.Provider.Calls))
+	}
+	second := fx.Provider.Calls[1]
+	if n := len(second); n < 2 || second[n-2].Role != "assistant" || second[n-1].Content != planner.ProposeReminder {
+		t.Errorf("second request does not end with the planner's reply then the reminder: %+v", second)
+	}
+	if p := readPlanFile(t, plan.PathFor(path)); len(p.Tasks) != 2 {
+		t.Errorf("plan = %+v, want 2 tasks", p)
+	}
+}
+
+// - Verify plannerNoPlanError shows "(no text)" for an empty reply and cuts a long one with " …"
+func Test_Unit_PlannerNoPlanError_EmptyAndLongReply(t *testing.T) {
+	if err := plannerNoPlanError("  ", 2, "goal.md"); !strings.Contains(err.Error(), "Its last reply:\n  (no text)\n") {
+		t.Errorf("empty reply: %v", err)
+	}
+	long := strings.Repeat("x", plannerReplyMax+10)
+	err := plannerNoPlanError(long, 2, "goal.md").Error()
+	if !strings.Contains(err, strings.Repeat("x", plannerReplyMax)+" …") || strings.Contains(err, strings.Repeat("x", plannerReplyMax+1)) {
+		t.Errorf("long reply not cut at %d characters:\n%s", plannerReplyMax, err)
 	}
 }
 

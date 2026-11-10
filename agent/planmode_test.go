@@ -90,9 +90,12 @@ func Test_Unit_PlanModeDetails_ModeName(t *testing.T) {
 	}
 }
 
-// - Verify SetupAgent in plan mode puts a *planModeDetails with an empty draft on the session
-// - Verify the registry holds plan's default built-in tools plus update_objective, and plannerTools holds the built-ins only
-// - Verify calling the registered update_objective changes the session's draft (the same pointer) and prints the draft
+//   - Verify SetupAgent in plan mode puts a *planModeDetails with an empty draft on the session
+//   - Verify the registry holds plan's default built-in tools plus update_objective and present_objective, and plannerTools
+//     holds the built-ins only
+//   - Verify the session's Output is planOutput
+//   - Verify calling the registered update_objective changes the session's draft (the same pointer) and prints nothing,
+//     and present_objective then prints the draft and the reminder
 func Test_Unit_SetupAgent_PlanMode_AddsDetailsAndUpdateObjective(t *testing.T) {
 	var out bytes.Buffer
 	a := &Agent{}
@@ -108,7 +111,7 @@ func Test_Unit_SetupAgent_PlanMode_AddsDetailsAndUpdateObjective(t *testing.T) {
 	if pd.Objective == nil || *pd.Objective != (objective.Objective{}) {
 		t.Errorf("draft = %+v, want an empty objective", pd.Objective)
 	}
-	if got, want := toolNames(a.session.Tools.GetToolDefs()), []string{"list_files", "read_file", "search_files", "update_objective"}; !slices.Equal(got, want) {
+	if got, want := toolNames(a.session.Tools.GetToolDefs()), []string{"list_files", "present_objective", "read_file", "search_files", "update_objective"}; !slices.Equal(got, want) {
 		t.Errorf("registered tools = %v, want %v", got, want)
 	}
 	var plannerDefs []model.ToolDef
@@ -130,8 +133,21 @@ func Test_Unit_SetupAgent_PlanMode_AddsDetailsAndUpdateObjective(t *testing.T) {
 	if pd.Objective != draft || draft.ObjText != "Count words." {
 		t.Errorf("draft = %+v (same pointer: %v), want ObjText %q", *pd.Objective, pd.Objective == draft, "Count words.")
 	}
-	if !strings.Contains(out.String(), "Here is the objective") || !strings.Contains(out.String(), "# Objective\nCount words.\n") {
-		t.Errorf("the draft was not printed:\n%s", out.String())
+	if out.Len() != 0 {
+		t.Errorf("update_objective printed:\n%s", out.String())
+	}
+	if _, ok := a.session.Output.(planOutput); !ok {
+		t.Errorf("Output = %T, want planOutput", a.session.Output)
+	}
+	present, ok := a.session.Tools.Lookup("present_objective")
+	if !ok {
+		t.Fatal("present_objective is not registered")
+	}
+	if _, err := present.CallTool(context.Background(), json.RawMessage(`{}`)); !errors.Is(err, tools.ErrEndTurn) {
+		t.Fatalf("present_objective: err = %v, want tools.ErrEndTurn", err)
+	}
+	if got := out.String(); !strings.Contains(got, "# Objective\nCount words.\n") || !strings.HasSuffix(got, planFooter+"\n") {
+		t.Errorf("present_objective did not print the draft and the reminder:\n%s", got)
 	}
 }
 
@@ -308,17 +324,20 @@ func Test_Unit_WriteFileAtomic_MissingDir(t *testing.T) {
 
 // ---- the objective chat (planMode) ----
 
-// - Verify the whole objective chat: the first answer is the first model request's user message
-// - Verify the model's update_objective call changes the draft and shows it, and /save writes draft.Markdown()
-// - Verify /save then runs the planner, and accepting its plan writes <objective>.plan.md, made from the saved objective
-// - Verify the planner request has only PlanPrompt and the plan message (no chat history) and the planner's own tools
+//   - Verify the whole objective chat: the first answer is the first model request's user message
+//   - Verify the model's update_objective call changes the draft silently, present_objective shows it with the reminder,
+//     and /save writes draft.Markdown()
+//   - Verify the reminder is shown twice only (at the start and under the final draft), with no "[assistant]",
+//     "[system]" or "[tool]" labels
+//   - Verify /save then runs the planner, and accepting its plan writes <objective>.plan.md, made from the saved objective
+//   - Verify the planner request has only PlanPrompt and the plan message (no chat history) and the planner's own tools
 func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 	dir := t.TempDir()
 	fx, pd := newPlanFixture(t)
 	pd.plannerTools = []tools.Tool{namedTool{name: "read_file", result: "x"}}
 	fx.Provider.Script = []model.ChatMessage{
 		modeltest.AssistantToolCall("call_1", "update_objective", `{"objective":"Count words in a file.","context":"A CLI."}`),
-		modeltest.AssistantText("Anything else?"),
+		modeltest.AssistantToolCall("call_p", "present_objective", `{}`),
 		proposeCall("call_2", validPlanArgs),
 	}
 	input := filepath.Join(dir, "goal") + "\n  I want a word counter  \n/save\ny\n"
@@ -359,9 +378,8 @@ func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 	out := fx.Out.String()
 	for _, w := range []string{
 		"What is your objective?",
-		"Type /save to save the objective",
-		"Here is the objective (" + path + ", not saved yet):\n\n" + want.Markdown(),
-		planFooter,
+		planFooter + " /exit leaves without saving.",
+		"Here is the objective (" + path + ", not saved yet):\n\n" + want.Markdown() + "\n" + planFooter,
 		"Saved " + path + ".",
 		"Making the plan for " + path,
 		"Plan 1 (Word counter): 2 to add",
@@ -370,6 +388,14 @@ func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+	if n := strings.Count(out, planFooter); n != 2 {
+		t.Errorf("reminder shown %d times, want 2 (start and final draft):\n%s", n, out)
+	}
+	for _, label := range []string{"[assistant]", "[system]", "[tool]"} {
+		if strings.Contains(out, label) {
+			t.Errorf("output has a %s label:\n%s", label, out)
 		}
 	}
 	if strings.Contains(out, "not built yet") {
@@ -460,7 +486,7 @@ func editNoteFor(o objective.Objective) string {
 	return "I edited the objective draft myself. It is now:\n\n" + o.Markdown()
 }
 
-// - Verify /edit replaces the draft with valid text and shows it, with no model call, history and context unchanged, and the note pending
+// - Verify /edit replaces the draft with valid text and says "Draft updated.", with no model call, history and context unchanged, and the note pending
 // - Verify the next message's request ends with one user message, the note then the typed text, after which the note is cleared
 // - Verify no request has two user messages in a row
 func Test_Unit_PlanMode_Edit_Applies(t *testing.T) {
@@ -477,8 +503,8 @@ func Test_Unit_PlanMode_Edit_Applies(t *testing.T) {
 	if len(fx.Provider.Calls) != 1 {
 		t.Errorf("expected only the first turn's model call, got %d", len(fx.Provider.Calls))
 	}
-	if !strings.Contains(fx.Out.String(), "Here is the objective") {
-		t.Errorf("the draft was not shown:\n%s", fx.Out.String())
+	if !strings.Contains(fx.Out.String(), "Draft updated.") {
+		t.Errorf("the edit was not confirmed:\n%s", fx.Out.String())
 	}
 	for name, msgs := range map[string][]model.ChatMessage{"history": fx.History.GetMessages(), "context": fx.Context.GetMessages()} {
 		if len(msgs) != 2 || msgs[1].Role != "assistant" {
@@ -611,7 +637,7 @@ func Test_Unit_PlanMode_Edit_TTY(t *testing.T) {
 		{"second objective section is refused", keystrokes([]string{keys.CtrlJ}, typed("# Objective"), []string{keys.CtrlJ}, typed("again")),
 			objective.Objective{ObjText: "Keep me."}, "The edit was not applied"},
 		{"context section is applied", keystrokes([]string{keys.CtrlJ}, typed("# Context"), []string{keys.CtrlJ}, typed("A CLI.")),
-			objective.Objective{ObjText: "Keep me.", Context: "A CLI."}, "Here is the objective"},
+			objective.Objective{ObjText: "Keep me.", Context: "A CLI."}, "Draft updated."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -653,13 +679,38 @@ func Test_Unit_PlanMode_Edit_EOF(t *testing.T) {
 	}
 }
 
-// - Verify /save and /edit are unrecognized commands in chat mode (no ModeDetails), with no model call
-func Test_Unit_ChatMode_SaveAndEditUnrecognized(t *testing.T) {
-	fx := newChatSessionFixture(t, 10, 100)
-	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/save\n/edit\n")); err != nil {
+//   - Verify /view prints "Nothing in the draft yet." for an empty draft, then the draft without the reminder once it has
+//     one, with no model call and nothing added to history
+func Test_Unit_PlanMode_View(t *testing.T) {
+	fx, pd := newPlanFixture(t)
+	pd.ObjectivePath = "goal.md"
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/view\n")); err != nil {
 		t.Fatalf("chatLoop: %v", err)
 	}
-	for _, cmd := range []string{"/save", "/edit"} {
+	if got, want := fx.Out.String(), "Nothing in the draft yet.\n"; got != want {
+		t.Errorf("empty draft: output = %q, want %q", got, want)
+	}
+
+	fx.Out.Reset()
+	*pd.Objective = objective.Objective{ObjText: "Count words.", Context: "A CLI."}
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/view\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	if got, want := fx.Out.String(), "Here is the objective (goal.md, not saved yet):\n\n"+pd.Objective.Markdown()+"\n"; got != want {
+		t.Errorf("output = %q, want %q", got, want)
+	}
+	if len(fx.Provider.Calls) != 0 || len(fx.History.GetMessages()) != 0 {
+		t.Errorf("/view made %d model calls and added %d messages, want none", len(fx.Provider.Calls), len(fx.History.GetMessages()))
+	}
+}
+
+// - Verify /save, /edit and /view are unrecognized commands in chat mode (no ModeDetails), with no model call
+func Test_Unit_ChatMode_SaveAndEditUnrecognized(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/save\n/edit\n/view\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	for _, cmd := range []string{"/save", "/edit", "/view"} {
 		if !strings.Contains(fx.Out.String(), "Unrecognized command: "+cmd) {
 			t.Errorf("output lacks the notice for %s:\n%s", cmd, fx.Out.String())
 		}

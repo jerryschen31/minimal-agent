@@ -81,9 +81,9 @@ func (t *ProposePlan) GetToolDefinition() model.ToolDef {
 							"done_when": {"type": "string", "description": "How to tell it is done (one line)"},
 							"effects": {"type": "string", "enum": ["", "external"], "description": "\"external\" if it acts outside the working directory"},
 							"gate": {"type": "string", "description": "Why a person must approve this task before it runs (one line); empty if no approval is needed"},
-							"body": {"type": "string", "description": "Details for the worker, in Markdown; don't start lines with #"}
+							"body": {"type": "string", "description": "How the task is done, in Markdown: **Approach:** numbered steps, **Produces:** what it leaves behind, **Check:** how the worker verifies it. Don't start lines with #"}
 						},
-						"required": ["id", "title"]
+						"required": ["id", "title", "body"]
 					}
 				}
 			},
@@ -124,6 +124,8 @@ func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (strin
 // Notes:
 //   - The plan's "objective:" is the objective's file name only: the plan file sits next to the objective
 //     (plan.PathFor), and the path is relative to the plan.
+//   - Every task must have a body (how it is done): an empty one is an error naming the task. Only propose_plan
+//     requires it; a hand-written plan file may leave it out.
 //   - Every text is trimmed. Title, depends, needs, done_when, effects and gate must be one line each: a line break there
 //     would change the plan file's structure, so it is an error naming the task.
 //   - IDs and depends are put in standard form with plan.NormalizeTaskID ("T1", "task 1", "t01" -> "t1") and effects
@@ -163,6 +165,9 @@ func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, err
 		}
 		if _, ok := plan.NormalizeTaskID(task.ID); !ok {
 			errs = append(errs, fmt.Errorf("task %d (%q): id %q is not t<number> (t1, t2, ...)", i+1, task.Title, task.ID))
+		}
+		if task.Body == "" {
+			errs = append(errs, fmt.Errorf("%s: body is empty: say how the task is done (Approach, Produces, Check)", name))
 		}
 		for _, f := range []struct{ field, value string }{
 			{"title", task.Title}, {"depends", strings.Join(task.Depends, ",")}, {"needs", task.Needs},

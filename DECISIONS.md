@@ -4669,7 +4669,9 @@ and codemap check/lint pass. `PLAN-plan-apply.md § The planning session` and `�
 - **The draft lives in memory, as an `objective.Objective`** (Jerry: "this is the utility of the Objective struct").
   The model changes it with `update_objective` (one section per field; absent = unchanged), and **only `/save` writes
   the file** (Go code, not a tool), so leaving the chat never leaves a half-made objective on disk. Go prints the draft
-  and a fixed footer after each change, rather than relying on the model to say how to save. `/edit` fills the prompt
+  and a fixed footer after each change, rather than relying on the model to say how to save (*superseded by
+  `§ 2026-11-10 Plan mode's chat reads like a conversation`*: the draft and footer are now shown only by
+  `present_objective`, and the footer also at the start). `/edit` fills the prompt
   with the draft (cursor at the end); what you submit replaces it if `objective.Parse` accepts it, and the model is told
   by a user message (no model call). Considered and rejected: the model writing the file on each change (overwrites an
   existing file before `/save`); `cs.Done` set by a save tool (an LLM deciding when the session ends).
@@ -4732,3 +4734,68 @@ Jerry's answers to what the step 2 tests turned up.
   `run_command` included; the config file is trusted (`§ Step 2 built`). Copilot asked for a read-only allowlist.
 - **mvp3/ and mvp4/ reverted:** a bulk rename of `GetDefaultConfig()` had also edited three of their test files, which
   broke them (they have their own `GetDefaultConfig()`). They are reference builds and stay as they were.
+
+### 2026-11-09 — `state/` moves from step 1 to the start of step 3
+
+Jerry asked why `state/` should come before the planner; it shouldn't: a first plan reads no state (there is no
+previous run), so step 2 needed only `objective/` and `plan/`. State is first read and written by a run (step 3:
+status, attempts, file hashes, resume) and by plan updates (step 4: last-run summary, drift check). Building the planner
+first gave real plans to look at before fixing the state format. *Downside:* the planner's update form (step 4) will
+take a state summary, so its prompt and inputs grow then. The skeleton (with `ObjectiveText` added) waits for Jerry's
+review; it is written out in `SESSION.md`'s 2026-11-09 handoff entry.
+
+### 2026-11-10 — Plan mode's chat reads like a conversation (after Jerry's first real test run, `objective-test.log`)
+
+Jerry's run with gpt-4o-mini showed the objective chat full of labels and repeated drafts, and the plan tasks generic.
+The model for these changes is Claude Code's plan mode. Files: `agent/output.go`, `agent/planmode.go`, `agent/chat.go`,
+`agent/planner/{update,present,prompt,propose}.go`, `config/config.go`.
+
+- **`planOutput`** (plan mode's `Output`, set in `setupPlanMode`): replies and notices without `[assistant]`/`[system]`
+  labels, nothing for an empty reply (a tool-only step), `[tool]` lines only with `-debug`. `[error]` and
+  `[interrupted]` keep their labels. It embeds `chatOutput` and replaces three methods. Chat mode is unchanged.
+  *Downside:* without labels, notices and the model's text look alike; dimming notices on a terminal is a possible
+  follow-up.
+- **`update_objective` is silent** (no `show` callback; result "Draft updated. The user has not seen it."). Showing the
+  draft after every change was distracting, and the old prompt line "the user sees the draft, so don't repeat it" was
+  why the model never summarized. **Supersedes** the "user sees the draft after each change" part of `§ Step 2 built`.
+- **New tool `present_objective`** (no arguments): the model calls it when it judges the draft final; it prints the
+  draft and the reminder and ends the turn (`tools.ErrEndTurn`). Like `ExitPlanMode`: the model chooses the moment, Go
+  prints the real draft (never the model's retelling). Refused while the draft has no objective text. *Downside:* a
+  weak model may call it too early or never; `/view` and `/save` always work.
+- **`/view`** (plan mode only) prints the current draft without the reminder, or "Nothing in the draft yet."
+- **The reminder (`planFooter`) is shown twice only**: at the start of the objective chat (plus "/exit leaves without
+  saving.") and under the final draft. `/edit` now says "Draft updated." instead of reprinting the draft.
+- **New `planSystemPrompt`**: three stages in order (objective, instructions/constraints, context); every reply is an
+  acknowledgement, a "So far:" summary and one question; never end without a question unless calling
+  `present_objective`. Guidance, not enforcement.
+- **Planner prompt asks for detailed tasks**: specific titles, and a `body` laid out as **Approach** (numbered steps),
+  **Produces**, **Check**, with one weak-vs-strong coding example and one non-coding example; no glue-only tasks.
+  **`propose_plan` requires `body`** (schema `required`, and `toPlan` refuses an empty one naming the task). Only
+  `propose_plan` requires it: a hand-written plan file may still leave a body out (`CheckComplete` unchanged). Go can
+  check that a body exists, not that it is good.
+- **Deferred:** a `planModel` setting for the planner run only; decide after the next test run.
+
+### 2026-11-10 — Plan mode shows the plan itself, not the planner's text (`objective-test-2.log`)
+
+The planner model wrote the whole plan as JSON in its reply before calling `propose_plan`, and `planOutput` printed it.
+- **The planner's reply text is hidden** (`planOutput.hideReplies`, set on the planner run's copy of the session in
+  `runPlanner`; `-debug` shows it). The planner can't ask the user anything, so its prose isn't for the user.
+  `PlanPrompt` also says not to write the plan in the reply (saves tokens).
+- **Before "Accept this plan?", the new plan is shown in full as its file will read**, without the front matter
+  (`plan.Plan.Body()`, exported from `body()`), then `plan.Summary`. Markdown rather than YAML or a custom view: what
+  you accept is exactly what gets written, with one renderer. *Downside:* a long plan (up to `maxPlanTasks`) scrolls;
+  the summary after it keeps the short view next to the question. An up-to-date existing plan (`-objective`) still
+  shows only the summary.
+
+### 2026-11-10 — The planner is reminded to call propose_plan (`objective-test-3.log`)
+
+gpt-4o-mini ended the planner run with "I'll now call `propose_plan` with this structured plan." and no tool call, so
+the turn ended with no plan; the bare error said nothing because the planner's text is hidden.
+- **Reminders:** when the planner's loop ends on a text reply without an accepted plan, `runPlanner` sends
+  `planner.ProposeReminder` as the next user message (after the model's reply, so never two user messages in a row) and
+  runs the loop again, up to `plannerReminders` (2) times, in the same task and turn timeout. *Downside:* up to two
+  extra model calls when it happens.
+- **The no-plan error shows the planner's last reply** (indented, cut to 800 characters) and how to plan the saved
+  objective again (`plannerNoPlanError`).
+- **Not done (an option if reminders aren't enough):** forcing a tool call with OpenAI's `tool_choice: "required"`. It
+  is the robust fix but changes the `model.Provider` interface and every adapter.

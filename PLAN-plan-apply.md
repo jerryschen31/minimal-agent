@@ -239,8 +239,9 @@ A first plan shows every task as `+`. A large re-run says so ("re-runs 14 tasks"
 
 1. **Formats.** `mdscan/`, `plan/` and `objective/` v2 **built 2026-11-08** (`DECISIONS.md § mdscan/ and plan/ built`,
    `§ objective/ v2 built`), with docs (`docs/objective-format.md`, `docs/plan-format.md`) and examples (an objective
-   and the plan made from it); the stub reads with `objective.Parse`. Still to do: `state/` (types, load/save/latest,
-   run dirs, lock, file hashes).
+   and the plan made from it); the stub reads with `objective.Parse`. `state/` (types, load/save/latest, run dirs,
+   lock, file hashes) **moved to the start of step 3**: a first plan never reads state (`DECISIONS.md § state/ moves
+   to step 3`); its skeleton is in `SESSION.md`'s last entry, waiting for Jerry's review.
 2. **First plan.** **Built 2026-11-09** (`DECISIONS.md § Step 2 built: plan mode`): `ErrEndTurn`; `propose_plan`
    (first-plan form) and `update_objective` in `agent/planner/`; per-mode defaults; plan mode through
    `SetupAgent`/`RunAgent`; the objective chat (`/save`, `/edit`); `Accept? [Y/n]` and revise; `-objective` file or

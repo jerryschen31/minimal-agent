@@ -50,3 +50,12 @@ func Test_Unit_PlanPrompt_MentionsGate(t *testing.T) {
 		t.Errorf("PlanPrompt lacks %q:\n%s", `"gate"`, PlanPrompt)
 	}
 }
+
+// - Verify PlanPrompt asks for the body layout (Approach, Produces, Check)
+func Test_Unit_PlanPrompt_AsksForBodyLayout(t *testing.T) {
+	for _, want := range []string{"**Approach:**", "**Produces:**", "**Check:**"} {
+		if !strings.Contains(PlanPrompt, want) {
+			t.Errorf("PlanPrompt lacks %q", want)
+		}
+	}
+}
