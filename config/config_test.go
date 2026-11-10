@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -68,7 +70,7 @@ func Test_Unit_SetDefaultConfig_PopulatesFromFile_KeepsDefaultsForMissingKeys(t 
 		t.Errorf("expected BuiltinTools [read_file], got %v", cfg.BuiltinTools)
 	}
 
-	defaults := GetDefaultConfig()
+	defaults := GetDefaultConfig(ModeChat)
 	if cfg.Provider != defaults.Provider || cfg.SystemPrompt != defaults.SystemPrompt || cfg.ChatStoreType != defaults.ChatStoreType {
 		t.Errorf("expected omitted keys to keep their defaults, got Provider=%q SystemPrompt=%q ChatStoreType=%q", cfg.Provider, cfg.SystemPrompt, cfg.ChatStoreType)
 	}
@@ -161,7 +163,7 @@ func Test_Unit_SetDefaultConfig_SnakeCaseKeys_WarnAndIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
 	}
-	defaults := GetDefaultConfig()
+	defaults := GetDefaultConfig(ModeChat)
 	if cfg.UserID != defaults.UserID || cfg.BaseURL != defaults.BaseURL {
 		t.Errorf("expected snake_case keys to be ignored (defaults kept), got UserID=%q BaseURL=%q", cfg.UserID, cfg.BaseURL)
 	}
@@ -297,7 +299,7 @@ func Test_Unit_SetDefaultConfig_McpServers_DecodeAndInferTransport(t *testing.T)
 
 // - Verify the built-in default for the ReAct step limit is 10
 func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
-	if got := GetDefaultConfig().MaxSteps; got != 10 {
+	if got := GetDefaultConfig(ModeChat).MaxSteps; got != 10 {
 		t.Errorf("expected default MaxSteps 10, got %d", got)
 	}
 }
@@ -306,7 +308,7 @@ func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
 // server by name and transport, and shows the ordinary settings
 func Test_Unit_PrintConfig_DoesNotPrintMcpSecrets(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.Model = "test-model"
 	cfg.McpServers = map[string]McpServerConfig{
@@ -333,7 +335,7 @@ func Test_Unit_PrintConfig_DoesNotPrintMcpSecrets(t *testing.T) {
 func Test_Unit_PrintConfig_DoesNotPrintApiKeyValue(t *testing.T) {
 	t.Setenv("PRINTCONFIG_TEST_KEY", "sk-SECRET-VALUE")
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.ApiKeyName = "PRINTCONFIG_TEST_KEY"
 
@@ -349,7 +351,7 @@ func Test_Unit_PrintConfig_DoesNotPrintApiKeyValue(t *testing.T) {
 
 // - Verify the built-in default for workDir is the current directory
 func Test_Unit_GetDefaultConfig_WorkDir_IsCurrentDirectory(t *testing.T) {
-	if got := GetDefaultConfig().WorkDir; got != "." {
+	if got := GetDefaultConfig(ModeChat).WorkDir; got != "." {
 		t.Errorf("expected default WorkDir %q, got %q", ".", got)
 	}
 }
@@ -376,7 +378,7 @@ func Test_Unit_SetDefaultConfig_WorkDir_AppliedWithoutWarning(t *testing.T) {
 // - Verify /config shows the workDir, since the read_file boundary is something the user should be able to check
 func Test_Unit_PrintConfig_ShowsWorkDir(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.WorkDir = "/some/project"
 
@@ -389,7 +391,7 @@ func Test_Unit_PrintConfig_ShowsWorkDir(t *testing.T) {
 
 // - Verify debug is off by default, and "debug": true in a config file is applied without a warning
 func Test_Unit_SetDefaultConfig_Debug_AppliedWithoutWarning(t *testing.T) {
-	if GetDefaultConfig().Debug {
+	if GetDefaultConfig(ModeChat).Debug {
 		t.Fatalf("expected debug to be off by default")
 	}
 	path := writeTempFile(t, "config.json", []byte(`{"debug": true}`))
@@ -425,7 +427,7 @@ func Test_Unit_SetDefaultConfig_Debug_StringValue_ReturnsError(t *testing.T) {
 // - Verify /config shows whether debug mode is on
 func Test_Unit_PrintConfig_ShowsDebug(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.Debug = true
 
@@ -476,7 +478,7 @@ func Test_Unit_DisplayURL(t *testing.T) {
 // - Verify PrintConfig shows baseUrl through DisplayURL: the host is printed, the password and query are not
 func Test_Unit_PrintConfig_BaseURL_HidesUserinfoAndQuery(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.BaseURL = "https://user:FAKE_SECRET_USERINFO_123@llm.example.invalid/v1?key=FAKE_SECRET_QUERY_123"
 
@@ -568,18 +570,18 @@ func Test_Unit_SetDefaultConfig_AskRules_FileReplacesDefaults(t *testing.T) {
 
 // - Verify GetDefaultConfig returns a fresh AskRules slice each call, so changing one result can't change the defaults
 func Test_Unit_GetDefaultConfig_AskRules_FreshSlice(t *testing.T) {
-	first := GetDefaultConfig()
+	first := GetDefaultConfig(ModeChat)
 	first.AskRules[0] = "changed"
 	first.AskRules = append(first.AskRules, "extra")
 
-	if got := GetDefaultConfig().AskRules; !slices.Equal(got, defaultAskRules) {
-		t.Errorf("GetDefaultConfig().AskRules = %q after changing an earlier result, want %q", got, defaultAskRules)
+	if got := GetDefaultConfig(ModeChat).AskRules; !slices.Equal(got, defaultAskRules) {
+		t.Errorf("GetDefaultConfig(ModeChat).AskRules = %q after changing an earlier result, want %q", got, defaultAskRules)
 	}
 }
 
 // - Verify the defaults: no deny rules and approval "ask"
 func Test_Unit_GetDefaultConfig_NoDenyRules_ApprovalAsk(t *testing.T) {
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	if len(cfg.DenyRules) != 0 {
 		t.Errorf("DenyRules = %q, want none by default", cfg.DenyRules)
 	}
@@ -621,7 +623,7 @@ func Test_Unit_SetDefaultConfig_Approval_FromFile(t *testing.T) {
 // - Verify /config shows denyRules, askRules and approval on their own aligned lines
 func Test_Unit_PrintConfig_ShowsToolRulesAndApproval(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.DenyRules = []string{"*push*"}
 	cfg.Approval = ApprovalAllowAll
@@ -647,7 +649,7 @@ func Test_Unit_SetDefaultConfig_SystemPrompt_EmptyReplacesDefault(t *testing.T) 
 		json string
 		want string
 	}{
-		{"no systemPrompt key keeps default", `{"model": "fake-model"}`, GetDefaultConfig().SystemPrompt},
+		{"no systemPrompt key keeps default", `{"model": "fake-model"}`, GetDefaultConfig(ModeChat).SystemPrompt},
 		{"empty string replaces default", `{"systemPrompt": ""}`, ""},
 	}
 	for _, c := range cases {
@@ -674,7 +676,7 @@ func Test_Unit_SetDefaultConfig_SystemPrompt_EmptyReplacesDefault(t *testing.T) 
 // - Verify the built-in defaults for the context window settings: a 50-message "offset" window,
 // auto-compaction on at 0.9, and a non-empty summarizer prompt
 func Test_Unit_GetDefaultConfig_ContextWindowSettings(t *testing.T) {
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	if cfg.ContextWindowMessages != 50 {
 		t.Errorf("ContextWindowMessages = %d, want 50", cfg.ContextWindowMessages)
 	}
@@ -732,7 +734,7 @@ func Test_Unit_SetDefaultConfig_ContextWindowSettings(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SetDefaultConfig() returned an error: %v", err)
 		}
-		def := GetDefaultConfig()
+		def := GetDefaultConfig(ModeChat)
 		if cfg.ContextWindowMessages != def.ContextWindowMessages || cfg.ContextStrategy != def.ContextStrategy ||
 			cfg.AutoCompact != def.AutoCompact || cfg.AutoCompactThreshold != def.AutoCompactThreshold ||
 			cfg.SummarizerPrompt != def.SummarizerPrompt {
@@ -745,7 +747,7 @@ func Test_Unit_SetDefaultConfig_ContextWindowSettings(t *testing.T) {
 // - Verify /config shows each context window setting
 func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.ContextWindowMessages = 7
 	cfg.ContextStrategy = "linked-list"
@@ -771,7 +773,7 @@ func Test_Unit_PrintConfig_ShowsContextWindowSettings(t *testing.T) {
 // - Verify the defaults enable every built-in tool except run_command, by model-facing name, and give each model call
 // 300 seconds
 func Test_Unit_GetDefaultConfig_BuiltinToolsAndResponseTimeout(t *testing.T) {
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	want := []string{"read_file", "write_file", "edit_file", "create_directory", "copy_file", "move_file", "list_files", "search_files"}
 	if !slices.Equal(cfg.BuiltinTools, want) {
 		t.Errorf("expected BuiltinTools %v, got %v", want, cfg.BuiltinTools)
@@ -807,7 +809,7 @@ func Test_Unit_SetDefaultConfig_ResponseTimeout_AppliedWithoutWarning(t *testing
 // - Verify /config shows responseTimeoutSeconds
 func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
 	var out bytes.Buffer
-	cfg := GetDefaultConfig()
+	cfg := GetDefaultConfig(ModeChat)
 	cfg.OutBuffer = &out
 	cfg.ResponseTimeoutSeconds = 42
 
@@ -820,7 +822,7 @@ func Test_Unit_PrintConfig_ShowsResponseTimeout(t *testing.T) {
 
 // - Verify denyPaths is empty by default, so only the built-in file deny list applies
 func Test_Unit_GetDefaultConfig_DenyPaths_Empty(t *testing.T) {
-	if got := GetDefaultConfig().DenyPaths; len(got) != 0 {
+	if got := GetDefaultConfig(ModeChat).DenyPaths; len(got) != 0 {
 		t.Errorf("expected no default DenyPaths, got %q", got)
 	}
 }
@@ -886,7 +888,7 @@ func Test_Unit_PrintConfig_ShowsDenyPaths(t *testing.T) {
 		{nil, "  denyPaths:     [] (added to the built-in list)\n"},
 	} {
 		var out bytes.Buffer
-		cfg := GetDefaultConfig()
+		cfg := GetDefaultConfig(ModeChat)
 		cfg.OutBuffer = &out
 		cfg.DenyPaths = c.names
 
@@ -900,7 +902,7 @@ func Test_Unit_PrintConfig_ShowsDenyPaths(t *testing.T) {
 
 // - Verify maxSearchFiles defaults to 10000
 func Test_Unit_GetDefaultConfig_MaxSearchFiles_Is10000(t *testing.T) {
-	if got := GetDefaultConfig().MaxSearchFiles; got != 10000 {
+	if got := GetDefaultConfig(ModeChat).MaxSearchFiles; got != 10000 {
 		t.Errorf("expected MaxSearchFiles 10000, got %d", got)
 	}
 }
@@ -938,11 +940,11 @@ func Test_Unit_PrintConfig_ShowsMaxSearchFiles(t *testing.T) {
 		n    int
 		want string
 	}{
-		{GetDefaultConfig().MaxSearchFiles, "maxSearchFiles: 10000\n"},
+		{GetDefaultConfig(ModeChat).MaxSearchFiles, "maxSearchFiles: 10000\n"},
 		{42, "maxSearchFiles: 42\n"},
 	} {
 		var out bytes.Buffer
-		cfg := GetDefaultConfig()
+		cfg := GetDefaultConfig(ModeChat)
 		cfg.OutBuffer = &out
 		cfg.MaxSearchFiles = c.n
 
@@ -957,7 +959,7 @@ func Test_Unit_PrintConfig_ShowsMaxSearchFiles(t *testing.T) {
 // - Verify ignorePaths defaults to .git/, node_modules/, __pycache__/, .venv/ and *.pyc
 func Test_Unit_GetDefaultConfig_IgnorePaths_Default(t *testing.T) {
 	want := []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"}
-	if got := GetDefaultConfig().IgnorePaths; !slices.Equal(got, want) {
+	if got := GetDefaultConfig(ModeChat).IgnorePaths; !slices.Equal(got, want) {
 		t.Errorf("IgnorePaths = %q, want %q", got, want)
 	}
 }
@@ -972,7 +974,7 @@ func Test_Unit_SetDefaultConfig_IgnorePaths_ReplacesDefault(t *testing.T) {
 	}{
 		{"a list replaces the default", `{"ignorePaths": ["*.tmp"]}`, []string{"*.tmp"}},
 		{"[] empties it", `{"ignorePaths": []}`, []string{}},
-		{"no key keeps the default", `{"model": "fake-model"}`, GetDefaultConfig().IgnorePaths},
+		{"no key keeps the default", `{"model": "fake-model"}`, GetDefaultConfig(ModeChat).IgnorePaths},
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
@@ -1001,11 +1003,11 @@ func Test_Unit_PrintConfig_ShowsIgnorePaths(t *testing.T) {
 		paths []string
 		want  string
 	}{
-		{GetDefaultConfig().IgnorePaths, "ignorePaths:   [.git/ node_modules/ __pycache__/ .venv/ *.pyc]\n"},
+		{GetDefaultConfig(ModeChat).IgnorePaths, "ignorePaths:   [.git/ node_modules/ __pycache__/ .venv/ *.pyc]\n"},
 		{[]string{}, "ignorePaths:   []\n"},
 	} {
 		var out bytes.Buffer
-		cfg := GetDefaultConfig()
+		cfg := GetDefaultConfig(ModeChat)
 		cfg.OutBuffer = &out
 		cfg.IgnorePaths = c.paths
 
@@ -1039,7 +1041,7 @@ func Test_Unit_SetDefaultConfig_ConfigFile_SetFromFlagNotFromFile(t *testing.T) 
 
 // - Verify copyFileMaxBytes defaults to 100 MB and a config file can override it
 func Test_Unit_SetDefaultConfig_CopyFileMaxBytes(t *testing.T) {
-	if got := GetDefaultConfig().CopyFileMaxBytes; got != 100<<20 {
+	if got := GetDefaultConfig(ModeChat).CopyFileMaxBytes; got != 100<<20 {
 		t.Errorf("default = %d", got)
 	}
 	path := writeTempFile(t, "config.json", []byte(`{"copyFileMaxBytes": 5242880}`))
@@ -1054,7 +1056,7 @@ func Test_Unit_SetDefaultConfig_CopyFileMaxBytes(t *testing.T) {
 // - Verify the run_command and timeout settings: defaults (no programs allowed, 128 KB cap, 5 and 10 minutes), keys read
 // from a config file without an "unrecognized field" warning, and the values shown by PrintConfig
 func Test_Unit_SetDefaultConfig_RunCommandAndTimeouts(t *testing.T) {
-	d := GetDefaultConfig()
+	d := GetDefaultConfig(ModeChat)
 	if len(d.RunCommands) != 0 || len(d.CommandEnv) != 0 || d.CommandMaxOutputBytes != 128<<10 || d.ToolTimeoutSeconds != 300 || d.TurnTimeoutSeconds != 600 {
 		t.Errorf("defaults: runCommands %v, commandEnv %v, cap %d, tool %d, turn %d", d.RunCommands, d.CommandEnv, d.CommandMaxOutputBytes, d.ToolTimeoutSeconds, d.TurnTimeoutSeconds)
 	}
@@ -1078,6 +1080,132 @@ func Test_Unit_SetDefaultConfig_RunCommandAndTimeouts(t *testing.T) {
 	for _, want := range []string{"runCommands:   [go npm]", "commandEnv:", "commandMaxOutputBytes: 2048", "toolTimeoutSeconds: 60", "turnTimeoutSeconds: 120"} {
 		if !strings.Contains(shown.String(), want) {
 			t.Errorf("PrintConfig lacks %q:\n%s", want, shown.String())
+		}
+	}
+}
+
+// - Verify plan mode's defaults differ from chat's only in SystemPrompt (planSystemPrompt) and BuiltinTools (read-only tools)
+// - Verify AgentMode is set to the mode asked for
+func Test_Unit_GetDefaultConfig_PlanMode_DiffersFromChat(t *testing.T) {
+	chat := GetDefaultConfig(ModeChat)
+	planCfg := GetDefaultConfig(ModePlan)
+	if chat.AgentMode != ModeChat || planCfg.AgentMode != ModePlan {
+		t.Errorf("AgentMode: chat %q, plan %q", chat.AgentMode, planCfg.AgentMode)
+	}
+	if planCfg.SystemPrompt != planSystemPrompt || planCfg.SystemPrompt == chat.SystemPrompt {
+		t.Errorf("plan SystemPrompt = %q", planCfg.SystemPrompt)
+	}
+	if want := []string{"read_file", "list_files", "search_files"}; !slices.Equal(planCfg.BuiltinTools, want) {
+		t.Errorf("plan BuiltinTools = %v, want %v", planCfg.BuiltinTools, want)
+	}
+	if slices.Equal(planCfg.BuiltinTools, chat.BuiltinTools) {
+		t.Errorf("plan and chat BuiltinTools should differ, both %v", chat.BuiltinTools)
+	}
+
+	// everything else is the same
+	planCfg.SystemPrompt, planCfg.BuiltinTools, planCfg.AgentMode = chat.SystemPrompt, chat.BuiltinTools, chat.AgentMode
+	if !reflect.DeepEqual(planCfg, chat) {
+		t.Errorf("plan defaults differ from chat beyond SystemPrompt and BuiltinTools:\nplan %+v\nchat %+v", planCfg, chat)
+	}
+}
+
+// - Verify an unknown mode (and every non-plan mode) gets the chat defaults, with AgentMode set to the mode as given
+func Test_Unit_GetDefaultConfig_OtherModes_GetChatDefaults(t *testing.T) {
+	chat := GetDefaultConfig(ModeChat)
+	for _, mode := range []string{"bogus", "", ModeInfo, ModeOneshot, ModeHeadless} {
+		cfg := GetDefaultConfig(mode)
+		if cfg.AgentMode != mode {
+			t.Errorf("%q: AgentMode %q", mode, cfg.AgentMode)
+		}
+		cfg.AgentMode = ModeChat
+		if !reflect.DeepEqual(cfg, chat) {
+			t.Errorf("%q: defaults differ from chat:\n%+v", mode, cfg)
+		}
+	}
+}
+
+// - Verify GetDefaultConfig(ModePlan) returns a fresh BuiltinTools slice each call, so changing one Config can't change another
+func Test_Unit_GetDefaultConfig_PlanMode_FreshBuiltinTools(t *testing.T) {
+	a := GetDefaultConfig(ModePlan)
+	a.BuiltinTools[0] = "write_file"
+	if b := GetDefaultConfig(ModePlan); b.BuiltinTools[0] != "read_file" {
+		t.Errorf("a change to one Config leaked into the next: %v", b.BuiltinTools)
+	}
+}
+
+// - Verify SetDefaultConfig picks the defaults' mode: -mode flag, else the file's "agentMode", else chat (with and without a file)
+func Test_Unit_SetDefaultConfig_ModeDecidesDefaults(t *testing.T) {
+	planFile := writeTempFile(t, "plan.json", []byte(`{"agentMode": "plan", "model": "m1"}`))
+	plainFile := writeTempFile(t, "plain.json", []byte(`{"model": "m1"}`))
+	cases := []struct {
+		name     string
+		flags    Flags
+		wantMode string
+	}{
+		{"no file, no -mode", Flags{}, ModeChat},
+		{"no file, -mode plan", Flags{Mode: new(ModePlan)}, ModePlan},
+		{"no file, -mode info", Flags{Mode: new(ModeInfo)}, ModeInfo},
+		{"file agentMode plan, no -mode", Flags{Config: &planFile}, ModePlan},
+		{"file agentMode plan, -mode chat", Flags{Config: &planFile, Mode: new(ModeChat)}, ModeChat},
+		{"file without agentMode, -mode plan", Flags{Config: &plainFile, Mode: new(ModePlan)}, ModePlan},
+		{"file without agentMode, no -mode", Flags{Config: &plainFile}, ModeChat},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg Config
+			var err error
+			out := captureStdout(t, func() { cfg, err = SetDefaultConfig(tc.flags) })
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out != "" {
+				t.Errorf("unexpected output %q", out)
+			}
+			want := GetDefaultConfig(tc.wantMode)
+			if cfg.SystemPrompt != want.SystemPrompt || !slices.Equal(cfg.BuiltinTools, want.BuiltinTools) {
+				t.Errorf("got SystemPrompt %.40q..., BuiltinTools %v; want the %s defaults", cfg.SystemPrompt, cfg.BuiltinTools, tc.wantMode)
+			}
+			if tc.flags.Config != nil && cfg.Model != "m1" {
+				t.Errorf("file's model not applied: %q", cfg.Model)
+			}
+			// the -mode flag itself is applied later by FlagsOverlay; without one, AgentMode is the mode worked out here
+			if tc.flags.Mode == nil && cfg.AgentMode != tc.wantMode {
+				t.Errorf("AgentMode %q, want %q", cfg.AgentMode, tc.wantMode)
+			}
+		})
+	}
+}
+
+// - Verify a config file's builtinTools and systemPrompt replace plan mode's defaults as given
+func Test_Unit_SetDefaultConfig_PlanMode_FileKeysReplaceDefaults(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"agentMode": "plan", "builtinTools": ["read_file", "write_file"], "systemPrompt": "mine"}`))
+	var cfg Config
+	var err error
+	captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(cfg.BuiltinTools, []string{"read_file", "write_file"}) || cfg.SystemPrompt != "mine" {
+		t.Errorf("got BuiltinTools %v, SystemPrompt %q", cfg.BuiltinTools, cfg.SystemPrompt)
+	}
+}
+
+// - Verify -yes with the mode taken from a config file (no -mode flag) is checked by ValidateMode: refused in chat, accepted in plan
+func Test_Unit_ValidateMode_Yes_ModeFromConfigFile(t *testing.T) {
+	for _, tc := range []struct{ fileMode, wantErr string }{{"chat", "-yes only applies"}, {"plan", ""}} {
+		path := writeTempFile(t, "config.json", []byte(`{"agentMode": "`+tc.fileMode+`"}`))
+		flags, err := ParseFlags([]string{"-config", path, "-y"}, io.Discard)
+		if err != nil {
+			t.Fatalf("%s: ParseFlags: %v", tc.fileMode, err)
+		}
+		var cfg Config
+		captureStdout(t, func() { cfg, err = SetDefaultConfig(flags) })
+		if err != nil {
+			t.Fatalf("%s: SetDefaultConfig: %v", tc.fileMode, err)
+		}
+		err = ValidateMode(FlagsOverlay(cfg, flags), flags)
+		if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+			t.Errorf("%s: ValidateMode = %v, want error containing %q", tc.fileMode, err, tc.wantErr)
 		}
 	}
 }

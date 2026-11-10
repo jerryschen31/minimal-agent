@@ -15,6 +15,12 @@ import (
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 )
 
+// ErrEndTurn is returned by a tool's CallTool to end the ReAct turn right after this call: its result is still recorded
+// as the tool's message, but the model is not called again for this turn.
+// [agent] A "sentinel error", like agent.ErrMaxSteps: callers check it with errors.Is. Used by plan mode's
+// propose_plan, where one more model call would only produce an acknowledgement nobody reads.
+var ErrEndTurn = errors.New("end turn")
+
 // Tool interface - Tool is any tool function the model can call (built-in tools for now, an MCP tool later)
 // Note that when getting a tools list from an MCP server, the tools will be instantiated as many Tool values, one per listed tool.
 type Tool interface {

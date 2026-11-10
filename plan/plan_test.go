@@ -428,3 +428,66 @@ func Test_Unit_ExampleFile(t *testing.T) {
 		t.Errorf("the example plan is stale: objective_hash %s, the example objective hashes to %s", p.ObjectiveHash, o.Hash())
 	}
 }
+
+// --- Plan paths and summaries ---
+
+// - Verify PathFor puts the plan next to the objective, replacing ".md" (any case) by ".plan.md" and keeping any other name whole
+func Test_Unit_PathFor(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"objective.md", "objective.plan.md"},
+		{"dir/objective.md", "dir/objective.plan.md"},
+		{"X.MD", "X.plan.md"},
+		{"a/b.Md", "a/b.plan.md"},
+		{"notes.txt", "notes.txt.plan.md"},
+		{"objective", "objective.plan.md"},
+		{"x.plan.md", "x.plan.plan.md"},
+		{"dir.md/objective", "dir.md/objective.plan.md"},
+	}
+	for _, c := range cases {
+		if got := PathFor(c.in); got != c.want {
+			t.Errorf("PathFor(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// - Verify Summary of the example plan: header with version and title, one "+" line per task with its depends, then the assumptions
+func Test_Unit_Summary_ExampleFile(t *testing.T) {
+	data, err := os.ReadFile("../examples/objective-example.plan.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := mustCleanup(t, string(data))
+	want := `Plan 1 (wordfreq, a word-frequency CLI in Go): 4 to add
+  + t1  Create the module and a sample input
+  + t2  Count words  (after t1)
+  + t3  Pick the top ten  (after t2)
+  + t4  Wire up main and write the README  (after t2, t3)
+Assumptions:
+  - Go 1.26 is installed and ` + "`go`" + ` is on the PATH.
+  - "Most frequent" counts every occurrence; there is no stop-word list.
+`
+	if got := Summary(p); got != want {
+		t.Errorf("Summary() =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// - Verify Summary leaves out version 0, the parentheses for an empty title, and the assumptions when there are none
+// - Verify IDs are padded to the widest one (t9 vs t10) and [external] and [gate] follow the depends
+func Test_Unit_Summary_HandBuilt(t *testing.T) {
+	p := Plan{Tasks: []Task{
+		{ID: "t9", Title: "Build"},
+		{ID: "t10", Title: "Deploy", Depends: []string{"t9"}, Effects: EffectsExternal, Gate: "pushes to production"},
+		{ID: "t11", Title: "Announce", Gate: "posts publicly"},
+	}}
+	want := `Plan: 3 to add
+  + t9   Build
+  + t10  Deploy  (after t9) [external] [gate]
+  + t11  Announce [gate]
+`
+	if got := Summary(p); got != want {
+		t.Errorf("Summary() =\n%q\nwant\n%q", got, want)
+	}
+	if got, want := Summary(Plan{Version: 2, Title: "x"}), "Plan 2 (x): 0 to add\n"; got != want {
+		t.Errorf("Summary(no tasks) = %q, want %q", got, want)
+	}
+}

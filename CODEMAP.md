@@ -177,9 +177,13 @@ input.go
   func newTTYReader() *ttyReader
   func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader
   func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error)
+  func (r *ttyReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+  func (r *ttyReader) AskLine(ctx context.Context, prompt string) (string, error)
   func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool
   func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainReader
   func (r *plainReader) ReadPrompt(ctx context.Context) (string, error)
+  func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+  func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
   func writePrompt(w io.Writer, lnum int) (int, error)
 
 output.go
@@ -196,7 +200,7 @@ planmode.go
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage
+  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
   func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
   func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
   func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)
@@ -259,7 +263,7 @@ render.go
 ```text
 config.go
   func (m McpServerConfig) TransportType() (string, error)
-  func GetDefaultConfig() Config
+  func GetDefaultConfig(mode string) Config
   func SetDefaultConfig(flags Flags) (Config, error)
   func configJSONKeys() map[string]bool
   func PrintConfig(cfg Config)
@@ -492,6 +496,7 @@ plan.go
   func AssignTaskIDs(tasks []Task, nextID int) []int
   func taskNumber(id string) (int, bool)
   func findCycle(tasks []Task) []string
+  func PathFor(objectivePath string) string
 
 render.go
   func (p Plan) Markdown() string
@@ -499,6 +504,7 @@ render.go
   func (p Plan) body() string
   func sectionBlock(heading, body string) string
   func taskBlock(t Task) string
+  func Summary(p Plan) string
 ```
 
 ## procutils (package procutils)

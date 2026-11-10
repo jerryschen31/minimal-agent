@@ -42,7 +42,7 @@ func Test_RunToolCall_AskOnDeny_ApprovedRuns(t *testing.T) {
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, true)
 
-	got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+	got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 	if tool.calls != 1 || got.Content != "deleted" {
 		t.Errorf("expected the tool to run once and return %q; ran %d time(s), content %q", "deleted", tool.calls, got.Content)
@@ -58,7 +58,7 @@ func Test_RunToolCall_AskOnDeny_DeclinedDenied(t *testing.T) {
 	var asked []askRecord
 	fx.Session.PromptAllowDenyCall = fakeAsker(&asked, false)
 
-	got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+	got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 	if tool.calls != 0 {
 		t.Errorf("expected the tool not to run, ran %d time(s)", tool.calls)
@@ -117,7 +117,7 @@ func Test_RunToolCall_AskOnDeny_NotAskedWhenAllowed(t *testing.T) {
 			var asked []askRecord
 			fx.Session.PromptAllowDenyCall = fakeAsker(&asked, true)
 
-			got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+			got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 			if len(asked) != 0 {
 				t.Errorf("expected no question, got %d", len(asked))
@@ -150,7 +150,7 @@ func Test_RunToolCall_AskOnDeny_TwoVetoingHooks(t *testing.T) {
 			var asked []askRecord
 			fx.Session.PromptAllowDenyCall = fakeAsker(&asked, tt.answers...)
 
-			got := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
+			got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), deleteCall())
 
 			if len(asked) != 2 {
 				t.Fatalf("expected the user to be asked twice, got %d", len(asked))

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -270,4 +271,17 @@ func findCycle(tasks []Task) []string {
 		}
 	}
 	return nil
+}
+
+// PathFor returns where the plan for the objective file objectivePath lives: next to it, ".md" replaced by ".plan.md".
+//
+// Notes:
+//   - "dir/objective.md" -> "dir/objective.plan.md". The ".md" match ignores case ("X.MD" -> "X.plan.md").
+//   - A name without ".md" keeps it whole: "notes.txt" -> "notes.txt.plan.md", "objective" -> "objective.plan.md".
+func PathFor(objectivePath string) string {
+	base := objectivePath
+	if ext := filepath.Ext(base); strings.EqualFold(ext, ".md") {
+		base = strings.TrimSuffix(base, ext)
+	}
+	return base + ".plan.md"
 }

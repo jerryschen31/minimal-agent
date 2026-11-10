@@ -97,6 +97,7 @@
 //	  func AssignTaskIDs(tasks []Task, nextID int) []int
 //	  func taskNumber(id string) (int, bool)
 //	  func findCycle(tasks []Task) []string
+//	  func PathFor(objectivePath string) string
 //
 //	render.go
 //	  func (p Plan) Markdown() string
@@ -104,4 +105,5 @@
 //	  func (p Plan) body() string
 //	  func sectionBlock(heading, body string) string
 //	  func taskBlock(t Task) string
+//	  func Summary(p Plan) string
 package plan

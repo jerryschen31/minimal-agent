@@ -12,7 +12,7 @@ import (
 // two vetoes on one call give two notes, and the footer counts every decision
 func Test_Digest_VetoNotesAndFooter(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		defer run.End()
 		task := StartTask(rec, "tidy up")
 		defer task.End()
@@ -60,7 +60,7 @@ func Test_Digest_VetoNotesAndFooter(t *testing.T) {
 // allow-all", and is not counted as an unknown decision
 func Test_Digest_AllowedByConfig_NoteAndFooter(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		defer run.End()
 		task := StartTask(rec, "tidy up")
 		defer task.End()
@@ -94,7 +94,7 @@ func Test_Digest_AllowedByConfig_NoteAndFooter(t *testing.T) {
 // - Verify a decision the digest doesn't know is still counted as "unknown decision", after the allow-all count
 func Test_Digest_UnknownDecision_CountedSeparately(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		task := StartTask(rec, "go")
 		task.Record(ToolVetoed, ToolVetoedData{CallID: "c1", Name: "write_file", Reason: "fake", Decision: VetoAllowedByConfig})
 		task.Record(ToolVetoed, ToolVetoedData{CallID: "c2", Name: "write_file", Reason: "fake", Decision: "from_the_future"})
@@ -110,7 +110,7 @@ func Test_Digest_UnknownDecision_CountedSeparately(t *testing.T) {
 // - Verify a run with no vetoes has no veto line in the footer
 func Test_Digest_NoVetoes_NoFooterLine(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		task := StartTask(rec, "read")
 		task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`})
 		task.Record(ToolFinished, ToolFinishedData{CallID: "c1", Name: "read_file", Content: "x"})
@@ -125,7 +125,7 @@ func Test_Digest_NoVetoes_NoFooterLine(t *testing.T) {
 // - Verify a tool_vetoed with no matching tool_requested is still counted, and nothing breaks
 func Test_Digest_VetoWithoutRequest_CountedInFooter(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		task := StartTask(rec, "go")
 		task.Record(ToolVetoed, ToolVetoedData{CallID: "orphan", Name: "delete_file", Reason: "denied by rule \"*delete*\"", Decision: VetoDenied})
 		task.Record(ToolFinished, ToolFinishedData{CallID: "orphan", Name: "delete_file", Content: "error: denied", Failed: true})
@@ -143,7 +143,7 @@ func Test_Digest_VetoWithoutRequest_CountedInFooter(t *testing.T) {
 // - Verify run_start carries the deny rules in force: no key with the defaults (there are no default deny rules), the
 // config's list when it sets one, and no key at all when there are none (nil or [])
 func Test_GetRunStartData_DenyRules(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	b, err := json.Marshal(GetRunStartData(cfg))
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func Test_GetRunStartData_DenyRules(t *testing.T) {
 // - Verify run_start carries the context window settings from the config, under their JSON keys; auto_compact
 // is written even when false, so a reader can tell "off" from "not recorded"
 func Test_GetRunStartData_ContextWindowSettings(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ContextWindowMessages = 7
 	cfg.ContextStrategy = "ring-buffer"
 	cfg.AutoCompact = false
@@ -209,7 +209,7 @@ func Test_GetRunStartData_ContextWindowSettings(t *testing.T) {
 // - Verify run_start carries the ask rules and approval in force: the defaults, a config's values, and no ask_rules key
 // when there are none (nil or [])
 func Test_GetRunStartData_AskRulesAndApproval(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	data := GetRunStartData(cfg)
 	if data.Approval != config.ApprovalAsk || len(data.AskRules) != 7 {
 		t.Errorf("expected the default ask rules and approval, got ask_rules %q, approval %q", data.AskRules, data.Approval)

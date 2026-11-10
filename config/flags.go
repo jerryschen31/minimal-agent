@@ -14,7 +14,7 @@ const (
 	ModeHeadless = "headless"
 	ModeOneshot  = "oneshot"
 	ModeInfo     = "info" // print what the agent would have (config, tools, MCP servers), it starts each MCP server to list its tools, then exits
-	ModePlan     = "plan" // talk an objective through with the user and save a complete objective file (see docs/objective-format.md)
+	ModePlan     = "plan" // write an objective with the user (or read one) and plan it (see PLAN-plan-apply.md)
 )
 
 type Flags struct {
@@ -29,8 +29,8 @@ type Flags struct {
 	MaxTokens *int
 	Debug     *bool
 	Approve   *string
-	Objective *string // -objective or -obj: the objective file (a draft in plan mode)
-	Out       *string // -out: where plan mode saves the objective file
+	Objective *string // -objective or -obj: an objective file, or the objective's text
+	Yes       *bool   // -yes or -y: plan mode accepts the plan without asking
 }
 
 // ParseFlags parses args (os.Args[1:]) into Flags and validates each value that was given.
@@ -40,9 +40,10 @@ type Flags struct {
 //   - Cross-checks against -mode only run when -mode itself was passed. If it wasn't, the effective mode may still
 //     come from the config file, so that check belongs after the config merge (see ValidateMode).
 //   - A flag that was not passed stays nil, never a zero value.
-//   - -query and -q are the same flag, and so are -objective and -obj; a positional argument is an error.
-//   - -objective must name an existing file; -out is only checked for being non-empty (plan mode never overwrites, and
-//     asks for another name when it exists).
+//   - -query and -q are the same flag, and so are -objective and -obj, and -yes and -y; a positional argument is an
+//     error.
+//   - -objective is only checked for being non-empty: it may name a file or be the objective's text, which plan mode
+//     tells apart when it starts.
 func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	// register flags with the flag set
 	fs := flag.NewFlagSet("minagent", flag.ContinueOnError)
@@ -51,8 +52,8 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 
 	var (
 		configPath, mode, query, queryShort, model, mission, workDir, approve string
-		objective, objectiveShort, outFile                                    string
-		asJSON, debug                                                         bool
+		objective, objectiveShort                                             string
+		asJSON, debug, yes, yesShort                                          bool
 		maxSteps, maxTokens                                                   int
 	)
 	fs.StringVar(&configPath, "config", "", "")
@@ -69,7 +70,8 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.StringVar(&approve, "approve", "", "")
 	fs.StringVar(&objective, "objective", "", "")
 	fs.StringVar(&objectiveShort, "obj", "", "")
-	fs.StringVar(&outFile, "out", "", "")
+	fs.BoolVar(&yes, "yes", false, "")
+	fs.BoolVar(&yesShort, "y", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		return Flags{}, err
@@ -95,7 +97,6 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"mission", mission, &f.Mission},
 		{"workdir", workDir, &f.WorkDir},
 		{"approve", approve, &f.Approve},
-		{"out", outFile, &f.Out},
 	} {
 		if !set[s.name] {
 			continue
@@ -134,6 +135,16 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 			return Flags{}, errors.New("-objective must not be empty")
 		}
 		f.Objective = new(v)
+	}
+
+	// -yes and -y are the same flag (both also accept =false)
+	switch {
+	case set["yes"] && set["y"] && yes != yesShort:
+		return Flags{}, errors.New("-yes and -y were both given with different values")
+	case set["yes"]:
+		f.Yes = new(yes)
+	case set["y"]:
+		f.Yes = new(yesShort)
 	}
 
 	// --json
@@ -178,12 +189,6 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 			return Flags{}, err
 		}
 	}
-	if f.Objective != nil {
-		if err := requireFile("objective", *f.Objective); err != nil {
-			return Flags{}, err
-		}
-	}
-
 	if f.WorkDir != nil {
 		if err := requireDir("workdir", *f.WorkDir); err != nil {
 			return Flags{}, err
@@ -213,9 +218,9 @@ func ValidateMode(cfg Config, f Flags) error {
 // Notes:
 //   - -query needs oneshot, and oneshot needs -query; -mission needs headless, and headless needs -mission; --json is
 //     refused in chat, info and plan.
-//   - -objective and -out need plan mode (autonomous mode will take -objective too). Plan mode without -objective asks
-//     for the objective at the prompt. That plan mode needs a terminal is checked when it starts (agent.RunPlanMode),
-//     not here: this function only looks at flags.
+//   - -objective and -yes need plan mode (autonomous mode will take them too). Plan mode without -objective asks for a
+//     new objective at the prompt. That plan mode needs a terminal is checked when it starts, not here: this function
+//     only looks at flags.
 func (f Flags) validateMode(mode string) error {
 	switch mode {
 	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo, ModePlan:
@@ -241,8 +246,8 @@ func (f Flags) validateMode(mode string) error {
 	if f.Objective != nil && mode != ModePlan {
 		return fmt.Errorf("-objective only applies to -mode %s, not %s", ModePlan, mode)
 	}
-	if f.Out != nil && mode != ModePlan {
-		return fmt.Errorf("-out only applies to -mode %s, not %s", ModePlan, mode)
+	if f.Yes != nil && mode != ModePlan {
+		return fmt.Errorf("-yes only applies to -mode %s, not %s", ModePlan, mode)
 	}
 	return nil
 }
@@ -292,8 +297,9 @@ func printUsage(w io.Writer) {
   --json                 Output result as JSON (oneshot and headless modes)
   -model <name>          Language model to use
   -mission <file>        Mission file; with headless mode
-  -obj, -objective <file>  Objective file; in plan mode, the draft to plan from (none = asked at the prompt)
-  -out <file>            Plan mode: where to save the objective file (never overwritten)
+  -obj, -objective <file|text>  Plan mode: the objective file to plan, or the objective's text (saved to a new
+                         file); none = write a new objective in a chat
+  -y, -yes               Plan mode: accept the plan without asking
   -workdir <dir>         Directory the read_file tool may read from, with its subdirectories (default ".")
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
@@ -335,8 +341,8 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	if f.Objective != nil {
 		cfg.ObjectiveFile = *f.Objective
 	}
-	if f.Out != nil {
-		cfg.OutFile = *f.Out
+	if f.Yes != nil {
+		cfg.AssumeYes = *f.Yes
 	}
 	return cfg
 }

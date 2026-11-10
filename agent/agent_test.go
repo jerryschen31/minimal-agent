@@ -70,7 +70,7 @@ func Test_SetupAgent_RejectsNonPositiveMCPResultCap(t *testing.T) {
 // - Verify checkConfig also runs contextwindow.CheckConfig, returning its error for a bad context window setting
 // (so SetupAgent and info mode both report it), and passes the defaults
 func Test_Unit_CheckConfig_ReturnsContextWindowError(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	if err := checkConfig(cfg); err != nil {
 		t.Fatalf("expected the default config to pass, got %v", err)
 	}
@@ -86,7 +86,7 @@ func Test_Unit_CheckConfig_ReturnsContextWindowError(t *testing.T) {
 // naming the field, while the rest of the config is the valid default
 func Test_Unit_CheckConfig_RejectsNonPositiveResponseTimeout(t *testing.T) {
 	for _, n := range []int{0, -1} {
-		cfg := config.GetDefaultConfig()
+		cfg := config.GetDefaultConfig(config.ModeChat)
 		cfg.ResponseTimeoutSeconds = n
 		err := checkConfig(cfg)
 		if err == nil || !strings.Contains(err.Error(), "responseTimeoutSeconds") {

@@ -55,7 +55,7 @@ func newChatSessionFixture(t *testing.T, maxSize, threshold int) *chatSessionFix
 		InBuffer:     strings.NewReader(""),
 		OutBuffer:    out,
 		// the window comes from maxSize/threshold above; only the summarizer prompt is read from cfg
-		SummarizerPrompt: config.GetDefaultConfig().SummarizerPrompt,
+		SummarizerPrompt: config.GetDefaultConfig(config.ModeChat).SummarizerPrompt,
 	}
 
 	tools, err := tools.NewToolRegistry(nil)

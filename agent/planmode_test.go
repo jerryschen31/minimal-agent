@@ -15,7 +15,7 @@ import (
 func planStubFixture(t *testing.T, file, input string) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.OutBuffer = &out
 	cfg.ObjectiveFile = file
 	ctx := t.Context()
@@ -80,7 +80,7 @@ func Test_Unit_PlanStub_AsksForObjective(t *testing.T) {
 
 // - Verify plan mode refuses to start without a terminal (here stdin is a buffer)
 func Test_Unit_RunPlanMode_NeedsTerminal(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.InBuffer = strings.NewReader("x\n")
 	cfg.OutBuffer = &bytes.Buffer{}
 	err := RunPlanMode(context.Background(), cfg)

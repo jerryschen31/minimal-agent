@@ -2,8 +2,9 @@
 //
 // # Where a setting comes from
 //
-// flags > config file > defaults. GetDefaultConfig holds every default. A config file (-config <file>) is decoded on
-// top of the defaults, so:
+// flags > config file > defaults. GetDefaultConfig(mode) holds every default; a few differ by mode (marked "plan:"
+// below). The mode is worked out first (-mode, else the file's "agentMode", else chat), then the file is decoded on
+// top of that mode's defaults, so:
 //
 //   - a key missing from the file keeps its default;
 //   - a key in the file replaces the default, a list included (it is not merged): "denyRules": [] means no rules;
@@ -30,7 +31,7 @@
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
 //	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat and info run; plan is
-//	                a stub so far (prints the objective, saves nothing)                                        ["chat"]
+//	                being built (PLAN-plan-apply.md step 2); it also picks the defaults                    ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]
@@ -46,6 +47,7 @@
 //	                longer is stopped and skipped (the others keep their tools). Positive                  [120]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
 //	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
+//	                plan: the objective-writing prompt (planSystemPrompt in config.go)
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
 //
 // Context window and compaction (checked by contextwindow.CheckConfig):
@@ -103,6 +105,7 @@
 //	                the old spelling, still works), "list_files", "search_files",
 //	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"
 //	                [every tool except "run_command", which must be listed by hand together with runCommands]
+//	                plan: ["read_file", "list_files", "search_files"]; a config file's list is used as given
 //	runCommands     programs run_command may start: bare names, looked up on PATH once at startup. The
 //	                only way to enable run_command: with [] (the default) the tool is not set up, and a
 //	                warning says so. A listed program runs unasked unless a deny or ask rule matches
@@ -196,8 +199,8 @@
 //	-config <file>   the config file to load (none = defaults only)
 //	-q, -query       the query; required for, and only used in, oneshot mode
 //	--json           JSON output; oneshot and headless modes only
-//	-obj, -objective the objective file; plan mode only (its draft; none = asked at the prompt)
-//	-out <file>      where plan mode saves the objective file; plan mode only; never overwritten
+//	-obj, -objective an objective file, or the objective's text; plan mode only (none = write a new one in a chat)
+//	-y, -yes         accept the plan without asking; plan mode only
 //
 // # Codemap (auto-generated)
 //
@@ -206,7 +209,7 @@
 //
 //	config.go
 //	  func (m McpServerConfig) TransportType() (string, error)
-//	  func GetDefaultConfig() Config
+//	  func GetDefaultConfig(mode string) Config
 //	  func SetDefaultConfig(flags Flags) (Config, error)
 //	  func configJSONKeys() map[string]bool
 //	  func PrintConfig(cfg Config)

@@ -88,7 +88,7 @@ func Test_Unit_ChatContext_RemoveLast_DelegatesToWindow(t *testing.T) {
 // config: a window of contextWindowMessages (no hidden buffer) that needs compaction at
 // int(contextWindowMessages * autoCompactThreshold) messages
 func Test_Unit_SetupChatContext_ComputesExpectedThreshold(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	chatContext, err := SetupChatContext(cfg)
 	if err != nil {
 		t.Fatalf("SetupChatContext() returned an error: %v", err)
@@ -464,7 +464,7 @@ func Test_Unit_CheckConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := config.GetDefaultConfig()
+			cfg := config.GetDefaultConfig(config.ModeChat)
 			tt.set(&cfg)
 			err := CheckConfig(cfg)
 			switch {
@@ -480,7 +480,7 @@ func Test_Unit_CheckConfig(t *testing.T) {
 // - Verify the window SetupChatContext builds holds exactly contextWindowMessages messages (no hidden buffer)
 func Test_Unit_SetupChatContext_MaxSizeIsContextWindowMessages(t *testing.T) {
 	for _, n := range []int{50, 7} {
-		cfg := config.GetDefaultConfig()
+		cfg := config.GetDefaultConfig(config.ModeChat)
 		cfg.ContextWindowMessages = n
 		chatContext, err := SetupChatContext(cfg)
 		if err != nil {
@@ -499,7 +499,7 @@ func Test_Unit_SetupChatContext_MaxSizeIsContextWindowMessages(t *testing.T) {
 // - Verify SetupChatContext builds the window type contextStrategy names
 func Test_Unit_SetupChatContext_UsesContextStrategy(t *testing.T) {
 	for _, strategy := range WindowStrategies {
-		cfg := config.GetDefaultConfig()
+		cfg := config.GetDefaultConfig(config.ModeChat)
 		cfg.ContextStrategy = strategy
 		chatContext, err := SetupChatContext(cfg)
 		if err != nil {
@@ -526,7 +526,7 @@ func Test_Unit_SetupChatContext_UsesContextStrategy(t *testing.T) {
 
 // - Verify that with autoCompact off, filling the window to its max never makes auto-compaction needed
 func Test_Unit_SetupChatContext_AutoCompactOff_NeverNeeded(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ContextWindowMessages = 10
 	cfg.AutoCompact = false
 	chatContext, err := SetupChatContext(cfg)
@@ -543,7 +543,7 @@ func Test_Unit_SetupChatContext_AutoCompactOff_NeverNeeded(t *testing.T) {
 
 // - Verify that with autoCompact on, a 10-message window at 0.9 needs compaction at 9 messages, not at 8
 func Test_Unit_SetupChatContext_AutoCompactOn_NeededAtThreshold(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ContextWindowMessages = 10
 	cfg.AutoCompact = true
 	cfg.AutoCompactThreshold = 0.9
@@ -563,7 +563,7 @@ func Test_Unit_SetupChatContext_AutoCompactOn_NeededAtThreshold(t *testing.T) {
 
 // - Verify SetupChatContext returns CheckConfig's error for a bad config instead of building a context
 func Test_Unit_SetupChatContext_BadConfig_ReturnsCheckConfigError(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ContextWindowMessages = 2
 	chatContext, err := SetupChatContext(cfg)
 	if err == nil || err.Error() != CheckConfig(cfg).Error() {

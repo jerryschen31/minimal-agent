@@ -575,7 +575,7 @@ func Test_SetupBuiltinTools_ListFiles_IgnorePaths(t *testing.T) {
 
 // builtinCfg builds the config SetupBuiltinTools reads, from the settings these tests vary.
 func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, maxSearchFiles int, denyPaths, ignorePaths []string) config.Config {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir = toolList, workDir, traceDir
 	cfg.ReadFileMaxBytes, cfg.MaxSearchFiles = readFileMaxBytes, maxSearchFiles
 	cfg.DenyPaths, cfg.IgnorePaths = denyPaths, ignorePaths

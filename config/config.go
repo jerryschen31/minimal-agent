@@ -70,9 +70,9 @@ type Config struct {
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
 
-	// per-run files, set only by flags (an objective is input to one run, not a setting to keep in a config file)
-	ObjectiveFile string `json:"-"` // -objective/-obj: the objective file; in plan mode the draft, "" = ask at the prompt
-	OutFile       string `json:"-"` // -out: where plan mode saves the objective file, "" = the default name (step 4)
+	// per-run settings, set only by flags (an objective is input to one run, not a setting to keep in a config file)
+	ObjectiveFile string `json:"-"` // -objective/-obj: an objective file or the objective's text; "" = plan mode asks for a new one
+	AssumeYes     bool   `json:"-"` // -yes/-y: plan mode accepts the plan without asking
 
 	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
 
@@ -173,14 +173,34 @@ func (m McpServerConfig) TransportType() (string, error) {
 	return kind, nil
 }
 
-// GetDefaultConfig returns the built-in defaults every setting starts from.
+// planSystemPrompt is plan mode's default system prompt: the chat that drafts an objective with the user.
+// [agent] update_objective, /save and /edit are added by plan mode (PLAN-plan-apply.md step 2); a config file's
+// "systemPrompt" replaces this text like any other default.
+const planSystemPrompt = `You help the user write an objective for an autonomous agent run. An objective has three sections:
+- Objective (required): what to achieve and why, in a few sentences.
+- Instructions (optional): how to work: constraints, the quality bar, when it is done, rough steps if the user has them.
+- Context (optional): background facts the work needs.
+
+Ask short questions, one or two at a time, until the objective is clear enough to plan from. Use your tools to look at
+the working directory when that helps.
+Whenever the draft should change, call update_objective with only the sections that change, each as the full new text
+of that section in Markdown, without the section's heading. The user sees the draft after each update, so don't repeat
+it in your reply.
+The user saves the draft with /save and can edit it directly with /edit; you never save it.
+Don't break the work into tasks: a planner does that after the objective is saved. Keep your replies short.`
+
+// GetDefaultConfig returns the built-in defaults every setting starts from, for the given mode.
 //
 // Notes:
 //   - Each call returns a fresh Config, but InBuffer and OutBuffer point at os.Stdin and os.Stdout.
 //   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
 //     FlagsOverlay layers the flags.
-func GetDefaultConfig() Config {
-	return Config{
+//   - Most defaults are the same in every mode. Plan mode (ModePlan) differs in SystemPrompt (planSystemPrompt) and
+//     BuiltinTools (read-only: read_file, list_files, search_files). Any other mode, including an unknown one, gets the
+//     chat defaults; ValidateMode reports an unknown mode later.
+//   - AgentMode is set to mode.
+func GetDefaultConfig(mode string) Config {
+	cfg := Config{
 		UserID:        "default_user",
 		Provider:      "openai",
 		Model:         "gpt-4o-mini",
@@ -188,7 +208,7 @@ func GetDefaultConfig() Config {
 		ApiKeyName:    "OPENAI_API_KEY",
 		AgentName:     "minagent",
 		AgentVersion:  "0.1.13",
-		AgentMode:     ModeChat,
+		AgentMode:     mode,
 		WorkDir:       ".",
 		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
 		ChatStoreType: "in-memory",
@@ -222,6 +242,13 @@ func GetDefaultConfig() Config {
 		CommandMaxOutputBytes: 128 << 10, // 128 KB
 		IgnorePaths:           []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
 	}
+
+	// the settings that differ by mode
+	if mode == ModePlan {
+		cfg.SystemPrompt = planSystemPrompt
+		cfg.BuiltinTools = []string{"read_file", "list_files", "search_files"} // planning reads the working directory, never changes it
+	}
+	return cfg
 }
 
 // SetDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in
@@ -230,25 +257,46 @@ func GetDefaultConfig() Config {
 // Notes:
 //   - The file is read from flags.Config; the defaults are loaded first, so missing keys in the file keep their
 //     defaults.
+//   - The defaults depend on the mode (GetDefaultConfig), so the mode is worked out first: the -mode flag, else the
+//     file's "agentMode", else chat.
 //   - Unrecognized fields display a warning (on cfg.OutBuffer, sorted so the warnings are stable) and get ignored;
 //     a file that cannot be read or parsed is an error.
 //   - Key matching is case-insensitive, as in encoding/json.
 func SetDefaultConfig(flags Flags) (Config, error) {
-	// first get the default config, so missing keys in the file keep their defaults
-	cfg := GetDefaultConfig()
-
-	// if no config file is specified in the flags, just return the built-in config defaults
+	// no config file: the built-in defaults for the -mode flag's mode (chat if none)
 	if flags.Config == nil || *flags.Config == "" {
-		return cfg, nil
+		mode := ModeChat
+		if flags.Mode != nil {
+			mode = *flags.Mode
+		}
+		return GetDefaultConfig(mode), nil
 	}
 
-	// otherwise for the config file, read its contents and parse the JSON
+	// otherwise read the config file and parse the JSON
 	filename := *flags.Config
-	cfg.ConfigFile = filename
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
+
+	// work out the mode first, since the defaults depend on it: the -mode flag, else the file's "agentMode", else chat
+	var fileMode struct {
+		AgentMode string `json:"agentMode"`
+	}
+	if err := json.Unmarshal(data, &fileMode); err != nil {
+		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
+	}
+	mode := ModeChat
+	switch {
+	case flags.Mode != nil:
+		mode = *flags.Mode
+	case fileMode.AgentMode != "":
+		mode = fileMode.AgentMode
+	}
+
+	// then the defaults for that mode, so missing keys in the file keep their defaults
+	cfg := GetDefaultConfig(mode)
+	cfg.ConfigFile = filename
 
 	// parse config JSON - unrecognized fields display a warning and get ignored ; error if JSON cannot be parsed
 	if err := json.Unmarshal(data, &cfg); err != nil {

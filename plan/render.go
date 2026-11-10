@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -85,4 +86,52 @@ func taskBlock(t Task) string {
 		s += "\n\n" + t.Body
 	}
 	return s
+}
+
+// Summary returns what plan mode shows before asking to accept p: a header line, one line per task, then the
+// assumptions.
+//
+// Notes:
+//   - This is the first-plan form, where every task is new ("+"). Plan updates (PLAN-plan-apply.md step 4) add the
+//     "~ ↻ - ?" markers.
+//   - Layout: a header ("Plan 1 (<title>): 4 to add"), then one line per task ("  + t2  Count words  (after t1)"),
+//     IDs padded to the same width. "(after …)" lists the task's depends, " [external]" marks effects: external and
+//     " [gate]" a task with a gate. Then "Assumptions:" with each line indented two spaces, if there are any.
+//   - Plan version 0 (not set) leaves the number out; an empty title leaves out the parentheses. Ends with "\n".
+func Summary(p Plan) string {
+	var b strings.Builder
+	b.WriteString("Plan")
+	if p.Version != 0 {
+		b.WriteString(" " + strconv.Itoa(p.Version))
+	}
+	if p.Title != "" {
+		b.WriteString(" (" + p.Title + ")")
+	}
+	fmt.Fprintf(&b, ": %d to add\n", len(p.Tasks))
+
+	width := 0
+	for _, t := range p.Tasks {
+		width = max(width, len(t.ID))
+	}
+	for _, t := range p.Tasks {
+		fmt.Fprintf(&b, "  + %-*s  %s", width, t.ID, t.Title)
+		if len(t.Depends) > 0 {
+			b.WriteString("  (after " + strings.Join(t.Depends, ", ") + ")")
+		}
+		if t.External() {
+			b.WriteString(" [external]")
+		}
+		if t.Gate != "" {
+			b.WriteString(" [gate]")
+		}
+		b.WriteString("\n")
+	}
+
+	if p.Assumptions != "" {
+		b.WriteString("Assumptions:\n")
+		for line := range strings.SplitSeq(strings.TrimRight(p.Assumptions, "\n"), "\n") { // a trailing newline adds no blank line
+			b.WriteString("  " + line + "\n")
+		}
+	}
+	return b.String()
 }

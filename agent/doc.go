@@ -64,9 +64,13 @@
 //	  func newTTYReader() *ttyReader
 //	  func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader
 //	  func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error)
+//	  func (r *ttyReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+//	  func (r *ttyReader) AskLine(ctx context.Context, prompt string) (string, error)
 //	  func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool
 //	  func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainReader
 //	  func (r *plainReader) ReadPrompt(ctx context.Context) (string, error)
+//	  func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+//	  func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
 //	  func writePrompt(w io.Writer, lnum int) (int, error)
 //
 //	output.go
@@ -83,7 +87,7 @@
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage
+//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
 //	  func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
 //	  func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
 //	  func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)

@@ -23,7 +23,7 @@ import (
 func denyWiringConfig(t *testing.T) config.Config {
 	t.Helper()
 	t.Setenv("MINAGENT_TEST_FAKE_API_KEY", "FAKE_SECRET_123")
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ApiKeyName = "MINAGENT_TEST_FAKE_API_KEY"
 	cfg.BaseURL = "http://127.0.0.1:0/v1" // never dialled; a fake endpoint in case a test did reach the provider
 	cfg.InBuffer, cfg.OutBuffer = strings.NewReader(""), io.Discard
@@ -53,7 +53,7 @@ func namedCall(name string) model.ToolCall {
 	return model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: name, Arguments: `{}`}}
 }
 
-// defaultAskRules mirrors config.GetDefaultConfig().AskRules, written out so a change to the defaults shows up here.
+// defaultAskRules mirrors config.GetDefaultConfig(config.ModeChat).AskRules, written out so a change to the defaults shows up here.
 var defaultAskRules = []string{"*delete*", "*remove*", "write_file", "edit_file", "create_directory", "copy_file", "move_file"}
 
 // - Verify SetupAgent with the default config installs exactly one hook, a *hooks.ToolRules with no deny rules and
