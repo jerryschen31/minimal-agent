@@ -4,8 +4,8 @@ An objective file says what you want an autonomous run to achieve, in your own w
 an LLM's help in plan mode); the planner turns it into formal tasks in a separate [plan file](plan-format.md); autonomous
 mode runs that plan. When you change the objective, the plan is redone and only what changed is re-run.
 
-> **Status:** the reader (package `objective/`) and the plan file (package `plan/`) are built. Plan mode and
-> autonomous mode are not built yet. The whole design: [`PLAN-plan-apply.md`](../PLAN-plan-apply.md).
+> **Status:** the reader (package `objective/`) and plan file (package `plan/`) are built, and plan mode can create a first
+> plan. Autonomous mode and plan updates are not built yet. The whole design: [`PLAN-plan-apply.md`](../PLAN-plan-apply.md).
 
 A complete example: [`examples/objective-example.md`](../examples/objective-example.md), and the plan made from it:
 [`examples/objective-example.plan.md`](../examples/objective-example.plan.md).
