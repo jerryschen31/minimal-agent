@@ -4718,3 +4718,17 @@ Jerry's answers to what the step 2 tests turned up.
   message of its own.
 - **`maxPlanTasks` is a config key** (default 30 in plan mode, 0 elsewhere; must be positive in plan mode), replacing
   the `planner.MaxTasks` constant.
+
+### 2026-11-09 — PR #42 review (Copilot): planner sets gates; an existing plan is checked; plan-mode tools stay trusted
+
+- **`propose_plan` takes a `gate`** (one line: why a person must approve the task before it runs), mapped to
+  `plan.Task.Gate`; the planner prompt says when to set one (external effects, hard to undo). The plan format already
+  had `gate:`, but the planner couldn't set it, so plans made before gates are enforced (step 6) would have lacked
+  them. A gate is the one point where an autonomous run stops for a person; `-yes` never answers it.
+- **An existing plan that is up to date is also checked with `CheckComplete(maxPlanTasks)`** before plan mode calls it
+  up to date, so a hand edit that broke it (no tasks, a dangling depends, a loop, too many tasks) is an error listing
+  the problems ("fix it, or delete it to plan from scratch"), the same checks a new plan passes.
+- **Not changed (Jerry):** plan mode keeps passing the configured built-in and MCP tools through, write tools and
+  `run_command` included; the config file is trusted (`§ Step 2 built`). Copilot asked for a read-only allowlist.
+- **mvp3/ and mvp4/ reverted:** a bulk rename of `GetDefaultConfig()` had also edited three of their test files, which
+  broke them (they have their own `GetDefaultConfig()`). They are reference builds and stay as they were.

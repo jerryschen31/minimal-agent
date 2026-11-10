@@ -43,3 +43,10 @@ func Test_Unit_RevisionNote_HoldsPlanChangeAndPointsAtUpdateObjective(t *testing
 		t.Errorf("RevisionNote() does not point at update_objective after the change:\n%s", got)
 	}
 }
+
+// - Verify PlanPrompt tells the planner when to set "gate"
+func Test_Unit_PlanPrompt_MentionsGate(t *testing.T) {
+	if !strings.Contains(PlanPrompt, `"gate"`) {
+		t.Errorf("PlanPrompt lacks %q:\n%s", `"gate"`, PlanPrompt)
+	}
+}

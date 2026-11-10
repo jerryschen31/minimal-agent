@@ -18,6 +18,8 @@ Write tasks that:
 - say in "done_when" how anyone can tell the task is done (a command that passes, a file that exists with some content);
 - list in "depends" the IDs of the tasks whose results they use;
 - set "effects" to "external" only when the task acts outside the working directory (sends, submits, buys, posts);
+- set "gate" to a short reason when a person should approve the task before it runs (anything with external effects,
+  or hard to undo); leave it empty otherwise;
 - put any details a worker needs in "body".
 Number the tasks t1, t2, t3, ... in order. Prefer a few solid tasks over many small ones.
 

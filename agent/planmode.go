@@ -184,8 +184,10 @@ func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 // planStep makes the plan for the saved objective in pd and asks the user to accept it.
 //
 // Notes:
-//   - fromFlag (the objective came from -objective): an existing plan that is up to date (plan.IsStale is false) is
-//     shown and nothing else happens; a stale one is an error until plan updates exist (step 4). A plan file that can't
+//   - fromFlag (the objective came from -objective): an existing plan that is up to date (plan.IsStale is false) and
+//     passes CheckComplete (the checks a new plan passes; a hand edit may have broken it) is shown and nothing else
+//     happens; a stale one is an error until plan updates exist (step 4), and one that fails the checks is an error
+//     listing the problems. A plan file that can't
 //     be read back is an error naming it. Without fromFlag the user chose to write the objective anew, so an existing
 //     plan is replaced.
 //   - The old plan file is only replaced when a new plan is accepted (writeFileAtomic).
@@ -214,6 +216,10 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 			if old.IsStale(pd.Objective.Hash()) {
 				return fmt.Errorf("%s changed since %s was made. Updating a plan comes in step 4; for now, delete %s to plan from scratch",
 					pd.ObjectivePath, planPath, planPath)
+			}
+			// the same checks a new plan passes before it is saved: a hand edit may have broken it
+			if err := old.CheckComplete(cs.Config.MaxPlanTasks); err != nil {
+				return fmt.Errorf("%s is not ready to run; fix it, or delete it to plan from scratch:\n%w", planPath, err)
 			}
 			fmt.Fprint(w, plan.Summary(old))
 			fmt.Fprintf(w, "%s is up to date with %s.\n", planPath, pd.ObjectivePath)

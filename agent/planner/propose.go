@@ -39,6 +39,7 @@ type proposedTask struct {
 	Needs    string   `json:"needs"`
 	DoneWhen string   `json:"done_when"`
 	Effects  string   `json:"effects"`
+	Gate     string   `json:"gate"`
 	Body     string   `json:"body"`
 }
 
@@ -59,7 +60,7 @@ func (t *ProposePlan) GetToolDefinition() model.ToolDef {
 	return model.NewToolDef(
 		"propose_plan",
 		fmt.Sprintf("Proposes the whole plan for the objective. Go checks it: task IDs t1, t2, ... each used once, depends naming "+
-			"other tasks with no loops, at most %d tasks, effects empty or \"external\", one-line fields. If there are problems they "+
+			"other tasks with no loops, at most %d tasks, effects empty or \"external\", one-line fields (gate included). If there are problems they "+
 			"are listed and you call it again with the whole plan fixed; if it passes, the user is shown the plan and decides.", t.maxTasks),
 		json.RawMessage(`{
 			"type": "object",
@@ -79,6 +80,7 @@ func (t *ProposePlan) GetToolDefinition() model.ToolDef {
 							"needs": {"type": "string", "description": "Capabilities it needs, not tool names (one line)"},
 							"done_when": {"type": "string", "description": "How to tell it is done (one line)"},
 							"effects": {"type": "string", "enum": ["", "external"], "description": "\"external\" if it acts outside the working directory"},
+							"gate": {"type": "string", "description": "Why a person must approve this task before it runs (one line); empty if no approval is needed"},
 							"body": {"type": "string", "description": "Details for the worker, in Markdown; don't start lines with #"}
 						},
 						"required": ["id", "title"]
@@ -122,7 +124,7 @@ func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (strin
 // Notes:
 //   - The plan's "objective:" is the objective's file name only: the plan file sits next to the objective
 //     (plan.PathFor), and the path is relative to the plan.
-//   - Every text is trimmed. Title, depends, needs, done_when and effects must be one line each: a line break there
+//   - Every text is trimmed. Title, depends, needs, done_when, effects and gate must be one line each: a line break there
 //     would change the plan file's structure, so it is an error naming the task.
 //   - IDs and depends are put in standard form with plan.NormalizeTaskID ("T1", "task 1", "t01" -> "t1") and effects
 //     is lower-cased, as plan.Cleanup does when the file is read back, so readBack doesn't mistake that for a broken
@@ -149,6 +151,7 @@ func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, err
 			Needs:    strings.TrimSpace(pt.Needs),
 			DoneWhen: strings.TrimSpace(pt.DoneWhen),
 			Effects:  strings.ToLower(strings.TrimSpace(pt.Effects)),
+			Gate:     strings.TrimSpace(pt.Gate),
 			Body:     strings.TrimSpace(pt.Body),
 		}
 		for _, d := range pt.Depends {
@@ -163,7 +166,7 @@ func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, err
 		}
 		for _, f := range []struct{ field, value string }{
 			{"title", task.Title}, {"depends", strings.Join(task.Depends, ",")}, {"needs", task.Needs},
-			{"done_when", task.DoneWhen}, {"effects", task.Effects},
+			{"done_when", task.DoneWhen}, {"effects", task.Effects}, {"gate", task.Gate},
 		} {
 			if strings.ContainsAny(f.value, "\r\n") {
 				errs = append(errs, fmt.Errorf("%s: %s must be one line", name, f.field))
@@ -195,7 +198,7 @@ func standardID(id string) string {
 //     saved. Cleanup may tidy the text (bullet spacing, the indent of a line continuing a bullet), and the tidied plan
 //     is what is returned and later saved.
 //   - Anything more than tidying is an error: a body line that reads as a heading (an extra section, or tasks lost or
-//     merged) or a task whose ID, title, depends, needs, done_when or effects came back different.
+//     merged) or a task whose ID, title, depends, needs, done_when, effects or gate came back different.
 func readBack(p plan.Plan) (plan.Plan, error) {
 	back, _, err := plan.Cleanup([]byte(p.Markdown()))
 	if err != nil {
@@ -216,7 +219,7 @@ func readBack(p plan.Plan) (plan.Plan, error) {
 		for i, a := range p.Tasks {
 			b := back.Tasks[i]
 			if a.ID != b.ID || a.Title != b.Title || !slices.Equal(a.Depends, b.Depends) || a.Needs != b.Needs ||
-				a.DoneWhen != b.DoneWhen || a.Effects != b.Effects {
+				a.DoneWhen != b.DoneWhen || a.Effects != b.Effects || a.Gate != b.Gate {
 				problems = append(problems, fmt.Sprintf("task %s reads back differently (a body line that looks like a field "+
 					"or heading?)", a.ID))
 			}

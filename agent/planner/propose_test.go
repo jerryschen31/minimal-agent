@@ -109,6 +109,52 @@ func Test_Unit_ProposePlan_TrimsAndAcceptsExternal(t *testing.T) {
 	}
 }
 
+// - Verify a task with a gate is accepted and keeps the trimmed reason; a task without one keeps an empty gate
+// - Verify the plan file has a "gate: <reason>" line and cleans up with zero fixes, and plan.Summary marks the task " [gate]"
+func Test_Unit_ProposePlan_AcceptsGate(t *testing.T) {
+	prop := validProposal()
+	prop.Tasks[1].Gate = "  publishes the results  "
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
+	if _, err := callPropose(t, tool, prop); !errors.Is(err, tools.ErrEndTurn) {
+		t.Fatalf("err = %v, want tools.ErrEndTurn", err)
+	}
+	p := tool.Accepted
+	if p.Tasks[1].Gate != "publishes the results" || p.Tasks[0].Gate != "" {
+		t.Errorf("gates = %q / %q, want \"\" / \"publishes the results\"", p.Tasks[0].Gate, p.Tasks[1].Gate)
+	}
+	md := p.Markdown()
+	if !strings.Contains(md, "\ngate: publishes the results\n") {
+		t.Errorf("plan file lacks the gate line:\n%s", md)
+	}
+	if _, fixes, err := plan.Cleanup([]byte(md)); err != nil || len(fixes) != 0 {
+		t.Errorf("Cleanup of the accepted plan: fixes %v, err %v", fixes, err)
+	}
+	summary := plan.Summary(*p)
+	if !strings.Contains(summary, "Test it  (after t1) [gate]") || strings.Count(summary, "[gate]") != 1 {
+		t.Errorf("summary does not mark only t2 [gate]:\n%s", summary)
+	}
+}
+
+// - Verify propose_plan's schema has a "gate" task property
+func Test_Unit_ProposePlan_SchemaHasGate(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Tasks struct {
+				Items struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"items"`
+			} `json:"tasks"`
+		} `json:"properties"`
+	}
+	def := NewProposePlan("objective.md", testObjective, testMaxTasks).GetToolDefinition()
+	if err := json.Unmarshal(def.Function.Params, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := schema.Properties.Tasks.Items.Properties["gate"]; !ok {
+		t.Errorf("task properties lack \"gate\": %s", def.Function.Params)
+	}
+}
+
 // - Verify Cleanup's tidying of a body (bullet spacing) is accepted, and the tidied body is what is kept
 func Test_Unit_ProposePlan_AcceptsTidiedBody(t *testing.T) {
 	prop := validProposal()
@@ -135,6 +181,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 		{"multi-line needs", func(p *proposal) { p.Tasks[1].Needs = "a\r\nb" }, []string{"t2: needs must be one line"}},
 		{"multi-line done_when", func(p *proposal) { p.Tasks[0].DoneWhen = "a\nb" }, []string{"t1: done_when must be one line"}},
 		{"multi-line effects", func(p *proposal) { p.Tasks[0].Effects = "external\nx" }, []string{"t1: effects must be one line"}},
+		{"multi-line gate", func(p *proposal) { p.Tasks[1].Gate = "publishes\nto prod" }, []string{"t2: gate must be one line"}},
 		{"multi-line depends", func(p *proposal) { p.Tasks[1].Depends = []string{"t1\nt3"} }, []string{"t2: depends must be one line"}},
 		{"multi-line field of a task without ID", func(p *proposal) { p.Tasks[1].ID = ""; p.Tasks[1].Needs = "a\nb" },
 			[]string{"task 2: needs must be one line"}},

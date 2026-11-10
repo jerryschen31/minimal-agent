@@ -347,6 +347,58 @@ func Test_Unit_PlanMode_ObjectiveFlag_BadPlanFile(t *testing.T) {
 	}
 }
 
+// - Verify -objective with an up-to-date plan that CheckComplete refuses (no tasks, unknown depends, a loop, over MaxPlanTasks) is an error
+// - Verify the error names the plan, says "not ready to run" and the problem; no model call, no summary, the plan file unchanged
+func Test_Unit_PlanMode_ObjectiveFlag_UpToDatePlanNotReady(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxTasks int // 0 = the fixture's default
+		edit     func(p *plan.Plan)
+		want     string
+	}{
+		{"no tasks", 0, func(p *plan.Plan) { p.Tasks = nil }, `"## Tasks" has no tasks`},
+		{"unknown depends", 0, func(p *plan.Plan) { p.Tasks[1].Depends = []string{"t9"} },
+			`task t2 depends on "t9", which is not a task in this file`},
+		{"loop", 0, func(p *plan.Plan) { p.Tasks[0].Depends = []string{"t2"} }, "in a loop"},
+		{"over MaxPlanTasks", 1, nil, "there are 2 tasks; the limit is 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			if tt.maxTasks != 0 {
+				fx.Session.Config.MaxPlanTasks = tt.maxTasks
+			}
+			p := acceptedPlan(t, path, countObjective, validPlanArgs)
+			if tt.edit != nil {
+				tt.edit(&p)
+			}
+			planPath := plan.PathFor(path)
+			before := []byte(p.Markdown())
+			if err := os.WriteFile(planPath, before, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := runPlanModeWith(t, fx, "")
+			if err == nil {
+				t.Fatal("err = nil, want a not-ready error")
+			}
+			for _, w := range []string{planPath + " is not ready to run", "delete it", tt.want} {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("err lacks %q:\n%v", w, err)
+				}
+			}
+			if len(fx.Provider.Calls) != 0 {
+				t.Errorf("expected no model call, got %d", len(fx.Provider.Calls))
+			}
+			if out := fx.Out.String(); strings.Contains(out, "is up to date") || strings.Contains(out, "Plan 1") {
+				t.Errorf("a plan that is not ready was shown as up to date:\n%s", out)
+			}
+			if after, _ := os.ReadFile(planPath); !bytes.Equal(after, before) {
+				t.Errorf("plan file changed:\n%s", after)
+			}
+		})
+	}
+}
+
 // - Verify -objective naming a file objective.Parse refuses is an error naming the file, with no model call
 func Test_Unit_PlanMode_ObjectiveFlag_BadObjectiveFile(t *testing.T) {
 	t.Chdir(t.TempDir())
