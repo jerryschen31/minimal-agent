@@ -593,7 +593,7 @@ func dedent(lines []line) []line {
 // any.
 //
 // Notes:
-//   - Items split on ","; each goes through normalizeTaskID, so "task1, 3" gives t1, t3. An item that isn't one ID
+//   - Items split on ","; each goes through NormalizeTaskID, so "task1, 3" gives t1, t3. An item that isn't one ID
 //     ("t1 t2") is split on spaces and used if every part is an ID.
 //   - An item that still isn't an ID is kept as written: CheckComplete reports it as naming no task.
 func parseDepends(value string) (ids []string, ok bool) {
@@ -602,14 +602,14 @@ func parseDepends(value string) (ids []string, ok bool) {
 		if item == "" {
 			continue
 		}
-		if id, isID := normalizeTaskID(item); isID {
+		if id, isID := NormalizeTaskID(item); isID {
 			ids = append(ids, id)
 			continue
 		}
 		parts := strings.Fields(item)
 		var partIDs []string
 		for _, p := range parts {
-			if id, isID := normalizeTaskID(p); isID {
+			if id, isID := NormalizeTaskID(p); isID {
 				partIDs = append(partIDs, id)
 			}
 		}
@@ -622,10 +622,10 @@ func parseDepends(value string) (ids []string, ok bool) {
 	return ids, len(ids) > 0
 }
 
-// normalizeTaskID turns "t3", "T3", "task3", "Task 3", "3" or "t03" into "t3", and reports false for anything else.
+// NormalizeTaskID turns "t3", "T3", "task3", "Task 3", "3" or "t03" into "t3", and reports false for anything else.
 //
 // Notes: none.
-func normalizeTaskID(s string) (string, bool) {
+func NormalizeTaskID(s string) (string, bool) {
 	m := taskIDOnlyRe.FindStringSubmatch(strings.TrimSpace(s))
 	if m == nil {
 		return "", false

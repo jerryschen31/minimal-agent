@@ -20,7 +20,12 @@ minimal-agent/
 │   ├── output.go
 │   ├── planmode.go
 │   ├── react.go
-│   └── session.go
+│   ├── session.go
+│   └── planner/
+│       ├── doc.go
+│       ├── prompt.go
+│       ├── propose.go
+│       └── update.go
 ├── cmd/
 │   └── codemap/
 │       ├── doc.go
@@ -144,6 +149,7 @@ chat.go
   func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader)
   func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error
   func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
   func discardStrayInterrupts(interrupts <-chan os.Signal)
   func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
   func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
@@ -195,8 +201,19 @@ output.go
   func (o chatOutput) Interrupted()
 
 planmode.go
-  func RunPlanMode(ctx context.Context, cfg config.Config) error
-  func planStub(ctx context.Context, cfg config.Config, reader promptReader) error
+  func (*planModeDetails) ModeName() string
+  func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error
+  func runPlanMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+  func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
+  func newObjectivePath(answer string) (string, error)
+  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
+  func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
+  func showObjective(cs *ChatSession, pd *planModeDetails)
+  func saveObjective(cs *ChatSession, pd *planModeDetails) error
+  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
+  func writeFileAtomic(path string, data []byte) error
+  func isYes(answer string, def bool) bool
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
@@ -209,6 +226,29 @@ session.go
   func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
   func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider
   func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
+```
+
+## agent/planner (package planner)
+
+`github.com/jerryschen31/minimal-agent/agent/planner`
+
+```text
+prompt.go
+  func PlanMessage(objectivePath string, o objective.Objective) string
+  func RevisionNote(p plan.Plan) string
+
+propose.go
+  func NewProposePlan(objectivePath string, o objective.Objective) *ProposePlan
+  func (t *ProposePlan) GetToolDefinition() model.ToolDef
+  func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, error)
+  func standardID(id string) string
+  func readBack(p plan.Plan) (plan.Plan, error)
+
+update.go
+  func NewUpdateObjective(draft *objective.Objective, show func()) *UpdateObjective
+  func (t *UpdateObjective) GetToolDefinition() model.ToolDef
+  func (t *UpdateObjective) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 ```
 
 ## cmd/codemap (package main)
@@ -484,7 +524,7 @@ cleanup.go
   func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
   func dedent(lines []line) []line
   func parseDepends(value string) (ids []string, ok bool)
-  func normalizeTaskID(s string) (string, bool)
+  func NormalizeTaskID(s string) (string, bool)
   func tidyBody(lines []line) (string, []Fix)
 
 plan.go

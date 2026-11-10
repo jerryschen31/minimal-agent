@@ -31,6 +31,7 @@
 //	  func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader)
 //	  func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error
 //	  func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
 //	  func discardStrayInterrupts(interrupts <-chan os.Signal)
 //	  func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
 //	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
@@ -82,8 +83,19 @@
 //	  func (o chatOutput) Interrupted()
 //
 //	planmode.go
-//	  func RunPlanMode(ctx context.Context, cfg config.Config) error
-//	  func planStub(ctx context.Context, cfg config.Config, reader promptReader) error
+//	  func (*planModeDetails) ModeName() string
+//	  func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error
+//	  func runPlanMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+//	  func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
+//	  func newObjectivePath(answer string) (string, error)
+//	  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
+//	  func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
+//	  func showObjective(cs *ChatSession, pd *planModeDetails)
+//	  func saveObjective(cs *ChatSession, pd *planModeDetails) error
+//	  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
+//	  func writeFileAtomic(path string, data []byte) error
+//	  func isYes(answer string, def bool) bool
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)

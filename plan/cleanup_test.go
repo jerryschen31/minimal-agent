@@ -533,16 +533,16 @@ func Test_Unit_Cleanup_Testdata(t *testing.T) {
 
 // --- helpers ---
 
-// - Verify normalizeTaskID accepts "t3", "T3", "task3", "Task 3", "3", "t03" and refuses anything else
+// - Verify NormalizeTaskID accepts "t3", "T3", "task3", "Task 3", "3", "t03" and refuses anything else
 func Test_Unit_NormalizeTaskID(t *testing.T) {
 	for _, in := range []string{"t3", "T3", "task3", "Task 3", "TASK3", "3", "t03", " t3 "} {
-		if got, ok := normalizeTaskID(in); !ok || got != "t3" {
-			t.Errorf("normalizeTaskID(%q) = %q, %v; want \"t3\", true", in, got, ok)
+		if got, ok := NormalizeTaskID(in); !ok || got != "t3" {
+			t.Errorf("NormalizeTaskID(%q) = %q, %v; want \"t3\", true", in, got, ok)
 		}
 	}
 	for _, in := range []string{"", "t", "task", "setup", "t-1", "3a", "t3x", "t 3 4"} {
-		if got, ok := normalizeTaskID(in); ok {
-			t.Errorf("normalizeTaskID(%q) = %q, true; want false", in, got)
+		if got, ok := NormalizeTaskID(in); ok {
+			t.Errorf("NormalizeTaskID(%q) = %q, true; want false", in, got)
 		}
 	}
 }

@@ -85,7 +85,7 @@
 //	  func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
 //	  func dedent(lines []line) []line
 //	  func parseDepends(value string) (ids []string, ok bool)
-//	  func normalizeTaskID(s string) (string, bool)
+//	  func NormalizeTaskID(s string) (string, bool)
 //	  func tidyBody(lines []line) (string, []Fix)
 //
 //	plan.go

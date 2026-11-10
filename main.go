@@ -26,8 +26,8 @@ const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /e
 //     get a Config, (3) call SetupAgent to get an Agent, (4) run the agent main loop.
 //   - In info mode (config.ModeInfo) it prints what the agent would have and exits through os.Exit; it never calls
 //     SetupAgent, so there is no model call and no trace files.
-//   - Plan mode (config.ModePlan) is a stub for now: agent.RunPlanMode prints the draft and saves nothing. It also
-//     returns before SetupAgent; an error exits with code 1.
+//   - Plan mode (config.ModePlan) goes through SetupAgent and RunAgent like chat; only chat prints the welcome message
+//     with the slash commands.
 //   - Ctrl+C is delivered on a separate channel (intsigCh) so it can stop foreground work without killing the
 //     program; SIGTERM cancels the root context.
 //   - The deferred function cancels the context first (compaction and LLM requests use it), then calls ShutdownAgent;
@@ -80,18 +80,6 @@ func main() {
 		os.Exit(code)
 	}
 
-	// plan mode reads the draft (or asks for the objective) and, for now, only prints it; it doesn't call SetupAgent yet
-	if cfg.AgentMode == config.ModePlan {
-		err := agent.RunPlanMode(ctx, cfg)
-		stop()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			// [agent] os.Exit skips deferred calls; safe here for the same reason as info mode: none are registered yet
-			os.Exit(1)
-		}
-		return
-	}
-
 	// create the agent instance
 	myAgent := agent.Agent{}
 	defer func() {
@@ -110,8 +98,10 @@ func main() {
 		}
 		return
 	}
-	// print a welcome message (debug purposes)
-	fmt.Fprintf(cfg.OutBuffer, WelcomeMsg, cfg.AgentVersion)
+	// print a welcome message (debug purposes); plan mode explains its own commands when it starts
+	if cfg.AgentMode == config.ModeChat {
+		fmt.Fprintf(cfg.OutBuffer, WelcomeMsg, cfg.AgentVersion)
+	}
 	fmt.Fprintf(cfg.OutBuffer, "Using model %s\n", cfg.Model)
 
 	// run the agent main loop (blocking call)
