@@ -1,10 +1,10 @@
 // Package objective reads objective files: what the user wants an autonomous run to achieve, in their own words.
 //
 // An objective file is the user's: written by hand, with an LLM's help in plan mode, or anything in between. Go never
-// rewrites it on its own. The planner LLM turns it into formal tasks in a separate plan file (package plan); when the
-// objective changes, its Hash changes and the plan is redone. See PLAN-plan-apply.md and docs/objective-format.md.
+// rewrites it on its own. The planner LLM turns it into formal tasks in a separate agent-managed plan file (package plan);
+// when the objective changes, its Hash changes and the plan is redone.
 //
-// The format (v2): only "# Objective" is required; "# Instructions" and "# Context" are optional. Any other top-level
+// The format: only "# Objective" is required; "# Instructions" and "# Context" are optional. Any other top-level
 // section (Constraints, Notes, informal Tasks) is added to Instructions with its heading. There is no front matter and
 // no task syntax.
 //
@@ -23,7 +23,7 @@
 //	   ▼
 //	(Objective, error)
 //
-//	Objective ─► Markdown()            the standard form, for Hash and the planner's prompt; Parse reads it back unchanged
+//	Objective ─► Markdown()            converts Objective struct object into properly formatted markdown file, for Hash and the planner's prompt; Parse reads it back unchanged
 //	Objective ─► Hash()                sha256 of Markdown(): a plan's objective_hash
 //	Objective ─► ChangedSections(old)  which sections changed, for the plan summary
 //
