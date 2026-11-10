@@ -19,12 +19,15 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/objective"
+	"github.com/jerryschen31/minimal-agent/tools"
 )
 
-// newPlanFixture returns a chat session fixture with plan mode set up on it (setupPlanMode, no base tools).
+// newPlanFixture returns a chat session fixture with plan mode set up on it (setupPlanMode, no base tools) and plan
+// mode's default maxPlanTasks.
 func newPlanFixture(t *testing.T) (*chatSessionFixture, *planModeDetails) {
 	t.Helper()
 	fx := newChatSessionFixture(t, 10, 100)
+	fx.Session.Config.MaxPlanTasks = config.GetDefaultConfig(config.ModePlan).MaxPlanTasks
 	if err := setupPlanMode(fx.Session, nil); err != nil {
 		t.Fatalf("setupPlanMode: %v", err)
 	}
@@ -50,6 +53,7 @@ func planWiringConfig(t *testing.T, out io.Writer) config.Config {
 	cfg := denyWiringConfig(t)
 	plan := config.GetDefaultConfig(config.ModePlan)
 	cfg.AgentMode, cfg.SystemPrompt, cfg.BuiltinTools = plan.AgentMode, plan.SystemPrompt, plan.BuiltinTools
+	cfg.MaxPlanTasks = plan.MaxPlanTasks
 	cfg.OutBuffer = out
 	return cfg
 }
@@ -305,15 +309,19 @@ func Test_Unit_WriteFileAtomic_MissingDir(t *testing.T) {
 // ---- the objective chat (planMode) ----
 
 // - Verify the whole objective chat: the first answer is the first model request's user message
-// - Verify the model's update_objective call changes the draft and shows it, and /save writes draft.Markdown() and ends plan mode
+// - Verify the model's update_objective call changes the draft and shows it, and /save writes draft.Markdown()
+// - Verify /save then runs the planner, and accepting its plan writes <objective>.plan.md, made from the saved objective
+// - Verify the planner request has only PlanPrompt and the plan message (no chat history) and the planner's own tools
 func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 	dir := t.TempDir()
 	fx, pd := newPlanFixture(t)
+	pd.plannerTools = []tools.Tool{namedTool{name: "read_file", result: "x"}}
 	fx.Provider.Script = []model.ChatMessage{
 		modeltest.AssistantToolCall("call_1", "update_objective", `{"objective":"Count words in a file.","context":"A CLI."}`),
 		modeltest.AssistantText("Anything else?"),
+		proposeCall("call_2", validPlanArgs),
 	}
-	input := filepath.Join(dir, "goal") + "\n  I want a word counter  \n/save\n"
+	input := filepath.Join(dir, "goal") + "\n  I want a word counter  \n/save\ny\n"
 	if err := runPlanModeWith(t, fx, input); err != nil {
 		t.Fatalf("planMode: %v", err)
 	}
@@ -331,12 +339,22 @@ func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 		t.Errorf("saved file = (%q, %v), want %q", got, err, want.Markdown())
 	}
 
-	if len(fx.Provider.Calls) != 2 {
-		t.Fatalf("expected 2 model calls, got %d", len(fx.Provider.Calls))
+	if len(fx.Provider.Calls) != 3 {
+		t.Fatalf("expected 3 model calls (2 chat, 1 planner), got %d", len(fx.Provider.Calls))
 	}
 	first := fx.Provider.Calls[0]
 	if last := first[len(first)-1]; last.Role != "user" || last.Content != "I want a word counter" {
 		t.Errorf("first request's last message = %s %q, want the first answer as a user message", last.Role, last.Content)
+	}
+	checkPlannerRequest(t, fx, 2, path, want)
+	if got, want := toolNames(fx.Provider.ToolDefs[2]), []string{"propose_plan", "read_file"}; !slices.Equal(got, want) {
+		t.Errorf("planner tools = %v, want %v", got, want)
+	}
+
+	planPath := filepath.Join(dir, "goal.plan.md")
+	p := readPlanFile(t, planPath)
+	if p.IsStale(want.Hash()) || len(p.Tasks) != 2 || p.ObjectivePath != "goal.md" {
+		t.Errorf("plan = %+v, want 2 tasks made from goal.md's objective", p)
 	}
 	out := fx.Out.String()
 	for _, w := range []string{
@@ -345,11 +363,17 @@ func Test_Unit_PlanMode_ObjectiveChat_Save(t *testing.T) {
 		"Here is the objective (" + path + ", not saved yet):\n\n" + want.Markdown(),
 		planFooter,
 		"Saved " + path + ".",
-		"Making the plan from the saved objective is not built yet",
+		"Making the plan for " + path,
+		"Plan 1 (Word counter): 2 to add",
+		"Accept this plan? [Y/n]: ",
+		"Wrote " + planPath + " (2 tasks).",
 	} {
 		if !strings.Contains(out, w) {
 			t.Errorf("output lacks %q:\n%s", w, out)
 		}
+	}
+	if strings.Contains(out, "not built yet") {
+		t.Errorf("output still says not built yet:\n%s", out)
 	}
 }
 
@@ -420,19 +444,6 @@ func Test_Unit_PlanMode_SaveEmptyDraft(t *testing.T) {
 	}
 }
 
-// - Verify planMode with -objective set returns the not-built-yet error before asking anything
-func Test_Unit_PlanMode_ObjectiveFlagNotBuilt(t *testing.T) {
-	fx, _ := newPlanFixture(t)
-	fx.Session.Config.ObjectiveFile = "objective.md"
-	err := runPlanModeWith(t, fx, "goal\n")
-	if err == nil || !strings.Contains(err.Error(), "not built yet") {
-		t.Errorf("err = %v, want a not-built-yet error", err)
-	}
-	if strings.Contains(fx.Out.String(), "Name or path") {
-		t.Errorf("asked a question:\n%s", fx.Out.String())
-	}
-}
-
 // - Verify planMode without plan mode details on the session is an error
 func Test_Unit_PlanMode_NotSetUp(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
@@ -444,12 +455,18 @@ func Test_Unit_PlanMode_NotSetUp(t *testing.T) {
 
 // ---- /edit ----
 
-// - Verify /edit replaces the draft with valid text, shows it, and adds a user note to history and context
-// - Verify /edit makes no model call
+// editNoteFor is the note /edit leaves for the user's next message when the draft becomes o.
+func editNoteFor(o objective.Objective) string {
+	return "I edited the objective draft myself. It is now:\n\n" + o.Markdown()
+}
+
+// - Verify /edit replaces the draft with valid text and shows it, with no model call, history and context unchanged, and the note pending
+// - Verify the next message's request ends with one user message, the note then the typed text, after which the note is cleared
+// - Verify no request has two user messages in a row
 func Test_Unit_PlanMode_Edit_Applies(t *testing.T) {
 	dir := t.TempDir()
 	fx, pd := newPlanFixture(t)
-	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("ok")}
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("ok"), modeltest.AssistantText("Noted.")}
 	if err := runPlanModeWith(t, fx, filepath.Join(dir, "goal")+"\nfirst\n/edit\nBuild a line counter.\n"); err != nil {
 		t.Fatalf("planMode: %v", err)
 	}
@@ -463,14 +480,102 @@ func Test_Unit_PlanMode_Edit_Applies(t *testing.T) {
 	if !strings.Contains(fx.Out.String(), "Here is the objective") {
 		t.Errorf("the draft was not shown:\n%s", fx.Out.String())
 	}
-	noteText := "I edited the objective draft myself. It is now:\n\n" + want.Markdown()
 	for name, msgs := range map[string][]model.ChatMessage{"history": fx.History.GetMessages(), "context": fx.Context.GetMessages()} {
-		if len(msgs) == 0 || msgs[len(msgs)-1].Role != "user" || msgs[len(msgs)-1].Content != noteText {
-			t.Errorf("%s does not end with the edit note: %+v", name, msgs)
+		if len(msgs) != 2 || msgs[1].Role != "assistant" {
+			t.Errorf("%s changed by /edit, want only the first turn: %+v", name, msgs)
 		}
+	}
+	if pd.editNote != editNoteFor(want) {
+		t.Errorf("editNote = %q, want %q", pd.editNote, editNoteFor(want))
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Errorf("/edit wrote files: %v", entries)
+	}
+
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "make it fast\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	if len(fx.Provider.Calls) != 2 {
+		t.Fatalf("expected 2 model calls, got %d", len(fx.Provider.Calls))
+	}
+	req := fx.Provider.Calls[1]
+	if last := req[len(req)-1]; last.Role != "user" || last.Content != editNoteFor(want)+"\n\nmake it fast" {
+		t.Errorf("request's last message = %s %q, want the note then the typed text", last.Role, last.Content)
+	}
+	checkNoConsecutiveUserMessages(t, fx)
+	if pd.editNote != "" {
+		t.Errorf("editNote = %q after a successful turn, want it cleared", pd.editNote)
+	}
+}
+
+// - Verify a second /edit before any message replaces the note, and a slash command (/config) does not use it up
+// - Verify the next message's request holds only the second edit's note
+func Test_Unit_PlanMode_Edit_SecondEditReplacesNote(t *testing.T) {
+	fx, pd := newPlanFixture(t)
+	*pd.Objective = objective.Objective{ObjText: "Start."}
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("Noted.")}
+	second := objective.Objective{ObjText: "Second edit."}
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/edit\nFirst edit.\n/edit\nSecond edit.\n/config\nhi\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	if len(fx.Provider.Calls) != 1 {
+		t.Fatalf("expected 1 model call, got %d", len(fx.Provider.Calls))
+	}
+	req := fx.Provider.Calls[0]
+	last := req[len(req)-1]
+	if last.Role != "user" || last.Content != editNoteFor(second)+"\n\nhi" {
+		t.Errorf("request's last message = %s %q, want the second note then hi", last.Role, last.Content)
+	}
+	if strings.Contains(last.Content, "First edit.") {
+		t.Errorf("the first edit's note was sent: %q", last.Content)
+	}
+	checkNoConsecutiveUserMessages(t, fx)
+}
+
+// - Verify a turn that fails keeps the note, and the next successful turn sends it and clears it
+func Test_Unit_PlanMode_Edit_FailedTurnKeepsNote(t *testing.T) {
+	fx, pd := newPlanFixture(t)
+	*pd.Objective = objective.Objective{ObjText: "Start."}
+	edited := objective.Objective{ObjText: "Edited."}
+	fx.Provider.Err = errors.New("model down")
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/edit\nEdited.\none\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	if pd.editNote != editNoteFor(edited) {
+		t.Fatalf("editNote = %q after a failed turn, want it kept", pd.editNote)
+	}
+	fx.Provider.Err = nil
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("Noted.")}
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "two\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	req := fx.Provider.Calls[len(fx.Provider.Calls)-1]
+	if last := req[len(req)-1]; last.Role != "user" || last.Content != editNoteFor(edited)+"\n\ntwo" {
+		t.Errorf("request's last message = %s %q, want the note then two", last.Role, last.Content)
+	}
+	if pd.editNote != "" {
+		t.Errorf("editNote = %q after a successful turn, want it cleared", pd.editNote)
+	}
+	checkNoConsecutiveUserMessages(t, fx)
+}
+
+// - Verify /save after /edit writes the edited draft and clears the pending note, with no model call
+func Test_Unit_PlanMode_Edit_SaveClearsNote(t *testing.T) {
+	fx, pd := newPlanFixture(t)
+	pd.ObjectivePath = filepath.Join(t.TempDir(), "goal.md")
+	*pd.Objective = objective.Objective{ObjText: "Start."}
+	edited := objective.Objective{ObjText: "Edited."}
+	if err := chatLoop(t.Context(), nil, fx.Session, plainReaderFor(t, "/edit\nEdited.\n/save\n")); err != nil {
+		t.Fatalf("chatLoop: %v", err)
+	}
+	if !pd.saved || pd.editNote != "" {
+		t.Errorf("saved = %v, editNote = %q; want saved and the note cleared", pd.saved, pd.editNote)
+	}
+	if data, _ := os.ReadFile(pd.ObjectivePath); string(data) != edited.Markdown() {
+		t.Errorf("saved file = %q, want %q", data, edited.Markdown())
+	}
+	if len(fx.Provider.Calls) != 0 {
+		t.Errorf("expected no model call, got %d", len(fx.Provider.Calls))
 	}
 }
 

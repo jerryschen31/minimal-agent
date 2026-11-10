@@ -1328,3 +1328,11 @@ v2 (delete its task code), `state/`, docs + examples, the stub on `objective.Par
 **2026-11-08, objective/ v2 built** (`DECISIONS.md § objective/ v2 built`), with docs and example files. **Next (end of
 step 1):** `state/`, from the skeleton (Jerry reviewing it; Claude proposed adding `ObjectiveText` to the snapshot).
 
+
+**2026-11-09, step 2 built** (`DECISIONS.md § 2026-11-09 — Step 2 built`): plan mode through `SetupAgent`/`RunAgent`,
+the objective chat (`update_objective`, `/save`, `/edit`), the planner run (`propose_plan`, `ErrEndTurn`), `Accept?` and
+revise, `-objective` file or text, `-yes`/`-y`, per-mode defaults, `agent/planner/`. Not committed (Jerry commits).
+`state/` was moved after step 2 (a first plan never reads state); its skeleton still waits for Jerry's review, with
+`ObjectiveText` added. **Next:** try plan mode against a real model; then step 3 (one complete serial run) with
+`state/`. Open: `/plan` in chat and `Run now?` are left of step 5. Follow-ups done the same day: `Save over <file>?`,
+one user message at a time, `maxPlanTasks` (`DECISIONS.md § Plan mode follow-ups`).

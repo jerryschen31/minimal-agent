@@ -17,6 +17,9 @@ import (
 // testObjective is the objective the propose_plan tests plan for.
 var testObjective = objective.Objective{ObjText: "Build a word counter.", Instructions: "Use Go."}
 
+// testMaxTasks is the task limit the propose_plan tests use (the plan-mode default).
+const testMaxTasks = 30
+
 // validProposal is a proposal that passes every check; tests change one thing in it.
 func validProposal() proposal {
 	return proposal{
@@ -43,7 +46,7 @@ func callPropose(t *testing.T, tool *ProposePlan, prop any) (string, error) {
 
 // - Verify propose_plan's definition has its name and valid JSON parameters
 func Test_Unit_ProposePlan_Definition(t *testing.T) {
-	def := NewProposePlan("objective.md", testObjective).GetToolDefinition()
+	def := NewProposePlan("objective.md", testObjective, testMaxTasks).GetToolDefinition()
 	if def.Function.Name != "propose_plan" {
 		t.Errorf("name = %q, want propose_plan", def.Function.Name)
 	}
@@ -56,7 +59,7 @@ func Test_Unit_ProposePlan_Definition(t *testing.T) {
 // - Verify the accepted plan has FormatV1, the objective's base name, its hash and version 1, and the given tasks
 // - Verify the accepted plan is not stale against the objective and its Markdown cleans up with zero fixes
 func Test_Unit_ProposePlan_Accepts(t *testing.T) {
-	tool := NewProposePlan("/some/dir/goal.md", testObjective)
+	tool := NewProposePlan("/some/dir/goal.md", testObjective, testMaxTasks)
 	result, err := callPropose(t, tool, validProposal())
 	if !errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("err = %v, want tools.ErrEndTurn", err)
@@ -95,7 +98,7 @@ func Test_Unit_ProposePlan_TrimsAndAcceptsExternal(t *testing.T) {
 	prop.Tasks[0].Title = " Write wc.go "
 	prop.Tasks[1].Depends = []string{" t1 "}
 	prop.Tasks[1].Effects = " external "
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	if _, err := callPropose(t, tool, prop); !errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("err = %v, want tools.ErrEndTurn", err)
 	}
@@ -110,7 +113,7 @@ func Test_Unit_ProposePlan_TrimsAndAcceptsExternal(t *testing.T) {
 func Test_Unit_ProposePlan_AcceptsTidiedBody(t *testing.T) {
 	prop := validProposal()
 	prop.Tasks[0].Body = "Steps:\n\n-   read stdin\n-   count words"
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	if _, err := callPropose(t, tool, prop); !errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("err = %v, want tools.ErrEndTurn", err)
 	}
@@ -153,7 +156,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 		{"no tasks", func(p *proposal) { p.Tasks = nil }, []string{"has problems", "no tasks"}},
 		{"too many tasks", func(p *proposal) {
 			p.Tasks = nil
-			for i := 1; i <= MaxTasks+1; i++ {
+			for i := 1; i <= testMaxTasks+1; i++ {
 				p.Tasks = append(p.Tasks, proposedTask{ID: fmt.Sprintf("t%d", i), Title: fmt.Sprintf("Task %d", i)})
 			}
 		}, []string{"has problems", "the limit is 30"}},
@@ -162,7 +165,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			prop := validProposal()
 			tt.change(&prop)
-			tool := NewProposePlan("objective.md", testObjective)
+			tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 			_, err := callPropose(t, tool, prop)
 			if err == nil || errors.Is(err, tools.ErrEndTurn) {
 				t.Fatalf("err = %v, want a refusal", err)
@@ -181,7 +184,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 
 // - Verify bad JSON is an error naming the arguments, with Accepted left nil
 func Test_Unit_ProposePlan_BadJSON(t *testing.T) {
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	_, err := tool.CallTool(context.Background(), json.RawMessage(`{"title":`))
 	if err == nil || !strings.Contains(err.Error(), "invalid arguments") {
 		t.Errorf("err = %v, want an invalid-arguments error", err)
@@ -191,9 +194,33 @@ func Test_Unit_ProposePlan_BadJSON(t *testing.T) {
 	}
 }
 
+// - Verify the maxTasks given to NewProposePlan is the limit: with 2, a 3-task plan is refused naming the limit and a 2-task one is accepted
+// - Verify the description states that limit
+func Test_Unit_ProposePlan_HonoursMaxTasks(t *testing.T) {
+	tool := NewProposePlan("objective.md", testObjective, 2)
+	if desc := tool.GetToolDefinition().Function.Desc; !strings.Contains(desc, "at most 2 tasks") {
+		t.Errorf("description lacks %q:\n%s", "at most 2 tasks", desc)
+	}
+	three := validProposal()
+	three.Tasks = append(three.Tasks, proposedTask{ID: "t3", Title: "Ship it", Depends: []string{"t2"}})
+	_, err := callPropose(t, tool, three)
+	if err == nil || errors.Is(err, tools.ErrEndTurn) {
+		t.Fatalf("3 tasks: err = %v, want a refusal", err)
+	}
+	if !strings.Contains(err.Error(), "the limit is 2") {
+		t.Errorf("err lacks %q:\n%v", "the limit is 2", err)
+	}
+	if tool.Accepted != nil {
+		t.Fatal("Accepted set on a refused proposal")
+	}
+	if _, err := callPropose(t, tool, validProposal()); !errors.Is(err, tools.ErrEndTurn) {
+		t.Fatalf("2 tasks: err = %v, want tools.ErrEndTurn", err)
+	}
+}
+
 // - Verify a valid call after a refused one is accepted
 func Test_Unit_ProposePlan_RetryAfterRefusal(t *testing.T) {
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	bad := validProposal()
 	bad.Tasks[0].Depends = []string{"t2"} // a loop
 	if _, err := callPropose(t, tool, bad); err == nil || errors.Is(err, tools.ErrEndTurn) {
@@ -210,7 +237,7 @@ func Test_Unit_ProposePlan_RetryAfterRefusal(t *testing.T) {
 // - Verify the hash is taken when the tool is made, so changing the objective afterwards does not change the plan's hash
 func Test_Unit_ProposePlan_HashTakenAtCreation(t *testing.T) {
 	o := testObjective
-	tool := NewProposePlan("objective.md", o)
+	tool := NewProposePlan("objective.md", o, testMaxTasks)
 	want := o.Hash()
 	o.ObjText = "Something else."
 	if _, err := callPropose(t, tool, validProposal()); !errors.Is(err, tools.ErrEndTurn) {
@@ -230,7 +257,7 @@ func Test_Unit_ProposePlan_AcceptsLooseIDsAndEffects(t *testing.T) {
 	prop.Tasks[1].Depends = []string{"T1"}
 	prop.Tasks[1].Effects = "External"
 	prop.Tasks = append(prop.Tasks, proposedTask{ID: "t03", Title: "Ship it", Depends: []string{" Task 2 "}})
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	if _, err := callPropose(t, tool, prop); !errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("err = %v, want tools.ErrEndTurn", err)
 	}
@@ -255,7 +282,7 @@ func Test_Unit_ProposePlan_AcceptsLooseIDsAndEffects(t *testing.T) {
 func Test_Unit_ProposePlan_RefusesNonTaskID(t *testing.T) {
 	prop := validProposal()
 	prop.Tasks[1].ID = "x1"
-	tool := NewProposePlan("objective.md", testObjective)
+	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	_, err := callPropose(t, tool, prop)
 	if err == nil || errors.Is(err, tools.ErrEndTurn) || !strings.Contains(err.Error(), `id "x1" is not t<number>`) {
 		t.Errorf("err = %v, want a refusal naming x1", err)

@@ -126,7 +126,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	chatSession.Hooks = []hooks.Hook{toolRules}
 	agent.session = chatSession
 
-	// 10. plan mode: its details on the session and its update_objective tool
+	// 10. plan mode: adds plan mode details into the session and adds update_objective tool to the tool list
 	if cfg.AgentMode == config.ModePlan {
 		if err := setupPlanMode(chatSession, slices.Concat(builtinTools, mcpTools)); err != nil {
 			return err
@@ -213,6 +213,10 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
+	}
+	// only plan mode reads it; 0 would refuse every plan
+	if cfg.AgentMode == config.ModePlan && cfg.MaxPlanTasks <= 0 {
+		return fmt.Errorf("maxPlanTasks must be a positive integer in plan mode, got %d", cfg.MaxPlanTasks)
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

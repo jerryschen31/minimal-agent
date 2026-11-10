@@ -205,9 +205,13 @@ planmode.go
   func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error
   func runPlanMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
   func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
+  func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
+  func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
   func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
   func newObjectivePath(answer string) (string, error)
   func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
+  func askLineNotBlank(ctx context.Context, reader promptReader, prompt string) (string, error)
   func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
   func showObjective(cs *ChatSession, pd *planModeDetails)
   func saveObjective(cs *ChatSession, pd *planModeDetails) error
@@ -235,10 +239,10 @@ session.go
 ```text
 prompt.go
   func PlanMessage(objectivePath string, o objective.Objective) string
-  func RevisionNote(p plan.Plan) string
+  func RevisionNote(p plan.Plan, change string) string
 
 propose.go
-  func NewProposePlan(objectivePath string, o objective.Objective) *ProposePlan
+  func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan
   func (t *ProposePlan) GetToolDefinition() model.ToolDef
   func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, error)

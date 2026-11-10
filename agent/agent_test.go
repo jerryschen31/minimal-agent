@@ -95,6 +95,30 @@ func Test_Unit_CheckConfig_RejectsNonPositiveResponseTimeout(t *testing.T) {
 	}
 }
 
+// - Verify checkConfig rejects a non-positive maxPlanTasks in plan mode, naming the field, and accepts plan's default
+// - Verify chat mode with maxPlanTasks 0 (its default) passes
+func Test_Unit_CheckConfig_MaxPlanTasks(t *testing.T) {
+	plan := config.GetDefaultConfig(config.ModePlan)
+	if err := checkConfig(plan); err != nil {
+		t.Fatalf("expected plan mode's defaults to pass, got %v", err)
+	}
+	for _, n := range []int{0, -1} {
+		cfg := config.GetDefaultConfig(config.ModePlan)
+		cfg.MaxPlanTasks = n
+		err := checkConfig(cfg)
+		if err == nil || !strings.Contains(err.Error(), "maxPlanTasks must be a positive integer in plan mode") {
+			t.Errorf("plan, MaxPlanTasks %d: err = %v, want a maxPlanTasks error", n, err)
+		}
+	}
+	chat := config.GetDefaultConfig(config.ModeChat)
+	if chat.MaxPlanTasks != 0 {
+		t.Fatalf("chat MaxPlanTasks = %d, want 0", chat.MaxPlanTasks)
+	}
+	if err := checkConfig(chat); err != nil {
+		t.Errorf("chat with MaxPlanTasks 0: %v, want no error", err)
+	}
+}
+
 // - Verify SetupAgent prints a failed remote MCP server's notice without the token in its URL: the connect error
 // quotes the URL, so SetupAgent must hide it (as info mode does) before writing to OutBuffer
 func Test_SetupAgent_FailedRemoteMCPServer_HidesTokenInURL(t *testing.T) {

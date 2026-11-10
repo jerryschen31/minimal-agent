@@ -4,8 +4,32 @@ A plan file holds the formal tasks that meet an [objective](objective-format.md)
 checks them and writes the file, and autonomous mode runs it. You normally don't write one; you may read it, commit it,
 and tweak it by hand (small mistakes are fixed for you and reported).
 
-> **Status:** the reader and writer (package `plan/`) are built; the planner and autonomous mode are not yet. Design:
-> [`PLAN-plan-apply.md`](../PLAN-plan-apply.md).
+> **Status:** the reader and writer (package `plan/`) and plan mode, which makes a first plan, are built; updating a
+> plan and running it (autonomous mode) are not yet. Design: [`PLAN-plan-apply.md`](../PLAN-plan-apply.md).
+
+## How a plan is made
+
+```sh
+minagent -mode plan                          # write a new objective in a chat, /save it, then plan it
+minagent -mode plan -objective objective.md  # plan an objective you have (or pass its text instead of a file)
+```
+
+The planner reads the saved objective (and may look at the working directory), then proposes the whole plan. Go checks
+it (the checks under "Ready to run" below, and that it reads back the same once written), sends any problems back to
+the planner, and shows you a summary:
+
+```
+Plan 1 (wordfreq, a word-frequency CLI in Go): 4 to add
+  + t1  Create the module and a sample input
+  + t2  Count words  (after t1)
+  ...
+Accept this plan? [Y/n]:
+```
+
+**y** writes `<objective>.plan.md` next to the objective. **n** offers to revise: you say what should change, the
+change goes into the objective (in the same chat), and after `/save` the plan is made again. `-yes` accepts without
+asking. Running plan mode again on an objective whose plan is up to date just shows the summary; after you edit the
+objective, the plan is stale (updating it is not built yet: delete the plan file to plan from scratch).
 
 Example: [`examples/objective-example.plan.md`](../examples/objective-example.plan.md), made from
 [`examples/objective-example.md`](../examples/objective-example.md). A plan sits next to its objective, named

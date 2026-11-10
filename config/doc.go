@@ -30,12 +30,14 @@
 //	userId          who the chat session belongs to                                                       ["default_user"]
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
-//	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat and info run; plan is
-//	                being built (PLAN-plan-apply.md step 2); it also picks the defaults                    ["chat"]
+//	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat, info and plan run;
+//	                the mode also picks the defaults                                                       ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
+//	maxPlanTasks    plan mode: the most tasks the planner's plan may have; must be positive in plan mode
+//	                plan: [30]; other modes don't use it                                                   [0]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]

@@ -38,11 +38,12 @@ type Config struct {
 	// run configuration
 	AgentName    string `json:"agentName"`
 	AgentVersion string `json:"agentVersion"`
-	AgentMode    string `json:"agentMode"`   // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info" | "plan"
-	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
-	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
-	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
-	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
+	AgentMode    string `json:"agentMode"`    // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info" | "plan"
+	MissionFile  string `json:"missionFile"`  // path to mission file, autonomous mode only (TODO)
+	WorkDir      string `json:"workDir"`      // the only directory (and subdirectories) the read_file tool may read from; default "."
+	MaxSteps     int    `json:"maxSteps"`     // max ReAct steps per turn; must be positive (default 10)
+	MaxPlanTasks int    `json:"maxPlanTasks"` // plan mode: the most tasks a plan may have; must be positive there (default 30 in plan mode, 0 otherwise)
+	MaxTokens    int    `json:"maxTokens"`    // 0 = unspecified (TODO)
 
 	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
 	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
@@ -196,7 +197,7 @@ Don't break the work into tasks: a planner does that after the objective is save
 //   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
 //     FlagsOverlay layers the flags.
 //   - Most defaults are the same in every mode. Plan mode (ModePlan) differs in SystemPrompt (planSystemPrompt) and
-//     BuiltinTools (read-only: read_file, list_files, search_files). Any other mode, including an unknown one, gets the
+//     BuiltinTools (read-only: read_file, list_files, search_files), and is the only mode with MaxPlanTasks (30). Any other mode, including an unknown one, gets the
 //     chat defaults; ValidateMode reports an unknown mode later.
 //   - AgentMode is set to mode.
 func GetDefaultConfig(mode string) Config {
@@ -247,6 +248,7 @@ func GetDefaultConfig(mode string) Config {
 	if mode == ModePlan {
 		cfg.SystemPrompt = planSystemPrompt
 		cfg.BuiltinTools = []string{"read_file", "list_files", "search_files"} // planning reads the working directory, never changes it
+		cfg.MaxPlanTasks = 30
 	}
 	return cfg
 }
@@ -357,6 +359,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  missionFile:   %s\n", cfg.MissionFile)
 	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
+	fmt.Fprintf(w, "  maxPlanTasks:  %d\n", cfg.MaxPlanTasks)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)

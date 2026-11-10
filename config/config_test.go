@@ -304,6 +304,42 @@ func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
 	}
 }
 
+// - Verify the default maxPlanTasks is 30 in plan mode and 0 in every other mode
+func Test_Unit_GetDefaultConfig_MaxPlanTasks_PerMode(t *testing.T) {
+	for mode, want := range map[string]int{ModePlan: 30, ModeChat: 0, ModeInfo: 0, ModeOneshot: 0, ModeHeadless: 0} {
+		if got := GetDefaultConfig(mode).MaxPlanTasks; got != want {
+			t.Errorf("%q: MaxPlanTasks = %d, want %d", mode, got, want)
+		}
+	}
+}
+
+// - Verify "maxPlanTasks" in a config file is read without a warning, over plan mode's default
+// - Verify PrintConfig shows it
+func Test_Unit_SetDefaultConfig_MaxPlanTasks_FromFile(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"agentMode": "plan", "maxPlanTasks": 5}`))
+
+	var cfg Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = SetDefaultConfig(Flags{Config: &path}) })
+
+	if err != nil {
+		t.Fatalf("SetDefaultConfig() returned an error: %v", err)
+	}
+	if cfg.AgentMode != ModePlan || cfg.MaxPlanTasks != 5 {
+		t.Errorf("AgentMode %q, MaxPlanTasks %d; want plan and 5", cfg.AgentMode, cfg.MaxPlanTasks)
+	}
+	if out != "" {
+		t.Errorf("expected no warnings, got %q", out)
+	}
+
+	var shown bytes.Buffer
+	cfg.OutBuffer = &shown
+	PrintConfig(cfg)
+	if !strings.Contains(shown.String(), "maxPlanTasks:  5") {
+		t.Errorf("PrintConfig lacks maxPlanTasks:\n%s", shown.String())
+	}
+}
+
 // - Verify PrintConfig never prints MCP credentials (headers, env, args, url) but still lists each
 // server by name and transport, and shows the ordinary settings
 func Test_Unit_PrintConfig_DoesNotPrintMcpSecrets(t *testing.T) {
@@ -1084,7 +1120,7 @@ func Test_Unit_SetDefaultConfig_RunCommandAndTimeouts(t *testing.T) {
 	}
 }
 
-// - Verify plan mode's defaults differ from chat's only in SystemPrompt (planSystemPrompt) and BuiltinTools (read-only tools)
+// - Verify plan mode's defaults differ from chat's only in SystemPrompt (planSystemPrompt), BuiltinTools (read-only tools) and MaxPlanTasks (30, 0 in chat)
 // - Verify AgentMode is set to the mode asked for
 func Test_Unit_GetDefaultConfig_PlanMode_DiffersFromChat(t *testing.T) {
 	chat := GetDefaultConfig(ModeChat)
@@ -1102,10 +1138,15 @@ func Test_Unit_GetDefaultConfig_PlanMode_DiffersFromChat(t *testing.T) {
 		t.Errorf("plan and chat BuiltinTools should differ, both %v", chat.BuiltinTools)
 	}
 
+	if planCfg.MaxPlanTasks != 30 || chat.MaxPlanTasks != 0 {
+		t.Errorf("MaxPlanTasks: plan %d, chat %d; want 30 and 0", planCfg.MaxPlanTasks, chat.MaxPlanTasks)
+	}
+
 	// everything else is the same
 	planCfg.SystemPrompt, planCfg.BuiltinTools, planCfg.AgentMode = chat.SystemPrompt, chat.BuiltinTools, chat.AgentMode
+	planCfg.MaxPlanTasks = chat.MaxPlanTasks
 	if !reflect.DeepEqual(planCfg, chat) {
-		t.Errorf("plan defaults differ from chat beyond SystemPrompt and BuiltinTools:\nplan %+v\nchat %+v", planCfg, chat)
+		t.Errorf("plan defaults differ from chat beyond SystemPrompt, BuiltinTools and MaxPlanTasks:\nplan %+v\nchat %+v", planCfg, chat)
 	}
 }
 

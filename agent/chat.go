@@ -26,6 +26,8 @@ import (
 // Notes:
 //   - Slash commands are /exit and /quit (return true), /clear, /summary (or /summarize), /compact and /config. An
 //     unrecognized command prints a notice. Empty or all-space lines are skipped.
+//   - Plan mode: a pending /edit note (planModeDetails.editNote) is put at the start of the message sent to the model,
+//     and cleared once the turn succeeds.
 //   - /save exists only in plan mode (cs.ModeDetails is *planModeDetails): it writes the draft objective and returns
 //     true, ending the chat; if there is nothing to save or the write fails it says so and the chat goes on.
 //   - msgContext is read once at the top, before /clear runs, and the context-cleared event records its size.
@@ -110,6 +112,13 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 		contextwindow.DebugChatContext(cs.OutBuffer, msgContext)
 	}
 
+	// plan mode: a pending /edit note goes at the start of this message (one user message, never two in a row)
+	editNote := ""
+	if pd, ok := cs.ModeDetails.(*planModeDetails); ok && pd.editNote != "" {
+		editNote = pd.editNote
+		line = editNote + "\n\n" + line
+	}
+
 	// initial user message
 	userMsg := model.CreateChatMessage("user", "user", line, "", nil)
 
@@ -139,6 +148,9 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 	// add new messages to history and context
 	cs.MsgHistory.Append(turnMsgs)
 	cs.MsgContext.AddMessages(turnMsgs)
+	if pd, ok := cs.ModeDetails.(*planModeDetails); ok && editNote != "" && pd.editNote == editNote {
+		pd.editNote = "" // the model has it now; a failed turn keeps it for the next one
+	}
 
 	return false
 }

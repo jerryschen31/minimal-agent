@@ -4,8 +4,8 @@
 //     objective.Objective, one section at a time; it never writes a file (plan mode's /save does).
 //   - propose_plan (ProposePlan): the planner run's tool. It turns the model's tasks into a plan.Plan, checks it, and
 //     ends the turn (tools.ErrEndTurn) when it passes; plan mode then shows it and asks the user to accept it.
-//   - PlanPrompt and PlanMessage are the planner run's system prompt and first message; RevisionNote tells the chat
-//     which plan the user turned down. The objective chat's own system prompt is plan mode's default "systemPrompt" in
+//   - PlanPrompt and PlanMessage are the planner run's system prompt and first message; RevisionNote is the message
+//     that reopens the chat with the plan the user turned down and what they want changed. The objective chat's own system prompt is plan mode's default "systemPrompt" in
 //     config, so a config file can replace it.
 //
 // It sits under agent/ because only plan mode (agent/planmode.go) uses it, but it is its own package: it imports
@@ -19,10 +19,10 @@
 //
 //	prompt.go
 //	  func PlanMessage(objectivePath string, o objective.Objective) string
-//	  func RevisionNote(p plan.Plan) string
+//	  func RevisionNote(p plan.Plan, change string) string
 //
 //	propose.go
-//	  func NewProposePlan(objectivePath string, o objective.Objective) *ProposePlan
+//	  func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan
 //	  func (t *ProposePlan) GetToolDefinition() model.ToolDef
 //	  func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 //	  func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, error)

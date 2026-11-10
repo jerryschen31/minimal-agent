@@ -1,6 +1,7 @@
 # PLAN: objective → plan → run, iterated (autonomous mode v2)
 
-Status: **shape agreed 2026-11-08, not built.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
+Status: **shape agreed 2026-11-08; steps 1 (formats, except `state/`) and 2 (plan mode, first plan) built
+2026-11-08/09.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
 package and the `-mode plan` stub, are built and get refactored here). Decisions: the `DECISIONS.md § 2026-11-08`
 entries (redesign; plan mode confirms by default; full governance tabled; simplified plan/run shape agreed).
 
@@ -65,8 +66,9 @@ The audience is grad students in ...
   top-level section, which goes to Instructions with its heading kept; deeper, it stays in the section it is in. (So
   `# Objective` + `## Instructions` + `## Constraints` puts Constraints in Instructions.) Headings inside code blocks
   are ignored.
-- No front matter. Go never rewrites the file on its own; the planning session edits it only by exact replacements
-  whose diff you approve, replacing text in place rather than appending.
+- No front matter. Go never rewrites the file on its own. Plan mode's objective chat keeps the draft in memory (the
+  model changes it section by section with `update_objective`, you can change it with `/edit`) and writes the file
+  only when you type `/save` (built in step 2; this replaced an earlier `edit_objective` idea of exact replacements).
 - The change-detection hash is taken over the normalized text (sections in standard form), so a whitespace-only edit
   doesn't trigger a replan.
 
@@ -135,31 +137,44 @@ secrets.
 
 ## Commands
 
-`-objective` takes **a file or text**. A value naming an existing file is the file; a value that looks like a path
-(ends in `.md`, or has a `/` and no spaces) but doesn't exist is an error; anything else is the objective's text, which
-is first saved as an objective file (`objective.md`, or `objective-<YYYYMMDD-HHMMSS>.md` if that exists; never
-overwritten), because iteration needs a file.
+`-objective` takes **a file or text**. A value naming an existing file is the file; one word ending in `.md` that
+doesn't exist is an error (a typo, most likely); anything else is the objective's text, which is first saved as an
+objective file (`objective.md`, or `objective-<YYYYMMDD-HHMMSS>.md` if that exists; never overwritten), because
+iteration needs a file.
 
 | Command | What it does |
 |---|---|
 | `minagent -mode autonomous -objective <file\|text>` | **The one command.** Plan if there is no plan or it is stale → summary → `Run? [Y/n/c]` → run. `c` opens the planning session, then returns to `Run?`. After a crash it resumes; after an edit it re-runs only what changed. |
-| `minagent -mode plan -objective <file\|text>` | Plan if needed → summary → `Accept this plan? [Y/n]`; **n** opens the planning session. Once saved: `Run now? [y/N]`; **N** exits and prints the command to run it later. If the plan is up to date: summary, then `Run now?`. |
-| `minagent -mode plan` (no objective) | The planning session, starting with "What is your objective?" |
+| `minagent -mode plan -objective <file\|text>` | Plan if needed → summary → `Accept this plan? [Y/n]`; **n** → `Enter chat mode to discuss and revise the plan (Y/n)?` → the objective chat → `/save` → plan again. If the plan is up to date: summary only; if it is stale: an error until step 4. *(Built in step 2. Still to come: `Run now? [y/N]` after saving, step 3.)* |
+| `minagent -mode plan` (no objective) | Asks for the new objective file's name (`default: objective.md`; an existing file asks `Overwrite (y/N)?`, **N** asks the name again), then `What is your objective? :`, then the objective chat; `/save` writes it and the plan is made as above. *(Built in step 2.)* |
 | `/plan [text \| file.md]` in chat | The planning session inside chat; "run now" starts the run as a background child process. |
-| `-yes` | Answers the plan and run questions (for scripts; no terminal needed). **Never answers a gate.** |
+| `-yes`, `-y` | Answers the plan and run questions (for scripts; with `-objective` no terminal is needed). **Never answers a gate.** |
 | `-replace t3` | Re-run t3 even if it looks done. |
 
-### The planning session
+### The planning session (as built in step 2)
 
-The chat loop with the planner's prompt, read-only tools, and two tools whose results Go shows and you approve:
+Plan mode runs through `SetupAgent` and `RunAgent` like chat, with its own defaults (`GetDefaultConfig("plan")`: the
+objective-writing system prompt and the read-only tools `read_file`, `list_files`, `search_files`); `-config` and
+`-model` work as in chat, so a planning config can add MCP servers.
 
-- `edit_objective`: exact replacements in `objective.md` (like `edit_file`); Go shows the diff and asks before writing.
-- `propose_plan`: Go validates it, prints the summary, asks `Accept this plan? [Y/n]`. **n** → "What should change?"
-  **y** → save; the session ends.
+- **The objective chat.** The chat loop with plan mode's system prompt and one extra tool, `update_objective`: it
+  changes the in-memory draft (an `objective.Objective`, held in `planModeDetails` on the session) one section at a time
+  and never writes a file. After each change Go prints the draft and "Type /save to save it and start planning, /edit
+  to change it yourself, or tell me what to change." `/save` writes the draft (and is the only thing that does);
+  `/edit` fills the prompt with the draft for you to change in place (no model call; the model is told what changed);
+  `/exit` or Ctrl+D leaves with nothing written.
+- **The planner run.** One turn on a copy of the session: `PlanPrompt` as the system message, no chat history (the
+  planner sees only the saved objective), the read-only and MCP tools plus `propose_plan`. Go checks the proposal
+  (one-line fields; it must read back the same through `plan.Cleanup`; `CheckComplete`), lists every problem back to
+  the model, and ends the turn (`tools.ErrEndTurn`) when it passes.
+- **Accept.** The summary, then `Accept this plan? [Y/n]` (`-yes` answers it). **y** writes the plan (the old plan
+  file is replaced only here). **n** → `Enter chat mode to discuss and revise the plan (Y/n)?`: **y** → "What would you
+  like to change in the plan?", the turned-down plan is added to the chat, and the objective chat reopens; after
+  `/save` the plan is made again. **n** prints the command to plan again.
 
 **A change you ask for goes into `objective.md` first, then the plan is redone from it**, so the objective stays the
-one place your intent lives, and the diff between objective versions drives the next plan. The model proposes as soon
-as the objective is clear enough, writing what it had to guess as Assumptions.
+one place your intent lives, and the diff between objective versions drives the next plan. The planner writes what it
+had to guess as Assumptions.
 
 ### `propose_plan`: a first plan vs an update
 
@@ -226,15 +241,17 @@ A first plan shows every task as `+`. A large re-run says so ("re-runs 14 tasks"
    `§ objective/ v2 built`), with docs (`docs/objective-format.md`, `docs/plan-format.md`) and examples (an objective
    and the plan made from it); the stub reads with `objective.Parse`. Still to do: `state/` (types, load/save/latest,
    run dirs, lock, file hashes).
-2. **First plan.** `ErrEndTurn`; `propose_plan` (first-plan form); `-objective` file or text; `-mode plan -yes` writes
-   the plan and prints the summary (all `+`); `-out` dropped.
+2. **First plan.** **Built 2026-11-09** (`DECISIONS.md § Step 2 built: plan mode`): `ErrEndTurn`; `propose_plan`
+   (first-plan form) and `update_objective` in `agent/planner/`; per-mode defaults; plan mode through
+   `SetupAgent`/`RunAgent`; the objective chat (`/save`, `/edit`); `Accept? [Y/n]` and revise; `-objective` file or
+   text; `-yes`/`-y`; `-out` dropped. This took in most of step 5 (the session with no objective, revising after **n**).
 3. **One complete run, serial.** Lock, summary, `Run?`, director and workers in `depends` order (mvp3 is the
    reference), file reads/writes recorded by the file tools, state snapshot, report. **Resume** from the last snapshot
    works here. External effects with idempotency keys.
 4. **Iteration.** `propose_plan` operations; drift check; `~ ↻ - ?` in the summary; recorded-reads cascade; "what
    changed" for `~` workers; `-replace`.
-5. **The planning session.** `Accept? [Y/n]` → chat, `edit_objective`, `Run now?`; `-mode plan` with no objective; then
-   `/plan` in chat with a background run.
+5. **The planning session.** Mostly built in step 2. Left: `Run now?` (after step 3), and `/plan` in chat with a
+   background run.
 6. Gates (pausing only what depends on them), capability preflight, budgets.
 
 ## Deferred

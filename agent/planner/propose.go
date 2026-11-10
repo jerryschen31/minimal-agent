@@ -15,14 +15,11 @@ import (
 	"github.com/jerryschen31/minimal-agent/tools"
 )
 
-// MaxTasks is the most tasks a plan may have. [agent] A constant for now; it can become a config key when a real
-// objective needs more.
-const MaxTasks = 30
-
 // ProposePlan is the propose_plan tool: it turns the model's tasks into a checked plan.Plan for one objective.
 type ProposePlan struct {
 	objectivePath string     // the objective file, as plan mode names it
 	objectiveHash string     // objective.Hash() of the objective being planned
+	maxTasks      int        // the most tasks a plan may have (config maxPlanTasks)
 	Accepted      *plan.Plan // set by the first proposal that passes the checks; nil until then
 }
 
@@ -45,12 +42,14 @@ type proposedTask struct {
 	Body     string   `json:"body"`
 }
 
-// NewProposePlan returns the propose_plan tool for the objective o saved at objectivePath.
+// NewProposePlan returns the propose_plan tool for the objective o saved at objectivePath, accepting at most maxTasks
+// tasks.
 //
 // Notes:
 //   - The hash is taken now, so the plan records the objective it was made from even if the draft changes later.
-func NewProposePlan(objectivePath string, o objective.Objective) *ProposePlan {
-	return &ProposePlan{objectivePath: objectivePath, objectiveHash: o.Hash()}
+//   - maxTasks comes from the config (maxPlanTasks); plan mode's setup checks it is positive.
+func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan {
+	return &ProposePlan{objectivePath: objectivePath, objectiveHash: o.Hash(), maxTasks: maxTasks}
 }
 
 // GetToolDefinition returns propose_plan's name, description and parameters.
@@ -61,7 +60,7 @@ func (t *ProposePlan) GetToolDefinition() model.ToolDef {
 		"propose_plan",
 		fmt.Sprintf("Proposes the whole plan for the objective. Go checks it: task IDs t1, t2, ... each used once, depends naming "+
 			"other tasks with no loops, at most %d tasks, effects empty or \"external\", one-line fields. If there are problems they "+
-			"are listed and you call it again with the whole plan fixed; if it passes, the user is shown the plan and decides.", MaxTasks),
+			"are listed and you call it again with the whole plan fixed; if it passes, the user is shown the plan and decides.", t.maxTasks),
 		json.RawMessage(`{
 			"type": "object",
 			"properties": {
@@ -111,7 +110,7 @@ func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (strin
 	if err != nil {
 		return "", err
 	}
-	if err := p.CheckComplete(MaxTasks); err != nil {
+	if err := p.CheckComplete(t.maxTasks); err != nil {
 		return "", fmt.Errorf("the plan has problems; fix them all and call propose_plan again:\n%w", err)
 	}
 	t.Accepted = &p

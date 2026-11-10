@@ -4553,6 +4553,10 @@ deploys only the difference.
 
 ### 2026-11-08 — Plan mode confirms by default; one planning session behind four entry points
 
+**Superseded in part by `§ 2026-11-09 — Step 2 built: plan mode`**: the session became an objective chat with an
+in-memory draft (`update_objective`, `/save`, `/edit`) instead of `edit_objective`; the planner is a separate run with
+its own prompt; `-mode plan` with no objective asks for a file name first.
+
 Jerry's clarification of the commands in `PLAN-plan-apply.md § Commands`.
 
 - `-mode plan` shows a new or refreshed plan and asks `Accept this plan? [Y/n]`; **n** opens an interactive planning
@@ -4649,3 +4653,68 @@ clean after one fix.
   v2 form (its steps are informal, under Instructions) and new `examples/objective-example.plan.md`, which tests keep
   in the standard form and not stale against the example objective. The plan-mode stub reads with `objective.Parse`.
 
+### 2026-11-09 — Step 2 built: plan mode writes an objective with you, then plans it
+
+Designed with Jerry over several rounds, then built by Claude (tests by sub-agents). `go test -race ./...`, vet, gofmt
+and codemap check/lint pass. `PLAN-plan-apply.md § The planning session` and `§ Build order` updated.
+
+- **Plan mode goes through `SetupAgent` and `RunAgent`** like chat (`RunAgent` has a plan branch; `main.go` lost its
+  special case; the stub is gone), so it gets MCP servers, tracing, approvals, `-config` and `-model`. *Why:* a
+  planning config can add research MCP servers, and nothing about setup is plan-specific.
+- **Defaults per mode: `GetDefaultConfig(mode)`.** Shared defaults once; plan mode differs in `systemPrompt` (the
+  objective-writing prompt) and `builtinTools` (`read_file`, `list_files`, `search_files`). `SetDefaultConfig` works out
+  the mode first (`-mode`, else the file's `agentMode`, else chat). **A config file is trusted** (Jerry): its
+  `builtinTools` is used as given in plan mode too, write tools included. *Downside:* a chat config used with
+  `-mode plan` can let planning write files.
+- **The draft lives in memory, as an `objective.Objective`** (Jerry: "this is the utility of the Objective struct").
+  The model changes it with `update_objective` (one section per field; absent = unchanged), and **only `/save` writes
+  the file** (Go code, not a tool), so leaving the chat never leaves a half-made objective on disk. Go prints the draft
+  and a fixed footer after each change, rather than relying on the model to say how to save. `/edit` fills the prompt
+  with the draft (cursor at the end); what you submit replaces it if `objective.Parse` accepts it, and the model is told
+  by a user message (no model call). Considered and rejected: the model writing the file on each change (overwrites an
+  existing file before `/save`); `cs.Done` set by a save tool (an LLM deciding when the session ends).
+- **`ChatSession.ModeDetails`** (an interface, `ModeName() string`) holds a mode's own state: `*planModeDetails` in plan
+  mode (objective path, draft, the tools the planner gets, the queued first line, saved), nil in chat. Jerry wanted the
+  session struct to stay mode-agnostic. `/save` (in `handleUserInput`) and `/edit` (in `chatLoop`, since it needs the
+  prompt reader) exist only when it is `*planModeDetails`; in chat they are unrecognized. *Downside:* type assertions,
+  checked at run time.
+- **`-mode plan` without `-objective`** asks `Planning mode for a new objective: Name or path for the new objective
+  file (default: objective.md | Ctrl+D to cancel):`, then `objective.md already exists. Overwrite (y/N)?:` (**N** asks
+  the name again), then `What is your objective? :`, whose answer is the chat's first turn. Ctrl+D cancels (Jerry:
+  Ctrl+D, not Ctrl+C, which keeps clearing the line). Overwriting the objective implies replacing its plan, but the old
+  plan file is kept until a new plan is accepted.
+- **The planner is a separate run** (`runPlanner`): one turn on a shallow copy of the session with `PlanPrompt`, no chat
+  history, the read-only and MCP tools plus `propose_plan`. `propose_plan` checks one-line fields, writes the plan and
+  reads it back through `plan.Cleanup` (tidying accepted; a body line read as a heading or field refused), then
+  `CheckComplete`; problems go back to the model; on success it returns **`tools.ErrEndTurn`**, which `runToolCall`
+  now reports (`(msg, endTurn bool)`) and which ends `reActLoop` after that response's other calls. IDs and depends are
+  put in standard form first (`plan.NormalizeTaskID`, now exported), after a test sub-agent found "T1" being refused
+  with a misleading message.
+- **Accept and revise:** summary (`plan.Summary`), `Accept this plan? [Y/n]` (`-yes`/`-y` answers it); **n** →
+  `Enter chat mode to discuss and revise the plan (Y/n)?`; **y** → "What would you like to change in the plan?", the
+  turned-down plan goes into the chat (`planner.RevisionNote`), the objective chat reopens, and `/save` plans again;
+  **n** exits with the command to plan again (Jerry: "back to the prompt" means exiting).
+- **`-objective <file|text>`**: a file is planned as is; one word ending in `.md` that doesn't exist is an error; other
+  text is saved to `objective.md` (`objective-<timestamp>.md` if taken; never overwritten). An up-to-date plan is just
+  shown; a stale one is an error until step 4 ("delete the plan to plan from scratch"). A terminal is needed unless
+  `-objective` comes with `-yes`.
+- **Package layout:** the prompts and the two tools are in **`agent/planner/`** (Jerry's choice over a top-level
+  `planner/`, folding them into `plan/`, or into `agent/`): a separate package, imported only by `agent`, never
+  importing it, so `plan/` stays a file-format package. `-out` is gone; `Config.ObjectiveFile` may hold text.
+- **Left as is (Jerry):** the answer to "What is your objective?" goes through slash-command handling, so `/exit` there
+  leaves.
+
+### 2026-11-09 — Plan mode follow-ups: ask before saving over your file; one user message at a time; `maxPlanTasks`
+
+Jerry's answers to what the step 2 tests turned up.
+
+- **Saving over your own objective file asks first.** After `-objective <existing file>` and a revision, the first
+  `/save` asks `Save over <file>? (y/N): ` (only once), because `/save` writes the standard form and your layout is
+  lost. Text given to `-objective` (a file Go just created) and the no-objective path (you already chose to overwrite)
+  don't ask.
+- **Never two user messages in a row** (Anthropic compatibility from the start). The revise chat opens with one message
+  holding the turned-down plan and the change asked for (`planner.RevisionNote(p, change)`); the `/edit` note is put at
+  the start of your next message (`planModeDetails.editNote`, cleared once that turn succeeds) instead of being a
+  message of its own.
+- **`maxPlanTasks` is a config key** (default 30 in plan mode, 0 elsewhere; must be positive in plan mode), replacing
+  the `planner.MaxTasks` constant.
