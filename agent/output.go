@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // Output is how the agent reports to the user during a session: a turn's progress, system notices and errors.
@@ -75,3 +76,50 @@ func (o chatOutput) Error(what string, err error) {
 //
 // Notes: none.
 func (o chatOutput) Interrupted() { fmt.Fprintln(o.w, "[interrupted]") }
+
+// planOutput is plan mode's Output: the objective chat reads like a conversation, so the model's replies and notices
+// are printed without "[assistant]" / "[system]" labels, and tool calls only with -debug. Thinking, Error and
+// Interrupted are chat mode's (errors keep their "[error]" label so they stand out).
+// [agent] Embedding chatOutput reuses its methods; the three defined below replace chat's versions.
+type planOutput struct {
+	chatOutput
+	showTools   bool // -debug: print "[tool] Tool called: …" lines (and replies hidden by hideReplies)
+	hideReplies bool // the planner run: its reply text is not meant for the user (it can't ask anything); -debug shows it
+}
+
+// newPlanOutput returns plan mode's Output on w; debug turns on the tool-call lines.
+//
+// Notes:
+//   - Thinking dots are shown when w is a real terminal.
+func newPlanOutput(w io.Writer, debug bool) planOutput {
+	return planOutput{chatOutput: chatOutput{w: w, showProgress: isTerminal(w)}, showTools: debug}
+}
+
+// Assistant prints the model's reply text as it is, and nothing for an empty reply.
+//
+// Notes:
+//   - A step that only calls tools has no text; chat mode prints an empty "[assistant]" line for it, plan mode nothing.
+//   - With hideReplies (the planner run) nothing is printed unless -debug: a model may write the whole plan as JSON
+//     before calling propose_plan, and plan mode shows the checked plan itself.
+func (o planOutput) Assistant(text string) {
+	if o.hideReplies && !o.showTools {
+		return
+	}
+	if strings.TrimSpace(text) != "" {
+		fmt.Fprintln(o.w, text)
+	}
+}
+
+// ToolCalled prints chat mode's "[tool] Tool called:" line, only with -debug.
+//
+// Notes: none.
+func (o planOutput) ToolCalled(name string) {
+	if o.showTools {
+		o.chatOutput.ToolCalled(name)
+	}
+}
+
+// System prints a notice without a label.
+//
+// Notes: none.
+func (o planOutput) System(text string) { fmt.Fprintln(o.w, text) }

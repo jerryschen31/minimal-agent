@@ -29,7 +29,8 @@ func validProposal() proposal {
 		Tasks: []proposedTask{
 			{ID: "t1", Title: "Write wc.go", Needs: "write files in the working directory", DoneWhen: "wc.go exists",
 				Body: "Count words on stdin."},
-			{ID: "t2", Title: "Test it", Depends: []string{"t1"}, Needs: "run go test", DoneWhen: "go test passes"},
+			{ID: "t2", Title: "Test it", Depends: []string{"t1"}, Needs: "run go test", DoneWhen: "go test passes",
+				Body: "Run go test ./... and fix what fails."},
 		},
 	}
 }
@@ -195,6 +196,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 			p.Tasks[0].Needs, p.Tasks[0].DoneWhen, p.Tasks[0].Body = "", "", "needs: a shell"
 		},
 			[]string{"task t1 reads back differently"}},
+		{"empty body", func(p *proposal) { p.Tasks[1].Body = "  \n " }, []string{"t2: body is empty"}},
 		{"task without ID", func(p *proposal) { p.Tasks[1].ID = ""; p.Tasks[1].Depends = nil }, []string{`id "" is not t<number>`}},
 		{"duplicate IDs", func(p *proposal) { p.Tasks[1].ID = "t1"; p.Tasks[1].Depends = nil }, []string{"can't be saved"}},
 		{"unknown depends", func(p *proposal) { p.Tasks[1].Depends = []string{"t7"} }, []string{"has problems", `"t7"`}},
@@ -204,7 +206,7 @@ func Test_Unit_ProposePlan_Refuses(t *testing.T) {
 		{"too many tasks", func(p *proposal) {
 			p.Tasks = nil
 			for i := 1; i <= testMaxTasks+1; i++ {
-				p.Tasks = append(p.Tasks, proposedTask{ID: fmt.Sprintf("t%d", i), Title: fmt.Sprintf("Task %d", i)})
+				p.Tasks = append(p.Tasks, proposedTask{ID: fmt.Sprintf("t%d", i), Title: fmt.Sprintf("Task %d", i), Body: "Do it."})
 			}
 		}, []string{"has problems", "the limit is 30"}},
 	}
@@ -249,7 +251,7 @@ func Test_Unit_ProposePlan_HonoursMaxTasks(t *testing.T) {
 		t.Errorf("description lacks %q:\n%s", "at most 2 tasks", desc)
 	}
 	three := validProposal()
-	three.Tasks = append(three.Tasks, proposedTask{ID: "t3", Title: "Ship it", Depends: []string{"t2"}})
+	three.Tasks = append(three.Tasks, proposedTask{ID: "t3", Title: "Ship it", Depends: []string{"t2"}, Body: "Tag a release."})
 	_, err := callPropose(t, tool, three)
 	if err == nil || errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("3 tasks: err = %v, want a refusal", err)
@@ -303,7 +305,7 @@ func Test_Unit_ProposePlan_AcceptsLooseIDsAndEffects(t *testing.T) {
 	prop.Tasks[1].ID = "task 2"
 	prop.Tasks[1].Depends = []string{"T1"}
 	prop.Tasks[1].Effects = "External"
-	prop.Tasks = append(prop.Tasks, proposedTask{ID: "t03", Title: "Ship it", Depends: []string{" Task 2 "}})
+	prop.Tasks = append(prop.Tasks, proposedTask{ID: "t03", Title: "Ship it", Depends: []string{" Task 2 "}, Body: "Tag a release."})
 	tool := NewProposePlan("objective.md", testObjective, testMaxTasks)
 	if _, err := callPropose(t, tool, prop); !errors.Is(err, tools.ErrEndTurn) {
 		t.Fatalf("err = %v, want tools.ErrEndTurn", err)

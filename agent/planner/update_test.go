@@ -11,7 +11,7 @@ import (
 
 // - Verify update_objective's definition has its name and valid JSON parameters
 func Test_Unit_UpdateObjective_Definition(t *testing.T) {
-	def := NewUpdateObjective(&objective.Objective{}, nil).GetToolDefinition()
+	def := NewUpdateObjective(&objective.Objective{}).GetToolDefinition()
 	if def.Function.Name != "update_objective" {
 		t.Errorf("name = %q, want update_objective", def.Function.Name)
 	}
@@ -20,13 +20,12 @@ func Test_Unit_UpdateObjective_Definition(t *testing.T) {
 	}
 }
 
-// - Verify each call changes only the sections it gives, trims text, and calls show once per success
+// - Verify each call changes only the sections it gives, trims text, and says the user has not seen the draft
 // - Verify "" clears instructions and context
 // - Verify a "## Sub" heading inside a section is accepted
 func Test_Unit_UpdateObjective_ChangesSections(t *testing.T) {
 	draft := &objective.Objective{}
-	shown := 0
-	tool := NewUpdateObjective(draft, func() { shown++ })
+	tool := NewUpdateObjective(draft)
 
 	steps := []struct {
 		name string
@@ -42,25 +41,22 @@ func Test_Unit_UpdateObjective_ChangesSections(t *testing.T) {
 		{"empty strings clear instructions and context", `{"instructions":"","context":""}`,
 			objective.Objective{ObjText: "Build a line counter."}},
 	}
-	for i, s := range steps {
+	for _, s := range steps {
 		got, err := tool.CallTool(context.Background(), json.RawMessage(s.args))
 		if err != nil {
 			t.Fatalf("%s: unexpected error: %v", s.name, err)
 		}
-		if got != "Draft updated; the user sees it." {
+		if got != "Draft updated. The user has not seen it." {
 			t.Errorf("%s: result = %q", s.name, got)
 		}
 		if *draft != s.want {
 			t.Errorf("%s: draft = %+v, want %+v", s.name, *draft, s.want)
 		}
-		if shown != i+1 {
-			t.Errorf("%s: show called %d times, want %d", s.name, shown, i+1)
-		}
 	}
 }
 
 // - Verify bad JSON, no field, an empty objective and text that would not read back are errors
-// - Verify a refused call leaves the draft unchanged and does not call show
+// - Verify a refused call leaves the draft unchanged
 func Test_Unit_UpdateObjective_Refuses(t *testing.T) {
 	start := objective.Objective{ObjText: "Keep me.", Instructions: "Use Go.", Context: "A CLI."}
 	tests := []struct {
@@ -77,8 +73,7 @@ func Test_Unit_UpdateObjective_Refuses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			draft := start
-			shown := 0
-			tool := NewUpdateObjective(&draft, func() { shown++ })
+			tool := NewUpdateObjective(&draft)
 			_, err := tool.CallTool(context.Background(), json.RawMessage(tt.args))
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("err = %v, want one containing %q", err, tt.wantErr)
@@ -86,20 +81,6 @@ func Test_Unit_UpdateObjective_Refuses(t *testing.T) {
 			if draft != start {
 				t.Errorf("draft changed to %+v", draft)
 			}
-			if shown != 0 {
-				t.Errorf("show called %d times on a refused call", shown)
-			}
 		})
-	}
-}
-
-// - Verify a nil show function is allowed
-func Test_Unit_UpdateObjective_NilShow(t *testing.T) {
-	draft := &objective.Objective{}
-	if _, err := NewUpdateObjective(draft, nil).CallTool(context.Background(), json.RawMessage(`{"objective":"x"}`)); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if draft.ObjText != "x" {
-		t.Errorf("draft = %+v", *draft)
 	}
 }

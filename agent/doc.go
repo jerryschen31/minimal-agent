@@ -81,6 +81,10 @@
 //	  func (o chatOutput) System(text string)
 //	  func (o chatOutput) Error(what string, err error)
 //	  func (o chatOutput) Interrupted()
+//	  func newPlanOutput(w io.Writer, debug bool) planOutput
+//	  func (o planOutput) Assistant(text string)
+//	  func (o planOutput) ToolCalled(name string)
+//	  func (o planOutput) System(text string)
 //
 //	planmode.go
 //	  func (*planModeDetails) ModeName() string
@@ -90,12 +94,14 @@
 //	  func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 //	  func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
 //	  func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
+//	  func plannerNoPlanError(lastReply string, reminded int, objectivePath string) error
 //	  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
 //	  func newObjectivePath(answer string) (string, error)
 //	  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
 //	  func askLineNotBlank(ctx context.Context, reader promptReader, prompt string) (string, error)
 //	  func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
 //	  func showObjective(cs *ChatSession, pd *planModeDetails)
+//	  func presentObjective(cs *ChatSession, pd *planModeDetails)
 //	  func saveObjective(cs *ChatSession, pd *planModeDetails) error
 //	  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
 //	  func writeFileAtomic(path string, data []byte) error

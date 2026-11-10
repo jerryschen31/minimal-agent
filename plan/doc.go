@@ -29,7 +29,7 @@
 //	   ▼
 //	(Plan, []Fix, error)
 //
-//	Plan ─► Markdown() = frontMatter() + body()
+//	Plan ─► Markdown() = frontMatter() + Body()
 //	Plan ─► CheckComplete(maxTasks) error
 //	Plan ─► IsStale(objective hash)
 //	Task ─► DefinitionHash()             (every field and the body, except reason)
@@ -102,7 +102,7 @@
 //	render.go
 //	  func (p Plan) Markdown() string
 //	  func (p Plan) frontMatter() string
-//	  func (p Plan) body() string
+//	  func (p Plan) Body() string
 //	  func sectionBlock(heading, body string) string
 //	  func taskBlock(t Task) string
 //	  func Summary(p Plan) string

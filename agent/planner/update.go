@@ -12,18 +12,17 @@ import (
 )
 
 // UpdateObjective is the update_objective tool: it changes plan mode's in-memory draft, one section at a time.
+// [agent] It is silent: the user doesn't see the draft after each change (that was distracting). The model summarizes
+// its understanding in its replies instead, and shows the final draft with present_objective; the user can /view it.
 type UpdateObjective struct {
 	draft *objective.Objective // the draft it changes; plan mode's /save writes it
-	show  func()               // called after each change, so the user sees the draft; nil = show nothing
 }
 
 // NewUpdateObjective returns the update_objective tool for draft.
 //
-// Notes:
-//   - show is called after every successful change; plan mode passes a function that prints the draft and how to save
-//     or edit it.
-func NewUpdateObjective(draft *objective.Objective, show func()) *UpdateObjective {
-	return &UpdateObjective{draft: draft, show: show}
+// Notes: none.
+func NewUpdateObjective(draft *objective.Objective) *UpdateObjective {
+	return &UpdateObjective{draft: draft}
 }
 
 // GetToolDefinition returns update_objective's name, description and parameters.
@@ -35,7 +34,8 @@ func (t *UpdateObjective) GetToolDefinition() model.ToolDef {
 		"update_objective",
 		"Changes the draft objective the user is writing with you. Give only the sections that change, each as the full "+
 			"new text of that section in Markdown, without the section's own heading. A section you leave out stays as it is; "+
-			"an empty string clears Instructions or Context. The user sees the whole draft after each change. "+
+			"an empty string clears Instructions or Context. The user does not see the draft when you call this: tell them "+
+			"what you understood in your reply, and show the final draft with present_objective. "+
 			"This never saves a file: the user saves with /save.",
 		json.RawMessage(`{
 			"type": "object",
@@ -57,7 +57,7 @@ func (t *UpdateObjective) GetToolDefinition() model.ToolDef {
 	)
 }
 
-// CallTool applies the sections given in args to the draft and shows it.
+// CallTool applies the sections given in args to the draft, without showing it.
 //
 // Notes:
 //   - A section that is absent stays as it is; one given as "" clears it, except objective, which can't be empty.
@@ -102,8 +102,5 @@ func (t *UpdateObjective) CallTool(ctx context.Context, args json.RawMessage) (s
 	}
 
 	*t.draft = next
-	if t.show != nil {
-		t.show()
-	}
-	return "Draft updated; the user sees it.", nil
+	return "Draft updated. The user has not seen it.", nil
 }

@@ -95,6 +95,38 @@ func Test_Unit_Output_ChatOutput_AssistantAndToolCalledText(t *testing.T) {
 	}
 }
 
+// ---- planOutput ----
+
+//   - Verify planOutput prints replies and notices without labels, nothing for an empty reply, tool calls only with
+//     debug, and keeps chat's "[error]" and "[interrupted]" lines
+func Test_Unit_Output_PlanOutput_Text(t *testing.T) {
+	cases := []struct {
+		name  string
+		debug bool
+		call  func(o planOutput)
+		want  string
+	}{
+		{"assistant text", false, func(o planOutput) { o.Assistant("hello there") }, "hello there\n"},
+		{"assistant empty (tool-only step)", false, func(o planOutput) { o.Assistant(" \n") }, ""},
+		{"tool called", false, func(o planOutput) { o.ToolCalled("update_objective") }, ""},
+		{"tool called with debug", true, func(o planOutput) { o.ToolCalled("update_objective") }, "[tool] Tool called: update_objective\n"},
+		{"planner reply hidden", false, func(o planOutput) { o.hideReplies = true; o.Assistant("my plan") }, ""},
+		{"planner reply with debug", true, func(o planOutput) { o.hideReplies = true; o.Assistant("my plan") }, "my plan\n"},
+		{"system", false, func(o planOutput) { o.System("Saved goal.md.") }, "Saved goal.md.\n"},
+		{"error", false, func(o planOutput) { o.Error("ReAct loop error", errors.New("boom")) }, "[error] ReAct loop error: boom\n"},
+		{"interrupted", false, func(o planOutput) { o.Interrupted() }, "[interrupted]\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var out bytes.Buffer
+			c.call(newPlanOutput(&out, c.debug))
+			if got := out.String(); got != c.want {
+				t.Errorf("expected %q, got %q", c.want, got)
+			}
+		})
+	}
+}
+
 // - Verify chatOutput.System and Interrupted print their exact chat-mode lines
 func Test_Unit_Output_ChatOutput_SystemAndInterruptedText(t *testing.T) {
 	cases := []struct {
