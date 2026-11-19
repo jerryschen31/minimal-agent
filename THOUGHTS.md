@@ -34,3 +34,71 @@ The things that could be handled by external capabilities are numerous. Examples
 - Safety: checks if requests or actions are potentially dangerous or malicious BEFORE they are executed
 - Web Search: whenever up-to-date information is needed to perform a task or answer a question
 
+
+---
+
+2026-Nov-12 — Checkup and direction for the next epic (written by Claude at Jerry's request)
+
+**Where things stand.** The root build is ~15k lines of Go plus ~26k of tests. It has a solid chat loop (Ctrl+C
+semantics, timeouts, four context-window strategies, compaction), a hardened file-tool suite inside a `Workspace`,
+an opt-in `run_command`, MCP over stdio and HTTP (connected in parallel), a deny/ask/run approval gate, JSONL tracing
+with redaction and digests, and plan mode (objective chat → `propose_plan` → `<objective>.plan.md`). Autonomous mode
+is next in line (`state/` package, then a serial run), with mvp3/mvp4 as references.
+
+Measured against the three goals:
+
+1. *Useful to users:* not yet a daily driver. Only an OpenAI-compatible provider (`model/anthropic.tmp` is a stub), no
+   streaming, no prompt caching, sessions don't survive a restart, no project instructions file (`AGENTS.md`), and
+   `oneshot`/`headless` are advertised but unimplemented, so it can't be scripted or put in CI.
+2. *Extensible:* the packages are well split, but the *extension points a non-author can use* are thin. Outside MCP
+   servers and config rules, extending means editing `SetupAgent`. `hooks.Hook` has one method (`BeforeTool`),
+   in-process only. No skills, no subagents, no after-tool / turn / compaction events.
+3. *Learning:* the deepest learning so far has been OS-level safety (TOCTOU, process groups, symlink races) and loop
+   mechanics. That was real, but the file tools have hit diminishing returns. The big gap is that **nothing measures
+   whether the agent got better**: plan-mode prompts are tuned by reading transcripts, and "try against a real model"
+   is still an open TODO.
+
+**How the Sep-27 idea held up.** The core / capability split matches where the field went, with one correction:
+core-adjacent capabilities (logging, safety, verification) ended up as *lifecycle hooks* (in-process, or an
+external command taking JSON on stdin), not MCP servers, because they need to run synchronously at fixed points
+and be able to veto. MCP won the *peripheral* side. Skills (a `SKILL.md` whose name and description sit in the prompt,
+with the body loaded only when needed) became a third kind: cheap, prompt-only capabilities. Subagents are just a
+tool that runs another loop with fresh memory. The "package-lock for agents" idea is still open and still good; the
+`Environment` / `Role` hashes planned for `state/` are its first piece.
+
+**Directions (roughly in recommended order).**
+
+A. **Measure first: oneshot mode + a small eval harness.** Implement `-mode oneshot -q` (and `--json` output),
+   then an `eval/` runner: each case is a prompt + a fixture workdir + checks (files exist, a command passes, an
+   answer matches), run N times, scored from the trace (pass rate, steps, tokens, cost, vetoes). Use it straight
+   away on open questions: which window strategy, whether `planModel` is worth it, whether a prompt change helped.
+   *Why:* this is the skill that separates agent infrastructure people from feature builders, it makes every later
+   epic cheaper to judge, and autonomous mode's per-task "Check" is the same idea. *Downside:* real-model runs cost
+   money and are noisy; you need several runs per case before differences mean anything.
+
+B. **Make it a daily driver.** An Anthropic adapter (system prompt as a field, thinking blocks replayed verbatim,
+   tool results batched, `cache_control` on the stable prefix), streaming output, saved sessions with `-resume`,
+   `AGENTS.md` loaded into the system prompt. *Why:* using it yourself is the fastest source of real problems, and
+   the provider differences (caching, thinking, `tool_choice`) are core infra knowledge. *Downside:* mostly known
+   ground; mvp1 already did an Anthropic adapter.
+
+C. **Open the extension surface.** Lifecycle events (`BeforeTool`, `AfterTool`, `TurnEnd`, `BeforeCompact`) with
+   both Go and external-command hooks; skills from a directory (`list_skills` / `load_skill`, or names in the
+   prompt); subagents as a tool with their own memory and the *shared* policy hooks. *Why:* this is goal 2 directly,
+   and designing a stable hook contract (what's in the payload, ordering, timeouts, can it change arguments?) is a
+   real API-design lesson. *Downside:* every public contract becomes something you must keep compatible.
+
+D. **Autonomous mode (the planned epic).** `state/`, a serial director/worker run, resume, idempotency keys.
+   *Why:* long-running work is where agents are headed, and checkpoint/resume is a genuinely hard infra problem.
+   *Downside:* the biggest epic of the four, mvp3/mvp4 already explored it, and without A you can't tell whether
+   a director prompt or a retry policy actually works.
+
+E. **(Later) Real sandboxing for `run_command`.** Seatbelt on macOS, Landlock/namespaces or a container on Linux.
+   The arg guard is documented as "not a boundary"; this would make one. Good learning, low priority until others
+   use the tool.
+
+**Recommendation.** Make the next epic **A, with the small parts of B it needs** (oneshot, the Anthropic adapter so
+evals can compare providers, prompt caching). Then do D on top of it, using the harness to judge the director and
+the plans. Do C after that, when you have your own hooks/skills to write against it rather than guessing at a
+contract. Smaller habits: keep each epic to a page of plan and measure its result; DECISIONS.md is at ~4.8k lines
+and the test-to-code ratio is ~1.7:1, so lean toward fewer, more meaningful tests and shorter decision entries.
