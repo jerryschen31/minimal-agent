@@ -37,7 +37,6 @@ const (
 	journalName    = "journal.jsonl"
 	planName       = "plan.md"
 	configName     = "config.json"
-	traceName      = "trace"
 	dirPerm        = 0o700 // private: journals hold tool-argument previews
 	filePerm       = 0o600
 	maxNewRunTries = 1000 // NewRun tries this many numbers before giving up (another process keeps taking them)
@@ -65,11 +64,6 @@ func OpenHome(dir string) (Home, error) {
 //
 // Notes: none.
 func (h Home) Dir() string { return h.dir }
-
-// TraceDir returns the folder for run r's trace (not created).
-//
-// Notes: none.
-func (r Run) TraceDir() string { return filepath.Join(r.Dir, traceName) }
 
 // NewPlanRef returns the identity of the plan file at planPath whose front matter has planID ("" = none).
 //

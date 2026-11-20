@@ -11,13 +11,16 @@ import (
 	"github.com/jerryschen31/minimal-agent/objective"
 )
 
-// newAutoFixture returns a session fixture set up for auto mode, with the plan at planPath (not written).
+// newAutoFixture returns a session fixture set up for auto mode, with the plan at planPath (not written) and a state
+// folder in a new temp dir (outside the current directory). The fake model replies "" to every call unless a test sets
+// fx.Provider.Script, so each task's worker finishes at once.
 func newAutoFixture(t *testing.T, planPath string) (*chatSessionFixture, *autoModeDetails) {
 	t.Helper()
 	fx := newChatSessionFixture(t, 10, 100)
 	fx.Session.Config.MaxPlanTasks = config.GetDefaultConfig(config.ModeAuto).MaxPlanTasks
 	fx.Session.Config.PlanFile = planPath
-	setupAutoMode(fx.Session)
+	fx.Session.Config.StateDir = t.TempDir()
+	setupAutoMode(fx.Session, nil)
 	return fx, fx.Session.ModeDetails.(*autoModeDetails)
 }
 
@@ -61,12 +64,13 @@ func Test_Unit_AutoModeDetails_ModeName(t *testing.T) {
 	}
 }
 
-// - Verify SetupAgent in auto mode puts *autoModeDetails with the -plan path on the session and uses planOutput
-// - Verify auto mode's default ask rules don't include the write tools
+//   - Verify SetupAgent in auto mode puts *autoModeDetails with the -plan path on the session, uses autoOutput and
+//     workerPrompt, and writes its trace in <stateDir>/traces (not traceDir)
 func Test_Unit_SetupAgent_AutoMode(t *testing.T) {
 	cfg := denyWiringConfig(t)
 	auto := config.GetDefaultConfig(config.ModeAuto)
 	cfg.AgentMode, cfg.AskRules, cfg.MaxPlanTasks, cfg.PlanFile = auto.AgentMode, auto.AskRules, auto.MaxPlanTasks, "run.md"
+	cfg.StateDir, cfg.TraceEnabled, cfg.TraceDir = t.TempDir(), true, filepath.Join(t.TempDir(), "not-used")
 	a := &Agent{}
 	if err := a.SetupAgent(context.Background(), cfg, nil); err != nil {
 		t.Fatalf("SetupAgent: %v", err)
@@ -76,13 +80,22 @@ func Test_Unit_SetupAgent_AutoMode(t *testing.T) {
 	if !ok || ad.PlanPath != "run.md" {
 		t.Fatalf("ModeDetails = %#v, want *autoModeDetails with PlanPath run.md", a.session.ModeDetails)
 	}
-	if _, ok := a.session.Output.(planOutput); !ok {
-		t.Errorf("Output = %T, want planOutput", a.session.Output)
+	if _, ok := a.session.Output.(autoOutput); !ok {
+		t.Errorf("Output = %T, want autoOutput", a.session.Output)
+	}
+	if a.session.SystemMsg.Content != workerPrompt {
+		t.Errorf("system prompt = %q, want workerPrompt", a.session.SystemMsg.Content)
+	}
+	if want := filepath.Join(cfg.StateDir, "traces"); a.session.Config.TraceDir != want {
+		t.Errorf("TraceDir = %s, want %s", a.session.Config.TraceDir, want)
+	}
+	if _, err := os.Stat(cfg.TraceDir); err == nil {
+		t.Errorf("auto mode created the configured traceDir %s", cfg.TraceDir)
 	}
 }
 
 //   - Verify a plan with any file name and no objective file (the front matter names one that doesn't exist, and no
-//     objective hash matches anything) is read, its summary shown, and "y" reaches the run step; no model call
+//     objective hash matches anything) is read, its summary shown, and "y" runs it: both tasks done, one model call each
 //   - Verify the same for a hand-written plan with no front matter at all (no objective, hash or version)
 func Test_Unit_AutoMode_RunsAnyNameWithoutObjective(t *testing.T) {
 	for name, objectiveFile := range map[string]string{"objective file missing": "gone.md", "no front matter": ""} {
@@ -103,7 +116,7 @@ func Test_Unit_AutoMode_RunsAnyNameWithoutObjective(t *testing.T) {
 				t.Fatalf("autoMode: %v", err)
 			}
 			out := fx.Out.String()
-			for _, want := range []string{"+ t1", "Write wc.go", "Run? [Y/n]: ", "nothing was run"} {
+			for _, want := range []string{"+ t1", "Write wc.go", "Run? [Y/n]: ", "Finished: 2 done"} {
 				if !strings.Contains(out, want) {
 					t.Errorf("output lacks %q:\n%s", want, out)
 				}
@@ -111,8 +124,8 @@ func Test_Unit_AutoMode_RunsAnyNameWithoutObjective(t *testing.T) {
 			if len(ad.Plan.Tasks) != 2 || !strings.Contains(ad.Plan.Objective, countObjective.ObjText) {
 				t.Errorf("plan on the session: %d tasks, objective %q", len(ad.Plan.Tasks), ad.Plan.Objective)
 			}
-			if len(fx.Provider.Calls) != 0 {
-				t.Errorf("expected no model call, got %d", len(fx.Provider.Calls))
+			if len(fx.Provider.Calls) != 2 {
+				t.Errorf("expected 2 model calls (one per task), got %d", len(fx.Provider.Calls))
 			}
 			checkNothingWritten(t, path)
 		})
@@ -198,7 +211,7 @@ func Test_Unit_AutoMode_RunQuestion(t *testing.T) {
 			if asked := strings.Contains(out, "Run? [Y/n]"); asked == tt.yes {
 				t.Errorf("asked = %v with -yes %v:\n%s", asked, tt.yes, out)
 			}
-			if ran := strings.Contains(out, "nothing was run"); ran != tt.run {
+			if ran := strings.Contains(out, "Run 0001"); ran != tt.run {
 				t.Errorf("reached the run step = %v, want %v:\n%s", ran, tt.run, out)
 			}
 			if !tt.run && !strings.Contains(out, "Not run.") {

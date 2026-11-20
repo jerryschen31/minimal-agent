@@ -13,6 +13,8 @@ minimal-agent/
 │   ├── agent.go
 │   ├── approval_preview.go
 │   ├── automode.go
+│   ├── autorun.go
+│   ├── autoworker.go
 │   ├── chat.go
 │   ├── compaction.go
 │   ├── doc.go
@@ -158,10 +160,24 @@ approval_preview.go
 
 automode.go
   func (*autoModeDetails) ModeName() string
-  func setupAutoMode(cs *ChatSession)
+  func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
   func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
   func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
-  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, error)
+  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
+  func (o autoOutput) ToolCalled(name string)
+
+autorun.go
+  func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error)
+  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
+  func hasPlanID(path, id string) bool
+  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
+  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan) runResult
+  func stopReasonFor(err error) state.StopReason
+  func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error
+
+autoworker.go
+  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string) string
+  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string) (string, error)
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -623,7 +639,6 @@ fold.go
 home.go
   func OpenHome(dir string) (Home, error)
   func (h Home) Dir() string
-  func (r Run) TraceDir() string
   func NewPlanRef(planID, planPath string) (PlanRef, error)
   func (p PlanRef) key() string
   func (p PlanRef) matches(m Manifest) bool

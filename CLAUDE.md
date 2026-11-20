@@ -132,7 +132,8 @@ go run . -mode plan -obj <file|text> [-y]        # plan an objective file (or te
 go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you name (a non-plan file there is replaced
                                                  # only after "Replace it? [y/N]"); the plan copies the objective in
 go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
-                                                 # "Run? [Y/n]"; the plan is its only input. Running tasks: 1d (PLAN-auto-mode.md)
+                                                 # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
+                                                 # state and traces in ~/.minagent (PLAN-auto-mode.md)
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
@@ -150,7 +151,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
 - **`state/`** is auto mode's durable record (stdlib + `golang.org/x/sys` only): one append-only journal per run in a
-  private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, trace/}`, `locks/`), rebuilt
+  private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, config.json}`, `traces/`, `locks/`), rebuilt
   into state by reading a plan's runs oldest first (`Home.Load`, `Fold`). `Journal.Append` syncs each line before it
   returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
   OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`

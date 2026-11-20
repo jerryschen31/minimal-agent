@@ -88,7 +88,7 @@ type Config struct {
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
 	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
 	DigestEnabled      bool   `json:"digestEnabled"`      // also write an L1 digest, <run_id>.digest.md, next to the trace; needs traceEnabled
-	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace"); auto mode ignores it (each run's trace is in its run folder)
+	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace"); auto mode ignores it (its traces go to <stateDir>/traces)
 	StateDir           string `json:"stateDir"`           // auto mode's private state folder: run journals, plan copies, run traces (default "~/.minagent"; "~" is your home)
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 

@@ -1,6 +1,6 @@
 # PLAN: autonomous mode v1 (one serial run, journal, resume, budgets)
 
-Status: **design agreed 2026-11-19, nothing built.** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
+Status: **design agreed 2026-11-19; 1a–1d built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
 step 6, with the changes agreed on 2026-11-19 (`DECISIONS.md § 2026-11-19`). Where the two plans differ, this one wins:
 the per-run `state.json` snapshot is replaced by an append-only journal.
 
@@ -39,12 +39,17 @@ The only questions are the gate before a gated task and, on a manual resume, the
 ## On disk
 
 ```
-.minagent/<objective-name>/
-  lock                       pid + start time; taken over only if that pid is dead
-  runs/0001/journal.jsonl    the run, append-only; a resume appends to the same file
+~/.minagent/                 config "stateDir"; the file tools never touch it
+  locks/<key>.lock           one OS file lock per plan (plan_id, else real path); the OS frees it on a crash
+  runs/0001/journal.jsonl    the run, append-only; line 1 is the manifest; a resume appends to the same file
+  runs/0001/plan.md          the exact plan that ran
+  runs/0001/config.json      the run's settings, secrets removed
+  traces/<trace-id>.jsonl    auto mode's traces (traceDir is ignored); the manifest's trace_run_id names the run's
 ```
 
-The trace stays in `.agent-trace/`; the manifest records the trace's run ID.
+Chat and plan mode keep `.agent-trace/` in the working directory. (Revised 2026-11-20, `DECISIONS.md § 1d built`.)
+**Later sprint:** accepted plans kept in the state folder (`~/.minagent/plans/<plan_id>.md`) and run from there, so the
+model can't edit or copy the plan that runs; the work-dir file becomes an editable draft you accept again.
 
 ## The journal
 
@@ -152,8 +157,9 @@ config/flags.go, config.go, doc.go   ModeAuto + alias; GetDefaultConfig("auto");
 state/                               NEW (stdlib only): doc.go, dir.go (folders, lock), journal.go (events, Writer),
                                      read.go (Read → RunState), manifest.go
 agent/director/                      NEW, like agent/planner: prompts, task_done / task_failed
-agent/automode.go                    NEW: autoModeDetails, setupAutoMode, runAutoMode, nextTask, runWorker, judgeTask,
-                                     askGate, resumeRun, stopReasonFor
+agent/automode.go                    NEW: autoModeDetails, setupAutoMode, runAutoMode, autoMode, loadRunnablePlan
+agent/autorun.go, autoworker.go      NEW (1d): openRun, tasksToRun, runPlan, stopReasonFor, end; workerPrompt,
+                                     taskMessage, runWorker. 1e adds judgeTask, askGate; 1h resumeRun
 agent/react.go, session.go           executeToolCall writes tool_before / tool_after via cs.ToolJournal (nil = off)
 agent/planmode.go                    planStep: Run now? [y/N]
 mcpconnect/tools.go                  idempotency key in _meta; HintsOf already gives readOnly / idempotent

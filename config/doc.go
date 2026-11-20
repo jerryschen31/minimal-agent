@@ -48,7 +48,8 @@
 //	mcpConnectTimeoutSeconds  most seconds one MCP server may take to connect at startup; a server that takes
 //	                longer is stopped and skipped (the others keep their tools). Positive                  [120]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
-//	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
+//	systemPrompt    the model's system message; "" sends no system message. Auto mode's workers use
+//	                their own prompt instead                                                               ["You are a helpful assistant. …"]
 //	                plan: the objective-writing prompt (planSystemPrompt in config.go)
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
 //
@@ -85,10 +86,11 @@
 //	digestEnabled       also write <run_id>.digest.md, a readable summary; needs traceEnabled             [true]
 //	redactionLevel      how secrets are masked in the trace: "standard" (the only level so far)            ["standard"]
 //	traceDir            directory for trace files, relative to where the agent starts; read_file never
-//	                    reads inside it; must not be empty. Auto mode ignores it: each run's trace goes in
-//	                    its run folder under stateDir                                                     [".agent-trace"]
-//	stateDir            auto mode's private state folder (run journals, a copy of each plan run, run
-//	                    traces); "~" is your home folder. The file tools never touch anything in it   ["~/.minagent"]
+//	                    reads inside it; must not be empty. Auto mode ignores it: its traces go in
+//	                    <stateDir>/traces (each run's journal names its trace)                           [".agent-trace"]
+//	stateDir            auto mode's private state folder (runs/: run journals, a copy of each plan run,
+//	                    its config; traces/; locks/); "~" is your home folder. The file tools never touch
+//	                    anything in it                                                                 ["~/.minagent"]
 //	traceMaxEventBytes  an event bigger than this (as JSON) is replaced by a marker; positive              [100 MB]
 //
 // Tool output caps (bytes, positive; they bound how much context one tool call can use):

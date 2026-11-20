@@ -8,18 +8,22 @@ import (
 	"os"
 
 	"github.com/jerryschen31/minimal-agent/config"
+	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/plan"
 )
 
 // Auto mode (-mode auto -plan <file>, also -mode autonomous) runs a plan file's tasks without a person
 // (PLAN-auto-mode.md). The plan file is its only input, like Terraform's saved plan: auto mode never reads the objective
 // file and doesn't check whether the plan is stale; the plan carries the objective in its "## Objective" section.
-// [agent] Step 1a: read and check the plan, show the summary, ask Run? [Y/n]. Running the tasks arrives in 1d.
+// [agent] 1a: read and check the plan, show the summary, ask Run? [Y/n]. 1d: run the tasks one at a time
+// (autorun.go), each with a fresh worker (autoworker.go). 1e adds the director.
 
 // autoModeDetails is what auto mode keeps on the session (ChatSession.ModeDetails).
 type autoModeDetails struct {
-	PlanPath string    // the -plan file
-	Plan     plan.Plan // the plan as read (after plan.Cleanup); set by autoMode
+	PlanPath string                      // the -plan file
+	Plan     plan.Plan                   // the plan as read (after plan.Cleanup); set by autoMode
+	planData []byte                      // the plan file's bytes, read once; the run folder keeps them as plan.md
+	conns    []*mcpconnect.McpConnection // the MCP servers that connected, for the run's manifest
 }
 
 // ModeName returns config.ModeAuto.
@@ -27,15 +31,21 @@ type autoModeDetails struct {
 // Notes: none.
 func (*autoModeDetails) ModeName() string { return config.ModeAuto }
 
-// setupAutoMode adds auto mode's details and output to cs.
+// setupAutoMode adds auto mode's details, output, worker prompt and approval setting to cs; conns are the MCP servers
+// that connected (recorded in each run's manifest).
 //
 // Notes:
 //   - Called by SetupAgent in auto mode, after the session is built. Nothing is read yet: the plan is read when the
 //     mode runs, so a missing file is reported by autoMode, not by setup.
-//   - The output is plan mode's (no "[assistant]"/"[system]" labels, tool calls only with -debug).
-func setupAutoMode(cs *ChatSession) {
-	cs.ModeDetails = &autoModeDetails{PlanPath: cs.Config.PlanFile}
-	cs.Output = newPlanOutput(cs.OutBuffer, cs.Config.Debug)
+//   - The output is autoOutput: tool names, not the worker's text (that is in the trace; -debug shows it).
+//   - The system prompt is workerPrompt, whatever the config's systemPrompt (that one is chat's).
+//   - Nobody is asked during a run (PromptAllowDenyCall stays nil), so an ask-rule call is denied, unless approval is
+//     "allow-all": then it runs. Answering "Run?" (or -yes) is the confirmation chat asks for at startup.
+func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection) {
+	cs.ModeDetails = &autoModeDetails{PlanPath: cs.Config.PlanFile, conns: conns}
+	cs.Output = autoOutput{planOutput: planOutput{chatOutput: chatOutput{w: cs.OutBuffer, showProgress: isTerminal(cs.OutBuffer)}, showTools: cs.Config.Debug, hideReplies: true}}
+	cs.SystemMsg = createSystemMessage(workerPrompt)
+	cs.AllowAskRules = cs.Config.Approval == config.ApprovalAllowAll
 }
 
 // runAutoMode runs auto mode on the session's input and output.
@@ -54,7 +64,8 @@ func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessi
 // Notes:
 //   - Reads the plan (loadRunnablePlan), prints its summary (plan.Summary), then asks "Run? [Y/n]: " (-yes answers
 //     yes). No, or Ctrl+D at the question, prints "Not run." and ends with no error.
-//   - [agent] 1a stops after the question; interrupts is used from 1d on (each task gets an interrupt watcher).
+//   - Yes: opens a run (openRun: lock, history, run folder), runs the tasks (runPlan) and ends the run (end: run_ended,
+//     report). Ctrl+C stops the run (an interrupt watcher covers all of it); the run is recorded as interrupted.
 func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error {
 	ad, ok := cs.ModeDetails.(*autoModeDetails)
 	if !ok {
@@ -62,11 +73,11 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 	}
 	w := cs.OutBuffer
 
-	p, err := loadRunnablePlan(ad.PlanPath, cs.Config.MaxPlanTasks, w)
+	p, data, err := loadRunnablePlan(ad.PlanPath, cs.Config.MaxPlanTasks, w)
 	if err != nil {
 		return err
 	}
-	ad.Plan = p
+	ad.Plan, ad.planData = p, data
 	fmt.Fprint(w, plan.Summary(p))
 
 	run := cs.Config.AssumeYes
@@ -85,11 +96,20 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 		fmt.Fprintln(w, "Not run.")
 		return nil
 	}
-	fmt.Fprintln(w, "Running a plan arrives in the next step (1d); nothing was run.")
-	return nil
+
+	discardStrayInterrupts(interrupts)
+	runCtx, stop := createInterruptWatcher(ctx, interrupts)
+	defer stop()
+	ar, err := openRun(cs, ad)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "Run %04d (%s)\n", ar.run.Number, ar.run.Dir)
+	res := runPlan(runCtx, cs, ar, p)
+	return ar.end(res, cs.Config.TraceDir, cs.Recorder.RunID(), w)
 }
 
-// loadRunnablePlan reads the plan file at path and returns it if it can run.
+// loadRunnablePlan reads the plan file at path and returns it, and the file's bytes, if it can run.
 //
 // Notes:
 //   - Any file name works: a file is a plan by its content (plan.Cleanup reads it and it has tasks), not by its name.
@@ -98,26 +118,35 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 //   - The fixes Cleanup made (small hand-edit slips) are printed to w, one per line, because what runs is the
 //     cleaned-up plan and the user should see where it differs from what they wrote. The file is never rewritten.
 //   - Neither the objective file nor the plan's objective_hash is looked at: the plan is the whole input.
-func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, error) {
+func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return plan.Plan{}, fmt.Errorf("%s: no such file", path)
+		return plan.Plan{}, nil, fmt.Errorf("%s: no such file", path)
 	}
 	if err != nil {
-		return plan.Plan{}, err
+		return plan.Plan{}, nil, err
 	}
 	p, fixes, err := plan.Cleanup(data)
 	if err != nil {
-		return plan.Plan{}, fmt.Errorf("%s can't be read as a plan: %w", path, err)
+		return plan.Plan{}, nil, fmt.Errorf("%s can't be read as a plan: %w", path, err)
 	}
 	if len(p.Tasks) == 0 {
-		return plan.Plan{}, fmt.Errorf("%s is not a plan: it has no \"## Tasks\" section with \"### t1: …\" tasks", path)
+		return plan.Plan{}, nil, fmt.Errorf("%s is not a plan: it has no \"## Tasks\" section with \"### t1: …\" tasks", path)
 	}
 	for _, f := range fixes {
 		fmt.Fprintf(w, "%s: read as fixed: %s\n", path, f)
 	}
 	if err := p.CheckComplete(maxTasks); err != nil {
-		return plan.Plan{}, fmt.Errorf("%s is not ready to run; fix it:\n%w", path, err)
+		return plan.Plan{}, nil, fmt.Errorf("%s is not ready to run; fix it:\n%w", path, err)
 	}
-	return p, nil
+	return p, data, nil
 }
+
+// autoOutput is auto mode's Output: plan mode's (the worker's replies hidden unless -debug), but every tool call is
+// shown as an indented "[tool] <name>" line, so a long task shows it is moving.
+type autoOutput struct{ planOutput }
+
+// ToolCalled prints an indented "[tool] <name>" line for every tool call.
+//
+// Notes: none.
+func (o autoOutput) ToolCalled(name string) { fmt.Fprintf(o.w, "    [tool] %s\n", name) }

@@ -87,9 +87,6 @@ func Test_Unit_Home_NewRun(t *testing.T) {
 	if r1.PlanPath != m.PlanPath {
 		t.Errorf("Run.PlanPath = %q, want the manifest's %q", r1.PlanPath, m.PlanPath)
 	}
-	if r1.TraceDir() != filepath.Join(r1.Dir, "trace") {
-		t.Errorf("TraceDir = %s", r1.TraceDir())
-	}
 }
 
 //   - Verify NewRun skips a number whose folder already exists, ignores folders that aren't numbers, and that parallel

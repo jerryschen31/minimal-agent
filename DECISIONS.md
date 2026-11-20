@@ -4909,4 +4909,39 @@ Shape agreed with Jerry; Claude wrote it.
   from version (`plan_sha256`) and task definitions (`DefinitionHash`): editing a task changes the latter two, never
   the identity. **Moves vs copies** (both show as an earlier run of this ID at another path) are told apart in 1d by
   the old path: nothing there with this ID → a move, history carries over; a file with the same ID → a copy, refused
-  with what to do (delete the copy's `plan_id` to run it fresh). Each `state.Run` carries the path it ran at for this.
+  with what to do (delete the copy's `plan_id` to run it fresh). *Superseded by § 1d built: a copy runs, with a
+  warning.* Each `state.Run` carries the path it ran at for this.
+
+### 2026-11-20 — 1d built: the first real run (serial), copies allowed, traces in the state folder
+
+Shape agreed with Jerry; Claude wrote it.
+- **The run:** after `Run?`, `openRun` takes the plan's lock, loads its history, notes a move / copy / unfinished run,
+  and creates the run folder with the manifest (`agent/autorun.go`). `tasksToRun` orders the tasks (each after its
+  `depends`, else file order) and marks each skip (done, same `DefinitionHash`) or run (everything else); IDs gone from
+  the plan are listed. `runPlan` runs them **one at a time** (serial, Jerry: parallel is its own feature; the later
+  shape is one scheduler goroutine with a ready-list and N workers, not a WaitGroup per dependency). Journal per task:
+  `task_started{attempt 1}`, `task_finished{status, def_hash, summary}`; an interrupted task gets no `task_finished`
+  (its `run_ended` marks it). Report: done / skipped / failed / not started, the run folder and the trace file.
+- **The worker** (`agent/autoworker.go`): a fresh `reActLoop` per task (no earlier messages), system prompt
+  `workerPrompt` (the manifest's `worker` hash is now of the prompt the session sends), first message `taskMessage`:
+  plan title and summary, `## Objective`, `## Assumptions`, the summaries of the tasks it depends on (from this run or
+  an earlier one), and the task. Its final reply, cut to 4 KB, is the summary. *Downside:* until 1e, "done" only means
+  the worker finished without an error; nothing checks `done when`.
+- **A failed task stops the run** (Jerry). Stop reasons: `done`; `max_steps` (`ErrMaxSteps`); `interrupted` (Ctrl+C or
+  SIGTERM; one interrupt watcher covers the run); `waiting` (a gated task is next: gates are 1e, so nothing gated runs
+  by accident); `error`. `max_steps` and `error` return an error; the others only report.
+- **Dependents of a changed task are not re-run** (no cascade in v1, as the "Which tasks run" table says).
+- **A copied plan runs, with a warning** (Jerry; reverses 1c's refusal). Refusing would let anything that can copy a
+  file (a prompt-injected model) stop an important plan from running. The copy shares the original's history and lock,
+  so the warning says a task done by either counts for both. **Tabled for a later sprint (Jerry's choice of the five
+  options):** keep accepted plans in the state folder (`~/.minagent/plans/<plan_id>.md`, out of the file tools' reach)
+  and run from there; the work-dir file becomes a draft you accept again. The other options weighed: the run uses its
+  own copy of the plan (already true), write-deny the plan file (misses `run_command`), signed plans (a copy still
+  passes), an OS sandbox (the real boundary).
+- **Auto mode's traces go to `<stateDir>/traces/`** (Jerry, option A of two), not into each run folder: the recorder is
+  made in `SetupAgent` before the run folder exists, so putting it in the folder needed a placeholder recorder and a
+  swap. The manifest's `trace_run_id` links a run to its trace. *Downside:* the trace isn't inside the run folder, and
+  answering "n" to `Run?` still leaves a small trace file (as chat does). `state.Run.TraceDir` was removed.
+- **Approval:** nobody is asked (`PromptAllowDenyCall` nil → an ask-rule call is denied); `approval: allow-all` sets
+  `AllowAskRules`, the `Run?` answer (or `-y`) being the confirmation. Output is `autoOutput`: task lines and every tool
+  name; the worker's text only with `-debug` (it is in the trace).

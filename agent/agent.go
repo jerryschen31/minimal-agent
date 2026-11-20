@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -31,6 +33,8 @@ type Agent struct {
 // Notes:
 //   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode); in auto mode
 //     the session's autoModeDetails (setupAutoMode).
+//   - Auto mode writes its trace to <stateDir>/traces instead of traceDir (each run's manifest records the trace's run
+//     ID), so a run leaves nothing in the working directory.
 //   - A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent then returns context.Canceled, and
 //     the MCP servers that had already connected are kept in agent.mcpConns, so ShutdownAgent closes them. A nil
 //     interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
@@ -45,6 +49,17 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 	// agent mode
 	agent.agentMode = cfg.AgentMode
+	// auto mode: traces go to <stateDir>/traces, next to the runs; each run's manifest names its trace (trace_run_id)
+	if cfg.AgentMode == config.ModeAuto {
+		dir, err := cfg.ResolveStateDir()
+		if err != nil {
+			return err
+		}
+		if dir == "" {
+			return errors.New("stateDir is empty: auto mode keeps its runs and traces in the state folder")
+		}
+		cfg.TraceDir = filepath.Join(dir, "traces")
+	}
 
 	// 1. setup LLM provider
 	provider, err := model.SetupProvider(cfg)
@@ -135,7 +150,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 	// 11. auto mode: adds auto mode details into the session
 	if cfg.AgentMode == config.ModeAuto {
-		setupAutoMode(chatSession)
+		setupAutoMode(chatSession, mcpConns)
 	}
 
 	return nil

@@ -22,8 +22,8 @@ import (
 // Notes:
 //   - PlanSHA256 and ConfigSHA256 are left for state.Home.NewRun, which hashes the bytes it writes. TraceRunID is set
 //     by the caller.
-//   - Prompts: "worker" (the session's system prompt) and "summarizer" (compaction), when not empty. [agent] 1d replaces
-//     the worker prompt and 1e adds "director"; the map form means the journal format doesn't change.
+//   - Prompts: "worker" (the system prompt the session sends: workerPrompt in auto mode) and "summarizer" (compaction),
+//     when not empty. [agent] 1e adds "director"; the map form means the journal format doesn't change.
 //   - conns are the MCP servers that connected; each is recorded with the name and version it reported.
 //   - A hostname error leaves Host empty; a manifest must not fail a run over it.
 func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error) {
@@ -50,8 +50,8 @@ func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state
 	if host, err := os.Hostname(); err == nil {
 		m.Host = host
 	}
-	if cfg.SystemPrompt != "" {
-		m.Prompts["worker"] = state.SHA256([]byte(cfg.SystemPrompt))
+	if cs.SystemMsg.Content != "" {
+		m.Prompts["worker"] = state.SHA256([]byte(cs.SystemMsg.Content))
 	}
 	if cfg.SummarizerPrompt != "" {
 		m.Prompts["summarizer"] = state.SHA256([]byte(cfg.SummarizerPrompt))

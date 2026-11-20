@@ -4,10 +4,11 @@
 // Layout:
 //
 //	<stateDir>/
-//	  locks/<key>.lock          one per plan (key = a short hash of the plan's real path); held while a run is going
+//	  locks/<key>.lock          one per plan (key = a short hash of its plan_id, else its real path); held while a run is going
 //	  runs/0001/journal.jsonl   the run's events, one JSON object per line; line 1 is the manifest
 //	  runs/0001/plan.md         the exact plan the run ran (a byte-for-byte copy)
-//	  runs/0001/trace/          the run's trace (reserved here; wired by auto mode)
+//	  runs/0001/config.json     the run's settings, secrets removed
+//	  traces/                   auto mode's traces (written by the agent's trace recorder, not this package)
 //
 // The journal is the only record: nothing else holds a run's state, so it can't disagree with anything. State is
 // rebuilt by reading the journals of every earlier run of the same plan, oldest first (Home.Load, Fold). Append syncs
@@ -28,7 +29,6 @@
 //	home.go
 //	  func OpenHome(dir string) (Home, error)
 //	  func (h Home) Dir() string
-//	  func (r Run) TraceDir() string
 //	  func NewPlanRef(planID, planPath string) (PlanRef, error)
 //	  func (p PlanRef) key() string
 //	  func (p PlanRef) matches(m Manifest) bool
