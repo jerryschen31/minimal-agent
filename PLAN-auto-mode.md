@@ -1,6 +1,7 @@
 # PLAN: autonomous mode v1 (one serial run, journal, resume, budgets)
 
-Status: **design agreed 2026-11-19; 1a–1h built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
+Status: **design agreed 2026-11-19; step 1 (1a–1i) built 2026-11-20.** Next: step U, then step 2. User guide:
+`docs/auto-mode.md`. This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
 step 6, with the changes agreed on 2026-11-19 (`DECISIONS.md § 2026-11-19`). Where the two plans differ, this one wins:
 the per-run `state.json` snapshot is replaced by an append-only journal.
 
@@ -10,17 +11,19 @@ the per-run `state.json` snapshot is replaced by an append-only journal.
 minagent -mode auto -plan objective.plan.md        # "-mode autonomous" is the same
 ```
 
-1. **The plan file is the input** (Terraform's saved plan; `apply` runs exactly what was reviewed). The objective is
-   found from the plan's front matter (`objective:`, relative to the plan) and read for context and the stale check. A
-   stale plan (the objective changed since) or one that fails `CheckComplete` is refused, with the plan-mode command.
+1. **The plan file is the input** (Terraform's saved plan; `apply` runs exactly what was reviewed), under any name. It
+   carries the objective in its `## Objective` section; auto mode never reads the objective file and has no stale check
+   (revised 1a, `DECISIONS.md § 2026-11-19`). A plan that fails `CheckComplete` is refused with what to fix.
 2. Show the plan summary, then `Run? [Y/n]` (`-y` answers it).
 3. Take the lock. If the latest run never ended (crash, power cut, kill): **resume** it (below). Otherwise start a new run.
 4. Run tasks one at a time, each after the tasks it `depends` on. Per task: a worker (fresh context) does the task, then
    the director judges the result against `done when` (`task_done` / `task_failed`), with a retry limit. A task with a
    `gate:` asks before it runs; `-y` never answers a gate.
-5. End with a typed stop reason and a short report: tasks, verdicts, tokens and time (step 2).
+5. End with a typed stop reason and a short report: done / skipped / failed / not started (tokens and time: step 2).
+   The stop reason maps to the exit code (0 / 1 / 3 / 130; `docs/auto-mode.md`).
 
-Plan mode gets `Run now? [y/N]` after a plan is accepted; it starts the same run.
+Plan mode asks `Run now? [y/N]` after a plan is written (or found up to date); yes, or `-y`, makes `main` set up a new
+agent for auto mode on the plan and run it (1i).
 
 ## Approval in auto mode
 

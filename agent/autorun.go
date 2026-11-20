@@ -15,6 +15,11 @@ import (
 	"github.com/jerryschen31/minimal-agent/state"
 )
 
+// ErrNeedsPerson is returned (wrapped) by auto mode when the run stopped because it needs a person: a gate or a resume
+// question with nobody to answer it ("waiting"), or a person said no to a gate ("declined"). The report was printed;
+// main exits with code 3 so a script can tell "needs a person" from "failed".
+var ErrNeedsPerson = errors.New("the run needs a person")
+
 // autoRun is one open run of a plan: its folder and journal, the plan's lock, and the plan's state before this run.
 type autoRun struct {
 	run     state.Run
@@ -373,8 +378,8 @@ func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) 
 // stopped on a failure.
 //
 // Notes:
-//   - done, waiting, declined and interrupted return nil (the report says what happened); task_failed and error
-//     return res.err, so the caller sees the run did not finish.
+//   - done returns nil. waiting and declined return ErrNeedsPerson, interrupted context.Canceled (wrapped), task_failed
+//     and error res.err: the caller (main) turns each into an exit code.
 //   - The report names the run folder and the trace file (<traceDir>/<trace run ID>.jsonl; none when tracing is off).
 func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error {
 	cs.ToolJournal = nil // the journal closes below: no call may be recorded after it
@@ -398,8 +403,13 @@ func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID stri
 	if jerr != nil {
 		return errors.Join(res.err, fmt.Errorf("run %04d: recording its end: %w", ar.run.Number, jerr))
 	}
-	if res.err != nil && res.reason != state.StopInterrupted {
-		return fmt.Errorf("run %04d stopped (%s): %w", ar.run.Number, res.reason, res.err)
+	switch res.reason {
+	case state.StopDone:
+		return nil
+	case state.StopWaiting, state.StopDeclined:
+		return fmt.Errorf("run %04d stopped (%s): %w", ar.run.Number, res.reason, ErrNeedsPerson)
+	case state.StopInterrupted:
+		return fmt.Errorf("run %04d interrupted: %w", ar.run.Number, context.Canceled)
 	}
-	return nil
+	return fmt.Errorf("run %04d stopped (%s): %w", ar.run.Number, res.reason, res.err)
 }

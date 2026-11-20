@@ -413,3 +413,24 @@ func Test_Unit_ParseFlags_AutoMode(t *testing.T) {
 		}
 	}
 }
+
+// - Verify FlagsForAuto sets auto mode, -plan and -yes, drops -objective, keeps the other flags, and passes validateMode
+func Test_Unit_FlagsForAuto(t *testing.T) {
+	f, err := ParseFlags([]string{"-mode", "plan", "-objective", "goal.md", "-model", "m1", "-workdir", ".", "-debug"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := FlagsForAuto(f, "goal.plan.md")
+	if *a.Mode != ModeAuto || *a.Plan != "goal.plan.md" || !*a.Yes || a.Objective != nil {
+		t.Errorf("mode %v, plan %v, yes %v, objective %v", *a.Mode, *a.Plan, *a.Yes, a.Objective)
+	}
+	if *a.Model != "m1" || *a.WorkDir != "." || !*a.Debug {
+		t.Errorf("other flags not kept: model %v, workdir %v, debug %v", *a.Model, *a.WorkDir, *a.Debug)
+	}
+	if err := a.validateMode(ModeAuto); err != nil {
+		t.Errorf("validateMode: %v", err)
+	}
+	if *f.Mode != ModePlan || f.Objective == nil {
+		t.Errorf("the original flags were changed")
+	}
+}

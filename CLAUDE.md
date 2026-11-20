@@ -127,14 +127,17 @@ go run . -mode info [-config file]               # print config, built-in + MCP 
                                                  # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
 go run . -mode plan                              # write a new objective in a chat (/save, /edit, /exit), then plan it
 go run . -mode plan -obj <file|text> [-y]        # plan an objective file (or text, saved to objective.md first); writes
-                                                 # <name>.plan.md after "Accept this plan? [Y/n]" (-y accepts; then no
-                                                 # terminal needed). Own defaults: GetDefaultConfig("plan")
+                                                 # <name>.plan.md after "Accept this plan? [Y/n]", then "Run now? [y/N]"
+                                                 # (y: main sets up a new agent for auto mode on the plan). -y accepts
+                                                 # AND runs; then no terminal needed. Own defaults: GetDefaultConfig("plan")
 go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you name (a non-plan file there is replaced
                                                  # only after "Replace it? [y/N]"); the plan copies the objective in
 go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
                                                  # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
                                                  # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
-                                                 # the same command resumes: cut-off calls settled first (may ask)
+                                                 # the same command resumes: cut-off calls settled first (may ask).
+                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person, 130 Ctrl+C.
+                                                 # User guide: docs/auto-mode.md
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.

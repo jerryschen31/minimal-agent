@@ -5067,3 +5067,23 @@ Shape agreed with Jerry; Claude wrote it (`agent/autoresume.go`).
   `run_command` call; the resume asks, "n" means it isn't repeated, "y" re-sends it exactly once, done t1 isn't re-run,
   and run 0001 is continued.
 - *Not covered:* a crash in chat or plan mode (no journal) can leave a temp file of 1g; it is harmless and clearly named.
+
+### 2026-11-20 — 1i built: "Run now?", exit codes, docs; step 1 done
+
+Shape agreed with Jerry; Claude wrote it.
+- **"Run now? [y/N]"** after plan mode writes a plan (or finds it up to date). Yes returns `*agent.ErrRunPlan{Path}` up
+  through `RunAgent` (traced as success). `main` shuts the plan-mode agent down (MCP servers closed, trace ended; the
+  planner conversation is dropped on purpose: the plan file is the whole input) and sets up **a new `Agent` for auto
+  mode in the same process** from the same flags (`config.FlagsForAuto`: `-mode auto -plan <file> -yes`, `-objective`
+  dropped), so auto mode's own defaults, tools, rules, prompt and trace folder apply. *Why not reuse the session:* a
+  plan-mode setting left over would quietly change the run. *Why not a child process* (Jerry): two processes sharing
+  the terminal and Ctrl+C. *Cost:* MCP servers start twice.
+- **`-y` in plan mode also answers "Run now?"** (Jerry): `-mode plan -objective x -y` plans, accepts and runs in one go.
+  `-y` still never answers a gate or a resume question.
+- **Exit codes** (Jerry; every mode exited 0 before, even on failure): 0 finished or the user said no; 1 failed (setup,
+  run error, `task_failed`); 2 bad flags/config; 3 needs a person (`waiting`, `declined`: `agent.ErrNeedsPerson`); 130
+  Ctrl+C or SIGTERM (an interrupted auto run returns `context.Canceled`). `main` is now `os.Exit(run())`, so deferred
+  shutdowns still run. A setup failure, which exited 0, now exits 1.
+- **Docs:** `docs/auto-mode.md` (user guide), README, CLAUDE.md commands, `PLAN-auto-mode.md` "What it does" brought in
+  line with what was built (no objective read, no stale check), `PLAN-plan-apply.md` status.
+- **Step 1 of `PLAN-auto-mode.md` is built** (1a–1i, 2026-11-19/20).

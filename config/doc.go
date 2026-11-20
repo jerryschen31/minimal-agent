@@ -233,6 +233,7 @@
 //	  func ParseFlags(args []string, out io.Writer) (Flags, error)
 //	  func ValidateMode(cfg Config, f Flags) error
 //	  func (f Flags) validateMode(mode string) error
+//	  func FlagsForAuto(f Flags, planPath string) Flags
 //	  func requireDir(flagName, path string) error
 //	  func requireFile(flagName, path string) error
 //	  func printUsage(w io.Writer)

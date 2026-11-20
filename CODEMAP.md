@@ -144,6 +144,9 @@ minimal-agent/
 ```text
 main.go
   func main()
+  func run() int
+  func loadConfig(flags config.Flags) (config.Config, error)
+  func exitCode(err error) int
 ```
 
 ## agent (package agent)
@@ -299,6 +302,8 @@ planmode.go
   func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
   func writeFileAtomic(path string, data []byte) error
   func isYes(answer string, def bool) bool
+  func (e *ErrRunPlan) Error() string
+  func askRunNow(ctx context.Context, cs *ChatSession, reader promptReader, planPath string) error
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
@@ -425,6 +430,7 @@ flags.go
   func ParseFlags(args []string, out io.Writer) (Flags, error)
   func ValidateMode(cfg Config, f Flags) error
   func (f Flags) validateMode(mode string) error
+  func FlagsForAuto(f Flags, planPath string) Flags
   func requireDir(flagName, path string) error
   func requireFile(flagName, path string) error
   func printUsage(w io.Writer)

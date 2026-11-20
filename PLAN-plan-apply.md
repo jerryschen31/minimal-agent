@@ -1,7 +1,8 @@
 # PLAN: objective → plan → run, iterated (autonomous mode v2)
 
 Status: **shape agreed 2026-11-08; steps 1 (formats, except `state/`) and 2 (plan mode, first plan) built
-2026-11-08/09.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
+2026-11-08/09; step 3 (run a plan) built 2026-11-20 as `PLAN-auto-mode.md` step 1, with an append-only journal
+instead of `state.json`.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
 package and the `-mode plan` stub, are built and get refactored here). Decisions: the `DECISIONS.md § 2026-11-08`
 entries (redesign; plan mode confirms by default; full governance tabled; simplified plan/run shape agreed).
 

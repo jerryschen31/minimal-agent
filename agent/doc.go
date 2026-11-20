@@ -158,6 +158,8 @@
 //	  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
 //	  func writeFileAtomic(path string, data []byte) error
 //	  func isYes(answer string, def bool) bool
+//	  func (e *ErrRunPlan) Error() string
+//	  func askRunNow(ctx context.Context, cs *ChatSession, reader promptReader, planPath string) error
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)

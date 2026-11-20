@@ -220,6 +220,8 @@ func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 //     /save the plan is made again and the questions repeat. No, Ctrl+D, or leaving the chat without /save write
 //     nothing.
 //   - Ctrl+C during the planner run ends plan mode with nothing written (runPlanner reports it).
+//   - After the plan is written, or an existing one is up to date: askRunNow ("Run now? [y/N]"; -yes answers yes), whose
+//     yes is an *ErrRunPlan for the caller.
 func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error {
 	pd := cs.ModeDetails.(*planModeDetails)
 	w := cs.OutBuffer
@@ -257,7 +259,7 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 			}
 			fmt.Fprint(w, plan.Summary(old))
 			fmt.Fprintf(w, "%s is up to date with %s.\n", planPath, pd.ObjectivePath)
-			return nil
+			return askRunNow(ctx, cs, reader, planPath)
 		}
 	}
 
@@ -301,7 +303,7 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 				return fmt.Errorf("could not save %s: %w", planPath, err)
 			}
 			fmt.Fprintf(w, "Wrote %s (%d tasks).\n", planPath, len(p.Tasks))
-			return nil
+			return askRunNow(ctx, cs, reader, planPath)
 		}
 
 		answer, err := reader.AskLine(ctx, "Enter chat mode to discuss and revise the plan (Y/n)? : ")
@@ -683,4 +685,46 @@ func isYes(answer string, def bool) bool {
 		return true
 	}
 	return false
+}
+
+// ErrRunPlan is what plan mode returns when the user chose to run the plan it just wrote or found up to date ("Run
+// now?"). It is not a failure: the caller (main) shuts the plan-mode agent down and runs auto mode on Path, exactly as
+// `minagent -mode auto -plan <Path> -yes` with the same other flags would (config.FlagsForAuto).
+// [agent] A new agent set up for auto mode, not the plan-mode session reused: its tools, rules, prompt and trace
+// folder are plan mode's, and a setting left over would quietly change how the run behaves.
+type ErrRunPlan struct {
+	Path string // the plan file, as plan mode named it
+}
+
+// Error says which plan is to run next.
+//
+// Notes: none.
+func (e *ErrRunPlan) Error() string { return "run the plan " + e.Path }
+
+// askRunNow asks "Run now? [y/N]" about the plan at planPath and returns an *ErrRunPlan for yes, nil for no.
+//
+// Notes:
+//   - -yes answers yes (`-mode plan -objective x -yes` plans and runs in one go). Gates and resume questions in the
+//     run are still never answered by -yes.
+//   - No, or Ctrl+D, prints the command that runs the plan later.
+func askRunNow(ctx context.Context, cs *ChatSession, reader promptReader, planPath string) error {
+	w := cs.OutBuffer
+	command := "minagent -mode auto -plan " + planPath
+	if strings.ContainsAny(planPath, " \t'\"") {
+		command = fmt.Sprintf("minagent -mode auto -plan %q", planPath)
+	}
+	if cs.Config.AssumeYes {
+		fmt.Fprintf(w, "Running it now (-yes; same as: %s)\n", command)
+		return &ErrRunPlan{Path: planPath}
+	}
+	answer, err := reader.AskLine(ctx, "Run now? [y/N]: ")
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if err != nil || !isYes(answer, false) {
+		fmt.Fprintf(w, "To run it later: %s\n", command)
+		return nil
+	}
+	fmt.Fprintf(w, "Starting auto mode on %s (same as: %s)\n", planPath, command)
+	return &ErrRunPlan{Path: planPath}
 }

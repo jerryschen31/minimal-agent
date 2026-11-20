@@ -1491,3 +1491,9 @@ task; crash test). **Tabled:** a larger cap for `edit_file` (its 1 MB is a memor
 Resume after a crash: cut-off calls settled before any task runs (file hashes, MCP idempotent re-send, ask for the
 rest), same run continued when plan and config are unchanged, crash note for the cut-off task's worker; crash test with a
 child process. Not committed. **Next: 1i** (plan mode's `Run now? [y/N]`; docs).
+
+### 2026-11-20 (later) — 1i built; step 1 done (see DECISIONS.md § 1i built)
+
+Plan mode's "Run now? [y/N]" (`-y` plans and runs), exit codes 0/1/2/3/130, `docs/auto-mode.md`. Not committed.
+**Next: Step U** (small plan update that keeps `plan_id`, objective drift check; `PLAN-auto-mode.md`), then **step 2**
+(budgets, 2a–2d). Still tabled: accepted plans in `~/.minagent/plans/`; a larger `edit_file` cap; chunked writes.

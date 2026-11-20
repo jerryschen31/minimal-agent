@@ -177,8 +177,8 @@ func Test_Unit_AutoResume_AfterCrash(t *testing.T) {
 	}
 }
 
-//   - Verify a cut-off call that needs an answer stops the resume with "waiting" when nobody can answer (no terminal,
-//     even with -yes) or on Ctrl+D: nothing is run or recorded, and the next start asks again
+//   - Verify a cut-off call that needs an answer stops the resume with "waiting" (ErrNeedsPerson) when nobody can answer
+//     (no terminal, even with -yes) or on Ctrl+D: nothing is run or recorded, and the next start asks again
 func Test_Unit_AutoResume_WaitsForAnAnswer(t *testing.T) {
 	dir := t.TempDir()
 	crashAndWait(t, dir)
@@ -188,7 +188,7 @@ func Test_Unit_AutoResume_WaitsForAnAnswer(t *testing.T) {
 		want     string
 	}{{"no terminal", false, "there is no terminal to ask"}, {"Ctrl+D", true, "you'll be asked again next time"}} {
 		fx, out, err := resumeWith(t, dir, "", tt.terminal)
-		if err != nil || !strings.Contains(out, tt.want) || !strings.Contains(out, "Stopped: waiting. Nothing was run.") {
+		if !errors.Is(err, ErrNeedsPerson) || !strings.Contains(out, tt.want) || !strings.Contains(out, "Stopped: waiting. Nothing was run.") {
 			t.Errorf("%s: %v\n%s", tt.name, err, out)
 		}
 		if len(fx.Provider.Calls) != 0 || sentLines(t, dir) != 1 {

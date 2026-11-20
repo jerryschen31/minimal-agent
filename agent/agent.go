@@ -165,6 +165,8 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 //   - Records run_start now. run_end is recorded by ShutdownAgent, not here: background work such as auto-compaction
 //     can still be running when this function returns, and its events must land before run_end.
 //   - Returns ctx's error at once if ctx is already cancelled.
+//   - Plan mode can return *ErrRunPlan ("Run now?" answered yes): the trace records it as a success, and the caller
+//     runs auto mode next.
 func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -183,7 +185,9 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 	} else {
 		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
-	agent.runTrace.Fail(err)
+	if _, next := errors.AsType[*ErrRunPlan](err); !next {
+		agent.runTrace.Fail(err) // "run this plan next" is plan mode succeeding, not failing
+	}
 	return err
 }
 

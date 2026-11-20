@@ -112,7 +112,7 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 	ar, err := openRun(runCtx, cs, ad, gates)
 	if errors.Is(err, errResumeWaiting) {
 		fmt.Fprintln(w, "Stopped: waiting. Nothing was run.")
-		return nil
+		return fmt.Errorf("resume: %w", ErrNeedsPerson)
 	}
 	if err != nil {
 		return err

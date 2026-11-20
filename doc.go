@@ -10,4 +10,7 @@
 //
 //	main.go
 //	  func main()
+//	  func run() int
+//	  func loadConfig(flags config.Flags) (config.Config, error)
+//	  func exitCode(err error) int
 package main

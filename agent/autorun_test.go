@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -280,7 +281,7 @@ func Test_Unit_AutoRun_WorkerOutOfStepsRetries(t *testing.T) {
 }
 
 //   - Verify Ctrl+C during a task stops the run: "interrupted" in run_ended, no task_finished for the task (Load then
-//     says interrupted), no error returned, and the lock is released (a second run starts)
+//     says interrupted), context.Canceled returned (main: exit 130), and the lock is released (a second run starts)
 func Test_Unit_AutoRun_Interrupted(t *testing.T) {
 	fx := newThreeTaskFixture(t)
 	fx.Session.Config.AssumeYes = true
@@ -293,8 +294,8 @@ func Test_Unit_AutoRun_Interrupted(t *testing.T) {
 	}()
 	<-fx.Provider.Waiting
 	interrupts <- os.Interrupt
-	if err := <-done; err != nil {
-		t.Errorf("autoMode: %v", err)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("autoMode: %v, want context.Canceled", err)
 	}
 	events := journal(t, fx, 1)
 	if got := eventTypes(events); !slices.Equal(got, []string{"manifest", "task_started:t1", "run_ended"}) {
@@ -385,8 +386,9 @@ func Test_Unit_AutoRun_GateAnswers(t *testing.T) {
 				t.Fatal(err)
 			}
 			fx.Session.Config.AssumeYes = tt.yes
-			if err := runAutoModeWith(t, fx, tt.input); err != nil {
-				t.Fatalf("autoMode: %v", err)
+			err := runAutoModeWith(t, fx, tt.input)
+			if (tt.reason == state.StopDeclined) != errors.Is(err, ErrNeedsPerson) || tt.reason == state.StopDone && err != nil {
+				t.Fatalf("autoMode: %v (want ErrNeedsPerson only when declined)", err)
 			}
 			out := fx.Out.String()
 			if !strings.Contains(out, `t2: Second has a gate: "a person checks a first". Run it? [y/N]`) {
@@ -417,8 +419,8 @@ func Test_Unit_AutoRun_GateWithoutTerminalWaits(t *testing.T) {
 	}
 	fx.Session.Config.AssumeYes = true
 	reader := newPlainReader(t.Context(), strings.NewReader(""), fx.Out)
-	if err := autoMode(t.Context(), nil, fx.Session, reader, nil); err != nil {
-		t.Fatalf("autoMode: %v", err)
+	if err := autoMode(t.Context(), nil, fx.Session, reader, nil); !errors.Is(err, ErrNeedsPerson) {
+		t.Fatalf("autoMode: %v, want ErrNeedsPerson", err)
 	}
 	out := fx.Out.String()
 	if !strings.Contains(out, "no terminal to ask") || !strings.Contains(out, "Stopped: waiting. 1 done, 0 skipped, 0 failed, 2 not started.") {
@@ -428,7 +430,7 @@ func Test_Unit_AutoRun_GateWithoutTerminalWaits(t *testing.T) {
 		t.Errorf("journal records an answer nobody gave: %v", got)
 	}
 	out, err := runAutoYes(t, fx) // the -yes run, now with a reader that answers (Ctrl+D: no)
-	if err != nil || !strings.Contains(out, "skip t1") || !strings.Contains(out, "Run it? [y/N]") {
+	if !errors.Is(err, ErrNeedsPerson) || !strings.Contains(out, "skip t1") || !strings.Contains(out, "Run it? [y/N]") {
 		t.Errorf("second run: %v\n%s", err, out)
 	}
 }

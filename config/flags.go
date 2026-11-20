@@ -284,6 +284,19 @@ func (f Flags) validateMode(mode string) error {
 	return nil
 }
 
+// FlagsForAuto returns f changed to run the plan at planPath in auto mode: what plan mode's "Run now?" starts, as if
+// `-mode auto -plan <planPath> -yes` had been typed with f's other flags.
+//
+// Notes:
+//   - -objective is dropped (auto mode's only input is the plan) and -yes is set (the user just answered yes; it covers
+//     only "Run?", never a gate or a resume question). -config, -workdir, -model, -debug and the rest are kept, so the
+//     run reads the same config file; auto mode's own defaults apply where neither sets a value.
+func FlagsForAuto(f Flags, planPath string) Flags {
+	mode, yes := ModeAuto, true
+	f.Mode, f.Plan, f.Yes, f.Objective = &mode, &planPath, &yes, nil
+	return f
+}
+
 // requireDir checks that a required directory exists.
 //
 // Notes:
