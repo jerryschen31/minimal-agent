@@ -232,8 +232,9 @@ func Test_RunToolCall_EndTurn(t *testing.T) {
 	}
 }
 
-// - Verify a response whose first tool call ends the turn still runs the other tool call in it, then stops with no further model call
-func Test_ReActLoop_EndTurn_RunsRemainingCallsThenStops(t *testing.T) {
+//   - Verify a response with a call that ends the turn runs the calls before it, does NOT run the calls after it (each
+//     gets the "not run" result, so every call still has one), and stops with no further model call (PR #45 review)
+func Test_ReActLoop_EndTurn_SkipsLaterCallsThenStops(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
 	endCalls, otherCalls := 0, 0
 	if err := fx.Tools.Register(namedTool{name: "propose", result: "plan proposed", err: tools.ErrEndTurn, calls: &endCalls}); err != nil {
@@ -242,8 +243,11 @@ func Test_ReActLoop_EndTurn_RunsRemainingCallsThenStops(t *testing.T) {
 	if err := fx.Tools.Register(namedTool{name: "other", result: "other done", calls: &otherCalls}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	response := modeltest.AssistantToolCall("c1", "propose", "{}")
-	response.ToolCalls = append(response.ToolCalls, model.ToolCall{ID: "c2", Type: "function", Function: model.ToolCallFunc{Name: "other", Arguments: "{}"}})
+	call := func(id, name string) model.ToolCall {
+		return model.ToolCall{ID: id, Type: "function", Function: model.ToolCallFunc{Name: name, Arguments: "{}"}}
+	}
+	response := modeltest.AssistantText("")
+	response.ToolCalls = []model.ToolCall{call("c0", "other"), call("c1", "propose"), call("c2", "other")}
 	fx.Provider.Script = []model.ChatMessage{response, modeltest.AssistantText("should not be reached")}
 
 	turn, err := reActLoop(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "hi"), nil, modeltest.Msg("user", "u1", "hi"))
@@ -255,14 +259,15 @@ func Test_ReActLoop_EndTurn_RunsRemainingCallsThenStops(t *testing.T) {
 		t.Errorf("expected exactly one model call, got %d", len(fx.Provider.Calls))
 	}
 	if endCalls != 1 || otherCalls != 1 {
-		t.Errorf("tool calls: propose %d, other %d; want 1 each", endCalls, otherCalls)
+		t.Errorf("tool calls: propose %d, other %d; want 1 each (the other after propose not run)", endCalls, otherCalls)
 	}
 	// user message, assistant response, then one result per tool call, in order
-	if len(turn) != 4 || turn[0].Role != "user" || turn[1].Role != "assistant" {
+	if len(turn) != 5 || turn[0].Role != "user" || turn[1].Role != "assistant" {
 		t.Fatalf("turn = %+v", turn)
 	}
-	if turn[2].ToolCallID != "c1" || turn[2].Content != "plan proposed" || turn[3].ToolCallID != "c2" || turn[3].Content != "other done" {
-		t.Errorf("tool results = %+v, %+v", turn[2], turn[3])
+	if turn[2].ToolCallID != "c0" || turn[2].Content != "other done" || turn[3].ToolCallID != "c1" || turn[3].Content != "plan proposed" ||
+		turn[4].ToolCallID != "c2" || turn[4].Content != errNotRunAfterEndTurn {
+		t.Errorf("tool results = %+v, %+v, %+v", turn[2], turn[3], turn[4])
 	}
 }
 

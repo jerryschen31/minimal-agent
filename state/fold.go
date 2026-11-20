@@ -34,6 +34,7 @@ type RunState struct {
 	Ended     *RunEnded  // nil: the run never ended (still going, or cut off by a crash)
 	Manifest  Manifest   // the run's manifest (its first event)
 	OpenCalls []OpenCall // tool_before events with no tool_after and not settled by a resume: calls a crash cut off, in the order they started
+	Calls     int        // tool_before events in the run: a resume numbers its calls after these, so call IDs stay unique
 	TornTail  bool
 }
 
@@ -86,6 +87,7 @@ func Fold(runs []RunEvents) (State, error) {
 				if err = decodeData(e, &d); err == nil {
 					open[d.CallID] = OpenCall{Task: e.Task, ToolBefore: d}
 					order = append(order, d.CallID)
+					rs.Calls++
 				}
 			case EventResumed:
 				var d Resumed

@@ -217,3 +217,66 @@ func Test_Unit_AutoRun_DirectorError(t *testing.T) {
 		t.Errorf("task_finished = %+v (%s)", fin, events[2].Type)
 	}
 }
+
+// externalTask is a one-task plan whose task acts outside the working directory.
+const externalTask = "# Plan: Mail\n\n## Tasks\n\n### t1: Email the report\neffects: external\ndone when: sent\n\nSend it.\n"
+
+// newExternalFixture writes externalTask to plan.md in a new temp dir (also the cwd) and returns an auto fixture for it.
+func newExternalFixture(t *testing.T) *chatSessionFixture {
+	t.Helper()
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("plan.md", []byte(externalTask), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx, _ := newAutoFixture(t, "plan.md")
+	return fx
+}
+
+//   - Verify an external task judged not done is not retried without a person's yes (PR #45 review): "n" stops the run
+//     with "declined" after one worker attempt, "y" runs attempt 2; the question says it may have already acted
+func Test_Unit_AutoRun_ExternalTask_RetryNeedsAYes(t *testing.T) {
+	for _, tt := range []struct {
+		answer  string
+		workers int
+		reason  state.StopReason
+	}{{"n\n", 1, state.StopDeclined}, {"y\n", 2, state.StopDone}} {
+		t.Run(strings.TrimSpace(tt.answer), func(t *testing.T) {
+			fx := newExternalFixture(t)
+			fx.Session.Config.AssumeYes = true // -yes doesn't answer this question
+			scriptDirector(fx, verdict("task_failed", "no sent mail found", ""), verdict("task_done", "sent", ""))
+			runAutoModeWith(t, fx, tt.answer)
+			out := fx.Out.String()
+			if !strings.Contains(out, "acts outside the working directory (effects: external), and attempt 1 was judged not done (no sent mail found); it may have already acted. Run it again? [y/N]") {
+				t.Errorf("not asked:\n%s", out)
+			}
+			if len(fx.Provider.Calls) != tt.workers {
+				t.Errorf("%d worker attempts, want %d", len(fx.Provider.Calls), tt.workers)
+			}
+			if r := lastRunEnded(t, journal(t, fx, 1)); r.Reason != tt.reason {
+				t.Errorf("run_ended = %+v, want %s", r, tt.reason)
+			}
+		})
+	}
+}
+
+//   - Verify an external task attempted in an earlier run is not run again without a person's yes: with no terminal the
+//     next run stops with "waiting" before any worker starts
+func Test_Unit_AutoRun_ExternalTask_EarlierAttemptNeedsAYes(t *testing.T) {
+	fx := newExternalFixture(t)
+	fx.Session.Config.MaxTaskAttempts = 1
+	scriptDirector(fx, verdict("task_failed", "no sent mail found", ""))
+	if _, err := runAutoYes(t, fx); err == nil {
+		t.Fatal("run 1: want task_failed")
+	}
+	calls := len(fx.Provider.Calls)
+	reader := newPlainReader(t.Context(), strings.NewReader(""), fx.Out)
+	fx.Out.Reset()
+	err := autoMode(t.Context(), nil, fx.Session, reader, nil) // -yes, no terminal
+	out := fx.Out.String()
+	if !errors.Is(err, ErrNeedsPerson) || !strings.Contains(out, "an earlier attempt (run 0001) ended failed, and there is no terminal to ask") {
+		t.Errorf("run 2: %v\n%s", err, out)
+	}
+	if len(fx.Provider.Calls) != calls {
+		t.Errorf("run 2 started a worker")
+	}
+}

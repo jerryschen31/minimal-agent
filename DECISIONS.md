@@ -5113,3 +5113,26 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
 - **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
   naming the run and seq, not a counted attempt.
 - **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.
+
+### 2026-11-20 — PR #45 review (merge into master): four fixes, one declined, one false positive
+
+- **Declined: the director keeps `run_command`** (Jerry). The review asked to remove it because `run_command` isn't
+  contained and the director is meant to only check. Jerry: a director that can't run `go test` or `pytest` can't
+  verify a worker's result, so it isn't a director; it is bounded by `runCommands`, the deny/ask rules, and later a
+  sandbox. Only the overclaiming comment on `directorToolNames` ("it never writes") was corrected.
+- **Call IDs stay unique across a resume.** A resumed run's recorder started again at `c1`, colliding with the crashed
+  session's calls. `Fold` counts each run's `tool_before` events (`RunState.Calls`) and the resumed recorder continues
+  from there.
+- **External tasks (`effects: external`) are never run again without a person's yes** (`askExternal`, same rules as a
+  gate: `-y` never answers; no terminal → `waiting`; no → `declined`). Asked before a retry within a run (the director
+  said not done), and before running one attempted in an earlier run or cut off by a crash, since that attempt may have
+  already acted. Before, retries and re-runs were automatic, contradicting the plan format's promise.
+- **An end-turn tool now ends the reply's tool calls.** After a call returns `tools.ErrEndTurn` (`task_done`,
+  `task_failed`, `propose_plan`, `present_objective`), the later calls in the same reply are not run; each gets the
+  result "error: not run: an earlier call in this reply ended the turn", since every call needs a result. Calls before
+  it ran normally. Before, they all ran (a verdict followed by an action, a draft shown then changed).
+- **`create_directory` records every directory it may create** (`ChangedPaths` returns each missing component,
+  outermost first), so a crash between `MkdirAll`'s steps settles as "happened", not "not happened".
+- **False positive: launching from `~`.** The review said `stateDir` `~/.minagent` inside `workDir` `~` fails setup.
+  `SetStateDir` refuses only a state folder that is or contains `workDir`; one inside it is allowed and refused to the
+  file tools. Checked with a test (`Test_Unit_Workspace_SetStateDir`) and the real binary with a fake `HOME`.

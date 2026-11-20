@@ -222,3 +222,21 @@ func Test_Unit_RemoveTempFiles(t *testing.T) {
 		t.Errorf("missing directory: %v, %v", removed, err)
 	}
 }
+
+//   - Verify create_directory's ChangedPaths names every directory the call may create, outermost first (a exists, so
+//     a/b and a/b/c), and only the path itself when it already exists (PR #45 review)
+func Test_Unit_CreateDirectory_ChangedPathsListsEveryMissingDirectory(t *testing.T) {
+	work := t.TempDir()
+	real, _ := filepath.EvalSymlinks(work)
+	os.Mkdir(filepath.Join(work, "a"), 0o755)
+	ws := newWorkspace(t, work, "", DenyList{})
+	tool, _ := NewCreateDirectoryTool(ws)
+	got, err := tool.ChangedPaths([]byte(`{"path":"a/b/c"}`))
+	want := []string{filepath.Join(real, "a", "b"), filepath.Join(real, "a", "b", "c")}
+	if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("a/b/c: %v, %v; want %v", got, err, want)
+	}
+	if got, err := tool.ChangedPaths([]byte(`{"path":"a"}`)); err != nil || len(got) != 1 || got[0] != filepath.Join(real, "a") {
+		t.Errorf("existing a: %v, %v", got, err)
+	}
+}

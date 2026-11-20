@@ -55,7 +55,7 @@ type settlePlan struct {
 //   - First every call's fate is decided, asking a person where needed (decideSettlement); errResumeWaiting means an
 //     answer was needed and couldn't be had, and then nothing is done or written.
 //   - Then the run's journal is reopened (state.Home.ContinueRun cuts a torn last line), cs.ToolJournal records into
-//     it (a re-send is a recorded call), the calls are settled (settle), and a resumed event lists the outcomes.
+//     it (a re-send is a recorded call; call IDs continue after the run's last one, state.RunState.Calls), the calls are settled (settle), and a resumed event lists the outcomes.
 //   - [agent] Continuing keeps one run one run, so step 2's budgets carry across a crash. When the plan, the config or
 //     the tools changed (toolsDiffer), the old run gets run_ended (interrupted) and the history carries over to the new
 //     run through Load.
@@ -82,6 +82,7 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 		j.Close()
 		return nil, nil, err
 	}
+	rj.n = last.Calls // [agent] continue the run's call numbering: "c1" again would collide with the crashed session's c1 (PR #45 review)
 	cs.ToolJournal = rj
 	settled, notes := settle(ctx, cs, rj, plans, w)
 	if jerr := rj.err(); jerr != nil { // a re-send's record failed: leave the run open, settle again next start

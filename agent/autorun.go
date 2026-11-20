@@ -205,6 +205,8 @@ func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string
 //     tasks after it are "not started".
 //   - A task with a gate is asked about first (askGate; gates is nil when there is nobody to ask): no answer possible
 //     → "waiting", no → "declined", yes → it runs. -yes never answers a gate.
+//   - An external task attempted before (any earlier run, or cut off by a crash) is asked about the same way
+//     (askExternal) before it runs again; so is each retry of it within the run (runTask).
 //   - The worker of a task is told the summaries of the tasks it depends on, from this run or an earlier one.
 func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult {
 	w := cs.OutBuffer
@@ -240,12 +242,20 @@ func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gat
 				return stop(i, reason, err)
 			}
 		}
-		summary, reason, err := runTask(ctx, cs, ar, p, t, summaries, ar.crashNotes[t.ID])
+		if ts, seen := ar.before.Tasks[t.ID]; t.External() && seen && ts.Attempts > 0 {
+			why := fmt.Sprintf("an earlier attempt (run %04d) ended %s", ts.Run, ts.Status)
+			if reason, err := askExternal(ctx, ar, t, gates, w, why); reason != "" {
+				return stop(i, reason, err)
+			}
+		}
+		summary, reason, err := runTask(ctx, cs, ar, p, t, summaries, ar.crashNotes[t.ID], gates)
 		switch reason {
 		case "":
 			res.done++
 			summaries[t.ID] = summary
 			continue
+		case state.StopWaiting, state.StopDeclined:
+			return stop(i+1, reason, err) // an external task's retry wasn't allowed (askExternal)
 		case state.StopInterrupted:
 			fmt.Fprintf(w, "■ %s interrupted\n", t.ID)
 		default:
@@ -265,11 +275,36 @@ func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gat
 //   - The answer goes to the journal (gate_answered: "yes" or "no") before anything else happens. No, or Ctrl+D, →
 //     "declined". Ctrl+C at the question → "interrupted".
 func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error) {
+	return askPerson(ctx, ar, t, gates, w, fmt.Sprintf("has a gate (%s)", t.Gate),
+		fmt.Sprintf("%s: %s has a gate: %q. Run it? [y/N]: ", t.ID, t.Title, t.Gate))
+}
+
+// askExternal asks whether task t, which acts outside the working directory (effects: external), may run again after
+// an attempt that didn't end done (why says what happened), records the answer, and returns the stop reason when it may
+// not ("" when it may).
+//
+// Notes:
+//   - [agent] An earlier attempt may already have sent the email or made the payment, so an external task is never
+//     repeated without a person's yes (PR #45 review): not across runs or a crash, not as a retry within a run.
+//   - The same rules as a gate (askPerson): no terminal → "waiting", no → "declined"; -yes never answers it.
+func askExternal(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer, why string) (state.StopReason, error) {
+	return askPerson(ctx, ar, t, gates, w, "acts outside the working directory and "+why,
+		fmt.Sprintf("%s: %s acts outside the working directory (effects: external), and %s; it may have already acted. "+
+			"Run it again? [y/N]: ", t.ID, t.Title, why))
+}
+
+// askPerson asks question about task t, records the answer (gate_answered), and returns the stop reason when the task
+// may not run ("" when it may). about completes "<id> ..." in the message printed when nobody can be asked.
+//
+// Notes:
+//   - gates nil (no terminal) → "waiting": nothing is recorded, and the next run on a terminal asks again.
+//   - No or Ctrl+D → "declined"; Ctrl+C → "interrupted".
+func askPerson(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer, about, question string) (state.StopReason, error) {
 	if gates == nil {
-		fmt.Fprintf(w, "%s has a gate (%s) and there is no terminal to ask; run it again on a terminal.\n", t.ID, t.Gate)
+		fmt.Fprintf(w, "%s %s, and there is no terminal to ask; run it again on a terminal.\n", t.ID, about)
 		return state.StopWaiting, nil
 	}
-	answer, err := gates.AskLine(ctx, fmt.Sprintf("%s: %s has a gate: %q. Run it? [y/N]: ", t.ID, t.Title, t.Gate))
+	answer, err := gates.AskLine(ctx, question)
 	if err != nil && !errors.Is(err, io.EOF) {
 		if ctx.Err() != nil {
 			return state.StopInterrupted, nil
@@ -301,15 +336,23 @@ func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, 
 //   - A worker that runs out of steps is a failed attempt (the director isn't asked). A director with no verdict is a
 //     failed attempt too (judgeTask). Out of attempts → "task_failed".
 //   - crash (after a resume: what happened to this task's cut-off calls) goes to the first attempt's worker.
+//   - An external task (effects: external) is retried only after a person's yes (askExternal, through gates); no
+//     answer possible → "waiting", no → "declined".
 //   - Ctrl+C → "interrupted", with no task_finished for the attempt (run_ended marks it). Any other error (the
 //     provider, a journal write) → "error", no retry. A tool call whose record failed (ar.tools.err) stops it at once,
 //     writing nothing more.
-func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error) {
+func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string, gates promptReader) (string, state.StopReason, error) {
 	w := cs.OutBuffer
 	maxAttempts := cs.Config.MaxTaskAttempts
 	ar.tools.setTask(t.ID) // the worker's and the director's tool calls are recorded under this task
 	var retry *retryNote
 	for attempt := 1; ; attempt++ {
+		if attempt > 1 && t.External() { // never retried without a person's yes: the attempt before may have acted
+			why := fmt.Sprintf("attempt %d was judged not done (%s)", attempt-1, retry.Reason)
+			if reason, err := askExternal(ctx, ar, t, gates, w, why); reason != "" {
+				return "", reason, err
+			}
+		}
 		if err := ar.journal.Append(state.EventTaskStarted, t.ID, state.TaskStarted{Attempt: attempt}); err != nil {
 			return "", state.StopError, err
 		}

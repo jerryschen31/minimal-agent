@@ -13,6 +13,9 @@ import (
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
+// errNotRunAfterEndTurn is the result of a tool call that came after a call ending the turn in the same reply.
+const errNotRunAfterEndTurn = "error: not run: an earlier call in this reply ended the turn"
+
 // ErrMaxSteps is returned (wrapped) by reActLoop when the model is still asking for tools after cfg.MaxSteps steps.
 // A "sentinel error": one shared error value that callers recognize with errors.Is(err, ErrMaxSteps)
 var ErrMaxSteps = errors.New("max steps for ReAct loop exceeded")
@@ -179,8 +182,9 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 //     task's scope ID; the trace records the turn's messages, while the system prompt and prior context are only
 //     counted.
 //   - A model error is returned as is: the caller reports it (cs.Output.Error), once.
-//   - A tool that returns tools.ErrEndTurn ends the turn: the other tool calls in that response still run (every call
-//     needs a result), then the turn's messages are returned with no further model call.
+//   - A tool that returns tools.ErrEndTurn ends the turn: the calls after it in that response are NOT run, each gets
+//     the result errNotRunAfterEndTurn (every call needs a result), and the turn's messages are returned with no further
+//     model call. Calls before it ran normally. (Changed in the PR #45 review: they used to run too.)
 //   - Returns ErrMaxSteps (wrapped with the limit) when the model is still asking for tools after cfg.MaxSteps steps.
 func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
 	requestMsgs := []model.ChatMessage{initialMsg}
@@ -213,6 +217,12 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		// otherwise there are tool calls to be made
 		endTurn := false
 		for _, tc := range response.ToolCalls {
+			if endTurn {
+				// [agent] an earlier call in this reply ended the turn (a verdict, a proposed plan): the rest are not run,
+				// but each still gets a result, because providers reject a tool call without one (PR #45 review)
+				requestMsgs = append(requestMsgs, model.CreateChatMessage("tool", "tool", errNotRunAfterEndTurn, tc.ID, nil))
+				continue
+			}
 			cs.Output.ToolCalled(tc.Function.Name)
 			toolResultMsg, end := runToolCall(ctx, cs, taskTrace, tc)
 			requestMsgs = append(requestMsgs, toolResultMsg)

@@ -524,7 +524,8 @@ func Test_ReadFile_Subdirectory_IsADirectoryError(t *testing.T) {
 
 //   - Verify SetStateDir makes the file tools refuse a path inside the state folder (reading and writing), with a message
 //     naming it, while other paths in workDir still pass; "" does nothing
-//   - Verify a state folder that is workDir or contains it is an error
+//   - Verify a state folder inside workDir (launched from the home folder, ~/.minagent not created yet) is allowed and
+//     refused to the tools; one that is workDir or contains it is an error
 func Test_Unit_Workspace_SetStateDir(t *testing.T) {
 	work := t.TempDir()
 	state := filepath.Join(work, ".minagent")
@@ -553,6 +554,16 @@ func Test_Unit_Workspace_SetStateDir(t *testing.T) {
 	}
 	if _, _, err := ws.resolvePath("notes.md"); err != nil {
 		t.Errorf("notes.md: %v", err)
+	}
+	// launched from the home folder: workDir ~ and stateDir ~/.minagent (not created yet) is allowed, the state folder
+	// being refused like any other path inside it (PR #45 review)
+	home := t.TempDir()
+	hws := newWorkspace(t, home, "", DenyList{})
+	if err := hws.SetStateDir(filepath.Join(home, ".minagent")); err != nil {
+		t.Errorf("workDir = home, stateDir = home/.minagent: %v, want allowed", err)
+	}
+	if _, err := hws.resolveNewPath(filepath.Join(".minagent", "runs")); err == nil {
+		t.Error("home/.minagent/runs: want a state-folder refusal")
 	}
 	for name, dir := range map[string]string{"equal": work, "parent": filepath.Dir(work)} {
 		if err := newWorkspace(t, work, "", DenyList{}).SetStateDir(dir); err == nil || !strings.Contains(err.Error(), "could reach nothing") {

@@ -114,7 +114,7 @@ then a blank line and the body:
 |---|---|
 | `depends: t1, t2` | tasks that must be done first |
 | `reason:` | why this plan version added or changed the task (only on those) |
-| `effects: external` | the task acts outside the working directory (a trade, an email, a submission): it can't be checked for drift, is never re-run automatically, and each action gets a key so a resumed run can't repeat it |
+| `effects: external` | the task acts outside the working directory (a trade, an email, a submission): it can't be checked for drift, and it is never run again without a person's yes, whether after a failed attempt, in a later run, or after a crash (`-y` doesn't answer that question) |
 | `gate:` | why the task must ask you before it runs |
 | `needs:` | the capabilities it needs, in plain words: tasks don't name tools |
 | `done when:` | how to tell the task is done |

@@ -60,6 +60,9 @@ The only questions auto mode asks come **before** work starts:
 - **Gates.** A task with a `gate:` line asks `Run it? [y/N]` before it starts. `-y` never answers a gate. No answer
   possible (no terminal) stops the run with `waiting`; no stops it with `declined`. Run it again on a terminal: done
   tasks are skipped and the gate is asked again.
+- **External tasks.** A task marked `effects: external` (an email, a payment) is never run again without your yes: not
+  as a retry after the director says it isn't done, not in a later run, not after a crash. An earlier attempt may have
+  already acted. Same rules as a gate.
 - **After a crash** (below).
 
 ## Crashes and resuming

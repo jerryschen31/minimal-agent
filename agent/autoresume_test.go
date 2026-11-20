@@ -127,6 +127,7 @@ func resumedEvent(t *testing.T, dir string) (state.Resumed, bool) {
 //     before anything runs, "n" treats it as done (it is not repeated: sent once), done t1 is not run again, t2 runs
 //     again with a worker told about the crash, and the same run (0001) is continued with a resumed event
 //   - Verify "y" sends the exact call again (sent twice), recorded with resend_of and the kept arguments
+//   - Verify every call ID in the run's journal is unique, before and after the crash
 func Test_Unit_AutoResume_AfterCrash(t *testing.T) {
 	for _, tt := range []struct {
 		answer, outcome string
@@ -161,6 +162,16 @@ func Test_Unit_AutoResume_AfterCrash(t *testing.T) {
 			}
 			if _, err := os.Stat(filepath.Join(dir, "state", "runs", "0002")); err == nil {
 				t.Errorf("a new run folder was made; the run should have been continued")
+			}
+			ids := map[string]bool{} // call IDs stay unique across the crash (PR #45 review): the resumed session numbers after the old one
+			for _, e := range journal(t, fx, 1) {
+				var b state.ToolBefore
+				if e.Type == state.EventToolBefore && json.Unmarshal(e.Data, &b) == nil {
+					if ids[b.CallID] {
+						t.Errorf("call ID %s recorded twice in run 1", b.CallID)
+					}
+					ids[b.CallID] = true
+				}
 			}
 			if tt.outcome == state.OutcomeResent {
 				var resend state.ToolBefore

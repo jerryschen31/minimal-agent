@@ -12,8 +12,11 @@ import (
 	"github.com/jerryschen31/minimal-agent/trace"
 )
 
-// directorToolNames are the session tools the director gets besides its verdict tools: it reads and runs checks, it
-// never writes. A tool the session doesn't have (run_command not enabled) is left out.
+// directorToolNames are the session tools the director gets besides its verdict tools: the read tools and run_command,
+// so it can verify a result itself ("go test", "pytest"). It gets no file-writing tool, but run_command is not contained:
+// an allowed program can change files. That is deliberate (Jerry, PR #45 review): a director that can't run checks
+// can't direct. It is bounded by runCommands and the deny/ask rules, and later a sandbox; the prompt tells it not to fix
+// anything. A tool the session doesn't have (run_command not enabled) is left out.
 var directorToolNames = []string{"read_file", "list_files", "search_files", "run_command"}
 
 // directorReminders is how many times a director that replies without a verdict is reminded (director.Reminder).

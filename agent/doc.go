@@ -63,7 +63,9 @@
 //	  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
 //	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
 //	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
-//	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
+//	  func askExternal(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer, why string) (state.StopReason, error)
+//	  func askPerson(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer, about, question string) (state.StopReason, error)
+//	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string, gates promptReader) (string, state.StopReason, error)
 //	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
 //	  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 //

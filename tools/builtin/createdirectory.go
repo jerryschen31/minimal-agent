@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
 )
@@ -104,10 +105,14 @@ func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage
 	return fmt.Sprintf("created directory %s", shown), nil
 }
 
-// ChangedPaths returns the directory a create_directory call with args would create, for auto mode's journal (tools.FileTool).
+// ChangedPaths returns every directory a create_directory call with args may create, outermost first, for auto mode's
+// journal (tools.FileTool).
 //
 // Notes:
-//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+//   - MkdirAll makes each missing component, so a call for a/b/c where only a exists may create a/b and a/b/c. All of
+//     them are returned, so a crash between two of them shows as "happened" on resume, not as nothing (PR #45 review).
+//     A path that already exists is returned alone.
+//   - Checked as CallTool checks it (resolveNewPath); bad JSON, an empty path or a refused path is an error.
 func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, error) {
 	var p struct {
 		Path string `json:"path"`
@@ -115,5 +120,23 @@ func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, erro
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
-	return t.ws.changedPaths(p.Path)
+	if p.Path == "" {
+		return nil, fmt.Errorf("missing path")
+	}
+	target, err := t.ws.resolveNewPath(p.Path)
+	if err != nil {
+		return nil, err
+	}
+	full := filepath.Join(t.ws.rootDir, target.rel)
+	missing, err := filepath.Rel(target.dirRel, target.rel) // the part below the deepest directory that exists
+	if err != nil || missing == "." || target.rel == "." {
+		return []string{full}, nil
+	}
+	dirs := []string{}
+	at := filepath.Join(t.ws.rootDir, target.dirRel)
+	for _, part := range strings.Split(missing, string(filepath.Separator)) {
+		at = filepath.Join(at, part)
+		dirs = append(dirs, at)
+	}
+	return dirs, nil
 }

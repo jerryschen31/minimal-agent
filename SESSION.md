@@ -1591,3 +1591,9 @@ has a header and `go run ./cmd/codemap` after signature changes; never edit mvp1
 Five comments: a failed `tool_after` now stops the run and leaves it open; resume asks before re-sending and starts a
 new run when tools or MCP servers changed (limited on purpose); files over 16 MB get a size+mtime fingerprint instead of
 a content hash; `Fold` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.
+
+### 2026-11-20 (end) — PR #45 review addressed (see DECISIONS.md § PR #45 review)
+
+Unique call IDs after a resume; external tasks never re-run or retried without a person's yes; calls after an end-turn
+tool aren't run; `create_directory` records every directory it may create. Declined: removing `run_command` from the
+director. False positive: launching from `~`. The handoff above (step 2, then orchestrator mode) still holds.
