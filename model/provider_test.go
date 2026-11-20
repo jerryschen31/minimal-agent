@@ -182,3 +182,31 @@ func Test_Unit_SetupProvider_OpenAI_SetsTimeoutFromConfig(t *testing.T) {
 		t.Errorf("expected Timeout 42s, got %v", p.Timeout)
 	}
 }
+
+// - Verify Usage.Add sums every count and is Reported when either part was
+func Test_Unit_Usage_Add_SumsCountsAndReported(t *testing.T) {
+	a := Usage{InputTokens: 100, OutputTokens: 10, CacheReadTokens: 80, CacheWriteTokens: 5, Reported: true}
+	b := Usage{InputTokens: 50, OutputTokens: 4, CacheReadTokens: 20, CacheWriteTokens: 1, Reported: true}
+
+	got := a.Add(b)
+	want := Usage{InputTokens: 150, OutputTokens: 14, CacheReadTokens: 100, CacheWriteTokens: 6, Reported: true}
+	if got != want {
+		t.Errorf("expected %+v, got %+v", want, got)
+	}
+
+	// a call with no usage adds nothing and does not make a reported sum unknown
+	if got := a.Add(Usage{}); got != a {
+		t.Errorf("adding an unreported Usage: expected %+v, got %+v", a, got)
+	}
+	if got := (Usage{}).Add(Usage{}); got.Reported {
+		t.Errorf("a sum of unreported calls must stay unreported, got %+v", got)
+	}
+}
+
+// - Verify Usage.Total is input plus output, without counting the cache fields twice
+func Test_Unit_Usage_Total_InputPlusOutput(t *testing.T) {
+	u := Usage{InputTokens: 1200, OutputTokens: 85, CacheReadTokens: 1024, CacheWriteTokens: 50, Reported: true}
+	if got := u.Total(); got != 1285 {
+		t.Errorf("expected 1285 (input 1200 + output 85; cache tokens are inside input), got %d", got)
+	}
+}

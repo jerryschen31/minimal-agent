@@ -85,6 +85,8 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 //
 // Notes: none.
 func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider {
+	// [agent] 2d: the budget meter wraps cs.Provider here, under the tracer (GetTracedProvider(meter(cs.Provider), …)),
+	// so a refused call is traced as model_error and every caller (loop, director, compaction, /summary) is counted.
 	return trace.GetTracedProvider(cs.Provider, cs.Recorder, scopeID, cs.Config)
 }
 

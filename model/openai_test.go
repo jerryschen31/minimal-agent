@@ -24,7 +24,7 @@ func Test_ChatRequest_ErrorsGracefully(t *testing.T) {
 	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply.Content)
+		t.Fatalf("expected an error when the provider is unreachable, got reply %q", reply.Message.Content)
 	}
 }
 
@@ -39,7 +39,7 @@ func Test_ChatRequest_Non2xxResponseErrorsGracefully(t *testing.T) {
 	reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 	if err == nil {
-		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply.Content)
+		t.Fatalf("expected an error for a non-2xx response, got reply %q", reply.Message.Content)
 	}
 }
 
@@ -57,14 +57,14 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for an empty response body, got reply %q", reply.Content)
+			t.Fatalf("expected an error for an empty response body, got reply %q", reply.Message.Content)
 		}
 	})
 
 	t.Run("valid JSON but no choices", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(ChatResponse{Choices: nil})
+			json.NewEncoder(w).Encode(openAIResponse{Choices: nil})
 		}))
 		defer srv.Close()
 
@@ -72,7 +72,7 @@ func Test_ChatRequest_EmptyResponseErrorsGracefully(t *testing.T) {
 		reply, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hello"}}, nil)
 
 		if err == nil {
-			t.Fatalf("expected an error for a response with no choices, got reply %q", reply.Content)
+			t.Fatalf("expected an error for a response with no choices, got reply %q", reply.Message.Content)
 		}
 	})
 }
@@ -88,10 +88,8 @@ func Test_ChatRequest_ProperRequestResponseCycle(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResponse{
-			Choices: []struct {
-				Message ChatMessage `json:"message"`
-			}{
+		json.NewEncoder(w).Encode(openAIResponse{
+			Choices: []openAIChoice{
 				{Message: ChatMessage{Role: "assistant", Content: "hi there"}},
 			},
 		})
@@ -104,8 +102,8 @@ func Test_ChatRequest_ProperRequestResponseCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat() returned an unexpected error: %v", err)
 	}
-	if reply.Content != "hi there" {
-		t.Errorf("expected reply %q, got %q", "hi there", reply.Content)
+	if reply.Message.Content != "hi there" {
+		t.Errorf("expected reply %q, got %q", "hi there", reply.Message.Content)
 	}
 }
 
@@ -116,9 +114,7 @@ func Test_ChatRequest_OnlyAPIFieldsSentOnMessages(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResponse{Choices: []struct {
-			Message ChatMessage `json:"message"`
-		}{{Message: ChatMessage{Role: "assistant", Content: "ok"}}}})
+		json.NewEncoder(w).Encode(openAIResponse{Choices: []openAIChoice{{Message: ChatMessage{Role: "assistant", Content: "ok"}}}})
 	}))
 	defer srv.Close()
 
@@ -175,14 +171,14 @@ func Test_ChatRequest_ResponseDecodesAPIFieldsAndIgnoresExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat() returned an error: %v", err)
 	}
-	if reply.Role != "assistant" || reply.Content != "hello" {
+	if reply.Message.Role != "assistant" || reply.Message.Content != "hello" {
 		t.Errorf("expected assistant %q, got %+v", "hello", reply)
 	}
-	if len(reply.ToolCalls) != 1 || reply.ToolCalls[0].ID != "call-9" || reply.ToolCalls[0].Function.Name != "read_file" {
-		t.Errorf("expected the read_file tool call call-9 to decode, got %+v", reply.ToolCalls)
+	if len(reply.Message.ToolCalls) != 1 || reply.Message.ToolCalls[0].ID != "call-9" || reply.Message.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("expected the read_file tool call call-9 to decode, got %+v", reply.Message.ToolCalls)
 	}
-	if reply.ID != "" {
-		t.Errorf("expected the provider's message id not to populate our internal ID, got %q", reply.ID)
+	if reply.Message.ID != "" {
+		t.Errorf("expected the provider's message id not to populate our internal ID, got %q", reply.Message.ID)
 	}
 }
 
@@ -197,10 +193,8 @@ func delayedReplyServer(t *testing.T, delay time.Duration) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ChatResponse{
-			Choices: []struct {
-				Message ChatMessage `json:"message"`
-			}{
+		json.NewEncoder(w).Encode(openAIResponse{
+			Choices: []openAIChoice{
 				{Message: ChatMessage{Role: "assistant", Content: "hi there"}},
 			},
 		})
@@ -235,7 +229,7 @@ func Test_ChatRequest_ZeroTimeout_NoLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Chat() returned an unexpected error: %v", err)
 	}
-	if reply.Content != "hi there" {
-		t.Errorf("expected reply %q, got %q", "hi there", reply.Content)
+	if reply.Message.Content != "hi there" {
+		t.Errorf("expected reply %q, got %q", "hi there", reply.Message.Content)
 	}
 }

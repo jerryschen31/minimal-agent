@@ -5113,3 +5113,27 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
 - **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
   naming the run and seq, not a counted attempt.
 - **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.
+
+### 2026-11-20 — Step 2 (token usage and budgets): a run stopped by a budget exits 3
+
+- **A run that hits `runTokenBudget` or `runTimeoutMinutes` exits 3 ("needs a person"), not 1 (failed)** (Jerry). The
+  work did not fail; someone has to decide whether to raise the budget and resume, which is the same kind of stop as a
+  gate with nobody to answer. Stop reasons stay `budget` / `timeout` in the journal. Affects `agent/autorun.go` (2d).
+
+### 2026-11-20 — Step 2: response type, normalized usage, `max_tokens` field chosen by host
+
+- **`Provider.Chat` returns `model.Response{Message, Usage, StopReason}`** instead of a bare `ChatMessage`. Usage and
+  the stop reason describe one call, not one message; a `json:"-"` field on `ChatMessage` was rejected because messages
+  are stored in memory and copied into compaction, so each would carry a stale per-call count. The Anthropic adapter
+  will also need per-call room (thinking blocks). OpenAI's wire structs move into `openai.go`, unexported
+  (`openAIRequest`, `openAIResponse`): they are one adapter's format, not shared types.
+- **`model.Usage` means the same for every provider:** `InputTokens` = every input token sent, cached ones included
+  (OpenAI's `prompt_tokens`; Anthropic's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`);
+  `CacheReadTokens` / `CacheWriteTokens` are parts of it; `OutputTokens` includes reasoning/thinking; `Reported` = false
+  when the server sent no usage. Stop reasons are mapped to `end` / `tool_calls` / `max_tokens`, else the raw value.
+  Budgets count tokens, not money (cache reads cost ~10%); a cost budget needs a price table and is deferred.
+- **`max_tokens` vs `max_completion_tokens` is chosen by host** (Jerry): `max_completion_tokens` for OpenAI
+  (`api.openai.com`) and Azure OpenAI (`*.openai.azure.com`), whose reasoning models reject `max_tokens`; `max_tokens`
+  everywhere else. There is no way to ask a server or model which one it takes (`/v1/models` lists IDs only; guessing
+  from model names breaks with each new family). **A config key `maxTokensField` overrides the choice** (Jerry), for a
+  gateway such as LiteLLM in front of OpenAI, which the host rule can't recognize. Built in 2c.

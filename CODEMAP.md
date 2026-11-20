@@ -224,7 +224,7 @@ chat.go
   func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
   func discardStrayInterrupts(interrupts <-chan os.Signal)
   func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
-  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
   func startProgressDots(out io.Writer, interval time.Duration) (stop func())
   func shouldShowProgress(cfg config.Config) bool
 
@@ -580,9 +580,11 @@ msghistory.go
 
 ```text
 openai.go
-  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
+  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)
 
 provider.go
+  func (u Usage) Add(other Usage) Usage
+  func (u Usage) Total() int
   func SetupProvider(cfg config.Config) (Provider, error)
   func CreateChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage
   func PrepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage
@@ -596,7 +598,7 @@ provider.go
 
 ```text
 fake_provider.go
-  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error)
+  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
   func AssistantText(text string) model.ChatMessage
   func AssistantToolCall(callID, toolName, args string) model.ChatMessage
   func Msg(role, id, content string) model.ChatMessage
@@ -928,7 +930,7 @@ event.go
 
 provider.go
   func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg config.Config) *TracedProvider
-  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 
 recorder.go
   func Nop() Recorder

@@ -1591,3 +1591,19 @@ has a header and `go run ./cmd/codemap` after signature changes; never edit mvp1
 Five comments: a failed `tool_after` now stops the run and leaves it open; resume asks before re-sending and starts a
 new run when tools or MCP servers changed (limited on purpose); files over 16 MB get a size+mtime fingerprint instead of
 a content hash; `Fold` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.
+
+### 2026-11-20 — Step 2 started (branch `feat/token-usage-tracking`): 2a built
+
+Step 2 is now five substeps (see DECISIONS.md § Step 2: response type, normalized usage, `max_tokens` field chosen by
+host; and § a run stopped by a budget exits 3):
+
+| # | Substep | Status |
+|---|---|---|
+| 2a | `Provider.Chat` returns `model.Response{Message, Usage, StopReason}`; `model.Usage` (+ `Add`, `Total`); OpenAI wire structs unexported in `openai.go` | built, not committed |
+| 2b | Parse `usage` and `finish_reason` in `openai.go`; `trace.Usage` → `model.Usage`; `GetModelResponseData` takes the Response | next |
+| 2c | Send `maxTokens` (`max_completion_tokens` for OpenAI/Azure hosts, else `max_tokens`; config `maxTokensField` overrides); a `max_tokens` stop gets a clear message | |
+| 2d | Usage meter under the tracer in `getSessionProvider`; `runTokenBudget`, `runTimeoutMinutes`; stop `budget`/`timeout` → exit 3 | |
+| 2e | `usage` event per task attempt, folded in `Fold`; report shows tokens and time; chat `/usage` | |
+
+Working flow for each substep (Jerry): shape + critical tests + gotchas first; after his "okay" Claude writes the code
+and tests; end with a one-sentence commit message.

@@ -195,11 +195,13 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		request2send := model.PrepareChatRequest(priorMsgs, cs.SystemMsg, requestMsgs)
 
 		// send the chat request to the LLM provider
-		provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs                    // the trace records the turn's messages; the system prompt and prior context are only counted
-		response, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // cs.Output shows thinking dots in chat mode
+		provider.Step, provider.TurnMsgs = stepNum+1, requestMsgs                // the trace records the turn's messages; the system prompt and prior context are only counted
+		resp, err := chatWithProgress(ctx, cs, provider, request2send, toolDefs) // cs.Output shows thinking dots in chat mode
 		if err != nil {
 			return nil, err // the caller reports it (cs.Output.Error), once
 		}
+		// [agent] the loop only needs the message; resp.Usage is counted by the provider wrapper, not here
+		response := resp.Message
 
 		// append the response as a ChatMessage to the request messages for the next iteration
 		cs.Output.Assistant(response.Content)

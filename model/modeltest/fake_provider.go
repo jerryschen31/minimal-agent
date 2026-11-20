@@ -44,7 +44,8 @@ type FakeProvider struct {
 //     mutex is not held while blocked, so a concurrent call is not blocked behind this one
 //   - precedence after the gate: a cancelled ctx, then Err, then Script (once set, running past its end is an error), then Reply
 //     as an assistant message
-func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error) {
+//   - the reply is returned as a model.Response with only Message set: Usage and StopReason stay zero
+func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
 	p.ToolDefs = append(p.ToolDefs, append([]model.ToolDef(nil), tools...))
@@ -57,33 +58,33 @@ func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage
 			select {
 			case waiting <- struct{}{}:
 			case <-ctx.Done():
-				return model.ChatMessage{}, ctx.Err()
+				return model.Response{}, ctx.Err()
 			}
 		}
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return model.ChatMessage{}, ctx.Err()
+			return model.Response{}, ctx.Err()
 		}
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if ctx.Err() != nil {
-		return model.ChatMessage{}, ctx.Err()
+		return model.Response{}, ctx.Err()
 	}
 	if p.Err != nil {
-		return model.ChatMessage{}, p.Err
+		return model.Response{}, p.Err
 	}
 	if p.Script != nil {
 		if p.next >= len(p.Script) {
-			return model.ChatMessage{}, fmt.Errorf("FakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
+			return model.Response{}, fmt.Errorf("FakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
 		}
 		reply := p.Script[p.next]
 		p.next++
-		return reply, nil
+		return model.Response{Message: reply}, nil
 	}
-	return model.ChatMessage{Role: "assistant", Content: p.Reply}, nil
+	return model.Response{Message: model.ChatMessage{Role: "assistant", Content: p.Reply}}, nil
 }
 
 // AssistantText builds a plain assistant reply with no tool calls (the "final answer" step).

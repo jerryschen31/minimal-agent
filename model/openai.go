@@ -16,7 +16,27 @@ type OpenAICompat struct {
 	Timeout time.Duration // most one Chat call may take (config's responseTimeoutSeconds); 0 = no limit of its own
 }
 
-// Chat sends chatContext (and tools) to an OpenAI-compatible server's /chat/completions and returns the first choice's message.
+// openAIRequest is the body of POST /chat/completions, in OpenAI's wire format. Only this adapter uses it.
+type openAIRequest struct {
+	Model    string        `json:"model"`
+	Messages []ChatMessage `json:"messages"`
+	Tools    []ToolDef     `json:"tools,omitempty"`
+}
+
+// openAIResponse is the JSON an OpenAI-compatible server returns. Only this adapter uses it; Chat converts it into a
+// Response.
+// [agent] "choices" is a list because a request may ask for several alternative answers ("n"); we never set n, so it
+// holds one.
+type openAIResponse struct {
+	Choices []openAIChoice `json:"choices"`
+}
+
+// openAIChoice is one answer in an openAIResponse.
+type openAIChoice struct {
+	Message ChatMessage `json:"message"`
+}
+
+// Chat sends chatContext (and tools) to an OpenAI-compatible server's /chat/completions and returns the first choice's message as a Response.
 //
 // Notes:
 //   - a Timeout above 0 wraps ctx in a deadline for this one call; 0 means no limit of its own
@@ -25,10 +45,11 @@ type OpenAICompat struct {
 //   - any status outside 200-299 is an error carrying only the status code, with the response body unread; a response with no
 //     choices is also an error
 //   - the returned message is exactly what the server sent: ID, Timestamp and Type are not filled in here
-func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error) {
+//   - Usage and StopReason are not read from the response yet (left zero)
+func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error) {
 	// make a request to the OpenAI-compatible server
 	// 1. build a chatRequest with p.Model and the provided chat context
-	reqRaw := ChatRequest{
+	reqRaw := openAIRequest{
 		Model:    p.Model,
 		Messages: chatContext,
 		Tools:    tools, // omitempty: nil tools send no "tools" key at all
@@ -37,7 +58,7 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 	// 2. json.Marshal it into a []byte body
 	reqBody, err := json.Marshal(reqRaw)
 	if err != nil {
-		return ChatMessage{}, err
+		return Response{}, err
 	}
 
 	// 3. build an *http.Request with http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", ...)
@@ -48,7 +69,7 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 	}
 	reqHttp, err := http.NewRequestWithContext(ctx, "POST", p.BaseURL+"/chat/completions", bytes.NewReader(reqBody))
 	if err != nil {
-		return ChatMessage{}, err
+		return Response{}, err
 	}
 
 	// 4. set header "Content-Type": "application/json"
@@ -60,24 +81,24 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 	// 5. do the request with a http.DefaultClient.Do(req) and TIMEOUT
 	resp, err := http.DefaultClient.Do(reqHttp)
 	if err != nil {
-		return ChatMessage{}, err
+		return Response{}, err
 	}
 	defer resp.Body.Close()
 
 	// 5b. Check if the HTTP response status code indicates an error
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatMessage{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return Response{}, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
 	// 6. read the response body, json.Unmarshal into a chatResponse
-	var chatResp ChatResponse
+	var chatResp openAIResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return ChatMessage{}, err
+		return Response{}, err
 	}
 
-	// 7. return resp.Choices[0].Message.Content, nil
+	// 7. return the first choice's message as a Response
 	if len(chatResp.Choices) == 0 {
-		return ChatMessage{}, fmt.Errorf("no choices in response")
+		return Response{}, fmt.Errorf("no choices in response")
 	}
-	return chatResp.Choices[0].Message, nil
+	return Response{Message: chatResp.Choices[0].Message}, nil
 }

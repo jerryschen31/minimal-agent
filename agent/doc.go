@@ -80,7 +80,7 @@
 //	  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
 //	  func discardStrayInterrupts(interrupts <-chan os.Signal)
 //	  func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
-//	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+//	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 //	  func startProgressDots(out io.Writer, interval time.Duration) (stop func())
 //	  func shouldShowProgress(cfg config.Config) bool
 //

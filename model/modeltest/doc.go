@@ -7,7 +7,7 @@
 // method signatures in source order.
 //
 //	fake_provider.go
-//	  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error)
+//	  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
 //	  func AssistantText(text string) model.ChatMessage
 //	  func AssistantToolCall(callID, toolName, args string) model.ChatMessage
 //	  func Msg(role, id, content string) model.ChatMessage

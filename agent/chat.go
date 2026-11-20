@@ -363,7 +363,7 @@ var progressDotInterval = 2 * time.Second
 // Notes:
 //   - Chat mode on a terminal prints thinking dots while waiting (see Output.Thinking); the dots stop when the reply or
 //     an error arrives.
-func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
+func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error) {
 	stop := cs.Output.Thinking()
 	defer stop()
 	return provider.Chat(ctx, msgs, toolDefs)

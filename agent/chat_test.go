@@ -530,7 +530,7 @@ func Test_ChatWithProgress_ShowProgress_PrintsDotsWhileWaiting(t *testing.T) {
 	resCh := make(chan result, 1)
 	go func() {
 		reply, err := chatWithProgress(context.Background(), fx.Session, fx.Session.Provider, nil, nil)
-		resCh <- result{reply.Content, err}
+		resCh <- result{reply.Message.Content, err}
 	}()
 
 	receiveOrFail(t, fx.Provider.Waiting, "the model call to start")

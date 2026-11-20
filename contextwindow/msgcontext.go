@@ -367,7 +367,7 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 	}
 
 	// Chat response summary could be nil, which should be considered an error.
-	summary := strings.TrimSpace(resp.Content)
+	summary := strings.TrimSpace(resp.Message.Content)
 	if summary == "" {
 		return "", fmt.Errorf("summarize: model returned an empty summary")
 	}

@@ -160,7 +160,7 @@
 //
 //	provider.go
 //	  func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg config.Config) *TracedProvider
-//	  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+//	  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 //
 //	recorder.go
 //	  func Nop() Recorder
