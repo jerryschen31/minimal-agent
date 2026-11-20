@@ -52,7 +52,7 @@ func Cleanup(data []byte) (Plan, []Fix, error) {
 	}
 	fixes = append(fixes, headingFixes...)
 
-	p := Plan{Format: fm.format, ObjectivePath: fm.objective, ObjectiveHash: fm.objectiveHash, Version: fm.version}
+	p := Plan{Format: fm.format, PlanID: fm.planID, ObjectivePath: fm.objective, ObjectiveHash: fm.objectiveHash, Version: fm.version}
 	seen := map[string]int{} // known section name → line of its heading
 	var heads []line         // each task's heading line, for the AssignTaskIDs fixes
 	for _, s := range sections {
@@ -102,6 +102,7 @@ func Cleanup(data []byte) (Plan, []Fix, error) {
 // frontMatter holds the front-matter keys this version knows.
 type frontMatter struct {
 	format        string // "format:"; FormatV1 when absent
+	planID        string // "plan_id:"
 	objective     string // "objective:"
 	objectiveHash string // "objective_hash:"
 	version       int    // "plan_version:"; 0 when absent
@@ -114,7 +115,7 @@ type frontMatter struct {
 //   - No front matter, or no "format:" line → FormatV1.
 //   - An unknown key is a fix with Now "" (warned about and ignored), so a newer file still runs on an older binary.
 //   - Errors: an unknown format (lists SupportedFormats); a plan_version that isn't a whole number (at most 9 digits);
-//     a line without ":"; no closing "---".
+//     a plan_id with a space; a line without ":"; no closing "---".
 //   - Only flat "key: value" lines (no YAML library); keys in any case; blank lines inside the block are skipped.
 func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error) {
 	start := 0
@@ -148,6 +149,11 @@ func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, er
 					l.Num, value, strings.Join(SupportedFormats, ", "))
 			}
 			fm.format = value
+		case "plan_id":
+			if strings.ContainsAny(value, " \t") {
+				return frontMatter{}, nil, nil, fmt.Errorf("line %d: plan_id %q has a space; it must be one word", l.Num, value)
+			}
+			fm.planID = value
 		case "objective":
 			fm.objective = value
 		case "objective_hash":

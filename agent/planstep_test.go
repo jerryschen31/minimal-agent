@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -546,7 +547,13 @@ func Test_Unit_PlanMode_Revise_ThenAccept(t *testing.T) {
 	checkNoConsecutiveUserMessages(t, fx)
 
 	chat := fx.Provider.Calls[1]
-	wantNote := planner.RevisionNote(acceptedPlan(t, path, countObjective, validPlanArgs), "lines, not words")
+	turnedDown := acceptedPlan(t, path, countObjective, validPlanArgs)
+	if len(chat) == 2 { // each plan gets a random plan_id: use the one the turned-down plan had
+		if m := regexp.MustCompile(`plan_id: (\S+)`).FindStringSubmatch(chat[1].Content); m != nil {
+			turnedDown.PlanID = m[1]
+		}
+	}
+	wantNote := planner.RevisionNote(turnedDown, "lines, not words")
 	if len(chat) != 2 || chat[0].Role != "system" || chat[1].Role != "user" || chat[1].Content != wantNote {
 		t.Errorf("chat request = %+v, want the system message and one user message %q", chat, wantNote)
 	}

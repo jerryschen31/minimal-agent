@@ -18,7 +18,7 @@ func (p Plan) Markdown() string {
 	return p.frontMatter() + "\n" + p.Body()
 }
 
-// frontMatter renders the "---" block: format, then objective, objective_hash and plan_version when set.
+// frontMatter renders the "---" block: format, then plan_id, objective, objective_hash and plan_version when set.
 //
 // Notes: none.
 func (p Plan) frontMatter() string {
@@ -27,6 +27,9 @@ func (p Plan) frontMatter() string {
 		format = FormatV1
 	}
 	s := "---\nformat: " + format + "\n"
+	if p.PlanID != "" {
+		s += "plan_id: " + p.PlanID + "\n"
+	}
 	if p.ObjectivePath != "" {
 		s += "objective: " + p.ObjectivePath + "\n"
 	}

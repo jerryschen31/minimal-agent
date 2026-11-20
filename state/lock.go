@@ -42,18 +42,14 @@ type lockHolder struct {
 // Lock takes the plan's lock, so only one run of a plan goes at a time; unlock releases it.
 //
 // Notes:
-//   - One lock file per plan: locks/<key>.lock, key = the first 16 hex characters of sha256(PlanKey(planPath)).
-//     Different plans can run at the same time.
+//   - One lock file per plan identity: locks/<key>.lock, key = the first 16 hex characters of sha256 of the identity
+//     (its plan_id, else its real path). Different plans can run at the same time; a moved plan and its old place can't.
 //   - A real OS lock (flock on Unix, LockFileEx on Windows): the OS releases it when the process ends, even on kill -9
 //     or a power cut, so a crashed run never leaves a stale lock.
 //   - Held by another process (or another open in this one): a *LockedError naming the plan, the pid and since when.
 //   - While held, the file holds the plan path, the pid and the time (JSON); it is not cleared on unlock.
-func (h Home) Lock(planPath string) (unlock func() error, err error) {
-	key, err := PlanKey(planPath)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256([]byte(key))
+func (h Home) Lock(p PlanRef) (unlock func() error, err error) {
+	sum := sha256.Sum256([]byte(p.key()))
 	path := filepath.Join(h.dir, "locks", hex.EncodeToString(sum[:])[:16]+".lock")
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, filePerm)
 	if err != nil {
@@ -64,13 +60,13 @@ func (h Home) Lock(planPath string) (unlock func() error, err error) {
 		f.Close()
 		if errors.Is(err, errLockBusy) {
 			if holder.Plan == "" {
-				holder.Plan = key
+				holder.Plan = p.Path
 			}
 			return nil, &LockedError{Plan: holder.Plan, PID: holder.PID, Since: holder.Since}
 		}
 		return nil, fmt.Errorf("plan lock %s: %w", path, err)
 	}
-	data, _ := json.Marshal(lockHolder{Plan: key, PID: os.Getpid(), Since: time.Now()})
+	data, _ := json.Marshal(lockHolder{Plan: p.Path, PID: os.Getpid(), Since: time.Now()})
 	if err := f.Truncate(0); err == nil {
 		f.WriteAt(append(data, '\n'), 0) // [agent] best effort: the details only make the "in progress" message nicer
 	}

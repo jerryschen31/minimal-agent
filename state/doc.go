@@ -29,11 +29,13 @@
 //	  func OpenHome(dir string) (Home, error)
 //	  func (h Home) Dir() string
 //	  func (r Run) TraceDir() string
-//	  func PlanKey(planPath string) (string, error)
+//	  func NewPlanRef(planID, planPath string) (PlanRef, error)
+//	  func (p PlanRef) key() string
+//	  func (p PlanRef) matches(m Manifest) bool
 //	  func SHA256(data []byte) string
-//	  func (h Home) NewRun(m Manifest, plan []byte) (*Journal, Run, error)
+//	  func (h Home) NewRun(m Manifest, plan, config []byte) (*Journal, Run, error)
 //	  func (h Home) ContinueRun(r Run) (*Journal, error)
-//	  func (h Home) Load(planPath string) (State, error)
+//	  func (h Home) Load(p PlanRef) (State, error)
 //	  func readManifest(path string) (Manifest, bool)
 //	  func (h Home) runsDir() string
 //	  func (h Home) runs() ([]Run, error)
@@ -49,7 +51,7 @@
 //
 //	lock.go
 //	  func (e *LockedError) Error() string
-//	  func (h Home) Lock(planPath string) (unlock func() error, err error)
+//	  func (h Home) Lock(p PlanRef) (unlock func() error, err error)
 //	  func readHolder(f *os.File) lockHolder
 //
 //	lock_other.go

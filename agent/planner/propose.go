@@ -126,6 +126,8 @@ func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (strin
 //     plan.PathFor); plan mode rewrites it relative to the plan when -plan puts the plan elsewhere. objective_hash is
 //     o.Hash().
 //   - The objective itself is copied into the plan's "## Objective" (plan.ObjectiveSection): a run reads only the plan.
+//   - Each proposal gets a new random plan_id (plan.NewPlanID): this is a first plan. (Plan updates, step U, will keep
+//     the old plan's ID.)
 //   - Every task must have a body (how it is done): an empty one is an error naming the task. Only propose_plan
 //     requires it; a hand-written plan file may leave it out.
 //   - Every text is trimmed. Title, depends, needs, done_when, effects and gate must be one line each: a line break there
@@ -137,6 +139,7 @@ func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (strin
 func (prop proposal) toPlan(objectivePath string, o objective.Objective) (plan.Plan, error) {
 	p := plan.Plan{
 		Format:        plan.FormatV1,
+		PlanID:        plan.NewPlanID(),
 		ObjectivePath: filepath.Base(objectivePath),
 		ObjectiveHash: o.Hash(),
 		Version:       1,

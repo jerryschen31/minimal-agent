@@ -18,6 +18,7 @@ minimal-agent/
 │   ├── doc.go
 │   ├── info.go
 │   ├── input.go
+│   ├── manifest.go
 │   ├── output.go
 │   ├── planmode.go
 │   ├── react.go
@@ -210,6 +211,11 @@ input.go
   func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
   func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
   func writePrompt(w io.Writer, lnum int) (int, error)
+
+manifest.go
+  func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error)
+  func configSnapshot(cfg config.Config) ([]byte, error)
+  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
 
 output.go
   func (o chatOutput) Assistant(text string)
@@ -452,6 +458,7 @@ conn.go
   func (o origin) String() string
   func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error)
   func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error)
+  func (s *McpConnection) ServerInfo() (name, version string)
   func (s *McpConnection) Close() error
 
 tools.go
@@ -580,6 +587,7 @@ plan.go
   func taskNumber(id string) (int, bool)
   func findCycle(tasks []Task) []string
   func PathFor(objectivePath string) string
+  func NewPlanID() string
 
 render.go
   func (p Plan) Markdown() string
@@ -616,11 +624,13 @@ home.go
   func OpenHome(dir string) (Home, error)
   func (h Home) Dir() string
   func (r Run) TraceDir() string
-  func PlanKey(planPath string) (string, error)
+  func NewPlanRef(planID, planPath string) (PlanRef, error)
+  func (p PlanRef) key() string
+  func (p PlanRef) matches(m Manifest) bool
   func SHA256(data []byte) string
-  func (h Home) NewRun(m Manifest, plan []byte) (*Journal, Run, error)
+  func (h Home) NewRun(m Manifest, plan, config []byte) (*Journal, Run, error)
   func (h Home) ContinueRun(r Run) (*Journal, error)
-  func (h Home) Load(planPath string) (State, error)
+  func (h Home) Load(p PlanRef) (State, error)
   func readManifest(path string) (Manifest, bool)
   func (h Home) runsDir() string
   func (h Home) runs() ([]Run, error)
@@ -636,7 +646,7 @@ journal.go
 
 lock.go
   func (e *LockedError) Error() string
-  func (h Home) Lock(planPath string) (unlock func() error, err error)
+  func (h Home) Lock(p PlanRef) (unlock func() error, err error)
   func readHolder(f *os.File) lockHolder
 
 lock_other.go
@@ -815,6 +825,7 @@ digest_activity.go
 
 event.go
   func GetRunStartData(cfg config.Config) RunStartData
+  func GitCommit() string
   func GetRunEndData(status, err string, durationMS int64) RunEndData
   func GetTaskStartData(input string) TaskStartData
   func GetTaskEndData(status, err string, durationMS int64) TaskEndData

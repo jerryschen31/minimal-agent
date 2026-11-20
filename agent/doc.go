@@ -81,6 +81,11 @@
 //	  func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
 //	  func writePrompt(w io.Writer, lnum int) (int, error)
 //
+//	manifest.go
+//	  func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error)
+//	  func configSnapshot(cfg config.Config) ([]byte, error)
+//	  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
+//
 //	output.go
 //	  func (o chatOutput) Assistant(text string)
 //	  func (o chatOutput) ToolCalled(name string)

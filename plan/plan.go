@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -33,6 +34,7 @@ const EffectsExternal = "external"
 // Plan is a cleaned-up plan file: the tasks the planner and Go made from an objective file.
 type Plan struct {
 	Format        string    // front matter "format:"; FormatV1 when the file has none
+	PlanID        string    // "plan_id:" — the plan's identity across moves and edits (NewPlanID); "" in a hand-written plan
 	ObjectivePath string    // "objective:" — the objective file this plan was made from, relative to the plan
 	ObjectiveHash string    // "objective_hash:" — objective.Hash() when this plan was made; a different hash = stale
 	Version       int       // "plan_version:" — 1 for a first plan, +1 per update; 0 when absent
@@ -280,4 +282,15 @@ func PathFor(objectivePath string) string {
 		base = strings.TrimSuffix(base, ext)
 	}
 	return base + ".plan.md"
+}
+
+// NewPlanID returns a new random plan ID: 16 lowercase hex characters (64 bits from crypto/rand).
+//
+// Notes:
+//   - [agent] Written once, by plan mode, into a new plan's front matter; plan updates keep it. Auto mode uses it to find
+//     the plan's earlier runs even after the file is moved (DECISIONS.md § 2026-11-19, plan identity).
+func NewPlanID() string {
+	var b [8]byte
+	rand.Read(b[:]) // [agent] crypto/rand.Read never fails (Go 1.24+: it crashes the program instead of returning an error)
+	return hex.EncodeToString(b[:])
 }

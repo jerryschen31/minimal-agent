@@ -1455,3 +1455,9 @@ implements and gives a commit message. Done: 1a (`-mode auto -plan`, summary, `R
 
 `state/` package (journal, home/runs, per-plan OS lock, fold), `stateDir` config key, the workspace refuses the state
 folder. Not committed. **Next: 1c** (the full manifest: model, config and prompt hashes, tools).
+
+### 2026-11-20 — 1c built (see DECISIONS.md § 1c built)
+
+Manifest (`agent/manifest.go`, `state.Manifest`), `config.json` per run, `plan_id` in plans, identity by `PlanRef`.
+Not committed. **Next: 1d** (open the run: lock, Load, move/copy check, NewRun with the manifest, trace into the run
+folder; then the serial scheduler and worker).

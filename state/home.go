@@ -22,13 +22,21 @@ type Home struct {
 
 // Run is one run's folder: runs/<Number>, four digits or more.
 type Run struct {
-	Number int
-	Dir    string // absolute
+	Number   int
+	Dir      string // absolute
+	PlanPath string // where the plan was when this run started (its manifest); set by NewRun and Load
+}
+
+// PlanRef is a plan's identity across runs: its plan_id when it has one, else its real path.
+type PlanRef struct {
+	ID   string // the plan's "plan_id:"; "" for a hand-written plan
+	Path string // the plan file's absolute path with symlinks resolved
 }
 
 const (
 	journalName    = "journal.jsonl"
 	planName       = "plan.md"
+	configName     = "config.json"
 	traceName      = "trace"
 	dirPerm        = 0o700 // private: journals hold tool-argument previews
 	filePerm       = 0o600
@@ -63,17 +71,44 @@ func (h Home) Dir() string { return h.dir }
 // Notes: none.
 func (r Run) TraceDir() string { return filepath.Join(r.Dir, traceName) }
 
-// PlanKey returns the plan's identity across runs: its absolute path with symlinks resolved.
+// NewPlanRef returns the identity of the plan file at planPath whose front matter has planID ("" = none).
 //
 // Notes:
-//   - The plan file must exist. Moving or renaming a plan starts it with no history: every task runs again, which is the
-//     safe side (an ID kept inside the plan would make a copied plan inherit its original's history).
-func PlanKey(planPath string) (string, error) {
+//   - The plan file must exist (its path is resolved). With a plan_id, the identity survives moving or renaming the
+//     file; without one (a hand-written plan), moving it starts it with no history. Telling a moved plan from a copied
+//     one is the caller's job (each Run in State.Runs has the path it ran at).
+func NewPlanRef(planID, planPath string) (PlanRef, error) {
 	abs, err := filepath.Abs(planPath)
 	if err != nil {
-		return "", err
+		return PlanRef{}, err
 	}
-	return filepath.EvalSymlinks(abs)
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return PlanRef{}, err
+	}
+	return PlanRef{ID: planID, Path: real}, nil
+}
+
+// key returns the string the plan's lock is named by: "id:<plan_id>", or "path:<real path>" without one.
+//
+// Notes: none.
+func (p PlanRef) key() string {
+	if p.ID != "" {
+		return "id:" + p.ID
+	}
+	return "path:" + p.Path
+}
+
+// matches reports whether a run with manifest m is a run of this plan.
+//
+// Notes:
+//   - With a plan_id: the manifest has the same plan_id, wherever the plan was. Without: the manifest has no plan_id
+//     and the same path (a plan that later gained an ID does not inherit the runs it had without one).
+func (p PlanRef) matches(m Manifest) bool {
+	if p.ID != "" {
+		return m.PlanID == p.ID
+	}
+	return m.PlanID == "" && m.PlanPath == p.Path
 }
 
 // SHA256 returns "sha256:<hex>" of data, the form the manifest records.
@@ -84,16 +119,16 @@ func SHA256(data []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// NewRun creates the next run folder, writes plan (the plan file's bytes) into it as plan.md, and starts its journal
-// with m as the manifest.
+// NewRun creates the next run folder, writes plan (the plan file's bytes) into it as plan.md and config (the run's
+// settings, secrets removed) as config.json, and starts its journal with m as the manifest.
 //
 // Notes:
 //   - The number is one more than the highest existing run. The folder is created with os.Mkdir, which only one process
 //     can win: if another run took the number first, the next number is tried (up to maxNewRunTries).
-//   - m.PlanSHA256 is set from plan when empty.
+//   - m.PlanSHA256 is set from plan, and m.ConfigSHA256 from config (when config is not nil).
 //   - Folders are 0700, files 0600. On an error after the folder was made, the folder is left (Load skips a run with no
 //     manifest).
-func (h Home) NewRun(m Manifest, plan []byte) (*Journal, Run, error) {
+func (h Home) NewRun(m Manifest, plan, config []byte) (*Journal, Run, error) {
 	runs, err := h.runs()
 	if err != nil {
 		return nil, Run{}, err
@@ -120,9 +155,14 @@ func (h Home) NewRun(m Manifest, plan []byte) (*Journal, Run, error) {
 	if err := os.WriteFile(filepath.Join(r.Dir, planName), plan, filePerm); err != nil {
 		return nil, Run{}, fmt.Errorf("run %d: copy of the plan: %w", r.Number, err)
 	}
-	if m.PlanSHA256 == "" {
-		m.PlanSHA256 = SHA256(plan)
+	m.PlanSHA256 = SHA256(plan)
+	if config != nil {
+		if err := os.WriteFile(filepath.Join(r.Dir, configName), config, filePerm); err != nil {
+			return nil, Run{}, fmt.Errorf("run %d: config: %w", r.Number, err)
+		}
+		m.ConfigSHA256 = SHA256(config)
 	}
+	r.PlanPath = m.PlanPath
 	f, err := os.OpenFile(filepath.Join(r.Dir, journalName), os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_APPEND, filePerm)
 	if err != nil {
 		return nil, Run{}, fmt.Errorf("run %d: %w", r.Number, err)
@@ -168,19 +208,15 @@ func (h Home) ContinueRun(r Run) (*Journal, error) {
 	return j, nil
 }
 
-// Load rebuilds the state of the plan at planPath from every earlier run of it, oldest first (Fold).
+// Load rebuilds the state of the plan p from every earlier run of it, oldest first (Fold).
 //
 // Notes:
-//   - A run belongs to the plan when its manifest's PlanPath equals PlanKey(planPath). Only the first line of each
-//     other run's journal is read.
+//   - A run belongs to the plan when its manifest matches p (same plan_id; or, without one, same path). Only the first
+//     line of each other run's journal is read. Each Run in State.Runs carries the path the plan had in that run.
 //   - A run folder with no journal, an empty one, or a first line that isn't a manifest is skipped (a crash between
 //     creating the folder and writing the manifest leaves one). A damaged journal of this plan is an error.
 //   - No runs: an empty State (no tasks), not an error.
-func (h Home) Load(planPath string) (State, error) {
-	key, err := PlanKey(planPath)
-	if err != nil {
-		return State{}, err
-	}
+func (h Home) Load(p PlanRef) (State, error) {
 	runs, err := h.runs()
 	if err != nil {
 		return State{}, err
@@ -189,9 +225,10 @@ func (h Home) Load(planPath string) (State, error) {
 	for _, r := range runs {
 		path := filepath.Join(r.Dir, journalName)
 		m, ok := readManifest(path)
-		if !ok || m.PlanPath != key {
+		if !ok || !p.matches(m) {
 			continue
 		}
+		r.PlanPath = m.PlanPath
 		f, err := os.Open(path)
 		if err != nil {
 			return State{}, fmt.Errorf("run %d: %w", r.Number, err)

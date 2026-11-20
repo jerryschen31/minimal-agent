@@ -18,6 +18,7 @@
 //	  func (o origin) String() string
 //	  func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error)
 //	  func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error)
+//	  func (s *McpConnection) ServerInfo() (name, version string)
 //	  func (s *McpConnection) Close() error
 //
 //	tools.go

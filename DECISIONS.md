@@ -4890,3 +4890,23 @@ Shape agreed with Jerry; Claude wrote it.
   keeps them running (the cut-off task).
 - **The file tools refuse the state folder** (`Workspace.SetStateDir`, by resolved path, like `traceDir`; the
   `run_command` argument guard too). Matters when `workDir` contains it (`-workdir ~`).
+
+### 2026-11-20 — 1c built: the full run manifest, config.json, and `plan_id`
+
+Shape agreed with Jerry; Claude wrote it.
+- **The manifest (journal line 1) is the "agent lockfile":** plan ID, path and hash; harness name, version and git
+  commit (`trace.GitCommit`, shared with run_start; empty under `go run`); host, pid, absolute work dir; provider, model,
+  base URL (as `config.DisplayURL` shows it); config hash; prompt hashes by role (`worker`, `summarizer` now; 1e adds
+  `director`); the sorted tool names and a hash over each tool's name, description and parameters; each MCP server's
+  name, transport and the name/version it reported (`McpConnection.ServerInfo`); the trace run ID (from 1d).
+  Built by `agent.buildManifest`; nothing calls it until 1d opens runs.
+- **The config itself goes in the run folder** (`config.json`, 0600; Jerry), so "something changed" becomes a `diff`.
+  Secrets removed by the trace's rule: an MCP server keeps only its transport type; base URL without user:password or
+  query. A token change doesn't change the config hash (a token isn't behaviour).
+- **`plan_id` (Jerry, after weighing path identity's flaw: moving a plan lost its history).** Plan mode writes a random
+  16-hex `plan_id` into a new plan's front matter (`plan.NewPlanID`); step U will keep it. A plan's identity is its
+  `plan_id`, else its real path (`state.PlanRef`); runs, the lock and `Load` use it. Identity (which plan) is separate
+  from version (`plan_sha256`) and task definitions (`DefinitionHash`): editing a task changes the latter two, never
+  the identity. **Moves vs copies** (both show as an earlier run of this ID at another path) are told apart in 1d by
+  the old path: nothing there with this ID → a move, history carries over; a file with the same ID → a copy, refused
+  with what to do (delete the copy's `plan_id` to run it fresh). Each `state.Run` carries the path it ran at for this.

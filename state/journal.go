@@ -39,10 +39,42 @@ type Event struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
-// Manifest is the first event of every run: which plan it runs. Step 1c adds what ran it (model, prompts, tools).
+// Manifest is the first event of every run: which plan it ran and what ran it (the "agent lockfile"). Two runs' manifests
+// say what changed between them; config.json in the run folder says how.
 type Manifest struct {
-	PlanPath   string `json:"plan_path"`   // the plan's real path (PlanKey), how Load finds a plan's runs
-	PlanSHA256 string `json:"plan_sha256"` // "sha256:<hex>" of the plan file's bytes (plan.md in the run folder)
+	PlanID     string `json:"plan_id,omitempty"` // the plan's "plan_id:" ("" for a hand-written plan): its identity
+	PlanPath   string `json:"plan_path"`         // the plan's real path when the run started (the identity if no PlanID)
+	PlanSHA256 string `json:"plan_sha256"`       // "sha256:<hex>" of the plan file's bytes (plan.md in the run folder)
+
+	Harness Harness `json:"harness"`
+	Host    string  `json:"host,omitempty"`
+	PID     int     `json:"pid,omitempty"`
+	WorkDir string  `json:"work_dir,omitempty"` // absolute
+
+	Provider     string            `json:"provider,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	BaseURL      string            `json:"base_url,omitempty"`      // as config.DisplayURL shows it (no user:password, no query)
+	ConfigSHA256 string            `json:"config_sha256,omitempty"` // "sha256:<hex>" of config.json in the run folder
+	Prompts      map[string]string `json:"prompts,omitempty"`       // role ("worker", "director", "summarizer") → "sha256:<hex>" of its prompt
+	Tools        []string          `json:"tools,omitempty"`         // the model-facing tool names, sorted
+	ToolsSHA256  string            `json:"tools_sha256,omitempty"`  // over every tool's name, description and parameters
+	MCPServers   []MCPServer       `json:"mcp_servers,omitempty"`   // by name
+	TraceRunID   string            `json:"trace_run_id,omitempty"`  // the run's trace (set from 1d)
+}
+
+// Harness is the minagent that ran a run.
+type Harness struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"` // the build's git commit (+dirty); empty under `go run`
+}
+
+// MCPServer is one MCP server a run had: the config's name and transport, and what the server said it is.
+type MCPServer struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Server    string `json:"server,omitempty"`  // the server's own name, from its initialize reply
+	Version   string `json:"version,omitempty"` // the server's own version, from its initialize reply
 }
 
 // TaskStatus is a task's state in the journal.

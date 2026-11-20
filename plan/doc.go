@@ -101,6 +101,7 @@
 //	  func taskNumber(id string) (int, bool)
 //	  func findCycle(tasks []Task) []string
 //	  func PathFor(objectivePath string) string
+//	  func NewPlanID() string
 //
 //	render.go
 //	  func (p Plan) Markdown() string

@@ -45,6 +45,7 @@ Example: [`examples/objective-example.plan.md`](../examples/objective-example.pl
 ```markdown
 ---
 format: minagent-plan/v1
+plan_id: 7f3a9c1e5b2d8046
 objective: objective.md
 objective_hash: sha256:3f2a…
 plan_version: 4
@@ -87,11 +88,13 @@ What to do.
 | Key | Meaning |
 |---|---|
 | `format` | `minagent-plan/v1`; a file without it is read as v1; an unknown value is an error |
+| `plan_id` | the plan's identity: written once by plan mode, kept by updates. Auto mode finds the plan's earlier runs by it, so moving or renaming the file keeps its history. One word (no spaces). A plan without one is known by its path |
 | `objective` | the objective file this plan was made from, relative to the plan |
 | `objective_hash` | the objective's fingerprint when the plan was made; if the objective's fingerprint changes, plan mode treats the plan as stale |
 | `plan_version` | 1 for the first plan, +1 for each update |
 
-All optional: they record where the plan came from, for plan mode. Auto mode ignores them, and a hand-written plan may
+All optional. `objective`, `objective_hash` and `plan_version` record where the plan came from, for plan mode; auto
+mode ignores them and uses only `plan_id`, and a hand-written plan may
 leave the whole header out. An unknown key is reported and ignored.
 
 ### Objective

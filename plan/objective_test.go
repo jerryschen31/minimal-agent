@@ -62,3 +62,25 @@ func Test_Unit_Plan_NoObjectiveSection(t *testing.T) {
 		t.Errorf("empty Objective was written:\n%s", p.Markdown())
 	}
 }
+
+// - Verify plan_id is read from the front matter, written right after format, and round-trips with zero fixes
+// - Verify a plan_id with a space is an error, and NewPlanID gives 16 lowercase hex characters, different each time
+func Test_Unit_Plan_PlanID(t *testing.T) {
+	p := Plan{Format: FormatV1, PlanID: NewPlanID(), ObjectivePath: "goal.md", Version: 1, Title: "x",
+		Tasks: []Task{{ID: "t1", Title: "a"}}}
+	md := p.Markdown()
+	if !strings.HasPrefix(md, "---\nformat: "+FormatV1+"\nplan_id: "+p.PlanID+"\nobjective: goal.md\n") {
+		t.Errorf("front matter:\n%s", md)
+	}
+	back, fixes, err := Cleanup([]byte(md))
+	if err != nil || len(fixes) != 0 || back.PlanID != p.PlanID {
+		t.Errorf("read back: id %q, fixes %v, err %v", back.PlanID, fixes, err)
+	}
+	if _, _, err := Cleanup([]byte("---\nplan_id: a b\n---\n# Plan: x\n")); err == nil || !strings.Contains(err.Error(), "plan_id") {
+		t.Errorf("plan_id with a space: err = %v", err)
+	}
+	a, b := NewPlanID(), NewPlanID()
+	if len(a) != 16 || strings.Trim(a, "0123456789abcdef") != "" || a == b {
+		t.Errorf("NewPlanID = %q, %q", a, b)
+	}
+}

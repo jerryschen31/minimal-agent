@@ -19,15 +19,27 @@ func writePlan(t *testing.T, name, content string) string {
 	return path
 }
 
-// newRunFor starts a run of the plan at planPath in h and returns its journal and run.
-func newRunFor(t *testing.T, h Home, planPath string) (*Journal, Run) {
+// refFor returns the identity of the plan at planPath with plan_id id ("" = none).
+func refFor(t *testing.T, id, planPath string) PlanRef {
 	t.Helper()
-	key, err := PlanKey(planPath)
+	ref, err := NewPlanRef(id, planPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _ := os.ReadFile(planPath)
-	j, r, err := h.NewRun(Manifest{PlanPath: key}, data)
+	return ref
+}
+
+// newRunFor starts a run of the plan at planPath (no plan_id) in h and returns its journal and run.
+func newRunFor(t *testing.T, h Home, planPath string) (*Journal, Run) {
+	t.Helper()
+	return newRunOf(t, h, refFor(t, "", planPath))
+}
+
+// newRunOf starts a run of the plan ref in h, with a small config, and returns its journal and run.
+func newRunOf(t *testing.T, h Home, ref PlanRef) (*Journal, Run) {
+	t.Helper()
+	data, _ := os.ReadFile(ref.Path)
+	j, r, err := h.NewRun(Manifest{PlanID: ref.ID, PlanPath: ref.Path}, data, []byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatalf("NewRun: %v", err)
 	}
@@ -36,8 +48,8 @@ func newRunFor(t *testing.T, h Home, planPath string) (*Journal, Run) {
 }
 
 //   - Verify OpenHome creates the folder with runs/ and locks/ (0700), and NewRun numbers runs 0001, 0002, …
-//   - Verify a run folder holds plan.md (byte for byte) and a journal (0600) whose first event is the manifest with the
-//     plan's hash filled in
+//   - Verify a run folder holds plan.md (byte for byte), config.json (0600) and a journal (0600) whose first event is
+//     the manifest with the plan's and the config's hashes filled in
 func Test_Unit_Home_NewRun(t *testing.T) {
 	h, err := OpenHome(filepath.Join(t.TempDir(), "home"))
 	if err != nil {
@@ -65,6 +77,16 @@ func Test_Unit_Home_NewRun(t *testing.T) {
 	if !ok || m.PlanSHA256 != SHA256([]byte("# Plan: x\n")) || !strings.HasSuffix(m.PlanPath, "setup.md") {
 		t.Errorf("manifest = %+v, %v", m, ok)
 	}
+	cfg, err := os.ReadFile(filepath.Join(r1.Dir, configName))
+	if err != nil || string(cfg) != `{"model":"m"}` || m.ConfigSHA256 != SHA256(cfg) {
+		t.Errorf("config.json = %q, %v; manifest config hash %q", cfg, err, m.ConfigSHA256)
+	}
+	if info, _ := os.Stat(filepath.Join(r1.Dir, configName)); info.Mode().Perm() != filePerm {
+		t.Errorf("config.json mode = %v, want 0600", info.Mode().Perm())
+	}
+	if r1.PlanPath != m.PlanPath {
+		t.Errorf("Run.PlanPath = %q, want the manifest's %q", r1.PlanPath, m.PlanPath)
+	}
 	if r1.TraceDir() != filepath.Join(r1.Dir, "trace") {
 		t.Errorf("TraceDir = %s", r1.TraceDir())
 	}
@@ -83,8 +105,7 @@ func Test_Unit_Home_NewRun_NumbersAreUnique(t *testing.T) {
 	nums := make(chan int, n)
 	for range n {
 		wg.Go(func() {
-			key, _ := PlanKey(planPath)
-			j, r, err := h.NewRun(Manifest{PlanPath: key}, []byte("x"))
+			j, r, err := h.NewRun(Manifest{PlanPath: planPath}, []byte("x"), nil)
 			if err != nil {
 				t.Errorf("NewRun: %v", err)
 				return
@@ -140,7 +161,7 @@ func Test_Unit_Home_Load_OnlyThisPlansRuns(t *testing.T) {
 	h, _ := OpenHome(t.TempDir())
 	a := writePlan(t, "a.md", "a")
 	b := writePlan(t, "b.md", "b")
-	if s, err := h.Load(a); err != nil || len(s.Runs) != 0 || len(s.Tasks) != 0 {
+	if s, err := h.Load(refFor(t, "", a)); err != nil || len(s.Runs) != 0 || len(s.Tasks) != 0 {
 		t.Errorf("no runs: %+v, %v", s, err)
 	}
 	ja1, _ := newRunFor(t, h, a)
@@ -153,7 +174,7 @@ func Test_Unit_Home_Load_OnlyThisPlansRuns(t *testing.T) {
 	ja2, _ := newRunFor(t, h, a)
 	ja2.Append(EventTaskStarted, "t2", TaskStarted{Attempt: 1})
 
-	s, err := h.Load(a)
+	s, err := h.Load(refFor(t, "", a))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +198,52 @@ func Test_Unit_Home_Load_DamagedJournal(t *testing.T) {
 	f, _ := os.OpenFile(filepath.Join(r.Dir, journalName), os.O_WRONLY|os.O_APPEND, 0)
 	f.WriteString("garbage\n{}\n")
 	f.Close()
-	if _, err := h.Load(a); err == nil || !strings.Contains(err.Error(), "run 1") {
+	if _, err := h.Load(refFor(t, "", a)); err == nil || !strings.Contains(err.Error(), "run 1") {
 		t.Errorf("err = %v, want one naming run 1", err)
+	}
+}
+
+//   - Verify a plan with a plan_id keeps its history after the file moves (Load by ID finds the run at the old path, and
+//     Run.PlanPath says where it was), while a plan without one does not; a plan with another ID finds nothing
+func Test_Unit_Home_Load_PlanIDSurvivesMove(t *testing.T) {
+	h, _ := OpenHome(t.TempDir())
+	old := writePlan(t, "setup.md", "x")
+	j, _ := newRunOf(t, h, refFor(t, "7f3a9c1e5b2d8046", old))
+	j.Append(EventTaskFinished, "t1", TaskFinished{Status: TaskDone})
+	jn, _ := newRunFor(t, h, old) // a run of a hand-written plan at the same path
+	jn.Close()
+
+	moved := writePlan(t, "renamed.md", "x")
+	s, err := h.Load(refFor(t, "7f3a9c1e5b2d8046", moved))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Runs) != 1 || s.Tasks["t1"].Status != TaskDone {
+		t.Fatalf("by ID after a move: runs %+v, tasks %+v", s.Runs, s.Tasks)
+	}
+	if want := refFor(t, "", old).Path; s.Runs[0].PlanPath != want {
+		t.Errorf("Run.PlanPath = %q, want the old path %q", s.Runs[0].PlanPath, want)
+	}
+	if s, _ := h.Load(refFor(t, "", moved)); len(s.Runs) != 0 {
+		t.Errorf("no ID, new path: found %d runs, want 0", len(s.Runs))
+	}
+	if s, _ := h.Load(refFor(t, "", old)); len(s.Runs) != 1 {
+		t.Errorf("no ID, old path: found %d runs, want only the hand-written plan's run", len(s.Runs))
+	}
+	if s, _ := h.Load(refFor(t, "0000000000000000", moved)); len(s.Runs) != 0 {
+		t.Errorf("another ID: found %d runs, want 0", len(s.Runs))
+	}
+}
+
+// - Verify an older journal whose manifest has only plan_path and plan_sha256 still loads (new fields are empty)
+func Test_Unit_Home_Load_OldManifest(t *testing.T) {
+	h, _ := OpenHome(t.TempDir())
+	a := writePlan(t, "a.md", "a")
+	dir := filepath.Join(h.Dir(), "runs", "0001")
+	os.Mkdir(dir, 0o700)
+	line := `{"v":1,"seq":1,"type":"manifest","data":{"plan_path":"` + refFor(t, "", a).Path + `","plan_sha256":"sha256:x"}}` + "\n"
+	os.WriteFile(filepath.Join(dir, journalName), []byte(line), 0o600)
+	if s, err := h.Load(refFor(t, "", a)); err != nil || len(s.Runs) != 1 {
+		t.Errorf("old manifest: %+v, %v", s.Runs, err)
 	}
 }
