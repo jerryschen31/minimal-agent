@@ -1,6 +1,6 @@
 # PLAN: autonomous mode v1 (one serial run, journal, resume, budgets)
 
-Status: **design agreed 2026-11-19; 1a–1f built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
+Status: **design agreed 2026-11-19; 1a–1g built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
 step 6, with the changes agreed on 2026-11-19 (`DECISIONS.md § 2026-11-19`). Where the two plans differ, this one wins:
 the per-run `state.json` snapshot is replaced by an append-only journal.
 

@@ -4991,3 +4991,47 @@ Shape agreed with Jerry; Claude wrote it.
   request's `_meta` as `io.minagent/idempotency-key` (MCP has no standard key; namespaced). Passed through the context
   (`mcpconnect.WithIdempotencyKey`), so `Tool.CallTool` doesn't change; servers that don't know it ignore it. The tool's
   `idempotentHint` is recorded with it; 1h re-sends automatically only for those.
+
+### 2026-11-20 — 1g built: write tools write a temporary file and rename it into place
+
+Shape agreed with Jerry; Claude wrote it.
+- **`write_file`, `edit_file` and `copy_file` no longer write into the file they change.** `Workspace.replaceFile`
+  (`tools/builtin/atomicwrite.go`) writes the new content to `.<name>.minagent-<8 hex>.tmp` in the same directory
+  (created with `O_EXCL` through the directory handle `openDir` approved), syncs it to disk, gives it the old file's
+  permission bits, checks the target once more, renames it over the target, and syncs the directory. A rename within one
+  directory is a single step, so the file is always all old or all new: a crash, Ctrl+C or a full disk part-way leaves
+  the old file. Before, a failure part-way left a truncated file (an accepted downside since Slice 4). `create_directory`
+  and `move_file` were already single steps. **All modes** (Jerry): the tools don't know the mode.
+- **Checks kept, and where they moved.** Path approval (`resolveNewPath` / `resolvePathForWrite`, deny list, write-deny,
+  trace and state folders) and `openDir` are unchanged. `openForWrite` is gone; `checkReplaceTarget` allows only a new
+  name or a regular file with one name (**hard links still refused**, Jerry: a rename would split the two names
+  silently). Just before the rename (`replaceTarget.unchanged`; `edit_file` its own size/mtime + `stillAtPath` check):
+  a new name must still be free (was `O_EXCL`'s job) and an existing file must be the same file, unchanged; otherwise
+  the temp file is removed and the call refused. The rename replaces a directory entry, so a symlink swapped in at the
+  name is replaced itself, never followed. `edit_file` now reads through the approved parent (`openDir`), opens
+  read-only, and re-resolves the path after taking its per-file lock (the edit before it made a new file).
+- **Accepted downsides.** An overwritten file is a new file (new inode): permission bits are kept, owner, ACLs and
+  extended attributes are not, and a program holding the old file open keeps the old content. Two `fsync`s per write
+  (about a millisecond for the 1 MB tools; a 100 MB `copy_file` can take seconds on a slow disk). Disk space for the
+  file is briefly needed twice. On Windows the rename fails if another program holds the target open without sharing
+  (compiled, not tested there). A crash between creating and renaming the temp file leaves it; **1h removes them** for
+  the paths of cut-off calls (Jerry).
+- **`git diff`** is unaffected: git compares content at the path; a new inode only makes it re-read the file.
+
+**Current limits of `edit_file` and `write_file`, and proposed improvements** (Jerry, 2026-11-20; tabled):
+- *`edit_file` does not send the file to the model.* The model sends `old_string` and `new_string`; Go reads the file
+  into its own memory, replaces the text, and writes it back. The model gets one line back ("edited x (1 replacement,
+  N bytes)"). To pick `old_string`, the model reads only the region it needs (`read_file` with `offset`/`limit`, or
+  `search_files`). So changing one word in a big file costs a few dozen tokens, not the file's size.
+- *Its 1 MB cap is not about tokens.* `edit_file` reuses `write_file`'s constant `maxWriteBytes` as the largest file it
+  will load into memory and rewrite. A 5 MB file is refused ("is 5242880 bytes; edit_file edits files up to 1048576
+  bytes"). **Proposal:** give `edit_file` its own, larger cap (for example `copyFileMaxBytes`, 100 MB, or a new
+  `editFileMaxBytes` key). It costs memory (the old and the new text, briefly) and disk time, never model tokens.
+- *`write_file`'s 1 MB cap is about tokens.* Every byte of its content is written by the model, so 1 MB is already about
+  250k tokens; it also matches `readFileMaxBytes`, so anything written can be read back in one call. A larger file can
+  only be produced today by `run_command` (a program writes it) or `copy_file` / `move_file`.
+- **Proposal: write a large file in chunks**, with an `append` option on `write_file` (or an `append_file` tool), each
+  call adding up to 1 MB at the end. Trade-off with 1g: an atomic append would copy the whole file into a temporary
+  file for every chunk (quadratic in the file's size), so append should write in place with `O_APPEND`. A crash
+  mid-chunk can then leave a partial chunk at the end; the journal's before/after hashes show the call was cut off, and
+  1h tells the worker to check the end of the file.

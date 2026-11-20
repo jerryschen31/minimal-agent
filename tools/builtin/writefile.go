@@ -3,10 +3,8 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
-	"os"
+	"io"
 	"path/filepath"
 	"strings"
 
@@ -69,17 +67,17 @@ func (t *WriteFileTool) GetToolDefinition() model.ToolDef {
 // Notes:
 //   - Order of defences: size and NUL checks, resolveNewPath (workspace and write-deny checks), openRoot, openDir (the
 //     file's parent is opened as a Root of its own and must be the directory that was approved, so a parent swapped for
-//     a symlink to .git after the check can't redirect the write), then the file is opened and checked on its
-//     descriptor before anything is written.
+//     a symlink to .git after the check can't redirect the write), checkReplaceTarget (a new file, or a regular file with
+//     one name), then replaceFile.
 //   - The parent directory must exist; a missing one is an error telling the model to call create_directory.
-//   - A new file is created with O_EXCL, so a file that appears after the check is not silently replaced. An existing
-//     file is opened WITHOUT O_TRUNC, checked to be a regular file and the same one the check saw (os.SameFile), and
-//     only then truncated. Opening with O_NONBLOCK keeps a named pipe from blocking.
+//   - Atomic (replaceFile): the content goes to a temporary file next to the target, which is renamed over it, so the
+//     file is never half written. Just before the rename, a new file must still be absent (a file that appeared is not
+//     silently replaced) and an existing one must be the same file, unchanged.
 //   - Content with a NUL byte is refused, like read_file refuses a file with one: this tool writes text.
-//   - Downside: the write is not atomic. A failure part-way (disk full) leaves a truncated file; writing a temp file
-//     and renaming would fix that at the cost of a new inode and lost permissions on overwrite.
-//   - The result is "created x (N bytes)" or "overwrote x (N bytes)"; a new file gets mode 0644, an overwritten one
-//     keeps its mode.
+//   - Downside of the rename: an overwritten file is a new file (new inode). Its permission bits are kept; its owner,
+//     ACLs and extended attributes are not, and a program holding the old file open keeps seeing the old content.
+//   - The result is "created x (N bytes)" or "overwrote x (N bytes)"; a new file gets mode 0644 (minus the umask), an
+//     overwritten one keeps its mode.
 func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
 		Path    string  `json:"path"`
@@ -125,18 +123,21 @@ func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (str
 		return "", fmt.Errorf("the directory %s doesn't exist; create it with create_directory first", filepath.ToSlash(filepath.Dir(target.rel)))
 	}
 
-	f, verb, err := t.ws.openForWrite(dir, params.Path, name, 0o644)
+	old, err := t.ws.checkReplaceTarget(dir, params.Path, name, 0o644)
 	if err != nil {
 		return "", err
 	}
-	n, err := f.WriteString(content)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
+	// [agent] written to a temporary file and renamed into place (replaceFile): never half a file
+	err = t.ws.replaceFile(dir, params.Path, name, old, old.unchanged(dir, params.Path, name), func(w io.Writer) error {
+		if _, err := io.WriteString(w, content); err != nil {
+			return errMsgHidePath(params.Path, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", errMsgHidePath(params.Path, err)
+		return "", err
 	}
-	return fmt.Sprintf("%s %s (%d bytes)", verb, filepath.ToSlash(target.rel), n), nil
+	return fmt.Sprintf("%s %s (%d bytes)", old.verb, filepath.ToSlash(target.rel), len(content)), nil
 }
 
 // ChangedPaths returns the file a write_file call with args would write, for auto mode's journal (tools.FileTool).
@@ -151,46 +152,4 @@ func (t *WriteFileTool) ChangedPaths(args json.RawMessage) ([]string, error) {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
 	return t.ws.changedPaths(p.Path)
-}
-
-// openForWrite opens the file name through root for writing and returns the file, positioned at the start and empty,
-// with "created" or "overwrote".
-//
-// Notes:
-//   - root is the Root of the file's parent directory (openDir) and name is the file's name in it; requested names the
-//     file in errors. The caller closes the file.
-//   - Missing: created with O_EXCL (mode perm, before the umask). Regular file: opened without O_TRUNC (openExisting: same file as the Lstat
-//     taken here, and not a file with several names), checked to still be at its path (stillAtPath), then truncated.
-//     Anything else (a directory, a symlink swapped in, a pipe, a socket, a device) is refused.
-//   - [agent] The Lstat is taken here because resolveNewPath returns the identity of the directory, not of the file. A
-//     swap between resolveNewPath and this Lstat shows up as a symlink (refused) or as another regular file at the
-//     same already-approved name (harmless); a swap after the Lstat fails the SameFile check.
-func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error) {
-	want, err := root.Lstat(name)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-		if errors.Is(err, fs.ErrExist) {
-			return nil, "", fmt.Errorf("%s was created while it was being written; try again", requested)
-		}
-		if err != nil {
-			return nil, "", errMsgHidePath(requested, err)
-		}
-		return f, "created", nil
-	case err != nil:
-		return nil, "", errMsgHidePath(requested, err)
-	}
-	f, _, err := w.openExisting(root, requested, name, want, os.O_WRONLY) // no O_TRUNC until the checks pass
-	if err != nil {
-		return nil, "", err // our own message, or an os.Root error that names only the relative path
-	}
-	if err := w.stillAtPath(root, requested, name, f); err != nil {
-		f.Close()
-		return nil, "", err
-	}
-	if err := f.Truncate(0); err != nil {
-		f.Close()
-		return nil, "", errMsgHidePath(requested, err)
-	}
-	return f, "overwrote", nil
 }

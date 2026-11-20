@@ -205,23 +205,29 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   descriptor) and refuses a file swapped in after the check (`os.SameFile`; `DECISIONS.md § PR #31 review`).
   **Write tools** (`create_directory`, `write_file`) use `Workspace.resolveNewPath` (the path may not exist yet), which adds
   a write-deny on top of `checkPath`: `.git` and the `-config` file (`cfg.ConfigFile`) can be read but never written.
-  `write_file` opens an existing file without `O_TRUNC`, checks it on the descriptor (`os.SameFile`), and only then
-  truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
+  **`write_file`, `edit_file` and `copy_file` never write into the file they change** (`Workspace.replaceFile`,
+  `tools/builtin/atomicwrite.go`): the new content goes to `.<name>.minagent-<hex>.tmp` in the same approved directory
+  (`O_EXCL`), is synced, and is renamed over the target, so a file is always all old or all new. `checkReplaceTarget`
+  allows only a new name or a regular file with one name; just before the rename, a new name must still be free and an
+  existing file must be the same, unchanged file (`replaceTarget.unchanged`), else the temp file is removed and the
+  call refused. An overwrite keeps the permission bits (not owner/ACLs; it is a new inode) (`DECISIONS.md § 1g built`).
+  `write_file` never creates parent directories; one call writes at most `maxWriteBytes`
   (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
   (`DECISIONS.md § Slice 4 built`).
   A new file or directory is created only through `Workspace.openDir` (the nearest existing directory above it, opened as its
   own `os.Root` and compared with the identity `resolveNewPath` approved), so a parent swapped for a symlink to `.git`
-  after the check can't redirect the write. `openExisting` refuses to open for writing a file with more than one name
-  (hard link), and `stillAtPath` refuses to truncate a file that was renamed away after it was opened
+  after the check can't redirect the write. `openExisting` (for writing) and `refuseHardLink` refuse a file with more
+  than one name (hard link), and `stillAtPath` refuses to replace a file that was renamed away after it was opened
   (`DECISIONS.md § PR #35 Copilot review`).
-  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `openForWrite`, streamed in 256 KB pieces with
+  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `replaceFile`, streamed in 256 KB pieces with
   the context checked, up to `copyFileMaxBytes` (default 100 MB), files only, no hard-linked source) and `move_file`
   (`resolvePathForWrite` + `resolveNewPath`, `openDir` on both parents, then `os.Root.Rename`: a real rename, no size cap,
   files only; across filesystems it fails with a message pointing at `copy_file`) check both paths
   (`DECISIONS.md § Slice 6 built`).
-  `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
+  `edit_file` (`resolvePathForWrite` → `openDir` → `openExisting` read-only → `replaceFile`) replaces an exact `old_string` that must
   match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
-  file just before writing (refuses if size or mtime changed), and serializes edits of one file. **Every write tool
+  file just before the rename (refuses if size or mtime changed), and serializes edits of one file (re-resolving the
+  path once it holds the lock, since the edit before it made a new file). **Every write tool
   implements `tools.FileTool`** (`ChangedPaths`, through `Workspace.changedPaths`), so auto mode's journal can hash what
   it changes; `Test_Unit_BuiltinFileTools` lists them. The trace cuts file
   bodies (`trace.shortenArguments`); the approval question is one summary per call (`DECISIONS.md § Slice 5 built`).

@@ -32,6 +32,9 @@ type Workspace struct {
 	// for the file tools, so the model can't rewrite its own approval rules.
 	configFile string
 	rootInfo   os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
+	// beforeRename, if not nil, runs in replaceFile after the temporary file is complete and before the last check and
+	// the rename; tests use it to look at both files, or to swap the target, at that moment
+	beforeRename func()
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not
@@ -259,7 +262,7 @@ func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.R
 // Notes:
 //   - Returns a newTarget (the path relative to rootDir, and the directory above it with its identity, for openDir) and
 //     the file's identity, for openExisting.
-//   - Used by tools that edit a file in place (edit_file) or take it away (move_file). A file that doesn't exist is an
+//   - Used by tools that change an existing file (edit_file) or take it away (move_file). A file that doesn't exist is an
 //     error, with resolvePath's message.
 func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error) {
 	rel, info, err := w.resolvePath(requested)
@@ -397,7 +400,8 @@ func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileI
 //     by name, so a hard link to .env or .git/config under an allowed name would otherwise pass them. Reading such a
 //     file is still allowed. Skipped where the OS gives no link count (linkCount).
 //   - A want that is a directory or not a regular file is refused before the open, so a write open never tries a
-//     directory or a pipe. A write tool truncates only after this returns, so a refused file is never emptied.
+//     directory or a pipe. Since 1g no caller opens for writing (the write tools rename a new file into place with
+//     replaceFile and check hard links with refuseHardLink); the write-open checks stay for any future caller.
 //   - Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want;
 //     both then follow the new directory, so they match. Closing it would need the OS to report the opened file's
 //     real path.
@@ -439,9 +443,10 @@ func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.F
 //
 // Notes:
 //   - [agent] f is a descriptor on one inode. If another process renames the file after it was opened and puts a
-//     different file at rel, writing to f would change the old, unlinked inode, report success, and leave rel as it
-//     was. Comparing f with what rel names now (os.SameFile) catches that before anything is truncated.
-//   - Called just before the truncate; a very small window remains between this check and the truncate (accepted).
+//     different file at rel, the edit would be built from the old file and replace the new one. Comparing f with what
+//     rel names now (os.SameFile) catches that.
+//   - edit_file calls it just before replaceFile's rename; a very small window remains between this check and the
+//     rename (accepted).
 //   - requested names the file in errors.
 func (w *Workspace) stillAtPath(root *os.Root, requested, rel string, f *os.File) error {
 	open, err := f.Stat()

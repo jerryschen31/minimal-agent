@@ -105,6 +105,7 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── atomicwrite.go
 │       ├── commandenv.go
 │       ├── copyfile.go
 │       ├── createdirectory.go
@@ -749,6 +750,13 @@ tool.go
 `github.com/jerryschen31/minimal-agent/tools/builtin`
 
 ```text
+atomicwrite.go
+  func (w *Workspace) checkReplaceTarget(dir *os.Root, requested, name string, newPerm os.FileMode) (replaceTarget, error)
+  func (t replaceTarget) unchanged(dir *os.Root, requested, name string) func() error
+  func refuseHardLink(requested string, info os.FileInfo) error
+  func (w *Workspace) replaceFile(dir *os.Root, requested, name string, t replaceTarget, verify func() error, write func(io.Writer) error) (err error)
+  func tempName(name string) string
+
 copyfile.go
   func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)
   func (t *CopyFileTool) GetToolDefinition() model.ToolDef
@@ -859,7 +867,6 @@ writefile.go
   func (t *WriteFileTool) GetToolDefinition() model.ToolDef
   func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func (t *WriteFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
-  func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error)
 ```
 
 ## trace (package trace)

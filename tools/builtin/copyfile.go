@@ -23,7 +23,7 @@ type CopyFileTool struct {
 	// afterResolve, if not nil, runs after both paths are approved and before anything is opened; tests use it to swap a
 	// directory or file at that moment, which nothing else can stage deterministically
 	afterResolve func()
-	// afterOpenDest, if not nil, runs after the destination is opened (created or emptied) and before the bytes are
+	// afterOpenDest, if not nil, runs after the temporary file for the destination is created and before the bytes are
 	// copied; tests use it to make the copy fail part-way
 	afterOpenDest func()
 }
@@ -121,14 +121,14 @@ func pathErrorOnly(requested string, err error) error {
 //     resolveNewPath on the destination (write-deny, deny list), so copying .env to notes.txt (a way to read a secret)
 //     and copying into .git are both refused. Then openRoot; the source is opened with openExisting (regular file,
 //     the approved one); the destination's parent is opened with openDir (the approved directory); the destination is
-//     opened by openForWrite (O_EXCL for a new file; an existing one is checked and truncated only after the checks).
+//     checked by checkReplaceTarget (a new file, or a regular file with one name) and written by replaceFile.
 //   - A source or destination with several names (hard links) is refused: the checks are by name, so a link to .env
 //     under another name would pass them. This also means the source and destination can't be two names of one file.
 //   - Files only (a directory or a pipe is an error); binary files are fine. The destination is the full path, its
 //     parent must exist, and it must not be the source.
 //   - A new file gets the source's permission bits (before the umask); an overwritten file keeps its own mode.
-//   - If the copy fails after a new file was created, that partial file is removed. A failed overwrite can leave a
-//     truncated destination (the same accepted downside as write_file).
+//   - Atomic (replaceFile): the bytes go to a temporary file next to the destination, renamed over it when complete. A
+//     failed or cancelled copy removes the temporary file and leaves the destination as it was (or absent).
 //   - The result is "copied a -> b (N bytes)", with ", overwrote existing" when it replaced a file.
 func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	var params struct {
@@ -190,25 +190,28 @@ func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 		return "", fmt.Errorf("the directory %s doesn't exist; create it with create_directory first", filepath.ToSlash(filepath.Dir(dst.rel)))
 	}
 
-	out, verb, err := t.ws.openForWrite(dir, params.Destination, name, info.Mode().Perm())
+	old, err := t.ws.checkReplaceTarget(dir, params.Destination, name, info.Mode().Perm())
 	if err != nil {
 		return "", err
 	}
-	if t.afterOpenDest != nil {
-		t.afterOpenDest()
-	}
-	n, err := copyWithContext(ctx, out, src, t.maxBytes)
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		if verb == "created" {
-			dir.Remove(name) // don't leave a partial copy behind
+	// [agent] copied into a temporary file and renamed into place (replaceFile): a failed or cancelled copy leaves the
+	// destination as it was
+	var n int64
+	err = t.ws.replaceFile(dir, params.Destination, name, old, old.unchanged(dir, params.Destination, name), func(w io.Writer) error {
+		if t.afterOpenDest != nil {
+			t.afterOpenDest()
 		}
-		return "", pathErrorOnly(params.Destination, err)
+		var err error
+		if n, err = copyWithContext(ctx, w, src, t.maxBytes); err != nil {
+			return pathErrorOnly(params.Destination, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	extra := ""
-	if verb == "overwrote" {
+	if old.verb == "overwrote" {
 		extra = ", overwrote existing"
 	}
 	return fmt.Sprintf("copied %s -> %s (%d bytes%s)", filepath.ToSlash(srcRel), filepath.ToSlash(dst.rel), n, extra), nil

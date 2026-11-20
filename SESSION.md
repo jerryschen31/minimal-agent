@@ -1478,3 +1478,10 @@ call, file hashes, idempotency key in MCP `_meta`).
 
 Every tool call recorded (`tool_before` / `tool_after`), file hashes via `tools.FileTool`, MCP idempotency key in
 `_meta`. Not committed. **Next: 1g** (write tools write via a temp file + rename).
+
+### 2026-11-20 (later) — 1g built (see DECISIONS.md § 1g built)
+
+`write_file`, `edit_file`, `copy_file` write a temp file in the same directory and rename it into place (all modes).
+Not committed. **Next: 1h** (resume: settle cut-off calls, remove leftover `.minagent-*.tmp` files, re-run the cut-off
+task; crash test). **Tabled:** a larger cap for `edit_file` (its 1 MB is a memory cap, not tokens); chunked writes
+(`append` on `write_file`, in place, not atomic) — see DECISIONS.md § 1g built.
