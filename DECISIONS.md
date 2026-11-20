@@ -4969,3 +4969,25 @@ Shape agreed with Jerry; Claude wrote it.
 - **Gates:** before a gated task, `"<id>: <title> has a gate: "<reason>". Run it? [y/N]"`, asked only on a terminal;
   `-yes` never answers it. No terminal → `waiting`; no / Ctrl+D → `declined`; the answer is journaled
   (`gate_answered`). A later run on a terminal skips the done tasks and asks again.
+
+### 2026-11-20 — 1f built: every tool call recorded, file hashes, MCP idempotency key
+
+Shape agreed with Jerry; Claude wrote it.
+- **Every tool call that runs is recorded** in the run's journal: `tool_before` after the approval hooks and before the
+  call, `tool_after` when it returns (success, error, timeout, Ctrl+C). A vetoed, unknown or bad-argument call never ran
+  and has no record. **Not recorded → not run.** The hook is `ChatSession.ToolJournal` (`toolRecorder`; nil in chat and
+  plan mode) in `executeToolCall`; auto mode's `runToolJournal` (`agent/autojournal.go`). The director's calls are
+  recorded too (shared via the session copy), under the task. A crash mid-call leaves a `tool_before` with no
+  `tool_after`: what 1h settles.
+- **Call IDs are the run's own** (`c1`, `c2`, …): a model's IDs can repeat; it is kept as `model_call_id`. The preview is
+  the arguments through the trace's redactor, cut to 300 bytes; `args_sha256` is of the exact arguments.
+- **File hashes:** each write tool implements `tools.FileTool.ChangedPaths(args)` (only the tool knows which arguments
+  are paths), resolved and checked exactly as the write is (`Workspace.changedPaths`), so a refused path is never
+  hashed. Hash = `sha256:…`, `absent` or `dir`. **"Before" in `tool_before`, "after" in `tool_after`** (Jerry): what
+  actually happened, not a prediction (predicting `edit_file` means doing the edit twice). *Downside:* for a cut-off
+  call 1h can say "not as before", not "exactly what this call writes"; with 1g's atomic writes, "not as before" means
+  it happened unless something else changed the file. `run_command` can't say what it changes: records, no files.
+- **Idempotency key on every MCP call** (Jerry): random per call (`minagent-<16 hex>`, Jerry), recorded and sent in the
+  request's `_meta` as `io.minagent/idempotency-key` (MCP has no standard key; namespaced). Passed through the context
+  (`mcpconnect.WithIdempotencyKey`), so `Tool.CallTool` doesn't change; servers that don't know it ignore it. The tool's
+  `idempotentHint` is recorded with it; 1h re-sends automatically only for those.

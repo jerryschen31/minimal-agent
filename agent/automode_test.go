@@ -23,6 +23,7 @@ func newAutoFixture(t *testing.T, planPath string) (*chatSessionFixture, *autoMo
 	fx.Session.Config.MaxTaskAttempts = config.GetDefaultConfig(config.ModeAuto).MaxTaskAttempts
 	fx.Session.Config.PlanFile = planPath
 	fx.Session.Config.StateDir = t.TempDir()
+	fx.Session.Config.RedactionLevel = config.GetDefaultConfig(config.ModeAuto).RedactionLevel // the tool journal masks previews
 	setupAutoMode(fx.Session, nil)
 	return fx, fx.Session.ModeDetails.(*autoModeDetails)
 }

@@ -101,28 +101,37 @@ type TaskFinished struct {
 	Verdict string     `json:"verdict,omitempty"`  // what the director decided, and why
 }
 
-// FileHashes records one file a tool call changes: its hash before the call and the hash it will have after
-// ("" = the file doesn't exist / not known in advance).
+// What a FileHashes hash is when the path holds no file's content.
+const (
+	HashAbsent = "absent" // nothing at the path
+	HashDir    = "dir"    // a directory
+)
+
+// FileHashes records one path a file tool call changes: "sha256:<hex>" of the file, HashAbsent or HashDir. tool_before
+// carries Before (the state before the call), tool_after carries After (the state after it returned).
 type FileHashes struct {
-	Path   string `json:"path"`
+	Path   string `json:"path"` // absolute, symlinks resolved
 	Before string `json:"before,omitempty"`
 	After  string `json:"after,omitempty"`
 }
 
 // ToolBefore is EventToolBefore's data, written before a tool call runs.
 type ToolBefore struct {
-	CallID         string       `json:"call_id"`
-	Tool           string       `json:"tool"`
-	ArgsSHA256     string       `json:"args_sha256,omitempty"`
-	ArgsPreview    string       `json:"args_preview,omitempty"`
-	IdempotencyKey string       `json:"idempotency_key,omitempty"`
-	Files          []FileHashes `json:"files,omitempty"` // file tools only
+	CallID         string       `json:"call_id"`                   // unique in the run ("c1", "c2", …); tool_after names it
+	ModelCallID    string       `json:"model_call_id,omitempty"`   // the model's own ID for the call (may repeat), for the trace
+	Tool           string       `json:"tool"`                      // the model-facing name
+	ArgsSHA256     string       `json:"args_sha256,omitempty"`     // of the exact arguments, so a re-send can be checked
+	ArgsPreview    string       `json:"args_preview,omitempty"`    // redacted and cut, for a person to read
+	IdempotencyKey string       `json:"idempotency_key,omitempty"` // MCP calls: sent in the request's _meta
+	Idempotent     bool         `json:"idempotent,omitempty"`      // MCP calls: the server says the tool is idempotent (idempotentHint)
+	Files          []FileHashes `json:"files,omitempty"`           // file tools only: Before of each path the call changes
 }
 
 // ToolAfter is EventToolAfter's data, written after a tool call returns.
 type ToolAfter struct {
-	CallID string `json:"call_id"`
-	Failed bool   `json:"failed,omitempty"`
+	CallID string       `json:"call_id"`
+	Failed bool         `json:"failed,omitempty"`
+	Files  []FileHashes `json:"files,omitempty"` // file tools only: After of each path in tool_before
 }
 
 // Resumed is EventResumed's data.

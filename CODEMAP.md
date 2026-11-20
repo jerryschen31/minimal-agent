@@ -13,6 +13,7 @@ minimal-agent/
 │   ├── agent.go
 │   ├── approval_preview.go
 │   ├── autodirector.go
+│   ├── autojournal.go
 │   ├── automode.go
 │   ├── autorun.go
 │   ├── autoworker.go
@@ -166,6 +167,14 @@ approval_preview.go
 autodirector.go
   func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 
+autojournal.go
+  func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
+  func (rj *runToolJournal) setTask(id string)
+  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error)
+  func (rj *runToolJournal) preview(args json.RawMessage) string
+  func newIdempotencyKey() string
+  func hashPath(path string) string
+
 automode.go
   func (*autoModeDetails) ModeName() string
   func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
@@ -183,7 +192,7 @@ autorun.go
   func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
   func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error)
   func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
-  func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error
+  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 
 autoworker.go
   func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string
@@ -510,6 +519,7 @@ conn.go
 tools.go
   func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
   func hintsFrom(a *mcp.ToolAnnotations) ToolHints
+  func WithIdempotencyKey(ctx context.Context, key string) context.Context
   func (t *mcpTool) GetToolDefinition() model.ToolDef
   func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error)
@@ -745,11 +755,13 @@ copyfile.go
   func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error)
   func pathErrorOnly(requested string, err error) error
   func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *CopyFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 createdirectory.go
   func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
   func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
   func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 denylist.go
   func DeniedNames() []string
@@ -764,6 +776,7 @@ editfile.go
   func applyEdit(content, old, new string, all bool, maxBytes int) (string, int, error)
   func (t *EditFileTool) lockFor(rel string) *sync.Mutex
   func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *EditFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
   func missingFileHint(err error, requested string) error
 
 ignorelist.go
@@ -782,6 +795,7 @@ movefile.go
   func (t *MoveFileTool) GetToolDefinition() model.ToolDef
   func renameError(source, destination string, err error) error
   func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *MoveFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 nlink_other.go
   func linkCount(fi os.FileInfo) (uint64, bool)
@@ -826,6 +840,7 @@ workspace.go
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
   func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+  func (w *Workspace) changedPaths(requested ...string) ([]string, error)
   func (w *Workspace) anchorFor(requested, rel, real string) (newTarget, error)
   func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
   func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
@@ -843,6 +858,7 @@ writefile.go
   func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
   func (t *WriteFileTool) GetToolDefinition() model.ToolDef
   func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *WriteFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
   func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error)
 ```
 

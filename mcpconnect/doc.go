@@ -24,6 +24,7 @@
 //	tools.go
 //	  func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
 //	  func hintsFrom(a *mcp.ToolAnnotations) ToolHints
+//	  func WithIdempotencyKey(ctx context.Context, key string) context.Context
 //	  func (t *mcpTool) GetToolDefinition() model.ToolDef
 //	  func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 //	  func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error)

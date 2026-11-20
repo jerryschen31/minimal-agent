@@ -28,6 +28,14 @@
 //	autodirector.go
 //	  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 //
+//	autojournal.go
+//	  func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
+//	  func (rj *runToolJournal) setTask(id string)
+//	  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error)
+//	  func (rj *runToolJournal) preview(args json.RawMessage) string
+//	  func newIdempotencyKey() string
+//	  func hashPath(path string) string
+//
 //	automode.go
 //	  func (*autoModeDetails) ModeName() string
 //	  func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
@@ -45,7 +53,7 @@
 //	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
 //	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error)
 //	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
-//	  func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error
+//	  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 //
 //	autoworker.go
 //	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string

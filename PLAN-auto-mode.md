@@ -1,6 +1,6 @@
 # PLAN: autonomous mode v1 (one serial run, journal, resume, budgets)
 
-Status: **design agreed 2026-11-19; 1a–1e built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
+Status: **design agreed 2026-11-19; 1a–1f built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
 step 6, with the changes agreed on 2026-11-19 (`DECISIONS.md § 2026-11-19`). Where the two plans differ, this one wins:
 the per-run `state.json` snapshot is replaced by an append-only journal.
 
@@ -83,7 +83,7 @@ each **cut-off call** (a `tool_before` with no `tool_after`; at most one or a fe
 | The cut-off call's tool | What resume does |
 |---|---|
 | A built-in read tool (`read_file`, `list_files`, `search_files`), or MCP `readOnlyHint` | Nothing; the task runs again |
-| A built-in file tool (`write_file`, `edit_file`, `create_directory`, `copy_file`, `move_file`) | Checks the file(s) against the hashes in `tool_before`: matches "before" → it didn't happen; matches "after" → it happened; neither → the worker is told the file changed unexpectedly |
+| A built-in file tool (`write_file`, `edit_file`, `create_directory`, `copy_file`, `move_file`) | Checks the file(s) against the "before" hashes in `tool_before`: all match → it didn't happen; otherwise → it happened, or something else changed the file, and the worker is told (1f records "after" only in `tool_after`, so a cut-off call has no "after" to compare with) |
 | MCP with `idempotentHint` | Re-sends the exact recorded call with the same idempotency key |
 | Anything else (other MCP tools, `run_command`) | **Warns and asks**: "`email_send` {to: …} did not complete before the crash. Send it again? [y/N]". **y** re-sends the exact recorded call; **n** treats it as done. `-y` never answers it; with no terminal the run stops with `waiting` |
 

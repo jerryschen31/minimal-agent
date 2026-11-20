@@ -115,7 +115,7 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 	}
 	fmt.Fprintf(w, "Run %04d (%s)\n", ar.run.Number, ar.run.Dir)
 	res := runPlan(runCtx, cs, ar, p, gates)
-	return ar.end(res, cs.Config.TraceDir, cs.Recorder.RunID(), w)
+	return ar.end(cs, res, cs.Config.TraceDir, cs.Recorder.RunID(), w)
 }
 
 // loadRunnablePlan reads the plan file at path and returns it, and the file's bytes, if it can run.

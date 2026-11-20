@@ -104,7 +104,7 @@ func Test_Unit_AutoRun_RetryThenDone(t *testing.T) {
 		!strings.Contains(retry[1].Content, "a is empty") || !strings.Contains(retry[1].Content, "Advice: write abc into a") {
 		t.Errorf("the retry's message (fresh context: %d messages) lacks the verdict:\n%s", len(retry), retry[len(retry)-1].Content)
 	}
-	events := journal(t, fx, 1)
+	events := withoutToolEvents(journal(t, fx, 1))
 	want := []string{"manifest", "task_started:t1", "task_finished:t1", "task_started:t1", "task_finished:t1"}
 	if got := eventTypes(events); !slices.Equal(got[:5], want) {
 		t.Errorf("journal starts %v, want %v", got[:5], want)

@@ -19,6 +19,7 @@ import (
 type autoRun struct {
 	run     state.Run
 	journal *state.Journal
+	tools   *runToolJournal // records the run's tool calls; also on the session (cs.ToolJournal) while the run is open
 	unlock  func() error
 	before  state.State // what the plan's earlier runs left (state.Home.Load)
 }
@@ -48,6 +49,7 @@ type taskStep struct {
 //   - The run folder gets the plan file's bytes as read (ad.planData), so what ran can be seen later even if the file
 //     changes. The manifest records the trace's run ID; the trace is in <stateDir>/traces (SetupAgent).
 //   - On an error after the lock was taken, the lock is released.
+//   - Sets cs.ToolJournal, so from now on every tool call is recorded in the run's journal (end clears it).
 func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
 	dir, err := cs.Config.ResolveStateDir()
 	if err != nil {
@@ -88,8 +90,14 @@ func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
 	if err != nil {
 		return nil, err
 	}
+	rj, err := newRunToolJournal(j, cs.Config.RedactionLevel)
+	if err != nil {
+		j.Close()
+		return nil, err
+	}
 	opened = true
-	return &autoRun{run: r, journal: j, unlock: unlock, before: before}, nil
+	cs.ToolJournal = rj
+	return &autoRun{run: r, journal: j, tools: rj, unlock: unlock, before: before}, nil
 }
 
 // notePlanHistory prints what the plan's earlier runs say before a new run starts.
@@ -279,6 +287,7 @@ func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, 
 func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error) {
 	w := cs.OutBuffer
 	maxAttempts := cs.Config.MaxTaskAttempts
+	ar.tools.setTask(t.ID) // the worker's and the director's tool calls are recorded under this task
 	var retry *retryNote
 	for attempt := 1; ; attempt++ {
 		if err := ar.journal.Append(state.EventTaskStarted, t.ID, state.TaskStarted{Attempt: attempt}); err != nil {
@@ -343,14 +352,15 @@ func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) 
 	return fmt.Errorf("%s failed: %w", t.ID, err)
 }
 
-// end records run_ended, closes the journal, releases the lock and prints the report; it returns an error when the run
+// end stops recording cs's tool calls, records run_ended, closes the journal, releases the lock and prints the report; it returns an error when the run
 // stopped on a failure.
 //
 // Notes:
 //   - done, waiting, declined and interrupted return nil (the report says what happened); task_failed and error
 //     return res.err, so the caller sees the run did not finish.
 //   - The report names the run folder and the trace file (<traceDir>/<trace run ID>.jsonl; none when tracing is off).
-func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error {
+func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error {
+	cs.ToolJournal = nil // the journal closes below: no call may be recorded after it
 	ended := state.RunEnded{Reason: res.reason}
 	if res.err != nil {
 		ended.Error = res.err.Error()

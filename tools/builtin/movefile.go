@@ -189,3 +189,18 @@ func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	return fmt.Sprintf("moved %s -> %s (%d bytes%s)", filepath.ToSlash(src.rel), filepath.ToSlash(dst.rel), srcInfo.Size(), extra), nil
 }
+
+// ChangedPaths returns the source and the destination of a move_file call with args (both change), for auto mode's journal (tools.FileTool).
+//
+// Notes:
+//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+func (t *MoveFileTool) ChangedPaths(args json.RawMessage) ([]string, error) {
+	var p struct {
+		Source      string `json:"source"`
+		Destination string `json:"destination"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return t.ws.changedPaths(p.Source, p.Destination)
+}

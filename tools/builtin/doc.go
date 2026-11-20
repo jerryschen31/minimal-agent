@@ -15,11 +15,13 @@
 //	  func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error)
 //	  func pathErrorOnly(requested string, err error) error
 //	  func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *CopyFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 //
 //	createdirectory.go
 //	  func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
 //	  func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
 //	  func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, error)
 //
 //	denylist.go
 //	  func DeniedNames() []string
@@ -34,6 +36,7 @@
 //	  func applyEdit(content, old, new string, all bool, maxBytes int) (string, int, error)
 //	  func (t *EditFileTool) lockFor(rel string) *sync.Mutex
 //	  func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *EditFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 //	  func missingFileHint(err error, requested string) error
 //
 //	ignorelist.go
@@ -52,6 +55,7 @@
 //	  func (t *MoveFileTool) GetToolDefinition() model.ToolDef
 //	  func renameError(source, destination string, err error) error
 //	  func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *MoveFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 //
 //	nlink_other.go
 //	  func linkCount(fi os.FileInfo) (uint64, bool)
@@ -96,6 +100,7 @@
 //	  func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
 //	  func errMsgHidePath(requested string, err error) error
 //	  func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+//	  func (w *Workspace) changedPaths(requested ...string) ([]string, error)
 //	  func (w *Workspace) anchorFor(requested, rel, real string) (newTarget, error)
 //	  func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
 //	  func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
@@ -113,5 +118,6 @@
 //	  func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
 //	  func (t *WriteFileTool) GetToolDefinition() model.ToolDef
 //	  func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+//	  func (t *WriteFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 //	  func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error)
 package builtin

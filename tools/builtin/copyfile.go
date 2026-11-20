@@ -213,3 +213,17 @@ func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	}
 	return fmt.Sprintf("copied %s -> %s (%d bytes%s)", filepath.ToSlash(srcRel), filepath.ToSlash(dst.rel), n, extra), nil
 }
+
+// ChangedPaths returns the destination a copy_file call with args would write (the source is only read), for auto mode's journal (tools.FileTool).
+//
+// Notes:
+//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+func (t *CopyFileTool) ChangedPaths(args json.RawMessage) ([]string, error) {
+	var p struct {
+		Destination string `json:"destination"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return t.ws.changedPaths(p.Destination)
+}

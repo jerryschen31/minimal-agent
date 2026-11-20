@@ -68,6 +68,13 @@ func journal(t *testing.T, fx *chatSessionFixture, n int) []state.Event {
 	return events
 }
 
+// withoutToolEvents returns events without tool_before and tool_after (tests of the task events).
+func withoutToolEvents(events []state.Event) []state.Event {
+	return slices.DeleteFunc(slices.Clone(events), func(e state.Event) bool {
+		return e.Type == state.EventToolBefore || e.Type == state.EventToolAfter
+	})
+}
+
 // eventTypes returns the type and task of each event, as "type" or "type:task".
 func eventTypes(events []state.Event) []string {
 	var out []string
@@ -165,7 +172,7 @@ func Test_Unit_AutoRun_RunsEveryTask(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
-	events := journal(t, fx, 1)
+	events := withoutToolEvents(journal(t, fx, 1)) // the director's verdict calls are recorded too; tested in autojournal_test.go
 	want := []string{"manifest", "task_started:t1", "task_finished:t1", "task_started:t2", "task_finished:t2",
 		"task_started:t3", "task_finished:t3", "run_ended"}
 	if got := eventTypes(events); !slices.Equal(got, want) {

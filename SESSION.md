@@ -1473,3 +1473,8 @@ Copies run with a warning; traces in `<stateDir>/traces`. Not committed. **Next:
 Director judges each attempt (`agent/director/`, `judgeTask`), up to `maxTaskAttempts` (3) attempts with its advice;
 gates asked on a terminal (`declined` / `waiting`). Not committed. **Next: 1f** (`tool_before` / `tool_after` for every
 call, file hashes, idempotency key in MCP `_meta`).
+
+### 2026-11-20 (later) — 1f built (see DECISIONS.md § 1f built)
+
+Every tool call recorded (`tool_before` / `tool_after`), file hashes via `tools.FileTool`, MCP idempotency key in
+`_meta`. Not committed. **Next: 1g** (write tools write via a temp file + rename).

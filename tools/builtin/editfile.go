@@ -230,6 +230,20 @@ func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	return fmt.Sprintf("edited %s (%d %s, %d bytes)", filepath.ToSlash(rel), n, noun, len(edited)), nil
 }
 
+// ChangedPaths returns the file an edit_file call with args would edit, for auto mode's journal (tools.FileTool).
+//
+// Notes:
+//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+func (t *EditFileTool) ChangedPaths(args json.RawMessage) ([]string, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return t.ws.changedPaths(p.Path)
+}
+
 // missingFileHint adds "use write_file to create it" to a not-found error from resolvePathForWrite.
 //
 // Notes:

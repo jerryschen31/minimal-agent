@@ -221,7 +221,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   (`DECISIONS.md § Slice 6 built`).
   `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
   match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
-  file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file
+  file just before writing (refuses if size or mtime changed), and serializes edits of one file. **Every write tool
+  implements `tools.FileTool`** (`ChangedPaths`, through `Workspace.changedPaths`), so auto mode's journal can hash what
+  it changes; `Test_Unit_BuiltinFileTools` lists them. The trace cuts file
   bodies (`trace.shortenArguments`); the approval question is one summary per call (`DECISIONS.md § Slice 5 built`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
@@ -258,7 +260,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `allowed_by_user` | `allowed_by_config`). The user is asked only through `cs.PromptAllowDenyCall`, which `chatLoop`
   sets for a `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second
   reader would steal the next prompt line); `nil` means nobody to ask, so an ask is denied. Model text shown in the
-  question is printed with `%q`. A new path that runs tools must go through this check. Rules match model-facing
+  question is printed with `%q`. A new path that runs tools must go through this check (and through
+  `cs.ToolJournal`, which in auto mode records the call before it runs and after it returns; not recorded = not run). Rules match model-facing
   names (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule or an
   unknown `approval` value fails setup. `hooks` holds no rules of its own: the defaults are `GetDefaultConfig()`
   (`denyRules` empty; `askRules` `*delete*`, `*remove*` and the write tools), and a config file's list replaces that

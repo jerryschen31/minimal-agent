@@ -170,6 +170,28 @@ func (w *Workspace) resolveNewPath(requested string) (newTarget, error) {
 	return w.anchorFor(requested, rel, real)
 }
 
+// changedPaths resolves each requested path as a write tool resolves the path it writes (resolveNewPath) and returns
+// them absolute, for FileTool.ChangedPaths.
+//
+// Notes:
+//   - The same checks as the write itself (inside workDir, not deny-listed, not write-denied), so a path the call would
+//     refuse is an error here too, and is never hashed. An empty path is an error.
+//   - Existing parts of a path have their symlinks resolved; the path may not exist yet.
+func (w *Workspace) changedPaths(requested ...string) ([]string, error) {
+	out := make([]string, 0, len(requested))
+	for _, r := range requested {
+		if r == "" {
+			return nil, errors.New("missing path")
+		}
+		t, err := w.resolveNewPath(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filepath.Join(w.rootDir, t.rel))
+	}
+	return out, nil
+}
+
 // anchorFor returns the newTarget for rel (relative to rootDir; real is the same path, absolute): rel together with the
 // deepest directory that exists above it and that directory's identity.
 //
