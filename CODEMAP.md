@@ -15,6 +15,7 @@ minimal-agent/
 │   ├── autodirector.go
 │   ├── autojournal.go
 │   ├── automode.go
+│   ├── autoresume.go
 │   ├── autorun.go
 │   ├── autoworker.go
 │   ├── chat.go
@@ -169,6 +170,7 @@ autodirector.go
   func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 
 autojournal.go
+  func withResend(ctx context.Context, orig state.ToolBefore) context.Context
   func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
   func (rj *runToolJournal) setTask(id string)
   func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error)
@@ -184,20 +186,28 @@ automode.go
   func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
   func (o autoOutput) ToolCalled(name string)
 
+autoresume.go
+  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
+  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, ask promptReader, w io.Writer) ([]settlePlan, error)
+  func resendable(cs *ChatSession, c state.ToolBefore) string
+  func settle(ctx context.Context, cs *ChatSession, rj *runToolJournal, plans []settlePlan, w io.Writer) ([]state.SettledCall, map[string]string)
+  func resendCall(ctx context.Context, cs *ChatSession, c state.ToolBefore) (string, error)
+  func oneLine(s string, max int) string
+
 autorun.go
-  func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error)
+  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
   func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
   func hasPlanID(path, id string) bool
   func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
   func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
   func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
-  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error)
+  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
   func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
   func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 
 autoworker.go
-  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string
-  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) (string, []model.ChatMessage, error)
+  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
+  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -756,6 +766,7 @@ atomicwrite.go
   func refuseHardLink(requested string, info os.FileInfo) error
   func (w *Workspace) replaceFile(dir *os.Root, requested, name string, t replaceTarget, verify func() error, write func(io.Writer) error) (err error)
   func tempName(name string) string
+  func RemoveTempFiles(path string) ([]string, error)
 
 copyfile.go
   func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)

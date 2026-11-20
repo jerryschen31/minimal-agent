@@ -15,6 +15,7 @@
 //	  func refuseHardLink(requested string, info os.FileInfo) error
 //	  func (w *Workspace) replaceFile(dir *os.Root, requested, name string, t replaceTarget, verify func() error, write func(io.Writer) error) (err error)
 //	  func tempName(name string) string
+//	  func RemoveTempFiles(path string) ([]string, error)
 //
 //	copyfile.go
 //	  func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)

@@ -8,6 +8,8 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/jerryschen31/minimal-agent/textutils"
 )
@@ -165,4 +167,35 @@ func tempName(name string) string {
 	b := make([]byte, 4)
 	rand.Read(b)
 	return "." + name + tempMarker + hex.EncodeToString(b) + ".tmp"
+}
+
+// RemoveTempFiles removes the temporary files replaceFile left next to path (a crash between creating one and renaming
+// it), and returns their names.
+//
+// Notes:
+//   - Matches ".<name>.minagent-<8 hex>.tmp" in path's directory, for path's name cut as tempName cuts it. A missing
+//     directory is no error (nothing to remove). Called by auto mode's resume for the paths of a cut-off file call.
+//   - Compares names with strings, not a glob, so a name with "*" or "[" in it can't match other files.
+func RemoveTempFiles(path string) ([]string, error) {
+	dir, name := filepath.Split(path)
+	name, _ = textutils.CutBytes(name, maxTempBase)
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	prefix := "." + name + tempMarker
+	var removed []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.Type().IsRegular() && strings.HasPrefix(n, prefix) && strings.HasSuffix(n, ".tmp") && len(n) == len(prefix)+8+len(".tmp") {
+			if err := os.Remove(filepath.Join(dir, n)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return removed, err
+			}
+			removed = append(removed, n)
+		}
+	}
+	return removed, nil
 }

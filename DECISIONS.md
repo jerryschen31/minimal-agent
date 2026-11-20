@@ -5035,3 +5035,35 @@ Shape agreed with Jerry; Claude wrote it.
   file for every chunk (quadratic in the file's size), so append should write in place with `O_APPEND`. A crash
   mid-chunk can then leave a partial chunk at the end; the journal's before/after hashes show the call was cut off, and
   1h tells the worker to check the end of the file.
+
+### 2026-11-20 — 1h built: resume after a crash
+
+Shape agreed with Jerry; Claude wrote it (`agent/autoresume.go`).
+- **Manual resume:** start the same command again. When the plan's last run has no `run_ended`, `openRun` calls
+  `resumeRun` before any task runs. Each **cut-off call** (a `tool_before` with no `tool_after`, `State.Latest.OpenCalls`,
+  now with its task) is settled first, then the cut-off task runs again from the start with a fresh worker whose first
+  message lists what happened to its calls (`taskMessage`'s crash section). Done tasks are skipped as always. The
+  cut-off attempt doesn't count toward `maxTaskAttempts`.
+- **Continue or new (Jerry):** if the plan file and the config are byte for byte what the run started with (manifest
+  `plan_sha256`, `config_sha256`), the same run continues (`ContinueRun`, a `resumed` event), so step 2's budgets carry
+  across a crash. Otherwise the cut-off calls are still settled in the old run (they are real actions), it gets
+  `run_ended{interrupted}`, and a new run starts; the history carries over through `Load`.
+- **Settling, decided first, done second** (`decideSettlement`, then `settle`): no effect (reads, verdicts, MCP
+  `readOnlyHint`, a file tool with no recorded paths) → nothing; a file call → compare each path with its "before" hash
+  (all equal: `not_happened`; else `happened`) and remove leftover `.<name>.minagent-*.tmp` files
+  (`builtin.RemoveTempFiles`; Jerry); an MCP call with `idempotentHint` → re-sent automatically; anything else (other MCP
+  calls, `run_command`) → asked "Send it again? [y/N]" (n: `user_said_done`). A call that can't be re-sent (no kept
+  arguments, a hash mismatch, the tool gone) asks "Carry on, treating it as done? [y/N]". No terminal (`-yes` never
+  answers), Ctrl+D (Jerry), or n to that second question → `errResumeWaiting`: "Stopped: waiting", nothing done or
+  written, asked again next start. Outcomes go in the `resumed` event; `Fold` closes settled calls, so a second crash
+  doesn't settle them twice.
+- **Exact arguments are kept for re-sending** (Jerry): `tool_before.args` for MCP and `run_command` calls only, up to
+  64 KB (larger: can't be re-sent, asked instead). *Downside:* they are unredacted in the journal; it is private (0600
+  in the state folder). File tools don't need them (settled by hashes). `read_only` (MCP `readOnlyHint`) is recorded too.
+- **Re-sends go through the normal path** (`resendCall` → `executeToolCall`; Jerry): deny and ask rules apply again (a
+  rule added since the crash counts; an ask rule is denied), the tool timeout applies, and the re-send is recorded with
+  `resend_of` and the cut-off call's own idempotency key.
+- **The plan's done test** (`Test_Unit_AutoResume_AfterCrash`): a child process (the test binary re-run) dies inside a
+  `run_command` call; the resume asks, "n" means it isn't repeated, "y" re-sends it exactly once, done t1 isn't re-run,
+  and run 0001 is continued.
+- *Not covered:* a crash in chat or plan mode (no journal) can leave a temp file of 1g; it is harmless and clearly named.

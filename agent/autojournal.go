@@ -24,6 +24,21 @@ import (
 // maxArgsPreviewBytes caps a tool call's argument preview in the journal (tool_before's args_preview).
 const maxArgsPreviewBytes = 300
 
+// maxResendArgsBytes caps the exact arguments kept for a call resume may re-send (tool_before's args). A call with
+// larger arguments can't be re-sent: resume asks about it instead.
+const maxResendArgsBytes = 64 << 10
+
+// resendCtx is the context key resendCall uses to tell recordCall that a call repeats a cut-off one.
+type resendCtx struct{}
+
+// withResend returns ctx marking the next recorded call as a re-send of the cut-off call orig: recordCall reuses its
+// idempotency key and records resend_of.
+//
+// Notes: none.
+func withResend(ctx context.Context, orig state.ToolBefore) context.Context {
+	return context.WithValue(ctx, resendCtx{}, orig)
+}
+
 // runToolJournal records every tool call of an auto run in its journal: tool_before when the call is about to run,
 // tool_after when it returns (the session's ToolJournal). [agent] A call cut off by a crash is a tool_before with no
 // tool_after; resume (1h) settles those.
@@ -62,7 +77,10 @@ func (rj *runToolJournal) setTask(id string) {
 // Notes:
 //   - The call ID is the run's own ("c1", "c2", …): a model's IDs can repeat. The model's is kept as model_call_id.
 //   - Every MCP call gets a random idempotency key (newIdempotencyKey), recorded and put on ctx; the tool sends it in
-//     its request's _meta. Built-in calls get none. An MCP tool's idempotentHint is recorded with it.
+//     its request's _meta. Built-in calls get none. An MCP tool's idempotentHint and readOnlyHint are recorded with it.
+//   - MCP and run_command calls also keep their exact arguments (args, up to maxResendArgsBytes), so resume can re-send
+//     them. They are unredacted; the journal is private (0600 in the state folder).
+//   - A re-send (ctx from withResend) records resend_of and reuses the cut-off call's idempotency key.
 //   - A file tool (tools.FileTool) records each path it would change with the path's hash now (hashPath); tool_after
 //     records each one's hash after the call. If the tool can't say (bad arguments, a refused path), no files are
 //     recorded: the call will fail the same way.
@@ -82,10 +100,22 @@ func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, t
 		ArgsSHA256:  state.SHA256(args),
 		ArgsPreview: rj.preview(args),
 	}
-	if hints, isMCP := mcpconnect.HintsOf(tool); isMCP {
+	hints, isMCP := mcpconnect.HintsOf(tool)
+	if isMCP {
 		before.IdempotencyKey = newIdempotencyKey()
-		before.Idempotent = hints.Idempotent
+		before.Idempotent, before.ReadOnly = hints.Idempotent, hints.ReadOnly
+	}
+	if orig, ok := ctx.Value(resendCtx{}).(state.ToolBefore); ok {
+		before.ResendOf = orig.CallID
+		if orig.IdempotencyKey != "" {
+			before.IdempotencyKey = orig.IdempotencyKey // the same key: a server that deduplicates runs it once
+		}
+	}
+	if before.IdempotencyKey != "" {
 		ctx = mcpconnect.WithIdempotencyKey(ctx, before.IdempotencyKey)
+	}
+	if (isMCP || call.Function.Name == "run_command") && len(args) <= maxResendArgsBytes {
+		before.Args = args // [agent] the calls resume may re-send; file tools are settled by their hashes instead
 	}
 	var paths []string
 	if ft, ok := tool.(tools.FileTool); ok {

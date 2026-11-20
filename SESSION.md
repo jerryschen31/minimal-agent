@@ -1485,3 +1485,9 @@ Every tool call recorded (`tool_before` / `tool_after`), file hashes via `tools.
 Not committed. **Next: 1h** (resume: settle cut-off calls, remove leftover `.minagent-*.tmp` files, re-run the cut-off
 task; crash test). **Tabled:** a larger cap for `edit_file` (its 1 MB is a memory cap, not tokens); chunked writes
 (`append` on `write_file`, in place, not atomic) — see DECISIONS.md § 1g built.
+
+### 2026-11-20 (later) — 1h built (see DECISIONS.md § 1h built)
+
+Resume after a crash: cut-off calls settled before any task runs (file hashes, MCP idempotent re-send, ask for the
+rest), same run continued when plan and config are unchanged, crash note for the cut-off task's worker; crash test with a
+child process. Not committed. **Next: 1i** (plan mode's `Run now? [y/N]`; docs).

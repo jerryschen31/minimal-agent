@@ -73,8 +73,8 @@ func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessi
 // Notes:
 //   - Reads the plan (loadRunnablePlan), prints its summary (plan.Summary), then asks "Run? [Y/n]: " (-yes answers
 //     yes). No, or Ctrl+D at the question, prints "Not run." and ends with no error.
-//   - Yes: opens a run (openRun: lock, history, run folder), runs the tasks (runPlan) and ends the run (end: run_ended,
-//     report). Ctrl+C stops the run (an interrupt watcher covers all of it); the run is recorded as interrupted.
+//   - Yes: opens a run (openRun: lock, history, resume of a run a crash cut off, run folder), runs the tasks (runPlan)
+//     and ends the run (end: run_ended, report). A resume that needs an answer it can't get stops with "waiting". Ctrl+C stops the run (an interrupt watcher covers all of it); the run is recorded as interrupted.
 func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error {
 	ad, ok := cs.ModeDetails.(*autoModeDetails)
 	if !ok {
@@ -109,7 +109,11 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 	discardStrayInterrupts(interrupts)
 	runCtx, stop := createInterruptWatcher(ctx, interrupts)
 	defer stop()
-	ar, err := openRun(cs, ad)
+	ar, err := openRun(runCtx, cs, ad, gates)
+	if errors.Is(err, errResumeWaiting) {
+		fmt.Fprintln(w, "Stopped: waiting. Nothing was run.")
+		return nil
+	}
 	if err != nil {
 		return err
 	}

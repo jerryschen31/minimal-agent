@@ -43,7 +43,9 @@ type retryNote struct {
 //   - An "effects: external" task is told so: its actions reach outside the working directory.
 //   - A retry is told that the earlier attempt's changes are still in the working directory, so it builds on them
 //     rather than starting over blindly.
-func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string {
+//   - crash (non-empty after a resume) lists what happened to the calls a crash cut off in an earlier attempt, so the
+//     worker checks instead of repeating an action.
+func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Plan: %s\n\n", p.Title)
 	if s := strings.TrimSpace(p.Summary); s != "" {
@@ -78,6 +80,11 @@ func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryN
 	if body := strings.TrimSpace(t.Body); body != "" {
 		b.WriteString("\n" + body + "\n")
 	}
+	if crash != "" {
+		fmt.Fprintf(&b, "\n## An earlier attempt was cut off by a crash\n\nIts changes are still in the working directory. What "+
+			"happened to the tool calls it had in progress:\n\n%s\n\nCheck the current state before you act, and don't repeat "+
+			"an action that already happened.\n", crash)
+	}
 	if retry != nil {
 		fmt.Fprintf(&b, "\n## Attempt %d was judged not done\n\nIts changes are still in the working directory: check them and build on "+
 			"them.\n\nWhy it was judged not done: %s\n", retry.Attempt, retry.Reason)
@@ -100,10 +107,10 @@ func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryN
 //     conversation.
 //   - Traced as its own task scope, named "<id>: <title>".
 //   - Whether the task is done is the director's call (judgeTask), not the worker's.
-func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) (string, []model.ChatMessage, error) {
+func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error) {
 	taskTrace := trace.StartTask(cs.Recorder, t.ID+": "+t.Title)
 	defer taskTrace.End()
-	msg := model.CreateChatMessage("user", "user", taskMessage(p, t, deps, retry), "", nil)
+	msg := model.CreateChatMessage("user", "user", taskMessage(p, t, deps, retry, crash), "", nil)
 	msgs, err := reActLoop(ctx, cs, taskTrace, nil, msg)
 	if err != nil {
 		taskTrace.Fail(err)

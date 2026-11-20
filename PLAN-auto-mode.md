@@ -1,6 +1,6 @@
 # PLAN: autonomous mode v1 (one serial run, journal, resume, budgets)
 
-Status: **design agreed 2026-11-19; 1a–1g built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
+Status: **design agreed 2026-11-19; 1a–1h built (2026-11-20).** This is step 3 of `PLAN-plan-apply.md` plus the budgets from its
 step 6, with the changes agreed on 2026-11-19 (`DECISIONS.md § 2026-11-19`). Where the two plans differ, this one wins:
 the per-run `state.json` snapshot is replaced by an append-only journal.
 
@@ -63,7 +63,7 @@ from the top and ignores a half-written last line. There is no snapshot file: th
 | `task_finished` | status (`done` / `failed`), summary, verdict |
 | `tool_before` | call ID, tool, arguments hash + preview, idempotency key; file tools also: path(s) and file hash before and after |
 | `tool_after` | call ID, failed |
-| `resumed` | the cut-off calls found and what was done with each |
+| `resumed` | pid, host, trace run ID, and each cut-off call's outcome (`no_effect`, `not_happened`, `happened`, `resent`, `resend_failed`, `user_said_done`); `Fold` closes the calls it settled |
 | `gate_answered` | `yes` / `no`: a person's answer to a task's gate (1e) |
 | `usage` (step 2) | tokens per model call or per task |
 | `run_ended` | reason: `done`, `task_failed` (judged not done on every attempt), `declined` (no to a gate), `budget`, `timeout`, `interrupted`, `error`, `waiting` (a gate with nobody to answer); `max_steps` is defined but no longer used (a worker out of steps is a failed attempt) |

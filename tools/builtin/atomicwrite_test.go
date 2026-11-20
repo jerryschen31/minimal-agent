@@ -202,3 +202,23 @@ func Test_WriteTools_Overwrite_KeepsPermissionsNewFile(t *testing.T) {
 		t.Errorf("same inode after an overwrite; replaceFile should have renamed a new file into place")
 	}
 }
+
+// - Verify RemoveTempFiles removes only the temporary files of that path (not another file's, not a look-alike name)
+// - Verify a missing directory is not an error
+func Test_Unit_RemoveTempFiles(t *testing.T) {
+	work := t.TempDir()
+	mine := tempName("a.txt")
+	for _, n := range []string{mine, tempName("b.txt"), ".a.txt.minagent-notahexx.tmp.bak", "a.txt"} {
+		writeFile(t, work, n, []byte("x"))
+	}
+	removed, err := RemoveTempFiles(filepath.Join(work, "a.txt"))
+	if err != nil || len(removed) != 1 || removed[0] != mine {
+		t.Errorf("removed %v, %v; want only %s", removed, err, mine)
+	}
+	if left, _ := os.ReadDir(work); len(left) != 3 {
+		t.Errorf("%d files left, want 3", len(left))
+	}
+	if removed, err := RemoveTempFiles(filepath.Join(work, "gone", "a.txt")); err != nil || len(removed) != 0 {
+		t.Errorf("missing directory: %v, %v", removed, err)
+	}
+}

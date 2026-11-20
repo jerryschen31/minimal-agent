@@ -22,11 +22,18 @@ type TaskState struct {
 	Run      int // the run that last started or finished it
 }
 
+// OpenCall is a call a crash cut off: its tool_before and the task it belonged to.
+type OpenCall struct {
+	Task string
+	ToolBefore
+}
+
 // RunState is what is known about one run.
 type RunState struct {
 	Run       Run
-	Ended     *RunEnded    // nil: the run never ended (still going, or cut off by a crash)
-	OpenCalls []ToolBefore // tool_before events with no tool_after: calls a crash cut off, in the order they started
+	Ended     *RunEnded  // nil: the run never ended (still going, or cut off by a crash)
+	Manifest  Manifest   // the run's manifest (its first event)
+	OpenCalls []OpenCall // tool_before events with no tool_after and not settled by a resume: calls a crash cut off, in the order they started
 	TornTail  bool
 }
 
@@ -44,14 +51,15 @@ type State struct {
 //     so a task done in run 1 and not touched since is still done in run 5.
 //   - run_ended marks the tasks still running in that run as interrupted. A run with no run_ended keeps them running:
 //     that is the task a crash cut off.
-//   - Open calls are counted per run; only the last run's are kept (Latest.OpenCalls).
+//   - Open calls are counted per run; only the last run's are kept (Latest.OpenCalls). A resumed event closes the calls
+//     it settled, so a second crash doesn't settle them again.
 //   - Unknown event types are skipped (a newer harness's journal). Known types with data that can't be decoded are an
 //     error naming the run and seq.
 func Fold(runs []RunEvents) (State, error) {
 	s := State{Tasks: map[string]TaskState{}}
 	for _, re := range runs {
 		rs := RunState{Run: re.Run, TornTail: re.TornTail}
-		open := map[string]ToolBefore{}
+		open := map[string]OpenCall{}
 		var order []string // call IDs in the order they started
 		for _, e := range re.Events {
 			var err error
@@ -68,11 +76,20 @@ func Fold(runs []RunEvents) (State, error) {
 					ts.Status, ts.DefHash, ts.Summary, ts.Verdict, ts.Run = d.Status, d.DefHash, d.Summary, d.Verdict, re.Run.Number
 					s.Tasks[e.Task] = ts
 				}
+			case EventManifest:
+				err = decodeData(e, &rs.Manifest)
 			case EventToolBefore:
 				var d ToolBefore
 				if err = decodeData(e, &d); err == nil {
-					open[d.CallID] = d
+					open[d.CallID] = OpenCall{Task: e.Task, ToolBefore: d}
 					order = append(order, d.CallID)
+				}
+			case EventResumed:
+				var d Resumed
+				if err = decodeData(e, &d); err == nil {
+					for _, c := range d.Settled {
+						delete(open, c.CallID) // settled: no longer cut off
+					}
 				}
 			case EventToolAfter:
 				var d ToolAfter

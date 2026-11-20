@@ -117,14 +117,17 @@ type FileHashes struct {
 
 // ToolBefore is EventToolBefore's data, written before a tool call runs.
 type ToolBefore struct {
-	CallID         string       `json:"call_id"`                   // unique in the run ("c1", "c2", …); tool_after names it
-	ModelCallID    string       `json:"model_call_id,omitempty"`   // the model's own ID for the call (may repeat), for the trace
-	Tool           string       `json:"tool"`                      // the model-facing name
-	ArgsSHA256     string       `json:"args_sha256,omitempty"`     // of the exact arguments, so a re-send can be checked
-	ArgsPreview    string       `json:"args_preview,omitempty"`    // redacted and cut, for a person to read
-	IdempotencyKey string       `json:"idempotency_key,omitempty"` // MCP calls: sent in the request's _meta
-	Idempotent     bool         `json:"idempotent,omitempty"`      // MCP calls: the server says the tool is idempotent (idempotentHint)
-	Files          []FileHashes `json:"files,omitempty"`           // file tools only: Before of each path the call changes
+	CallID         string          `json:"call_id"`                   // unique in the run ("c1", "c2", …); tool_after names it
+	ModelCallID    string          `json:"model_call_id,omitempty"`   // the model's own ID for the call (may repeat), for the trace
+	Tool           string          `json:"tool"`                      // the model-facing name
+	ArgsSHA256     string          `json:"args_sha256,omitempty"`     // of the exact arguments, so a re-send can be checked
+	ArgsPreview    string          `json:"args_preview,omitempty"`    // redacted and cut, for a person to read
+	IdempotencyKey string          `json:"idempotency_key,omitempty"` // MCP calls: sent in the request's _meta
+	Idempotent     bool            `json:"idempotent,omitempty"`      // MCP calls: the server says the tool is idempotent (idempotentHint)
+	ReadOnly       bool            `json:"read_only,omitempty"`       // MCP calls: the server says the tool changes nothing (readOnlyHint)
+	Args           json.RawMessage `json:"args,omitempty"`            // MCP and run_command calls: the exact arguments, so resume can re-send them (capped)
+	ResendOf       string          `json:"resend_of,omitempty"`       // a re-send by resume: the call ID of the cut-off call it repeats
+	Files          []FileHashes    `json:"files,omitempty"`           // file tools only: Before of each path the call changes
 }
 
 // ToolAfter is EventToolAfter's data, written after a tool call returns.
@@ -136,8 +139,30 @@ type ToolAfter struct {
 
 // Resumed is EventResumed's data.
 type Resumed struct {
-	PID int `json:"pid"`
+	PID        int           `json:"pid"`
+	Host       string        `json:"host,omitempty"`
+	TraceRunID string        `json:"trace_run_id,omitempty"` // the resuming process's trace
+	Settled    []SettledCall `json:"settled,omitempty"`      // what was done about each cut-off call; Fold closes them
 }
+
+// SettledCall is what resume did about one cut-off call (a tool_before with no tool_after).
+type SettledCall struct {
+	CallID  string `json:"call_id"`
+	Tool    string `json:"tool"`
+	Task    string `json:"task,omitempty"`
+	Outcome string `json:"outcome"` // one of the Outcome constants
+	Note    string `json:"note,omitempty"`
+}
+
+// The outcomes of a settled call.
+const (
+	OutcomeNoEffect     = "no_effect"      // a call that changes nothing (a read, a verdict, a refused path)
+	OutcomeNotHappened  = "not_happened"   // a file call whose files are all as they were before it
+	OutcomeHappened     = "happened"       // a file call whose files changed (by it, or by something else)
+	OutcomeResent       = "resent"         // re-sent with the same arguments and idempotency key, and it succeeded
+	OutcomeResendFailed = "resend_failed"  // re-sent, and it failed or was refused by a rule
+	OutcomeUserSaidDone = "user_said_done" // a person said not to send it again: treated as done
+)
 
 // StopReason says why a run ended.
 type StopReason string

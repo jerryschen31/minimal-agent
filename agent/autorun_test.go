@@ -436,7 +436,7 @@ func Test_Unit_AutoRun_GateWithoutTerminalWaits(t *testing.T) {
 // - Verify taskMessage holds the plan's objective, the dependencies' summaries in depends order, and the task's fields
 func Test_Unit_TaskMessage(t *testing.T) {
 	p, _, _ := plan.Cleanup([]byte(threeTasks))
-	msg := taskMessage(p, p.Tasks[1], map[string]string{"t1": "a is ready", "t3": "not a dependency"}, nil)
+	msg := taskMessage(p, p.Tasks[1], map[string]string{"t1": "a is ready", "t3": "not a dependency"}, nil, "")
 	for _, want := range []string{"# Plan: Three steps", "## Objective\n\nDo three things.", "### t1\n\na is ready",
 		"## Your task: t2: Second", "Done when: b exists", "Make b."} {
 		if !strings.Contains(msg, want) {

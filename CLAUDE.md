@@ -133,7 +133,8 @@ go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you 
                                                  # only after "Replace it? [y/N]"); the plan copies the objective in
 go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
                                                  # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
-                                                 # state and traces in ~/.minagent (PLAN-auto-mode.md)
+                                                 # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
+                                                 # the same command resumes: cut-off calls settled first (may ask)
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.

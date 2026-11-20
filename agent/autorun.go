@@ -22,6 +22,8 @@ type autoRun struct {
 	tools   *runToolJournal // records the run's tool calls; also on the session (cs.ToolJournal) while the run is open
 	unlock  func() error
 	before  state.State // what the plan's earlier runs left (state.Home.Load)
+	// crashNotes: after a resume, per task, what happened to the calls a crash cut off (for its next worker)
+	crashNotes map[string]string
 }
 
 // runResult is how a run ended, for its run_ended event and the report.
@@ -45,12 +47,15 @@ type taskStep struct {
 //   - The plan's identity is its plan_id, else its real path (state.PlanRef). Another process running the same plan is
 //     a *state.LockedError.
 //   - Prints what the history says before the run starts (notePlanHistory): a moved plan, a copy sharing the plan_id
-//     (allowed, with a warning), a run that never ended.
+//     (allowed, with a warning).
+//   - The last run never ended (a crash): resumeRun settles its cut-off calls (ask answers its questions; ctx is the
+//     run's, so Ctrl+C stops it) and continues that run when the plan and config are unchanged, else a new run starts.
+//     errResumeWaiting: an answer was needed and none could be had; nothing was done.
 //   - The run folder gets the plan file's bytes as read (ad.planData), so what ran can be seen later even if the file
 //     changes. The manifest records the trace's run ID; the trace is in <stateDir>/traces (SetupAgent).
 //   - On an error after the lock was taken, the lock is released.
 //   - Sets cs.ToolJournal, so from now on every tool call is recorded in the run's journal (end clears it).
-func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
+func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error) {
 	dir, err := cs.Config.ResolveStateDir()
 	if err != nil {
 		return nil, err
@@ -85,6 +90,19 @@ func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
 	if err != nil {
 		return nil, err
 	}
+	var notes map[string]string
+	if len(before.Runs) > 0 && before.Latest.Ended == nil {
+		cont, n, err := resumeRun(ctx, cs, home, before, ad.planData, snapshot, ask)
+		if err != nil {
+			return nil, err
+		}
+		notes = n
+		if cont != nil {
+			opened = true
+			cont.unlock, cont.before, cont.crashNotes = unlock, before, notes
+			return cont, nil
+		}
+	}
 	m.TraceRunID = cs.Recorder.RunID()
 	j, r, err := home.NewRun(m, ad.planData, snapshot)
 	if err != nil {
@@ -97,7 +115,7 @@ func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
 	}
 	opened = true
 	cs.ToolJournal = rj
-	return &autoRun{run: r, journal: j, tools: rj, unlock: unlock, before: before}, nil
+	return &autoRun{run: r, journal: j, tools: rj, unlock: unlock, before: before, crashNotes: notes}, nil
 }
 
 // notePlanHistory prints what the plan's earlier runs say before a new run starts.
@@ -107,8 +125,6 @@ func openRun(cs *ChatSession, ad *autoModeDetails) (*autoRun, error) {
 //     copy, and a warning says the two share one history and one lock (a copy is allowed: refusing would let anyone who
 //     can copy a file stop a plan from running; protecting the plan file is planned for later, DECISIONS.md
 //     § 2026-11-20 — 1d). Otherwise the plan was moved, and its history carries over.
-//   - The last run never ended (no run_ended: a crash or a kill): its unfinished task runs again. [agent] 1h turns this
-//     into a real resume (cut-off calls settled, the same journal continued).
 func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State) {
 	if len(st.Runs) == 0 {
 		return
@@ -120,9 +136,6 @@ func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State) {
 		} else {
 			fmt.Fprintf(w, "This plan was moved from %s; its history carries over.\n", last)
 		}
-	}
-	if st.Latest.Ended == nil {
-		fmt.Fprintf(w, "Run %04d did not finish (a crash or a kill); its unfinished task runs again.\n", st.Latest.Run.Number)
 	}
 }
 
@@ -222,7 +235,7 @@ func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gat
 				return stop(i, reason, err)
 			}
 		}
-		summary, reason, err := runTask(ctx, cs, ar, p, t, summaries)
+		summary, reason, err := runTask(ctx, cs, ar, p, t, summaries, ar.crashNotes[t.ID])
 		switch reason {
 		case "":
 			res.done++
@@ -282,9 +295,10 @@ func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, 
 //     the journal; the last one decides the task's state (state.Fold).
 //   - A worker that runs out of steps is a failed attempt (the director isn't asked). A director with no verdict is a
 //     failed attempt too (judgeTask). Out of attempts → "task_failed".
+//   - crash (after a resume: what happened to this task's cut-off calls) goes to the first attempt's worker.
 //   - Ctrl+C → "interrupted", with no task_finished for the attempt (run_ended marks it). Any other error (the
 //     provider, a journal write) → "error", no retry.
-func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error) {
+func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error) {
 	w := cs.OutBuffer
 	maxAttempts := cs.Config.MaxTaskAttempts
 	ar.tools.setTask(t.ID) // the worker's and the director's tool calls are recorded under this task
@@ -298,7 +312,10 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 		} else {
 			fmt.Fprintf(w, "▶ %s: %s (attempt %d of %d)\n", t.ID, t.Title, attempt, maxAttempts)
 		}
-		summary, workerMsgs, err := runWorker(ctx, cs, p, t, deps, retry)
+		if attempt > 1 {
+			crash = "" // the first attempt after a resume was told; later ones are told about that attempt instead
+		}
+		summary, workerMsgs, err := runWorker(ctx, cs, p, t, deps, retry, crash)
 		var v director.Verdict
 		switch {
 		case err != nil && ctx.Err() != nil:
