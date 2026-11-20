@@ -200,6 +200,9 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 			if cfg.TraceDir != "" {
 				fmt.Fprintf(w, "  %-28s never reads: anything in the trace directory (%s)\n", "", safeText(cfg.TraceDir))
 			}
+			if cfg.StateDir != "" {
+				fmt.Fprintf(w, "  %-28s never reads: anything in the state folder (%s)\n", "", safeText(cfg.StateDir))
+			}
 		}
 	}
 	return names, true
@@ -265,8 +268,8 @@ func inspectServer(ctx context.Context, cfg config.Config, name string) (status 
 		return "FAILED listing tools  " + safeText(hideURL(err.Error(), cfg.McpServers[name].URL)), nil
 	}
 	status = "connected"
-	if res := conn.Session.InitializeResult(); res != nil && res.ServerInfo != nil {
-		status += fmt.Sprintf("  server: %s %s", safeText(res.ServerInfo.Name), safeText(res.ServerInfo.Version))
+	if name, version := conn.ServerInfo(); name != "" || version != "" {
+		status += fmt.Sprintf("  server: %s %s", safeText(name), safeText(version))
 	}
 	return status + fmt.Sprintf("  %d tools", len(serverTools)), serverTools
 }

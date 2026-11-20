@@ -172,7 +172,7 @@ func Test_EditFile_RenamedAfterOpen_Refused(t *testing.T) {
 	}
 }
 
-// - Verify stillAtPath, as write_file's overwrite uses it: true for the file at its path, an error once the path names a
+// - Verify stillAtPath, as edit_file uses it before the rename: true for the file at its path, an error once the path names a
 // different file or nothing
 func Test_StillAtPath(t *testing.T) {
 	work := t.TempDir()

@@ -145,6 +145,7 @@
 //
 //	event.go
 //	  func GetRunStartData(cfg config.Config) RunStartData
+//	  func GitCommit() string
 //	  func GetRunEndData(status, err string, durationMS int64) RunEndData
 //	  func GetTaskStartData(input string) TaskStartData
 //	  func GetTaskEndData(status, err string, durationMS int64) TaskEndData

@@ -29,7 +29,7 @@
 //	   ▼
 //	(Plan, []Fix, error)
 //
-//	Plan ─► Markdown() = frontMatter() + body()
+//	Plan ─► Markdown() = frontMatter() + Body()
 //	Plan ─► CheckComplete(maxTasks) error
 //	Plan ─► IsStale(objective hash)
 //	Task ─► DefinitionHash()             (every field and the body, except reason)
@@ -88,6 +88,9 @@
 //	  func NormalizeTaskID(s string) (string, bool)
 //	  func tidyBody(lines []line) (string, []Fix)
 //
+//	objective.go
+//	  func ObjectiveSection(objectiveMarkdown string) string
+//
 //	plan.go
 //	  func (f Fix) String() string
 //	  func (t Task) External() bool
@@ -98,11 +101,12 @@
 //	  func taskNumber(id string) (int, bool)
 //	  func findCycle(tasks []Task) []string
 //	  func PathFor(objectivePath string) string
+//	  func NewPlanID() string
 //
 //	render.go
 //	  func (p Plan) Markdown() string
 //	  func (p Plan) frontMatter() string
-//	  func (p Plan) body() string
+//	  func (p Plan) Body() string
 //	  func sectionBlock(heading, body string) string
 //	  func taskBlock(t Task) string
 //	  func Summary(p Plan) string

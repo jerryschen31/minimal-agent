@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -29,7 +31,10 @@ type Agent struct {
 // registry, trace recorder and chat session, in that order.
 //
 // Notes:
-//   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode).
+//   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode); in auto mode
+//     the session's autoModeDetails (setupAutoMode).
+//   - Auto mode writes its trace to <stateDir>/traces instead of traceDir (each run's manifest records the trace's run
+//     ID), so a run leaves nothing in the working directory.
 //   - A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent then returns context.Canceled, and
 //     the MCP servers that had already connected are kept in agent.mcpConns, so ShutdownAgent closes them. A nil
 //     interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
@@ -44,6 +49,17 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 	}
 	// agent mode
 	agent.agentMode = cfg.AgentMode
+	// auto mode: traces go to <stateDir>/traces, next to the runs; each run's manifest names its trace (trace_run_id)
+	if cfg.AgentMode == config.ModeAuto {
+		dir, err := cfg.ResolveStateDir()
+		if err != nil {
+			return err
+		}
+		if dir == "" {
+			return errors.New("stateDir is empty: auto mode keeps its runs and traces in the state folder")
+		}
+		cfg.TraceDir = filepath.Join(dir, "traces")
+	}
 
 	// 1. setup LLM provider
 	provider, err := model.SetupProvider(cfg)
@@ -132,6 +148,10 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 			return err
 		}
 	}
+	// 11. auto mode: adds auto mode details into the session
+	if cfg.AgentMode == config.ModeAuto {
+		setupAutoMode(chatSession, mcpConns)
+	}
 
 	return nil
 }
@@ -140,11 +160,13 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 //
 // Notes:
 //   - intsigChRecv of type <-chan os.Signal only receives OS interrupt signals (e.g., Ctrl+C).
-//   - Chat and plan modes are supported; any other agent mode returns an "unsupported agent mode" error. This function
+//   - Chat, plan and auto modes are supported; any other agent mode returns an "unsupported agent mode" error. This function
 //     needs to be updated to handle headless and oneshot modes.
 //   - Records run_start now. run_end is recorded by ShutdownAgent, not here: background work such as auto-compaction
 //     can still be running when this function returns, and its events must land before run_end.
 //   - Returns ctx's error at once if ctx is already cancelled.
+//   - Plan mode can return *ErrRunPlan ("Run now?" answered yes): the trace records it as a success, and the caller
+//     runs auto mode next.
 func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
@@ -158,10 +180,14 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 		err = runChatLoop(ctx, intsigChRecv, agent.session)
 	} else if agent.agentMode == config.ModePlan {
 		err = runPlanMode(ctx, intsigChRecv, agent.session)
+	} else if agent.agentMode == config.ModeAuto {
+		err = runAutoMode(ctx, intsigChRecv, agent.session)
 	} else {
 		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
-	agent.runTrace.Fail(err)
+	if _, next := errors.AsType[*ErrRunPlan](err); !next {
+		agent.runTrace.Fail(err) // "run this plan next" is plan mode succeeding, not failing
+	}
 	return err
 }
 
@@ -214,9 +240,13 @@ func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
 	}
-	// only plan mode reads it; 0 would refuse every plan
-	if cfg.AgentMode == config.ModePlan && cfg.MaxPlanTasks <= 0 {
-		return fmt.Errorf("maxPlanTasks must be a positive integer in plan mode, got %d", cfg.MaxPlanTasks)
+	// only plan and auto mode read it; 0 would refuse every plan
+	if (cfg.AgentMode == config.ModePlan || cfg.AgentMode == config.ModeAuto) && cfg.MaxPlanTasks <= 0 {
+		return fmt.Errorf("maxPlanTasks must be a positive integer in %s mode, got %d", cfg.AgentMode, cfg.MaxPlanTasks)
+	}
+	// only auto mode reads it; 0 would fail every task without running it
+	if cfg.AgentMode == config.ModeAuto && cfg.MaxTaskAttempts <= 0 {
+		return fmt.Errorf("maxTaskAttempts must be a positive integer in auto mode, got %d", cfg.MaxTaskAttempts)
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

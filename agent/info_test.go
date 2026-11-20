@@ -129,7 +129,7 @@ func Test_Unit_PrintInfo_BuiltinTools_Default(t *testing.T) {
 	var toolLine, neverLine string
 	for line := range strings.Lines(out) {
 		switch {
-		case strings.Contains(line, "never reads:") && !strings.Contains(line, "trace directory"): // the deny-list line, not the trace-directory one
+		case strings.Contains(line, "never reads:") && !strings.Contains(line, "trace directory") && !strings.Contains(line, "state folder"): // the deny-list line, not the trace-directory or state-folder one
 			neverLine = line
 		case strings.Contains(line, "read_file"):
 			toolLine = line

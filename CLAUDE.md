@@ -127,8 +127,17 @@ go run . -mode info [-config file]               # print config, built-in + MCP 
                                                  # starts each MCP server; exit 1 if one failed, 130 on Ctrl+C
 go run . -mode plan                              # write a new objective in a chat (/save, /edit, /exit), then plan it
 go run . -mode plan -obj <file|text> [-y]        # plan an objective file (or text, saved to objective.md first); writes
-                                                 # <name>.plan.md after "Accept this plan? [Y/n]" (-y accepts; then no
-                                                 # terminal needed). Own defaults: GetDefaultConfig("plan")
+                                                 # <name>.plan.md after "Accept this plan? [Y/n]", then "Run now? [y/N]"
+                                                 # (y: main sets up a new agent for auto mode on the plan). -y accepts
+                                                 # AND runs; then no terminal needed. Own defaults: GetDefaultConfig("plan")
+go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you name (a non-plan file there is replaced
+                                                 # only after "Replace it? [y/N]"); the plan copies the objective in
+go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
+                                                 # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
+                                                 # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
+                                                 # the same command resumes: cut-off calls settled first (may ask).
+                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person, 130 Ctrl+C.
+                                                 # User guide: docs/auto-mode.md
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
@@ -145,6 +154,12 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools/builtin/` (`ReadFileTool`), `mcpconnect/` (MCP client connections + the adapter that
   wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
+- **`state/`** is auto mode's durable record (stdlib + `golang.org/x/sys` only): one append-only journal per run in a
+  private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, config.json}`, `traces/`, `locks/`), rebuilt
+  into state by reading a plan's runs oldest first (`Home.Load`, `Fold`). `Journal.Append` syncs each line before it
+  returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
+  OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
+  (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
 - **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
   package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
   and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
@@ -154,6 +169,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   only by `agent` and never imports it (that would be a cycle); the tools get the draft and a show function as
   arguments. Plan mode's state lives in `ChatSession.ModeDetails` (`*planModeDetails`, nil in chat); `/save` and `/edit`
   exist only when it is set.
+- **`agent/director/`** is auto mode's equivalent: the director's prompt, first message (`Message`, with `ToolLog` of the
+  worker's calls) and its verdict tools (`task_done`, `task_failed`, ending the turn). Same import rule as `planner`.
+  `agent/autodirector.go` (`judgeTask`) runs it on a shallow copy of the session with the read tools and `run_command`.
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,
@@ -191,23 +209,31 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   descriptor) and refuses a file swapped in after the check (`os.SameFile`; `DECISIONS.md § PR #31 review`).
   **Write tools** (`create_directory`, `write_file`) use `Workspace.resolveNewPath` (the path may not exist yet), which adds
   a write-deny on top of `checkPath`: `.git` and the `-config` file (`cfg.ConfigFile`) can be read but never written.
-  `write_file` opens an existing file without `O_TRUNC`, checks it on the descriptor (`os.SameFile`), and only then
-  truncates; a new file uses `O_EXCL`; it never creates parent directories; one call writes at most `maxWriteBytes`
+  **`write_file`, `edit_file` and `copy_file` never write into the file they change** (`Workspace.replaceFile`,
+  `tools/builtin/atomicwrite.go`): the new content goes to `.<name>.minagent-<hex>.tmp` in the same approved directory
+  (`O_EXCL`), is synced, and is renamed over the target, so a file is always all old or all new. `checkReplaceTarget`
+  allows only a new name or a regular file with one name; just before the rename, a new name must still be free and an
+  existing file must be the same, unchanged file (`replaceTarget.unchanged`), else the temp file is removed and the
+  call refused. An overwrite keeps the permission bits (not owner/ACLs; it is a new inode) (`DECISIONS.md § 1g built`).
+  `write_file` never creates parent directories; one call writes at most `maxWriteBytes`
   (1 MB; this is not a limit on total disk use). The approval question shows `approvalPreview`, not the whole content
   (`DECISIONS.md § Slice 4 built`).
   A new file or directory is created only through `Workspace.openDir` (the nearest existing directory above it, opened as its
   own `os.Root` and compared with the identity `resolveNewPath` approved), so a parent swapped for a symlink to `.git`
-  after the check can't redirect the write. `openExisting` refuses to open for writing a file with more than one name
-  (hard link), and `stillAtPath` refuses to truncate a file that was renamed away after it was opened
+  after the check can't redirect the write. `openExisting` (for writing) and `refuseHardLink` refuse a file with more
+  than one name (hard link), and `stillAtPath` refuses to replace a file that was renamed away after it was opened
   (`DECISIONS.md § PR #35 Copilot review`).
-  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `openForWrite`, streamed in 256 KB pieces with
+  `copy_file` (source `resolvePath`, destination `resolveNewPath` + `openDir` + `replaceFile`, streamed in 256 KB pieces with
   the context checked, up to `copyFileMaxBytes` (default 100 MB), files only, no hard-linked source) and `move_file`
   (`resolvePathForWrite` + `resolveNewPath`, `openDir` on both parents, then `os.Root.Rename`: a real rename, no size cap,
   files only; across filesystems it fails with a message pointing at `copy_file`) check both paths
   (`DECISIONS.md § Slice 6 built`).
-  `edit_file` (`resolvePathForWrite` → `openExisting` read-write, no `O_TRUNC`) replaces an exact `old_string` that must
+  `edit_file` (`resolvePathForWrite` → `openDir` → `openExisting` read-only → `replaceFile`) replaces an exact `old_string` that must
   match once (or `replace_all`), refuses files over 1 MB or with a NUL byte, builds the result in memory, re-stats the
-  file just before writing (refuses if size or mtime changed), and serializes edits of one file. The trace cuts file
+  file just before the rename (refuses if size or mtime changed), and serializes edits of one file (re-resolving the
+  path once it holds the lock, since the edit before it made a new file). **Every write tool
+  implements `tools.FileTool`** (`ChangedPaths`, through `Workspace.changedPaths`), so auto mode's journal can hash what
+  it changes; `Test_Unit_BuiltinFileTools` lists them. The trace cuts file
   bodies (`trace.shortenArguments`); the approval question is one summary per call (`DECISIONS.md § Slice 5 built`).
 - **After a trim, a context window must start at a `user` message.** Windows trim by message count
   and a turn is several messages, so a trim can land mid-turn: on a tool result (providers reject an
@@ -244,7 +270,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `allowed_by_user` | `allowed_by_config`). The user is asked only through `cs.PromptAllowDenyCall`, which `chatLoop`
   sets for a `ttyReader` and which reads through the line editor (`AskYesNo`), never a raw stdin read (a second
   reader would steal the next prompt line); `nil` means nobody to ask, so an ask is denied. Model text shown in the
-  question is printed with `%q`. A new path that runs tools must go through this check. Rules match model-facing
+  question is printed with `%q`. A new path that runs tools must go through this check (and through
+  `cs.ToolJournal`, which in auto mode records the call before it runs and after it returns; not recorded = not run). Rules match model-facing
   names (`<server>_<tool>`, case-insensitive), are built before any MCP server starts, and an invalid rule or an
   unknown `approval` value fails setup. `hooks` holds no rules of its own: the defaults are `GetDefaultConfig()`
   (`denyRules` empty; `askRules` `*delete*`, `*remove*` and the write tools), and a config file's list replaces that

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -31,6 +32,9 @@ type ChatSession struct {
 	// AllowAskRules runs ask-rule calls without asking: approval "allow-all", confirmed by the user at chat startup
 	// (confirmAllowAll). It never affects deny rules.
 	AllowAskRules bool
+	// ToolJournal records every tool call that runs, before and after (auto mode's run journal); nil = not recorded
+	// (chat and plan mode). See executeToolCall.
+	ToolJournal toolRecorder
 	// ModeDetails holds what one mode keeps on the session: *planModeDetails in plan mode, nil in chat mode. Code that
 	// needs a mode's fields checks for its type (cs.ModeDetails.(*planModeDetails)), so the session itself stays
 	// mode-agnostic.
@@ -39,6 +43,14 @@ type ChatSession struct {
 	// except what Output's doc comment lists. NewChatSession sets chat mode's chatOutput on OutBuffer; code that swaps
 	// OutBuffer must set Output too.
 	Output Output
+}
+
+// toolRecorder records tool calls around their run (ChatSession.ToolJournal; auto mode's runToolJournal).
+type toolRecorder interface {
+	// recordCall records that call (to tool, with args) is about to run, and returns the context to run it with and a
+	// function to call once it returns, whose error means the end could not be recorded (the caller must not report the
+	// call as done). An error from recordCall means it could not be recorded: the call must not run.
+	recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error)
 }
 
 // ModeDetails is what one mode keeps on a ChatSession (ChatSession.ModeDetails); each mode that needs any has its own

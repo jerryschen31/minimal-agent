@@ -1,7 +1,8 @@
 # PLAN: objective → plan → run, iterated (autonomous mode v2)
 
 Status: **shape agreed 2026-11-08; steps 1 (formats, except `state/`) and 2 (plan mode, first plan) built
-2026-11-08/09.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
+2026-11-08/09; step 3 (run a plan) built 2026-11-20 as `PLAN-auto-mode.md` step 1, with an append-only journal
+instead of `state.json`.** Supersedes `PLAN-plan-mode.md` (whose steps 1–2, the `objective/`
 package and the `-mode plan` stub, are built and get refactored here). Decisions: the `DECISIONS.md § 2026-11-08`
 entries (redesign; plan mode confirms by default; full governance tabled; simplified plan/run shape agreed).
 
@@ -121,6 +122,9 @@ done when: the submission ID is in submission.md
 
 ## `state.json` (one snapshot per run)
 
+> **Superseded 2026-11-19 by `PLAN-auto-mode.md`:** an append-only journal (`runs/NNNN/journal.jsonl`) replaces the
+> snapshot, and step 3 is planned there (`DECISIONS.md § 2026-11-19 — Autonomous mode v1`).
+
 Written by Go during the run and frozen when it ends; the next run starts from the latest snapshot. Never holds
 secrets.
 
@@ -239,8 +243,9 @@ A first plan shows every task as `+`. A large re-run says so ("re-runs 14 tasks"
 
 1. **Formats.** `mdscan/`, `plan/` and `objective/` v2 **built 2026-11-08** (`DECISIONS.md § mdscan/ and plan/ built`,
    `§ objective/ v2 built`), with docs (`docs/objective-format.md`, `docs/plan-format.md`) and examples (an objective
-   and the plan made from it); the stub reads with `objective.Parse`. Still to do: `state/` (types, load/save/latest,
-   run dirs, lock, file hashes).
+   and the plan made from it); the stub reads with `objective.Parse`. `state/` (types, load/save/latest, run dirs,
+   lock, file hashes) **moved to the start of step 3**: a first plan never reads state (`DECISIONS.md § state/ moves
+   to step 3`); its skeleton is in `SESSION.md`'s last entry, waiting for Jerry's review.
 2. **First plan.** **Built 2026-11-09** (`DECISIONS.md § Step 2 built: plan mode`): `ErrEndTurn`; `propose_plan`
    (first-plan form) and `update_objective` in `agent/planner/`; per-mode defaults; plan mode through
    `SetupAgent`/`RunAgent`; the objective chat (`/save`, `/edit`); `Accept? [Y/n]` and revise; `-objective` file or

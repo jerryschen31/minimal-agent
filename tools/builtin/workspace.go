@@ -24,6 +24,7 @@ var writeDeniedNames = []string{".git"}
 type Workspace struct {
 	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
 	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
+	stateDir string   // absolute path of auto mode's state folder (run journals), symlinks resolved; "" = none (SetStateDir)
 	deny     DenyList // names never touched (the built-ins plus config denyPaths)
 	// writeDeny: names that may be read but never written, created or deleted by a file tool (see writeDeniedNames)
 	writeDeny []pathPattern
@@ -31,6 +32,9 @@ type Workspace struct {
 	// for the file tools, so the model can't rewrite its own approval rules.
 	configFile string
 	rootInfo   os.FileInfo // rootDir as checked by NewWorkspace; openRoot refuses a directory that isn't this one
+	// beforeRename, if not nil, runs in replaceFile after the temporary file is complete and before the last check and
+	// the rename; tests use it to look at both files, or to swap the target, at that moment
+	beforeRename func()
 }
 
 // NewWorkspace checks and resolves workDir (must be an existing directory) and traceDir (need not exist yet; must not
@@ -169,6 +173,28 @@ func (w *Workspace) resolveNewPath(requested string) (newTarget, error) {
 	return w.anchorFor(requested, rel, real)
 }
 
+// changedPaths resolves each requested path as a write tool resolves the path it writes (resolveNewPath) and returns
+// them absolute, for FileTool.ChangedPaths.
+//
+// Notes:
+//   - The same checks as the write itself (inside workDir, not deny-listed, not write-denied), so a path the call would
+//     refuse is an error here too, and is never hashed. An empty path is an error.
+//   - Existing parts of a path have their symlinks resolved; the path may not exist yet.
+func (w *Workspace) changedPaths(requested ...string) ([]string, error) {
+	out := make([]string, 0, len(requested))
+	for _, r := range requested {
+		if r == "" {
+			return nil, errors.New("missing path")
+		}
+		t, err := w.resolveNewPath(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, filepath.Join(w.rootDir, t.rel))
+	}
+	return out, nil
+}
+
 // anchorFor returns the newTarget for rel (relative to rootDir; real is the same path, absolute): rel together with the
 // deepest directory that exists above it and that directory's identity.
 //
@@ -236,7 +262,7 @@ func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.R
 // Notes:
 //   - Returns a newTarget (the path relative to rootDir, and the directory above it with its identity, for openDir) and
 //     the file's identity, for openExisting.
-//   - Used by tools that edit a file in place (edit_file) or take it away (move_file). A file that doesn't exist is an
+//   - Used by tools that change an existing file (edit_file) or take it away (move_file). A file that doesn't exist is an
 //     error, with resolvePath's message.
 func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error) {
 	rel, info, err := w.resolvePath(requested)
@@ -269,7 +295,7 @@ func (w *Workspace) checkWritable(requested, rel string, isDir bool) error {
 	return nil
 }
 
-// checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
+// checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir or stateDir.
 //
 // Notes:
 //   - requested is used only in error messages.
@@ -291,7 +317,35 @@ func (w *Workspace) checkPath(requested, real string) (rel string, err error) {
 	if w.traceDir != "" && isWithin(w.traceDir, real) {
 		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)
 	}
+	if w.stateDir != "" && isWithin(w.stateDir, real) {
+		return "", fmt.Errorf("%s is blocked: it is inside the agent's state folder (its own run journals)", requested)
+	}
 	return rel, nil
+}
+
+// SetStateDir makes the file tools refuse everything inside dir, auto mode's state folder (run journals, plan copies,
+// run traces), like the trace directory.
+//
+// Notes:
+//   - Call it once, right after NewWorkspace and before any tool uses the workspace (the workspace is shared without a
+//     lock because it doesn't change after setup).
+//   - dir need not exist yet. It is matched by its resolved path, whatever its name. "" does nothing.
+//   - A dir that is workDir or contains it is an error: the file tools could reach nothing.
+//   - [agent] Usually the folder is outside workDir and unreachable anyway; this matters when workDir contains it (say,
+//     -workdir ~). run_command is not stopped by it (DECISIONS.md § run_command built: not contained).
+func (w *Workspace) SetStateDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	real, err := resolveSymLinks(dir)
+	if err != nil {
+		return fmt.Errorf("stateDir %q: %w", dir, err)
+	}
+	if isWithin(real, w.rootDir) {
+		return fmt.Errorf("stateDir %q is workDir or contains it, so the file tools could reach nothing", dir)
+	}
+	w.stateDir = real
+	return nil
 }
 
 // openRoot opens rootDir as an *os.Root, the second line of defence: it refuses ".." and symlink escapes when the file
@@ -346,7 +400,8 @@ func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileI
 //     by name, so a hard link to .env or .git/config under an allowed name would otherwise pass them. Reading such a
 //     file is still allowed. Skipped where the OS gives no link count (linkCount).
 //   - A want that is a directory or not a regular file is refused before the open, so a write open never tries a
-//     directory or a pipe. A write tool truncates only after this returns, so a refused file is never emptied.
+//     directory or a pipe. Since 1g no caller opens for writing (the write tools rename a new file into place with
+//     replaceFile and check hard links with refuseHardLink); the write-open checks stay for any future caller.
 //   - Remaining gap: a directory above the file swapped in the moment between resolving the name and taking want;
 //     both then follow the new directory, so they match. Closing it would need the OS to report the opened file's
 //     real path.
@@ -388,9 +443,10 @@ func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.F
 //
 // Notes:
 //   - [agent] f is a descriptor on one inode. If another process renames the file after it was opened and puts a
-//     different file at rel, writing to f would change the old, unlinked inode, report success, and leave rel as it
-//     was. Comparing f with what rel names now (os.SameFile) catches that before anything is truncated.
-//   - Called just before the truncate; a very small window remains between this check and the truncate (accepted).
+//     different file at rel, the edit would be built from the old file and replace the new one. Comparing f with what
+//     rel names now (os.SameFile) catches that.
+//   - edit_file calls it just before replaceFile's rename; a very small window remains between this check and the
+//     rename (accepted).
 //   - requested names the file in errors.
 func (w *Workspace) stillAtPath(root *os.Root, requested, rel string, f *os.File) error {
 	open, err := f.Stat()

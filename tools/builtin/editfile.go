@@ -121,17 +121,17 @@ func (t *EditFileTool) lockFor(rel string) *sync.Mutex {
 //
 // Notes:
 //   - Order of defences: argument and size checks, resolvePathForWrite (workspace, deny list and write-deny checks),
-//     openRoot, openExisting (regular file, same file as checked, opened read-write WITHOUT O_TRUNC). Nothing is
-//     changed until the new content is built in memory.
+//     openRoot, openDir (the file's parent, the approved directory), openExisting read-only through it (regular file,
+//     same file as checked), refuseHardLink. Nothing is changed until the new content is built in memory.
 //   - The file must exist; a missing one is an error pointing at write_file. A file over maxBytes, or with a NUL byte,
 //     is refused, so a binary file is never rewritten.
 //   - [agent] The read-modify-write has a window: another process can change the file after it is read. Just before
-//     the write the file is stat'ed again and the edit is refused if its size or modification time changed. Locks
-//     can't stop another process, so a very small window remains (accepted; an atomic temp-file rename would close it
-//     at the cost of a new inode and mode on every edit).
-//   - Edits of the same file by this tool are serialized (lockFor); an edit and a write_file of one file are not.
-//   - The write is in place (truncate, then write), like write_file, so the mode is kept. Downside: a failure part-way
-//     (disk full) leaves a truncated file.
+//     the rename the file is stat'ed again and the edit is refused if its size or modification time changed, or if
+//     another file is now at the path. Locks can't stop another process, so a very small window remains (accepted).
+//   - Edits of the same file by this tool are serialized (lockFor); an edit and a write_file of one file are not. The
+//     path is resolved again once the lock is held: the edit before it replaced the file with a new one.
+//   - Atomic (replaceFile): the edited text goes to a temporary file renamed over the original, so a failure part-way
+//     leaves the original as it was. The mode is kept; the file is a new file (see write_file's downside).
 //   - The result is "edited x (N replacement(s), M bytes)". Errors name only the requested path and never print
 //     file content.
 func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
@@ -170,17 +170,31 @@ func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	mu := t.lockFor(rel)
 	mu.Lock()
 	defer mu.Unlock()
+	// [agent] again, under the lock: an edit of this file that held the lock before us replaced it with a new file
+	// (replaceFile), so the identity taken above may be the old one
+	target, want, err = t.ws.resolvePathForWrite(params.Path)
+	if err != nil {
+		return "", missingFileHint(err, params.Path)
+	}
 
 	root, err := t.ws.openRoot()
 	if err != nil {
 		return "", err
 	}
 	defer root.Close()
-	f, before, err := t.ws.openExisting(root, params.Path, rel, want, os.O_RDWR)
+	dir, name, err := t.ws.openDir(root, params.Path, target) // the approved parent: the rename happens in it
+	if err != nil {
+		return "", err
+	}
+	defer dir.Close()
+	f, before, err := t.ws.openExisting(dir, params.Path, name, want, os.O_RDONLY)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
+	if err := refuseHardLink(params.Path, before); err != nil {
+		return "", err
+	}
 	if before.Size() > int64(t.maxBytes) {
 		return "", fmt.Errorf("%s is %d bytes; edit_file edits files up to %d bytes", params.Path, before.Size(), t.maxBytes)
 	}
@@ -203,31 +217,46 @@ func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (stri
 	if t.afterRead != nil {
 		t.afterRead()
 	}
-	// refuse if the file changed since it was read; the new content is already built, so only I/O can fail after this
-	now, err := f.Stat()
+	// just before the rename: refuse if the file changed since it was read, or another file is at the path now
+	unchanged := func() error {
+		now, err := f.Stat()
+		if err != nil {
+			return errMsgHidePath(params.Path, err)
+		}
+		if now.Size() != before.Size() || !now.ModTime().Equal(before.ModTime()) {
+			return fmt.Errorf("%s changed while it was being edited; read it again and retry", params.Path)
+		}
+		return t.ws.stillAtPath(dir, params.Path, name, f)
+	}
+	old := replaceTarget{existing: before, perm: before.Mode().Perm(), verb: "overwrote"}
+	err = t.ws.replaceFile(dir, params.Path, name, old, unchanged, func(w io.Writer) error {
+		if _, err := io.WriteString(w, edited); err != nil {
+			return errMsgHidePath(params.Path, err)
+		}
+		return nil
+	})
 	if err != nil {
-		return "", errMsgHidePath(params.Path, err)
-	}
-	if now.Size() != before.Size() || !now.ModTime().Equal(before.ModTime()) {
-		return "", fmt.Errorf("%s changed while it was being edited; read it again and retry", params.Path)
-	}
-	if err := t.ws.stillAtPath(root, params.Path, rel, f); err != nil {
 		return "", err
-	}
-	if err := f.Truncate(0); err != nil {
-		return "", errMsgHidePath(params.Path, err)
-	}
-	if _, err := f.WriteAt([]byte(edited), 0); err != nil {
-		return "", errMsgHidePath(params.Path, err)
-	}
-	if err := f.Close(); err != nil {
-		return "", errMsgHidePath(params.Path, err)
 	}
 	noun := "replacements"
 	if n == 1 {
 		noun = "replacement"
 	}
 	return fmt.Sprintf("edited %s (%d %s, %d bytes)", filepath.ToSlash(rel), n, noun, len(edited)), nil
+}
+
+// ChangedPaths returns the file an edit_file call with args would edit, for auto mode's journal (tools.FileTool).
+//
+// Notes:
+//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+func (t *EditFileTool) ChangedPaths(args json.RawMessage) ([]string, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return t.ws.changedPaths(p.Path)
 }
 
 // missingFileHint adds "use write_file to create it" to a not-found error from resolvePathForWrite.

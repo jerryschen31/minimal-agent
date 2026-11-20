@@ -3,8 +3,10 @@ package agent
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -19,12 +21,12 @@ import (
 
 // validPlanArgs are propose_plan arguments for a two-task plan that passes every check.
 const validPlanArgs = `{"title":"Word counter","summary":"Write it, then test it.","tasks":[` +
-	`{"id":"t1","title":"Write wc.go","needs":"write files in the working directory","done_when":"wc.go exists"},` +
-	`{"id":"t2","title":"Test it","depends":["t1"],"needs":"run go test","done_when":"go test passes"}]}`
+	`{"id":"t1","title":"Write wc.go","needs":"write files in the working directory","done_when":"wc.go exists","body":"Count words on stdin."},` +
+	`{"id":"t2","title":"Test it","depends":["t1"],"needs":"run go test","done_when":"go test passes","body":"Run go test."}]}`
 
 // oneTaskPlanArgs are propose_plan arguments for a one-task plan that passes every check.
 const oneTaskPlanArgs = `{"title":"Line counter","summary":"Write it.","tasks":[` +
-	`{"id":"t1","title":"Write lc.go","needs":"write files in the working directory","done_when":"lc.go exists"}]}`
+	`{"id":"t1","title":"Write lc.go","needs":"write files in the working directory","done_when":"lc.go exists","body":"Count lines on stdin."}]}`
 
 // proposeCall returns an assistant reply that calls propose_plan with args.
 func proposeCall(id, args string) model.ChatMessage {
@@ -224,8 +226,8 @@ func Test_Unit_RunPlanMode_TerminalUnlessObjectiveAndYes(t *testing.T) {
 	writePlanFor(t, path, countObjective, validPlanArgs)
 	fx.Session.InBuffer = strings.NewReader("")
 	fx.Session.Config.AssumeYes = true
-	if err := runPlanMode(t.Context(), nil, fx.Session); err != nil {
-		t.Fatalf("runPlanMode with -objective and -yes: %v", err)
+	if err := runPlanMode(t.Context(), nil, fx.Session); !isRunPlan(err) {
+		t.Fatalf("runPlanMode with -objective and -yes: %v, want *ErrRunPlan", err)
 	}
 	if !strings.Contains(fx.Out.String(), "is up to date") {
 		t.Errorf("output lacks the up-to-date line:\n%s", fx.Out.String())
@@ -258,8 +260,8 @@ func Test_Unit_PlanMode_ObjectiveFlag_TextPlannedWithYes(t *testing.T) {
 	fx.Session.Config.ObjectiveFile = "Count words in a file."
 	fx.Session.Config.AssumeYes = true
 	fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
-	if err := runPlanModeWith(t, fx, ""); err != nil {
-		t.Fatalf("planMode: %v", err)
+	if err := runPlanModeWith(t, fx, ""); !isRunPlan(err) {
+		t.Fatalf("planMode: %v, want *ErrRunPlan (-yes also runs the plan)", err)
 	}
 	if data, _ := os.ReadFile("objective.md"); string(data) != "Count words in a file.\n" {
 		t.Errorf("objective.md = %q", data)
@@ -442,6 +444,37 @@ func Test_Unit_PlanMode_Accept_Writes(t *testing.T) {
 	}
 }
 
+// - Verify the new plan is shown in full (its file without the front matter) before the summary and the question
+// - Verify the planner's reply text (here the plan as JSON) is not printed, and is printed with -debug
+func Test_Unit_PlanMode_ShowsPlanBodyNotPlannerText(t *testing.T) {
+	for _, debug := range []bool{false, true} {
+		t.Run(fmt.Sprintf("debug=%v", debug), func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			if debug {
+				fx.Session.Output = newPlanOutput(fx.Out, true)
+			}
+			call := proposeCall("call_1", validPlanArgs)
+			call.Content = "```json\n{\"title\": \"Word counter\"}\n```"
+			fx.Provider.Script = []model.ChatMessage{call}
+			if err := runPlanModeWith(t, fx, "y\n"); err != nil {
+				t.Fatalf("planMode: %v", err)
+			}
+			out := fx.Out.String()
+			body := acceptedPlan(t, path, countObjective, validPlanArgs).Body()
+			bodyAt, summaryAt, askAt := strings.Index(out, body), strings.Index(out, "Plan 1 (Word counter)"), strings.Index(out, "Accept this plan?")
+			if bodyAt < 0 || !(bodyAt < summaryAt && summaryAt < askAt) {
+				t.Errorf("want the plan body, then the summary, then the question:\n%s", out)
+			}
+			if strings.Contains(out, "objective_hash") {
+				t.Errorf("output shows the front matter:\n%s", out)
+			}
+			if got := strings.Contains(out, "```json"); got != debug {
+				t.Errorf("planner text shown = %v, want %v:\n%s", got, debug, out)
+			}
+		})
+	}
+}
+
 // - Verify declining the plan, then declining the chat, or Ctrl+D at Accept, the chat question or the change question writes nothing
 // - Verify each prints the No-plan-written line and returns no error, and a blank change answer asks again
 func Test_Unit_PlanMode_Decline_NoPlanWritten(t *testing.T) {
@@ -514,7 +547,13 @@ func Test_Unit_PlanMode_Revise_ThenAccept(t *testing.T) {
 	checkNoConsecutiveUserMessages(t, fx)
 
 	chat := fx.Provider.Calls[1]
-	wantNote := planner.RevisionNote(acceptedPlan(t, path, countObjective, validPlanArgs), "lines, not words")
+	turnedDown := acceptedPlan(t, path, countObjective, validPlanArgs)
+	if len(chat) == 2 { // each plan gets a random plan_id: use the one the turned-down plan had
+		if m := regexp.MustCompile(`plan_id: (\S+)`).FindStringSubmatch(chat[1].Content); m != nil {
+			turnedDown.PlanID = m[1]
+		}
+	}
+	wantNote := planner.RevisionNote(turnedDown, "lines, not words")
 	if len(chat) != 2 || chat[0].Role != "system" || chat[1].Role != "user" || chat[1].Content != wantNote {
 		t.Errorf("chat request = %+v, want the system message and one user message %q", chat, wantNote)
 	}
@@ -735,17 +774,69 @@ func Test_Unit_PlanMode_NewObjective_OldPlanKeptUntilAccepted(t *testing.T) {
 
 // ---- runPlanner ----
 
-// - Verify a planner that replies with text and never calls propose_plan is the error "stopped without proposing a plan", with nothing written
+//   - Verify a planner that replies with text and never calls propose_plan is reminded plannerReminders times, then is
+//     the error "stopped without proposing a plan" showing its last reply and how to plan again, with nothing written
+//   - Verify each reminder is one user message after the planner's reply (never two user messages in a row)
 func Test_Unit_PlanMode_PlannerNoProposal(t *testing.T) {
 	fx, _, path := newFlagPlanFixture(t, countObjective)
 	fx.Session.Config.AssumeYes = true
-	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("Here is my plan: do it.")}
-	err := runPlanModeWith(t, fx, "")
-	if err == nil || !strings.Contains(err.Error(), "stopped without proposing a plan") {
-		t.Errorf("err = %v, want stopped without proposing a plan", err)
+	fx.Provider.Script = []model.ChatMessage{
+		modeltest.AssistantText("I'll now call propose_plan."),
+		modeltest.AssistantText("Calling it now."),
+		modeltest.AssistantText("Here is my plan:\ndo it."),
 	}
+	err := runPlanModeWith(t, fx, "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"stopped without proposing a plan", "reminded 2 times", "Its last reply:\n  Here is my plan:\n  do it.",
+		"-mode plan -objective " + path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err lacks %q:\n%v", want, err)
+		}
+	}
+	if len(fx.Provider.Calls) != 1+plannerReminders {
+		t.Fatalf("model calls = %d, want %d", len(fx.Provider.Calls), 1+plannerReminders)
+	}
+	last := fx.Provider.Calls[plannerReminders]
+	if m := last[len(last)-1]; m.Role != "user" || m.Content != planner.ProposeReminder {
+		t.Errorf("last request ends with %s %q, want the reminder", m.Role, m.Content)
+	}
+	checkNoConsecutiveUserMessages(t, fx)
 	if _, err := os.Stat(plan.PathFor(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a plan file was written (%v)", err)
+	}
+}
+
+// - Verify a planner that replies with text, then calls propose_plan after one reminder, gets its plan written
+func Test_Unit_PlanMode_PlannerRemindedThenProposes(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	fx.Session.Config.AssumeYes = true
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("I'll now call propose_plan."), proposeCall("call_1", validPlanArgs)}
+	if err := runPlanModeWith(t, fx, ""); !isRunPlan(err) {
+		t.Fatalf("planMode: %v, want *ErrRunPlan (-yes also runs the plan)", err)
+	}
+	if len(fx.Provider.Calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(fx.Provider.Calls))
+	}
+	second := fx.Provider.Calls[1]
+	if n := len(second); n < 2 || second[n-2].Role != "assistant" || second[n-1].Content != planner.ProposeReminder {
+		t.Errorf("second request does not end with the planner's reply then the reminder: %+v", second)
+	}
+	if p := readPlanFile(t, plan.PathFor(path)); len(p.Tasks) != 2 {
+		t.Errorf("plan = %+v, want 2 tasks", p)
+	}
+}
+
+// - Verify plannerNoPlanError shows "(no text)" for an empty reply and cuts a long one with " …"
+func Test_Unit_PlannerNoPlanError_EmptyAndLongReply(t *testing.T) {
+	if err := plannerNoPlanError("  ", 2, "minagent -mode plan -objective goal.md"); !strings.Contains(err.Error(), "Its last reply:\n  (no text)\n") {
+		t.Errorf("empty reply: %v", err)
+	}
+	long := strings.Repeat("x", plannerReplyMax+10)
+	err := plannerNoPlanError(long, 2, "minagent -mode plan -objective goal.md").Error()
+	if !strings.Contains(err, strings.Repeat("x", plannerReplyMax)+" …") || strings.Contains(err, strings.Repeat("x", plannerReplyMax+1)) {
+		t.Errorf("long reply not cut at %d characters:\n%s", plannerReplyMax, err)
 	}
 }
 
@@ -755,8 +846,8 @@ func Test_Unit_PlanMode_ProposeRefusedThenRetried(t *testing.T) {
 	fx.Session.Config.AssumeYes = true
 	bad := `{"title":"Word counter","tasks":[{"id":"x1","title":"Write wc.go","needs":"write files","done_when":"wc.go exists"}]}`
 	fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", bad), proposeCall("call_2", validPlanArgs)}
-	if err := runPlanModeWith(t, fx, ""); err != nil {
-		t.Fatalf("planMode: %v", err)
+	if err := runPlanModeWith(t, fx, ""); !isRunPlan(err) {
+		t.Fatalf("planMode: %v, want *ErrRunPlan (-yes also runs the plan)", err)
 	}
 	if len(fx.Provider.Calls) != 2 {
 		t.Fatalf("expected 2 model calls (refused, retried), got %d", len(fx.Provider.Calls))
@@ -777,8 +868,8 @@ func Test_Unit_PlanMode_PlannerUsesMaxPlanTasks(t *testing.T) {
 	fx.Session.Config.AssumeYes = true
 	fx.Session.Config.MaxPlanTasks = 1
 	fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs), proposeCall("call_2", oneTaskPlanArgs)}
-	if err := runPlanModeWith(t, fx, ""); err != nil {
-		t.Fatalf("planMode: %v", err)
+	if err := runPlanModeWith(t, fx, ""); !isRunPlan(err) {
+		t.Fatalf("planMode: %v, want *ErrRunPlan (-yes also runs the plan)", err)
 	}
 	if len(fx.Provider.Calls) != 2 {
 		t.Fatalf("expected 2 model calls (refused, retried), got %d", len(fx.Provider.Calls))
@@ -827,5 +918,165 @@ func Test_Unit_PlanMode_PlannerInterrupted(t *testing.T) {
 	}
 	if _, err := os.Stat(plan.PathFor(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a plan file was written (%v)", err)
+	}
+}
+
+// ---- planMode with -plan ----
+
+//   - Verify -objective with -plan in another folder writes the plan exactly there, with "objective:" relative to the
+//     plan's folder, and the objective copied into "## Objective"
+func Test_Unit_PlanMode_PlanFlag_WritesThere(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	if err := os.Mkdir("plans", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx.Session.Config.PlanFile = filepath.Join("plans", "my-run.md")
+	fx.Session.Config.AssumeYes = true
+	fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
+	if err := runPlanModeWith(t, fx, ""); !isRunPlan(err) {
+		t.Fatalf("planMode: %v, want *ErrRunPlan (-yes also runs the plan)", err)
+	}
+	p := readPlanFile(t, filepath.Join("plans", "my-run.md"))
+	if p.ObjectivePath != "../goal.md" {
+		t.Errorf("objective: = %q, want ../goal.md", p.ObjectivePath)
+	}
+	if !strings.Contains(p.Objective, countObjective.ObjText) {
+		t.Errorf("plan's Objective = %q, want the objective copied", p.Objective)
+	}
+	if _, err := os.Stat(plan.PathFor(path)); err == nil {
+		t.Errorf("a plan was also written next to the objective")
+	}
+}
+
+// - Verify a -plan whose folder doesn't exist is an error before any model call
+func Test_Unit_PlanMode_PlanFlag_MissingFolder(t *testing.T) {
+	fx, _, _ := newFlagPlanFixture(t, countObjective)
+	fx.Session.Config.PlanFile = filepath.Join("nowhere", "run.md")
+	err := runPlanModeWith(t, fx, "")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("err = %v, want a missing-folder error", err)
+	}
+	if len(fx.Provider.Calls) != 0 {
+		t.Errorf("expected no model call, got %d", len(fx.Provider.Calls))
+	}
+}
+
+//   - Verify a -plan file that exists and isn't a plan (the user's notes) is replaced only after "Replace it? [y/N]":
+//     no (and Ctrl+D) keeps it and prints the replan command with -plan; yes replaces it; -yes refuses with an error
+func Test_Unit_PlanMode_PlanFlag_ReplacesNonPlanOnlyIfAsked(t *testing.T) {
+	const notes = "# My notes\n\nKeep these.\n"
+	tests := []struct {
+		name, answers string
+		yes, replaced bool
+		wantErr       string
+	}{
+		{"no", "y\nn\n", false, false, ""},
+		{"Ctrl+D", "y\n", false, false, ""},
+		{"yes", "y\ny\n", false, true, ""},
+		{"-yes refuses", "", true, false, "-yes doesn't replace it"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			if err := os.WriteFile("notes.md", []byte(notes), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fx.Session.Config.PlanFile = "notes.md"
+			fx.Session.Config.AssumeYes = tt.yes
+			fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
+			err := runPlanModeWith(t, fx, tt.answers)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("err = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("planMode: %v", err)
+			}
+			data, _ := os.ReadFile("notes.md")
+			if replaced := string(data) != notes; replaced != tt.replaced {
+				t.Errorf("replaced = %v, want %v; file:\n%s", replaced, tt.replaced, data)
+			}
+			if !tt.replaced && tt.wantErr == "" {
+				if want := noPlanLine(path) + " -plan notes.md"; !strings.Contains(fx.Out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, fx.Out.String())
+				}
+			}
+			if !tt.yes && !strings.Contains(fx.Out.String(), "notes.md exists and is not a plan. Replace it? [y/N]") {
+				t.Errorf("the replace question was not asked:\n%s", fx.Out.String())
+			}
+		})
+	}
+}
+
+// - Verify an up-to-date plan at the -plan path is shown, as one next to the objective is, with no model call
+func Test_Unit_PlanMode_PlanFlag_UpToDatePlan(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	p := acceptedPlan(t, path, countObjective, validPlanArgs)
+	if err := os.WriteFile("run.md", []byte(p.Markdown()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.Session.Config.PlanFile = "run.md"
+	if err := runPlanModeWith(t, fx, ""); err != nil {
+		t.Fatalf("planMode: %v", err)
+	}
+	if !strings.Contains(fx.Out.String(), "run.md is up to date with") || len(fx.Provider.Calls) != 0 {
+		t.Errorf("calls %d, output:\n%s", len(fx.Provider.Calls), fx.Out.String())
+	}
+}
+
+// - Verify objectivePathFromPlan writes the objective's path relative to the plan's folder, with "/" separators
+func Test_Unit_ObjectivePathFromPlan(t *testing.T) {
+	tests := []struct{ planPath, objPath, want string }{
+		{"goal.plan.md", "goal.md", "goal.md"},
+		{"plans/run.md", "goal.md", "../goal.md"},
+		{"run.md", "docs/goal.md", "docs/goal.md"},
+	}
+	for _, tt := range tests {
+		if got := objectivePathFromPlan(tt.planPath, tt.objPath); got != tt.want {
+			t.Errorf("objectivePathFromPlan(%q, %q) = %q, want %q", tt.planPath, tt.objPath, got, tt.want)
+		}
+	}
+}
+
+// isRunPlan reports whether err is plan mode's "run this plan next" (*ErrRunPlan): what -yes now ends with.
+func isRunPlan(err error) bool {
+	_, ok := errors.AsType[*ErrRunPlan](err)
+	return ok
+}
+
+//   - Verify "Run now? [y/N]" after a plan is written: y returns *ErrRunPlan with the written plan's path; n, an empty
+//     line and Ctrl+D return nil and print the command that runs it later
+//   - Verify it is not asked when the plan is turned down
+func Test_Unit_PlanMode_RunNow(t *testing.T) {
+	tests := []struct {
+		name, input string
+		run, asked  bool
+	}{
+		{"y", "y\ny\n", true, true},
+		{"n", "y\nn\n", false, true},
+		{"default no", "y\n\n", false, true},
+		{"Ctrl+D", "y\n", false, true},
+		{"plan turned down", "n\nn\n", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
+			err := runPlanModeWith(t, fx, tt.input)
+			out := fx.Out.String()
+			if asked := strings.Contains(out, "Run now? [y/N]: "); asked != tt.asked {
+				t.Errorf("asked = %v, want %v:\n%s", asked, tt.asked, out)
+			}
+			next, ok := errors.AsType[*ErrRunPlan](err)
+			if ok != tt.run || ok && next.Path != plan.PathFor(path) {
+				t.Errorf("err = %v, want run %v of %s", err, tt.run, plan.PathFor(path))
+			}
+			if !tt.run && err != nil {
+				t.Errorf("err = %v, want nil", err)
+			}
+			if tt.asked && !tt.run && !strings.Contains(out, "To run it later: minagent -mode auto -plan "+plan.PathFor(path)) {
+				t.Errorf("no command printed:\n%s", out)
+			}
+		})
 	}
 }

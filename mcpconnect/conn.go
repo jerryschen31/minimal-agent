@@ -277,6 +277,21 @@ func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return h.base.RoundTrip(req)
 }
 
+// ServerInfo returns the name and version the server reported when it connected (its initialize reply); "" when it
+// sent none.
+//
+// Notes:
+//   - The server's own claim, unchecked: shown by info mode and recorded in auto mode's run manifest, never trusted.
+func (s *McpConnection) ServerInfo() (name, version string) {
+	if s.Session == nil {
+		return "", ""
+	}
+	if res := s.Session.InitializeResult(); res != nil && res.ServerInfo != nil {
+		return res.ServerInfo.Name, res.ServerInfo.Version
+	}
+	return "", ""
+}
+
 // Close closes an MCP server connection.
 //
 // Notes:

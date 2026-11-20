@@ -52,7 +52,7 @@ func Cleanup(data []byte) (Plan, []Fix, error) {
 	}
 	fixes = append(fixes, headingFixes...)
 
-	p := Plan{Format: fm.format, ObjectivePath: fm.objective, ObjectiveHash: fm.objectiveHash, Version: fm.version}
+	p := Plan{Format: fm.format, PlanID: fm.planID, ObjectivePath: fm.objective, ObjectiveHash: fm.objectiveHash, Version: fm.version}
 	seen := map[string]int{} // known section name → line of its heading
 	var heads []line         // each task's heading line, for the AssignTaskIDs fixes
 	for _, s := range sections {
@@ -69,6 +69,8 @@ func Cleanup(data []byte) (Plan, []Fix, error) {
 		case HeadingPlan:
 			p.Title = s.title
 			p.Summary, f = tidyBody(s.lines)
+		case HeadingObjective:
+			p.Objective, f = tidyBody(s.lines)
 		case HeadingAssumptions:
 			p.Assumptions, f = tidyBody(s.lines)
 		case HeadingTasks:
@@ -100,6 +102,7 @@ func Cleanup(data []byte) (Plan, []Fix, error) {
 // frontMatter holds the front-matter keys this version knows.
 type frontMatter struct {
 	format        string // "format:"; FormatV1 when absent
+	planID        string // "plan_id:"
 	objective     string // "objective:"
 	objectiveHash string // "objective_hash:"
 	version       int    // "plan_version:"; 0 when absent
@@ -112,7 +115,7 @@ type frontMatter struct {
 //   - No front matter, or no "format:" line → FormatV1.
 //   - An unknown key is a fix with Now "" (warned about and ignored), so a newer file still runs on an older binary.
 //   - Errors: an unknown format (lists SupportedFormats); a plan_version that isn't a whole number (at most 9 digits);
-//     a line without ":"; no closing "---".
+//     a plan_id with a space; a line without ":"; no closing "---".
 //   - Only flat "key: value" lines (no YAML library); keys in any case; blank lines inside the block are skipped.
 func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error) {
 	start := 0
@@ -146,6 +149,11 @@ func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, er
 					l.Num, value, strings.Join(SupportedFormats, ", "))
 			}
 			fm.format = value
+		case "plan_id":
+			if strings.ContainsAny(value, " \t") {
+				return frontMatter{}, nil, nil, fmt.Errorf("line %d: plan_id %q has a space; it must be one word", l.Num, value)
+			}
+			fm.planID = value
 		case "objective":
 			fm.objective = value
 		case "objective_hash":
@@ -168,7 +176,8 @@ func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, er
 // Notes:
 //   - Headings inside ``` or ~~~ fences are ignored (mdscan.IsCodeBlockFence).
 //   - A known section at any level starts that section ("# Plan: <title>", "## Assumptions", "## Tasks"); a fix when
-//     the line isn't exactly the standard heading.
+//     the line isn't exactly the standard heading. "Objective" only at level 1 or 2: deeper it is a subheading.
+//   - Inside Objective: every heading of level 3 or deeper is a body line (the copied objective's own headings).
 //   - Inside Tasks: a level-3 heading, or any heading with a task ID ("## t2: …"), stays a body line of Tasks
 //     (parseTasks makes it a task); level 4 and deeper without an ID stays a body line too (a subheading in a task).
 //   - Outside Tasks: a heading with a task ID (any level) is an error: every task must be under "## Tasks". An
@@ -191,8 +200,8 @@ func splitSections(lines []line) ([]rawSection, []Fix, error) {
 		if !inFence {
 			level, text, isHeading = mdscan.ReadHeading(l.Text, knownHeading)
 		}
-		if !isHeading {
-			cur.lines = append(cur.lines, l)
+		if !isHeading || (cur.name == HeadingObjective && level >= 3) {
+			cur.lines = append(cur.lines, l) // [agent] the copied objective's own headings ("### Instructions") stay in it
 			continue
 		}
 
@@ -203,7 +212,7 @@ func splitSections(lines []line) ([]rawSection, []Fix, error) {
 			}
 			continue
 		}
-		if name, known := sectionName(text); known {
+		if name, known := sectionName(text); known && (name != HeadingObjective || level <= 2) {
 			sections = append(sections, rawSection{name: name, heading: name, line: l.Num})
 			if want := headingLine(name); l.Text != want {
 				fixes = append(fixes, Fix{Line: l.Num, Was: l.Text, Now: want})
@@ -266,7 +275,8 @@ func planTitle(text string) (string, bool) {
 	return "", false
 }
 
-// sectionName maps heading text to HeadingAssumptions or HeadingTasks, or reports false for an unknown section.
+// sectionName maps heading text to HeadingObjective, HeadingAssumptions or HeadingTasks, or reports false for an unknown
+// section.
 //
 // Notes:
 //   - Lenient: any case, surrounding spaces, a trailing ":", the singular or plural ("Task", "Assumption").
@@ -274,6 +284,8 @@ func planTitle(text string) (string, bool) {
 func sectionName(text string) (string, bool) {
 	h := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(text), ":")))
 	switch h {
+	case "objective", "objectives":
+		return HeadingObjective, true
 	case "assumptions", "assumption":
 		return HeadingAssumptions, true
 	case "tasks", "task":

@@ -183,6 +183,14 @@ func Test_Unit_ValidateMode(t *testing.T) {
 		{"config chat with -yes", withMode(ModeChat), Flags{Yes: new(true)}, "-yes only applies"},
 		{"config info with -yes=false", withMode(ModeInfo), Flags{Yes: new(false)}, "-yes only applies"},
 		{"config bogus", withMode("bogus"), Flags{}, "-mode must be one of"},
+		{"config auto with -plan", withMode(ModeAuto), Flags{Plan: new("p.md")}, ""},
+		{"config auto with -plan and -yes", withMode(ModeAuto), Flags{Plan: new("p.md"), Yes: new(true)}, ""},
+		{"config auto without -plan", withMode(ModeAuto), Flags{}, "requires -plan"},
+		{"config auto with -objective", withMode(ModeAuto), Flags{Plan: new("p.md"), Objective: new("o.md")}, "-objective only applies"},
+		{"config auto with --json", withMode(ModeAuto), Flags{Plan: new("p.md"), JSON: new(true)}, "--json only applies"},
+		{"config plan with -plan", withMode(ModePlan), Flags{Plan: new("p.md")}, ""},
+		{"config plan with -objective and -plan", withMode(ModePlan), Flags{Objective: new("o.md"), Plan: new("p.md")}, ""},
+		{"config chat with -plan", withMode(ModeChat), Flags{Plan: new("p.md")}, "-plan only applies"},
 		{"-mode info overlaid, with --json", FlagsOverlay(GetDefaultConfig(ModeChat), Flags{Mode: new(ModeInfo)}),
 			Flags{Mode: new(ModeInfo), JSON: new(true)}, "--json only applies"},
 	}
@@ -376,5 +384,53 @@ func Test_Unit_FlagsOverlay_Yes(t *testing.T) {
 	cfg.AssumeYes = true
 	if FlagsOverlay(cfg, Flags{Yes: new(false)}).AssumeYes {
 		t.Errorf("expected -yes=false to clear AssumeYes")
+	}
+}
+
+// - Verify -mode autonomous is parsed as auto, -plan is recorded and overlaid as PlanFile, and -y works with auto
+// - Verify an empty -plan is an error, and auto mode without -plan is an error at parse time
+func Test_Unit_ParseFlags_AutoMode(t *testing.T) {
+	for _, mode := range []string{"auto", "autonomous"} {
+		flags, err := ParseFlags([]string{"-mode", mode, "-plan", "my-run.md", "-y"}, io.Discard)
+		if err != nil {
+			t.Fatalf("-mode %s: %v", mode, err)
+		}
+		if flags.Mode == nil || *flags.Mode != ModeAuto {
+			t.Errorf("-mode %s parsed as %v, want %q", mode, flags.Mode, ModeAuto)
+		}
+		cfg := FlagsOverlay(GetDefaultConfig(ModeAuto), flags)
+		if cfg.AgentMode != ModeAuto || cfg.PlanFile != "my-run.md" || !cfg.AssumeYes {
+			t.Errorf("-mode %s overlay: mode %q, PlanFile %q, AssumeYes %v", mode, cfg.AgentMode, cfg.PlanFile, cfg.AssumeYes)
+		}
+	}
+	for name, args := range map[string][]string{
+		"empty -plan":   {"-mode", "auto", "-plan", " "},
+		"no -plan":      {"-mode", "autonomous"},
+		"-plan in chat": {"-mode", "chat", "-plan", "p.md"},
+	} {
+		if _, err := ParseFlags(args, io.Discard); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// - Verify FlagsForAuto sets auto mode, -plan and -yes, drops -objective, keeps the other flags, and passes validateMode
+func Test_Unit_FlagsForAuto(t *testing.T) {
+	f, err := ParseFlags([]string{"-mode", "plan", "-objective", "goal.md", "-model", "m1", "-workdir", ".", "-debug"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := FlagsForAuto(f, "goal.plan.md")
+	if *a.Mode != ModeAuto || *a.Plan != "goal.plan.md" || !*a.Yes || a.Objective != nil {
+		t.Errorf("mode %v, plan %v, yes %v, objective %v", *a.Mode, *a.Plan, *a.Yes, a.Objective)
+	}
+	if *a.Model != "m1" || *a.WorkDir != "." || !*a.Debug {
+		t.Errorf("other flags not kept: model %v, workdir %v, debug %v", *a.Model, *a.WorkDir, *a.Debug)
+	}
+	if err := a.validateMode(ModeAuto); err != nil {
+		t.Errorf("validateMode: %v", err)
+	}
+	if *f.Mode != ModePlan || f.Objective == nil {
+		t.Errorf("the original flags were changed")
 	}
 }

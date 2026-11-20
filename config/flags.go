@@ -15,7 +15,22 @@ const (
 	ModeOneshot  = "oneshot"
 	ModeInfo     = "info" // print what the agent would have (config, tools, MCP servers), it starts each MCP server to list its tools, then exits
 	ModePlan     = "plan" // write an objective with the user (or read one) and plan it (see PLAN-plan-apply.md)
+	ModeAuto     = "auto" // run a plan file's tasks without a person (see PLAN-auto-mode.md)
+
+	ModeAutonomous = "autonomous" // another name for ModeAuto; normalizeMode turns it into ModeAuto
 )
+
+// normalizeMode returns the mode's one name: ModeAutonomous becomes ModeAuto, anything else is returned as is.
+//
+// Notes:
+//   - Called on the -mode flag (ParseFlags) and on a config file's "agentMode" (SetDefaultConfig), so the rest of the
+//     code only ever sees ModeAuto.
+func normalizeMode(mode string) string {
+	if mode == ModeAutonomous {
+		return ModeAuto
+	}
+	return mode
+}
 
 type Flags struct {
 	Config    *string
@@ -30,7 +45,8 @@ type Flags struct {
 	Debug     *bool
 	Approve   *string
 	Objective *string // -objective or -obj: an objective file, or the objective's text
-	Yes       *bool   // -yes or -y: plan mode accepts the plan without asking
+	Plan      *string // -plan: the plan file (plan mode: where to write it; auto mode: the plan to run)
+	Yes       *bool   // -yes or -y: plan mode accepts the plan, auto mode runs it, without asking
 }
 
 // ParseFlags parses args (os.Args[1:]) into Flags and validates each value that was given.
@@ -43,7 +59,9 @@ type Flags struct {
 //   - -query and -q are the same flag, and so are -objective and -obj, and -yes and -y; a positional argument is an
 //     error.
 //   - -objective is only checked for being non-empty: it may name a file or be the objective's text, which plan mode
-//     tells apart when it starts.
+//     tells apart when it starts. -plan is only checked for being non-empty: plan mode may create it, auto mode reports
+//     a missing one when it starts.
+//   - -mode autonomous is turned into auto (normalizeMode).
 func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	// register flags with the flag set
 	fs := flag.NewFlagSet("minagent", flag.ContinueOnError)
@@ -52,7 +70,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 
 	var (
 		configPath, mode, query, queryShort, model, mission, workDir, approve string
-		objective, objectiveShort                                             string
+		objective, objectiveShort, planFile                                   string
 		asJSON, debug, yes, yesShort                                          bool
 		maxSteps, maxTokens                                                   int
 	)
@@ -70,6 +88,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 	fs.StringVar(&approve, "approve", "", "")
 	fs.StringVar(&objective, "objective", "", "")
 	fs.StringVar(&objectiveShort, "obj", "", "")
+	fs.StringVar(&planFile, "plan", "", "")
 	fs.BoolVar(&yes, "yes", false, "")
 	fs.BoolVar(&yesShort, "y", false, "")
 
@@ -97,6 +116,7 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 		{"mission", mission, &f.Mission},
 		{"workdir", workDir, &f.WorkDir},
 		{"approve", approve, &f.Approve},
+		{"plan", planFile, &f.Plan},
 	} {
 		if !set[s.name] {
 			continue
@@ -105,6 +125,11 @@ func ParseFlags(args []string, out io.Writer) (Flags, error) {
 			return Flags{}, fmt.Errorf("-%s must not be empty", s.name)
 		}
 		*s.dst = new(s.val)
+	}
+
+	// "-mode autonomous" is "-mode auto"
+	if f.Mode != nil {
+		f.Mode = new(normalizeMode(*f.Mode))
 	}
 
 	// -query and -q are the same flag
@@ -218,14 +243,15 @@ func ValidateMode(cfg Config, f Flags) error {
 // Notes:
 //   - -query needs oneshot, and oneshot needs -query; -mission needs headless, and headless needs -mission; --json is
 //     refused in chat, info and plan.
-//   - -objective and -yes need plan mode (autonomous mode will take them too). Plan mode without -objective asks for a
-//     new objective at the prompt. That plan mode needs a terminal is checked when it starts, not here: this function
-//     only looks at flags.
+//   - -objective needs plan mode. -plan needs plan or auto mode, and auto mode needs -plan (its only input; it never reads
+//     the objective). -yes needs plan or auto mode. Plan mode without -objective asks for a new objective at the
+//     prompt. That a mode needs a terminal is checked when it starts, not here: this function only looks at flags.
 func (f Flags) validateMode(mode string) error {
 	switch mode {
-	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo, ModePlan:
+	case ModeChat, ModeHeadless, ModeOneshot, ModeInfo, ModePlan, ModeAuto:
 	default:
-		return fmt.Errorf("-mode must be one of %s|%s|%s|%s|%s, got %q", ModeChat, ModeHeadless, ModeOneshot, ModeInfo, ModePlan, mode)
+		return fmt.Errorf("-mode must be one of %s|%s|%s|%s|%s|%s (or %s), got %q",
+			ModeChat, ModeHeadless, ModeOneshot, ModeInfo, ModePlan, ModeAuto, ModeAutonomous, mode)
 	}
 
 	if f.Query != nil && mode != ModeOneshot {
@@ -240,16 +266,35 @@ func (f Flags) validateMode(mode string) error {
 	if mode == ModeHeadless && f.Mission == nil {
 		return fmt.Errorf("-mode %s requires -mission", ModeHeadless)
 	}
-	if f.JSON != nil && (mode == ModeChat || mode == ModeInfo || mode == ModePlan) {
+	if f.JSON != nil && (mode == ModeChat || mode == ModeInfo || mode == ModePlan || mode == ModeAuto) {
 		return fmt.Errorf("--json only applies to -mode %s or %s, not %s", ModeOneshot, ModeHeadless, mode)
 	}
 	if f.Objective != nil && mode != ModePlan {
 		return fmt.Errorf("-objective only applies to -mode %s, not %s", ModePlan, mode)
 	}
-	if f.Yes != nil && mode != ModePlan {
-		return fmt.Errorf("-yes only applies to -mode %s, not %s", ModePlan, mode)
+	if f.Plan != nil && mode != ModePlan && mode != ModeAuto {
+		return fmt.Errorf("-plan only applies to -mode %s or %s, not %s", ModePlan, ModeAuto, mode)
+	}
+	if mode == ModeAuto && f.Plan == nil {
+		return fmt.Errorf("-mode %s requires -plan <file>: the plan to run", ModeAuto)
+	}
+	if f.Yes != nil && mode != ModePlan && mode != ModeAuto {
+		return fmt.Errorf("-yes only applies to -mode %s or %s, not %s", ModePlan, ModeAuto, mode)
 	}
 	return nil
+}
+
+// FlagsForAuto returns f changed to run the plan at planPath in auto mode: what plan mode's "Run now?" starts, as if
+// `-mode auto -plan <planPath> -yes` had been typed with f's other flags.
+//
+// Notes:
+//   - -objective is dropped (auto mode's only input is the plan) and -yes is set (the user just answered yes; it covers
+//     only "Run?", never a gate or a resume question). -config, -workdir, -model, -debug and the rest are kept, so the
+//     run reads the same config file; auto mode's own defaults apply where neither sets a value.
+func FlagsForAuto(f Flags, planPath string) Flags {
+	mode, yes := ModeAuto, true
+	f.Mode, f.Plan, f.Yes, f.Objective = &mode, &planPath, &yes, nil
+	return f
 }
 
 // requireDir checks that a required directory exists.
@@ -292,14 +337,16 @@ func printUsage(w io.Writer) {
   -h, --help             Show this help
   -config <file>         Path to configuration file (flags override its values)
   
-  -mode <mode>           chat | headless | oneshot | info | plan (chat is default)
+  -mode <mode>           chat | headless | oneshot | info | plan | auto (chat is default; autonomous = auto)
   -q, -query <text>      Query text; required for, and only used in, oneshot mode
   --json                 Output result as JSON (oneshot and headless modes)
   -model <name>          Language model to use
   -mission <file>        Mission file; with headless mode
   -obj, -objective <file|text>  Plan mode: the objective file to plan, or the objective's text (saved to a new
                          file); none = write a new objective in a chat
-  -y, -yes               Plan mode: accept the plan without asking
+  -plan <file>           Plan mode: where to write the plan (default: next to the objective, <name>.plan.md);
+                         auto mode: the plan file to run (required; any name)
+  -y, -yes               Plan mode: accept the plan without asking; auto mode: run without asking
   -workdir <dir>         Directory the read_file tool may read from, with its subdirectories (default ".")
   -maxsteps <n>          Maximum agent steps (positive integer)
   -maxtokens <n>         Maximum tokens the agent may use (positive integer)
@@ -340,6 +387,9 @@ func FlagsOverlay(cfg Config, f Flags) Config {
 	}
 	if f.Objective != nil {
 		cfg.ObjectiveFile = *f.Objective
+	}
+	if f.Plan != nil {
+		cfg.PlanFile = *f.Plan
 	}
 	if f.Yes != nil {
 		cfg.AssumeYes = *f.Yes

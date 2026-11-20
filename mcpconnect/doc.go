@@ -18,11 +18,13 @@
 //	  func (o origin) String() string
 //	  func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error)
 //	  func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error)
+//	  func (s *McpConnection) ServerInfo() (name, version string)
 //	  func (s *McpConnection) Close() error
 //
 //	tools.go
 //	  func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
 //	  func hintsFrom(a *mcp.ToolAnnotations) ToolHints
+//	  func WithIdempotencyKey(ctx context.Context, key string) context.Context
 //	  func (t *mcpTool) GetToolDefinition() model.ToolDef
 //	  func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 //	  func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error)

@@ -206,9 +206,9 @@ func Test_Unit_CheckComplete(t *testing.T) {
 		{"empty format is v1", func(p *Plan) { p.Format = "" }, nil},
 		{"no title is fine", func(p *Plan) { p.Title = "" }, nil},
 		{"unknown format", func(p *Plan) { p.Format = "minagent-plan/v9" }, []string{`format "minagent-plan/v9" is not supported`}},
-		{"no objective path", func(p *Plan) { p.ObjectivePath = " " }, []string{`"objective:" is missing`}},
-		{"no objective hash", func(p *Plan) { p.ObjectiveHash = "" }, []string{`"objective_hash:" is missing`}},
-		{"no version", func(p *Plan) { p.Version = 0 }, []string{`"plan_version:" is 0`}},
+		{"no objective path is fine", func(p *Plan) { p.ObjectivePath = " " }, nil},
+		{"no objective hash is fine", func(p *Plan) { p.ObjectiveHash = "" }, nil},
+		{"no version is fine", func(p *Plan) { p.Version = 0 }, nil},
 		{"no tasks", func(p *Plan) { p.Tasks = nil }, []string{`"## Tasks" has no tasks`}},
 		{"too many tasks", func(p *Plan) {
 			p.Tasks = append(p.Tasks, Task{ID: "t4", Title: "a"}, Task{ID: "t5", Title: "b"})
@@ -226,8 +226,8 @@ func Test_Unit_CheckComplete(t *testing.T) {
 			[]string{"task t2 depends on itself"}},
 		{"cycle", func(p *Plan) { p.Tasks[0].Depends = []string{"t2"} },
 			[]string{"in a loop (t1 → t2 → t1)"}},
-		{"two problems at once", func(p *Plan) { p.ObjectiveHash = ""; p.Tasks = nil },
-			[]string{`"objective_hash:" is missing`, `"## Tasks" has no tasks`}},
+		{"two problems at once", func(p *Plan) { p.Format = "x"; p.Tasks = nil },
+			[]string{`format "x" is not supported`, `"## Tasks" has no tasks`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

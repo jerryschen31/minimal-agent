@@ -67,6 +67,22 @@ func hintsFrom(a *mcp.ToolAnnotations) ToolHints {
 	}
 }
 
+// IdempotencyMetaKey is the _meta key an MCP call's idempotency key is sent under. MCP has no standard key, so it is
+// namespaced; a server that deduplicates by it runs a re-sent call once, and any other server ignores it.
+const IdempotencyMetaKey = "io.minagent/idempotency-key"
+
+// idempotencyKeyCtx is the context key WithIdempotencyKey stores the key under.
+type idempotencyKeyCtx struct{}
+
+// WithIdempotencyKey returns ctx carrying key, which the next MCP tool call made with it sends in its request's _meta.
+//
+// Notes:
+//   - [agent] Through the context, because Tool.CallTool has no room for it and only MCP tools use it; built-in tools
+//     ignore it. Auto mode's journal sets it for every call it records.
+func WithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKeyCtx{}, key)
+}
+
 // GetToolDefinition returns the definition of the MCP tool as the model sees it.
 //
 // Notes:
@@ -80,8 +96,12 @@ func (t *mcpTool) GetToolDefinition() model.ToolDef {
 // Notes:
 //   - Sends the tool's name on the server (toolName), not the prefixed name the model sees.
 //   - A protocol error and a tool-reported failure both come back as an error (see flattenMCPResult).
+//   - An idempotency key on ctx (WithIdempotencyKey) is sent in the request's _meta under IdempotencyMetaKey.
 func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error) {
 	toolParams := mcp.CallToolParams{Name: t.toolName, Arguments: args}
+	if key, _ := ctx.Value(idempotencyKeyCtx{}).(string); key != "" {
+		toolParams.Meta = mcp.Meta{IdempotencyMetaKey: key}
+	}
 	res, err := t.mcpConn.Session.CallTool(ctx, &toolParams)
 	if err != nil {
 		return "", fmt.Errorf("CallTool error: %w", err)

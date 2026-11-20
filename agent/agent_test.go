@@ -119,6 +119,22 @@ func Test_Unit_CheckConfig_MaxPlanTasks(t *testing.T) {
 	}
 }
 
+// - Verify checkConfig rejects a non-positive maxTaskAttempts in auto mode, naming the field, and accepts auto's default
+// - Verify chat mode with maxTaskAttempts 0 (its default) passes
+func Test_Unit_CheckConfig_MaxTaskAttempts(t *testing.T) {
+	auto := config.GetDefaultConfig(config.ModeAuto)
+	if err := checkConfig(auto); err != nil {
+		t.Fatalf("expected auto mode's defaults to pass, got %v", err)
+	}
+	auto.MaxTaskAttempts = 0
+	if err := checkConfig(auto); err == nil || !strings.Contains(err.Error(), "maxTaskAttempts must be a positive integer in auto mode") {
+		t.Errorf("auto, MaxTaskAttempts 0: err = %v, want a maxTaskAttempts error", err)
+	}
+	if err := checkConfig(config.GetDefaultConfig(config.ModeChat)); err != nil {
+		t.Errorf("chat with MaxTaskAttempts 0: %v, want no error", err)
+	}
+}
+
 // - Verify SetupAgent prints a failed remote MCP server's notice without the token in its URL: the connect error
 // quotes the URL, so SetupAgent must hide it (as info mode does) before writing to OutBuffer
 func Test_SetupAgent_FailedRemoteMCPServer_HidesTokenInURL(t *testing.T) {

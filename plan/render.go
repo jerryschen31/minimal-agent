@@ -15,10 +15,10 @@ import (
 //   - Empty front-matter values and empty Assumptions are left out; Tasks is written only if there are tasks or task
 //     notes.
 func (p Plan) Markdown() string {
-	return p.frontMatter() + "\n" + p.body()
+	return p.frontMatter() + "\n" + p.Body()
 }
 
-// frontMatter renders the "---" block: format, then objective, objective_hash and plan_version when set.
+// frontMatter renders the "---" block: format, then plan_id, objective, objective_hash and plan_version when set.
 //
 // Notes: none.
 func (p Plan) frontMatter() string {
@@ -27,6 +27,9 @@ func (p Plan) frontMatter() string {
 		format = FormatV1
 	}
 	s := "---\nformat: " + format + "\n"
+	if p.PlanID != "" {
+		s += "plan_id: " + p.PlanID + "\n"
+	}
 	if p.ObjectivePath != "" {
 		s += "objective: " + p.ObjectivePath + "\n"
 	}
@@ -39,13 +42,20 @@ func (p Plan) frontMatter() string {
 	return s + "---\n"
 }
 
-// body renders everything after the front matter.
+// Body renders everything after the front matter: the plan as a person reads it.
 //
 // Notes:
 //   - Ends with exactly one "\n".
+//   - Plan mode shows it before asking to accept the plan: it is the file that will be written, without the format and
+//     hash fields.
 //   - The title heading is always written ("# Plan" with no title), so the file always starts the same way.
-func (p Plan) body() string {
+//   - Order: title and summary, Objective, Assumptions, the other sections, Tasks. Empty Objective and Assumptions are
+//     left out.
+func (p Plan) Body() string {
 	blocks := []string{sectionBlock(titleLine(p.Title), p.Summary)}
+	if p.Objective != "" {
+		blocks = append(blocks, sectionBlock(headingLine(HeadingObjective), p.Objective))
+	}
 	if p.Assumptions != "" {
 		blocks = append(blocks, sectionBlock(headingLine(HeadingAssumptions), p.Assumptions))
 	}
