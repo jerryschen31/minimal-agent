@@ -91,12 +91,16 @@ func Test_Unit_Fold_ResumedClosesSettledCalls(t *testing.T) {
 	}
 }
 
-// - Verify a known event whose data can't be decoded is an error naming the run and seq
+// - Verify a known event whose data can't be decoded (task_finished, task_started) is an error naming the run and seq
 func Test_Unit_Fold_BadData(t *testing.T) {
-	bad := Event{V: 1, Seq: 4, Type: EventTaskFinished, Task: "t1", Data: json.RawMessage(`{"status": 7}`)}
-	if _, err := Fold([]RunEvents{{Run: Run{Number: 3}, Events: []Event{bad}}}); err == nil {
-		t.Error("want an error")
-	} else if got := err.Error(); !strings.Contains(got, "run 3") || !strings.Contains(got, "seq 4") {
-		t.Errorf("err = %v, want one naming run 3 and seq 4", err)
+	for _, bad := range []Event{
+		{V: 1, Seq: 4, Type: EventTaskFinished, Task: "t1", Data: json.RawMessage(`{"status": 7}`)},
+		{V: 1, Seq: 4, Type: EventTaskStarted, Task: "t1", Data: json.RawMessage(`{"attempt": "bad"}`)},
+	} {
+		if _, err := Fold([]RunEvents{{Run: Run{Number: 3}, Events: []Event{bad}}}); err == nil {
+			t.Errorf("%s: want an error", bad.Type)
+		} else if got := err.Error(); !strings.Contains(got, "run 3") || !strings.Contains(got, "seq 4") {
+			t.Errorf("%s: err = %v, want one naming run 3 and seq 4", bad.Type, err)
+		}
 	}
 }

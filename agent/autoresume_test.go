@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -225,7 +226,7 @@ func Test_Unit_AutoResume_PlanChangedStartsNewRun(t *testing.T) {
 func settleOne(t *testing.T, rs *recordedSession, c state.OpenCall, answer string) (state.SettledCall, map[string]string, error) {
 	t.Helper()
 	ask := newPlainReader(t.Context(), strings.NewReader(answer), rs.cs.OutBuffer)
-	plans, err := decideSettlement(t.Context(), rs.cs, []state.OpenCall{c}, ask, rs.cs.OutBuffer)
+	plans, err := decideSettlement(t.Context(), rs.cs, []state.OpenCall{c}, false, ask, rs.cs.OutBuffer)
 	if err != nil {
 		return state.SettledCall{}, nil, err
 	}
@@ -343,5 +344,62 @@ func Test_Unit_ToolJournal_KeepsArgsForResend(t *testing.T) {
 	}
 	if b := ev[4].(*state.ToolBefore); b.Args != nil {
 		t.Errorf("over-cap args kept (%d bytes)", len(b.Args))
+	}
+}
+
+// - Verify toolsDiffer: the same tools and servers → false; another tools hash, or a server reporting another version → true
+func Test_Unit_ToolsDiffer(t *testing.T) {
+	base := state.Manifest{ToolsSHA256: "sha256:a", MCPServers: []state.MCPServer{{Name: "shop", Transport: "stdio", Server: "shop", Version: "1"}}}
+	same := base
+	same.MCPServers = slices.Clone(base.MCPServers)
+	if toolsDiffer(base, same) {
+		t.Errorf("identical manifests differ")
+	}
+	tools := same
+	tools.ToolsSHA256 = "sha256:b"
+	version := same
+	version.MCPServers = []state.MCPServer{{Name: "shop", Transport: "stdio", Server: "shop", Version: "2"}}
+	if !toolsDiffer(base, tools) || !toolsDiffer(base, version) {
+		t.Errorf("a changed tools hash or server version was not noticed")
+	}
+}
+
+//   - Verify that when the tools changed since the crash, even an idempotent MCP call is asked about, not re-sent
+//     automatically (PR #44 review); "n" treats it as done and nothing is sent
+func Test_Unit_Settle_ToolsChanged_AsksBeforeResend(t *testing.T) {
+	sent := 0
+	rs := newRecordedSession(t, funcTool{"shop_order", func(context.Context, json.RawMessage) (string, error) { sent++; return "", nil }})
+	args := json.RawMessage(`{"item":"book"}`)
+	cut := state.OpenCall{Task: "t2", ToolBefore: state.ToolBefore{CallID: "c7", Tool: "shop_order", Args: args, ArgsSHA256: state.SHA256(args),
+		IdempotencyKey: "minagent-0011223344556677", Idempotent: true}}
+	ask := newPlainReader(t.Context(), strings.NewReader("n\n"), rs.cs.OutBuffer)
+	plans, err := decideSettlement(t.Context(), rs.cs, []state.OpenCall{cut}, true, ask, rs.cs.OutBuffer)
+	if err != nil || len(plans) != 1 || plans[0].action != settleDone {
+		t.Fatalf("plans %+v, %v; want asked and treated as done", plans, err)
+	}
+	if out := rs.cs.OutBuffer.(interface{ String() string }).String(); !strings.Contains(out, "changed since. Send it again?") {
+		t.Errorf("question lacks the reason:\n%s", out)
+	}
+	if sent != 0 {
+		t.Errorf("sent %d times", sent)
+	}
+}
+
+//   - Verify a resume where the tools changed (a tool was added since the crash) starts a new run instead of
+//     continuing the old one, and says why
+func Test_Unit_AutoResume_ToolsChangedStartsNewRun(t *testing.T) {
+	dir := t.TempDir()
+	crashAndWait(t, dir)
+	fx := newCrashFixture(t, dir, false)
+	if err := fx.Session.Tools.Register(funcTool{"new_tool", func(context.Context, json.RawMessage) (string, error) { return "", nil }}); err != nil {
+		t.Fatal(err)
+	}
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("checked")}
+	fx.Session.Config.AssumeYes = true
+	reader := newPlainReader(t.Context(), strings.NewReader("n\n"), fx.Out)
+	err := autoMode(t.Context(), nil, fx.Session, reader, reader)
+	out := fx.Out.String()
+	if err != nil || !strings.Contains(out, "The tools or MCP servers changed since then") || !strings.Contains(out, "Run 0002") {
+		t.Errorf("%v\n%s", err, out)
 	}
 }

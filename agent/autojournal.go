@@ -24,6 +24,11 @@ import (
 // maxArgsPreviewBytes caps a tool call's argument preview in the journal (tool_before's args_preview).
 const maxArgsPreviewBytes = 300
 
+// hashContentMaxBytes is the largest file hashPath reads in full. A larger one (a big copy_file or move_file) gets a
+// "meta:<size>:<mtime>" fingerprint instead, so recording a call never turns a rename into reading gigabytes (PR #44
+// review). A var so tests can lower it.
+var hashContentMaxBytes int64 = 16 << 20
+
 // maxResendArgsBytes caps the exact arguments kept for a call resume may re-send (tool_before's args). A call with
 // larger arguments can't be re-sent: resume asks about it instead.
 const maxResendArgsBytes = 64 << 10
@@ -48,6 +53,31 @@ type runToolJournal struct {
 	mu       sync.Mutex
 	task     string // the task the calls belong to (setTask)
 	n        int    // calls recorded so far; the next call ID is "c<n+1>"
+	// broken is the first journal write that failed. From then on no call runs (not recorded = not run) and the run
+	// stops without run_ended, so a call whose end wasn't recorded stays open for the next start to settle.
+	broken error
+}
+
+// err returns the journal write that failed, or nil while every call has been recorded.
+//
+// Notes:
+//   - runTask checks it after each worker and director, and end skips run_ended when it is set (PR #44 review).
+func (rj *runToolJournal) err() error {
+	rj.mu.Lock()
+	defer rj.mu.Unlock()
+	return rj.broken
+}
+
+// fail keeps err as the journal's first failed write and returns it.
+//
+// Notes: none.
+func (rj *runToolJournal) fail(err error) error {
+	rj.mu.Lock()
+	defer rj.mu.Unlock()
+	if rj.broken == nil {
+		rj.broken = err
+	}
+	return err
 }
 
 // newRunToolJournal returns the tool recorder for a run with journal j, masking previews at redaction level level.
@@ -86,8 +116,12 @@ func (rj *runToolJournal) setTask(id string) {
 //     recorded: the call will fail the same way.
 //   - The preview is the arguments with secrets masked (the trace's redactor), cut to maxArgsPreviewBytes. The hash is
 //     of the exact arguments.
-//   - A tool_after that can't be written is ignored here: the next journal write fails too, and stops the run.
-func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error) {
+//   - A tool_before or tool_after that can't be written marks the journal broken (err): no further call runs, and the
+//     run stops without run_ended, so the call stays open for the next start to settle. done returns that error.
+func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error) {
+	if err := rj.err(); err != nil {
+		return ctx, nil, fmt.Errorf("the run's journal failed earlier: %w", err)
+	}
 	rj.mu.Lock()
 	rj.n++
 	id, task := fmt.Sprintf("c%d", rj.n), rj.task
@@ -127,14 +161,17 @@ func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, t
 		before.Files = append(before.Files, state.FileHashes{Path: p, Before: hashPath(p)})
 	}
 	if err := rj.journal.Append(state.EventToolBefore, task, before); err != nil {
-		return ctx, nil, err
+		return ctx, nil, rj.fail(err)
 	}
-	done := func(failed bool) {
+	done := func(failed bool) error {
 		after := state.ToolAfter{CallID: id, Failed: failed}
 		for _, p := range paths {
 			after.Files = append(after.Files, state.FileHashes{Path: p, After: hashPath(p)})
 		}
-		rj.journal.Append(state.EventToolAfter, task, after)
+		if err := rj.journal.Append(state.EventToolAfter, task, after); err != nil {
+			return rj.fail(err)
+		}
+		return nil
 	}
 	return ctx, done, nil
 }
@@ -171,8 +208,11 @@ func newIdempotencyKey() string {
 // hashPath returns what is at path now: "sha256:<hex>" of a file's content, state.HashAbsent or state.HashDir.
 //
 // Notes:
-//   - The file is read in full, streamed (copy_file's limit is 100 MB). Anything else, or a read error, is
-//     "unreadable: <reason>": a hash that matches nothing, so resume treats the path as changed.
+//   - A file up to hashContentMaxBytes is read in full, streamed. A larger one gets "meta:<size>:<mtime in ns>" instead:
+//     resume only asks "is it as it was before the call?", and size and modification time answer that for big files
+//     (a same-size change within the same nanosecond would be missed: accepted).
+//   - Anything else, or a read error, is "unreadable: <reason>": a hash that matches nothing, so resume treats the path
+//     as changed.
 //   - The path was checked by the tool (FileTool.ChangedPaths), so it is inside workDir and not deny-listed.
 func hashPath(path string) string {
 	info, err := os.Lstat(path)
@@ -185,6 +225,8 @@ func hashPath(path string) string {
 		return state.HashDir
 	case !info.Mode().IsRegular():
 		return "unreadable: not a regular file"
+	case info.Size() > hashContentMaxBytes:
+		return fmt.Sprintf("meta:%d:%d", info.Size(), info.ModTime().UnixNano())
 	}
 	f, err := os.Open(path)
 	if err != nil {

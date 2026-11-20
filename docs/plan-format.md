@@ -5,9 +5,9 @@ objective. The planner LLM proposes the tasks, Go checks them and writes the fil
 auto mode's whole input** (like Terraform's saved plan): a run never reads the objective file. You may read a plan,
 commit it, tweak it by hand (small mistakes are fixed for you and reported), or write one from scratch, under any name.
 
-> **Status:** the reader and writer (package `plan/`) and plan mode, which makes a first plan, are built; auto mode
-> reads and checks a plan (`-mode auto -plan <file>`) but doesn't run tasks yet; updating a plan is not built. Design:
-> [`PLAN-auto-mode.md`](../PLAN-auto-mode.md).
+> **Status:** the reader and writer (package `plan/`), plan mode (which makes a first plan) and auto mode (which runs
+> it: `-mode auto -plan <file>`, one task at a time, a worker and a director per task; see [auto mode](auto-mode.md))
+> are built. Updating an existing plan is not built yet. Design: [`PLAN-auto-mode.md`](../PLAN-auto-mode.md).
 
 ## How a plan is made
 

@@ -107,7 +107,8 @@ const (
 	HashDir    = "dir"    // a directory
 )
 
-// FileHashes records one path a file tool call changes: "sha256:<hex>" of the file, HashAbsent or HashDir. tool_before
+// FileHashes records one path a file tool call changes: "sha256:<hex>" of the file (or "meta:<size>:<mtime>" for a
+// large one), HashAbsent or HashDir. tool_before
 // carries Before (the state before the call), tool_after carries After (the state after it returned).
 type FileHashes struct {
 	Path   string `json:"path"` // absolute, symlinks resolved

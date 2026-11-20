@@ -174,9 +174,11 @@ autodirector.go
 
 autojournal.go
   func withResend(ctx context.Context, orig state.ToolBefore) context.Context
+  func (rj *runToolJournal) err() error
+  func (rj *runToolJournal) fail(err error) error
   func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
   func (rj *runToolJournal) setTask(id string)
-  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error)
+  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error)
   func (rj *runToolJournal) preview(args json.RawMessage) string
   func newIdempotencyKey() string
   func hashPath(path string) string
@@ -190,8 +192,9 @@ automode.go
   func (o autoOutput) ToolCalled(name string)
 
 autoresume.go
-  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
-  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, ask promptReader, w io.Writer) ([]settlePlan, error)
+  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
+  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
+  func toolsDiffer(was, now state.Manifest) bool
   func resendable(cs *ChatSession, c state.ToolBefore) string
   func settle(ctx context.Context, cs *ChatSession, rj *runToolJournal, plans []settlePlan, w io.Writer) ([]state.SettledCall, map[string]string)
   func resendCall(ctx context.Context, cs *ChatSession, c state.ToolBefore) (string, error)

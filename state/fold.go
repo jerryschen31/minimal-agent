@@ -65,10 +65,13 @@ func Fold(runs []RunEvents) (State, error) {
 			var err error
 			switch e.Type {
 			case EventTaskStarted:
-				ts := s.Tasks[e.Task]
-				ts.Status, ts.Run = TaskRunning, re.Run.Number
-				ts.Attempts++
-				s.Tasks[e.Task] = ts
+				var d TaskStarted
+				if err = decodeData(e, &d); err == nil { // decoded only to catch a damaged line, like the other types
+					ts := s.Tasks[e.Task]
+					ts.Status, ts.Run = TaskRunning, re.Run.Number
+					ts.Attempts++
+					s.Tasks[e.Task] = ts
+				}
 			case EventTaskFinished:
 				var d TaskFinished
 				if err = decodeData(e, &d); err == nil {

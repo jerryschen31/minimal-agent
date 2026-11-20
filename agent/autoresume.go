@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
@@ -48,20 +49,27 @@ type settlePlan struct {
 
 // resumeRun settles the cut-off calls of the plan's last run, which never ended (st.Latest), and returns that run to
 // continue when the plan file and the config are byte for byte what it started with; otherwise it ends that run and
-// returns nil (the caller starts a new one). It also returns a note per task about its settled calls (crashNotes).
+// returns nil (the caller starts a new one). now is the manifest this start would write (its tools and MCP servers). It also returns a note per task about its settled calls (crashNotes).
 //
 // Notes:
 //   - First every call's fate is decided, asking a person where needed (decideSettlement); errResumeWaiting means an
 //     answer was needed and couldn't be had, and then nothing is done or written.
 //   - Then the run's journal is reopened (state.Home.ContinueRun cuts a torn last line), cs.ToolJournal records into
 //     it (a re-send is a recorded call), the calls are settled (settle), and a resumed event lists the outcomes.
-//   - [agent] Continuing keeps one run one run, so step 2's budgets carry across a crash. When the plan or config
-//     changed, the old run gets run_ended (interrupted) and the history carries over to the new run through Load.
-func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
+//   - [agent] Continuing keeps one run one run, so step 2's budgets carry across a crash. When the plan, the config or
+//     the tools changed (toolsDiffer), the old run gets run_ended (interrupted) and the history carries over to the new
+//     run through Load.
+//   - Tools changed: no call is re-sent without asking (PR #44 review: a re-send must not go to a different server
+//     unseen). A server that changed behind an unchanged interface is not detected (accepted, Jerry).
+func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
 	w := cs.OutBuffer
 	last := st.Latest
 	fmt.Fprintf(w, "Run %04d did not finish (a crash or a kill).\n", last.Run.Number)
-	plans, err := decideSettlement(ctx, cs, last.OpenCalls, ask, w)
+	toolsChanged := toolsDiffer(last.Manifest, now)
+	if toolsChanged {
+		fmt.Fprintln(w, "The tools or MCP servers changed since then: nothing is sent again without asking, and a new run starts.")
+	}
+	plans, err := decideSettlement(ctx, cs, last.OpenCalls, toolsChanged, ask, w)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -76,6 +84,11 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 	}
 	cs.ToolJournal = rj
 	settled, notes := settle(ctx, cs, rj, plans, w)
+	if jerr := rj.err(); jerr != nil { // a re-send's record failed: leave the run open, settle again next start
+		cs.ToolJournal = nil
+		j.Close()
+		return nil, nil, fmt.Errorf("run %04d: the journal failed while settling: %w", last.Run.Number, jerr)
+	}
 	host, _ := os.Hostname()
 	resumed := state.Resumed{PID: os.Getpid(), Host: host, TraceRunID: cs.Recorder.RunID(), Settled: settled}
 	if err := j.Append(state.EventResumed, "", resumed); err != nil {
@@ -83,18 +96,18 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 		j.Close()
 		return nil, nil, err
 	}
-	if last.Manifest.PlanSHA256 == state.SHA256(planData) && last.Manifest.ConfigSHA256 == state.SHA256(config) {
+	if last.Manifest.PlanSHA256 == state.SHA256(planData) && last.Manifest.ConfigSHA256 == state.SHA256(config) && !toolsChanged {
 		fmt.Fprintf(w, "Resuming run %04d.\n", last.Run.Number)
 		return &autoRun{run: last.Run, journal: j, tools: rj}, notes, nil
 	}
 	cs.ToolJournal = nil
-	ended := state.RunEnded{Reason: state.StopInterrupted, Error: "cut off by a crash; the plan or config changed since, so a new run continues it"}
+	ended := state.RunEnded{Reason: state.StopInterrupted, Error: "cut off by a crash; the plan, config or tools changed since, so a new run continues it"}
 	err = j.Append(state.EventRunEnded, "", ended)
 	j.Close()
 	if err != nil {
 		return nil, nil, err
 	}
-	fmt.Fprintf(w, "The plan or config changed since run %04d started, so a new run continues it.\n", last.Run.Number)
+	fmt.Fprintf(w, "The plan, config or tools changed since run %04d started, so a new run continues it.\n", last.Run.Number)
 	return nil, notes, nil
 }
 
@@ -103,13 +116,14 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 // Notes:
 //   - A call that changes nothing (noEffectTools, an MCP tool with readOnlyHint, a file tool whose path was refused so
 //     no files were recorded) → nothing. A file call → settleFiles.
-//   - An MCP call with idempotentHint that can be re-sent (resendable) → re-sent without asking.
+//   - An MCP call with idempotentHint that can be re-sent (resendable) → re-sent without asking, unless toolsChanged
+//     (the tools or MCP servers differ from the crashed run's): then it is asked like the rest.
 //   - Anything else (other MCP calls, run_command, an unknown tool) → asked. "Send it again? [y/N]": y re-sends, n
 //     treats it as done. If it can't be re-sent: "Carry on, treating it as done? [y/N]": y treats it as done, n stops.
 //   - Nobody to ask (ask is nil: no terminal; -yes never answers this), Ctrl+D, or n to the second question →
 //     errResumeWaiting, before anything is done. Ctrl+C → ctx's error.
 //   - The call is shown with %q (it holds model text).
-func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, ask promptReader, w io.Writer) ([]settlePlan, error) {
+func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error) {
 	var plans []settlePlan
 	for _, c := range open {
 		switch {
@@ -121,7 +135,7 @@ func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCal
 			continue
 		}
 		why := resendable(cs, c.ToolBefore)
-		if why == "" && c.Idempotent {
+		if why == "" && c.Idempotent && !toolsChanged {
 			plans = append(plans, settlePlan{c, settleResend})
 			continue
 		}
@@ -131,6 +145,9 @@ func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCal
 			return nil, errResumeWaiting
 		}
 		question := what + ". Send it again? [y/N]: "
+		if toolsChanged {
+			question = what + ". The tools or MCP servers changed since. Send it again? [y/N]: "
+		}
 		if why != "" {
 			question = fmt.Sprintf("%s and can't be sent again (%s). Carry on, treating it as done? [y/N]: ", what, why)
 		}
@@ -154,6 +171,16 @@ func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCal
 		}
 	}
 	return plans, nil
+}
+
+// toolsDiffer reports whether the tools or MCP servers of manifest now differ from those of was: a different tool set,
+// a changed description or parameters (ToolsSHA256), or a server with another name, transport or reported version.
+//
+// Notes:
+//   - Server settings themselves (URL, command, args) aren't compared: config.json leaves them out because they can
+//     hold tokens. A server that reports the same identity and tools from a new address passes (accepted).
+func toolsDiffer(was, now state.Manifest) bool {
+	return was.ToolsSHA256 != now.ToolsSHA256 || !slices.Equal(was.MCPServers, now.MCPServers)
 }
 
 // resendable returns why the cut-off call c can't be sent again, or "" if it can.

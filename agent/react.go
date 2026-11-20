@@ -109,7 +109,7 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 		defer cancel()
 	}
 	// 6. Auto mode: record the call before it runs (tool_before) and after it returns (tool_after). Not recorded → not run.
-	var recorded func(failed bool)
+	var recorded func(failed bool) error
 	if cs.ToolJournal != nil {
 		recCtx, done, err := cs.ToolJournal.recordCall(toolCtx, call, tool, args)
 		if err != nil {
@@ -119,7 +119,11 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 	}
 	result, err := callToolSafely(toolCtx, tool, args) // never panics: a tool's panic comes back as an error
 	if recorded != nil {
-		recorded(err != nil && !errors.Is(err, tools.ErrEndTurn)) // ending the turn is not a failure
+		// ending the turn is not a failure; an end that can't be recorded is reported instead of the result, and the run
+		// stops (runTask checks the journal)
+		if rerr := recorded(err != nil && !errors.Is(err, tools.ErrEndTurn)); rerr != nil {
+			return "", fmt.Errorf("the call ran, but its end could not be recorded; the run stops: %w", rerr)
+		}
 	}
 	// ctx still alive and only the tool's own deadline passed: say it timed out, so the model can react (a Ctrl+C or the
 	// turn timeout ends ctx itself and is reported by the caller instead)

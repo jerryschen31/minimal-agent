@@ -15,6 +15,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/hooks"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/model"
+	"github.com/jerryschen31/minimal-agent/model/modeltest"
 	"github.com/jerryschen31/minimal-agent/state"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
@@ -308,5 +309,78 @@ func Test_Unit_ToolJournal_DirectorCallsInARun(t *testing.T) {
 	}
 	if fx.Session.ToolJournal != nil {
 		t.Errorf("ToolJournal still set after the run")
+	}
+}
+
+//   - Verify a tool_after that can't be written (the journal fails during the call) is reported instead of the
+//     tool's result, marks the journal broken, and no later call runs (PR #44 review)
+func Test_Unit_ToolJournal_AfterNotRecorded_StopsCalls(t *testing.T) {
+	var rs *recordedSession
+	ran := 0
+	breaker := funcTool{"breaker", func(context.Context, json.RawMessage) (string, error) {
+		ran++
+		rs.journal.Close() // the disk goes away mid-call: tool_before is written, tool_after can't be
+		return "did it", nil
+	}}
+	rs = newRecordedSession(t, breaker)
+	if _, err := rs.call(t, "breaker", `{}`); err == nil || !strings.Contains(err.Error(), "its end could not be recorded") {
+		t.Errorf("err = %v, want the end-not-recorded error", err)
+	}
+	rj := rs.cs.ToolJournal.(*runToolJournal)
+	if rj.err() == nil {
+		t.Errorf("journal not marked broken")
+	}
+	if _, err := rs.call(t, "breaker", `{}`); err == nil || ran != 1 {
+		t.Errorf("after the failure: err %v, ran %d times; want refused, not run", err, ran)
+	}
+}
+
+//   - Verify a run whose tool_after can't be written stops with an error and is left open (no run_ended): Load shows
+//     the run not ended with the call still open, for the next start to settle
+func Test_Unit_AutoRun_AfterNotRecorded_LeavesRunOpen(t *testing.T) {
+	fx := newOneTaskFixture(t)
+	breaker := funcTool{"breaker", func(context.Context, json.RawMessage) (string, error) {
+		fx.Session.ToolJournal.(*runToolJournal).journal.Close()
+		return "did it", nil
+	}}
+	if err := fx.Session.Tools.Register(breaker); err != nil {
+		t.Fatal(err)
+	}
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantToolCall("w1", "breaker", `{}`), modeltest.AssistantText("done")}
+	out, err := runAutoYes(t, fx)
+	if err == nil || !strings.Contains(out, "The run was left open") {
+		t.Errorf("err = %v:\n%s", err, out)
+	}
+	if n := directorOf(fx).calls; n != 0 {
+		t.Errorf("director asked %d times after the journal failed", n)
+	}
+	home, _ := state.OpenHome(fx.Session.Config.StateDir)
+	ref, _ := state.NewPlanRef("", "plan.md")
+	s, err := home.Load(ref)
+	if err != nil || s.Latest.Ended != nil || len(s.Latest.OpenCalls) != 1 || s.Latest.OpenCalls[0].Tool != "breaker" {
+		t.Errorf("after: ended %+v, open calls %+v, err %v; want not ended, breaker open", s.Latest.Ended, s.Latest.OpenCalls, err)
+	}
+}
+
+//   - Verify hashPath reads a file up to hashContentMaxBytes (a content hash) and gives a larger one a size and mtime
+//     fingerprint without reading it, which still changes when the file does (PR #44 review)
+func Test_Unit_HashPath_LargeFileUsesMetadata(t *testing.T) {
+	old := hashContentMaxBytes
+	hashContentMaxBytes = 10
+	t.Cleanup(func() { hashContentMaxBytes = old })
+	dir := t.TempDir()
+	small, big := filepath.Join(dir, "small"), filepath.Join(dir, "big")
+	os.WriteFile(small, []byte("tiny"), 0o644)
+	os.WriteFile(big, []byte(strings.Repeat("x", 100)), 0o644)
+	if got := hashPath(small); got != state.SHA256([]byte("tiny")) {
+		t.Errorf("small: %s", got)
+	}
+	before := hashPath(big)
+	if !strings.HasPrefix(before, "meta:100:") {
+		t.Errorf("big: %s, want a meta fingerprint", before)
+	}
+	os.WriteFile(big, []byte(strings.Repeat("y", 101)), 0o644)
+	if hashPath(big) == before {
+		t.Errorf("big file changed but its fingerprint didn't")
 	}
 }

@@ -76,8 +76,9 @@ crash cut off:
 | anything else (another MCP tool, `run_command`) | you are asked: `... did not complete before the crash. Send it again? [y/N]` (no = it happened, don't repeat it) |
 
 Then the task that was cut off runs again with a worker that is told what happened to those calls; finished tasks are
-skipped. If the plan and config are unchanged, the same run continues (run folder `0003` stays `0003`); otherwise a
-new run picks up the history. Files are never left half written: the file tools write a temporary file and rename it
+skipped. If the plan, the config and the tools are unchanged, the same run continues (run folder `0003` stays `0003`);
+otherwise a new run picks up the history. If the tools or MCP servers changed since the crash, nothing is sent again
+without asking you first. Files are never left half written: the file tools write a temporary file and rename it
 into place.
 
 ## Where things are

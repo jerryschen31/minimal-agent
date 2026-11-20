@@ -97,7 +97,7 @@ func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask prom
 	}
 	var notes map[string]string
 	if len(before.Runs) > 0 && before.Latest.Ended == nil {
-		cont, n, err := resumeRun(ctx, cs, home, before, ad.planData, snapshot, ask)
+		cont, n, err := resumeRun(ctx, cs, home, before, m, ad.planData, snapshot, ask)
 		if err != nil {
 			return nil, err
 		}
@@ -302,7 +302,8 @@ func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, 
 //     failed attempt too (judgeTask). Out of attempts → "task_failed".
 //   - crash (after a resume: what happened to this task's cut-off calls) goes to the first attempt's worker.
 //   - Ctrl+C → "interrupted", with no task_finished for the attempt (run_ended marks it). Any other error (the
-//     provider, a journal write) → "error", no retry.
+//     provider, a journal write) → "error", no retry. A tool call whose record failed (ar.tools.err) stops it at once,
+//     writing nothing more.
 func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error) {
 	w := cs.OutBuffer
 	maxAttempts := cs.Config.MaxTaskAttempts
@@ -321,6 +322,9 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 			crash = "" // the first attempt after a resume was told; later ones are told about that attempt instead
 		}
 		summary, workerMsgs, err := runWorker(ctx, cs, p, t, deps, retry, crash)
+		if jerr := ar.tools.err(); jerr != nil { // a call's record failed: stop now, record nothing more (end)
+			return "", state.StopError, fmt.Errorf("the run's journal: %w", jerr)
+		}
 		var v director.Verdict
 		switch {
 		case err != nil && ctx.Err() != nil:
@@ -331,6 +335,9 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 			return "", state.StopError, finishFailed(ar, t, err.Error(), "", err)
 		default:
 			v, err = judgeTask(ctx, cs, t, attempt, summary, workerMsgs)
+			if jerr := ar.tools.err(); jerr != nil {
+				return "", state.StopError, fmt.Errorf("the run's journal: %w", jerr)
+			}
 			if err != nil && ctx.Err() != nil {
 				return "", state.StopInterrupted, nil
 			}
@@ -378,11 +385,22 @@ func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) 
 // stopped on a failure.
 //
 // Notes:
+//   - A tool call whose record failed (ar.tools.err): no run_ended, so the run stays open and the next start settles
+//     that call; an error is returned.
 //   - done returns nil. waiting and declined return ErrNeedsPerson, interrupted context.Canceled (wrapped), task_failed
 //     and error res.err: the caller (main) turns each into an exit code.
 //   - The report names the run folder and the trace file (<traceDir>/<trace run ID>.jsonl; none when tracing is off).
 func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error {
 	cs.ToolJournal = nil // the journal closes below: no call may be recorded after it
+	if terr := ar.tools.err(); terr != nil {
+		// [agent] no run_ended: a run marked ended has no open calls (Fold), and the call whose end wasn't recorded may
+		// have done something. Left open, the next start resumes it and settles that call.
+		ar.journal.Close()
+		ar.unlock()
+		fmt.Fprintf(w, "Stopped: a tool call could not be recorded in the journal (%v).\nThe run was left open: the next start "+
+			"settles that call before anything else runs.\nRun folder: %s\n", terr, ar.run.Dir)
+		return fmt.Errorf("run %04d: the journal failed: %w", ar.run.Number, terr)
+	}
 	ended := state.RunEnded{Reason: res.reason}
 	if res.err != nil {
 		ended.Error = res.err.Error()

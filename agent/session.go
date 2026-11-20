@@ -48,8 +48,9 @@ type ChatSession struct {
 // toolRecorder records tool calls around their run (ChatSession.ToolJournal; auto mode's runToolJournal).
 type toolRecorder interface {
 	// recordCall records that call (to tool, with args) is about to run, and returns the context to run it with and a
-	// function to call once it returns. An error means it could not be recorded: the call must not run.
-	recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool), error)
+	// function to call once it returns, whose error means the end could not be recorded (the caller must not report the
+	// call as done). An error from recordCall means it could not be recorded: the call must not run.
+	recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error)
 }
 
 // ModeDetails is what one mode keeps on a ChatSession (ChatSession.ModeDetails); each mode that needs any has its own

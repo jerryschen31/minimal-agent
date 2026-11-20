@@ -5087,3 +5087,29 @@ Shape agreed with Jerry; Claude wrote it.
 - **Docs:** `docs/auto-mode.md` (user guide), README, CLAUDE.md commands, `PLAN-auto-mode.md` "What it does" brought in
   line with what was built (no objective read, no stale check), `PLAN-plan-apply.md` status.
 - **Step 1 of `PLAN-auto-mode.md` is built** (1a–1i, 2026-11-19/20).
+
+### 2026-11-20 — PR #44 review: four fixes, one deliberately limited
+
+Jerry's line for this review: be reasonable on guardrails; don't overfix obscure edge cases.
+- **A `tool_after` that can't be written now stops the run and leaves it open.** Before, `done` dropped the error: the
+  run went on and could write `run_ended`, after which `Fold` ignores the open call, losing the evidence resume needs.
+  Now `runToolJournal` keeps the first failed write (`err`); `executeToolCall` reports "the call ran, but its end could
+  not be recorded" instead of the result; every later call is refused (not recorded = not run); `runTask` stops with
+  `error` after the worker or director; `end` writes **no** `run_ended` and says the run was left open, so the next
+  start settles that call. A re-send during resume that can't be recorded leaves the run open the same way.
+- **Resume and changed MCP servers: limited fix** (Jerry, partly disagreeing with the review). The review asked for a
+  fingerprint of each server's settings (URL, command, args) or a new run on any MCP change. Two points: settling
+  happens before the continue-or-new choice, so a new run alone wouldn't stop a re-send to a changed server; and the
+  settings can hold tokens (`config.json` leaves them out on purpose). What was done: `toolsDiffer` compares the crashed
+  run's manifest with this start's (the tools hash over names, descriptions and parameters; each server's name,
+  transport and reported name/version). If they differ, no call is re-sent without asking ("The tools or MCP servers
+  changed since. Send it again?") and a new run starts. *Accepted gap:* a server that changed behind the same identity
+  and tools (another address, other data) is not detected.
+- **`hashPath` no longer reads huge files.** A file over `hashContentMaxBytes` (16 MB) gets `meta:<size>:<mtime ns>`
+  instead of a content hash, so journaling a `move_file` of a multi-GB file stays a metadata lookup. Covers every
+  `write_file`/`edit_file` result (max 1 MB) with full hashes. Kept general rather than special-casing `move_file`:
+  resume only asks "is it as before?", which presence plus size and mtime answer. *Accepted gap:* a same-size change
+  within the same nanosecond to a file over 16 MB.
+- **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
+  naming the run and seq, not a counted attempt.
+- **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.

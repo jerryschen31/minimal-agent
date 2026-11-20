@@ -1497,3 +1497,97 @@ child process. Not committed. **Next: 1i** (plan mode's `Run now? [y/N]`; docs).
 Plan mode's "Run now? [y/N]" (`-y` plans and runs), exit codes 0/1/2/3/130, `docs/auto-mode.md`. Not committed.
 **Next: Step U** (small plan update that keeps `plan_id`, objective drift check; `PLAN-auto-mode.md`), then **step 2**
 (budgets, 2a–2d). Still tabled: accepted plans in `~/.minagent/plans/`; a larger `edit_file` cap; chunked writes.
+
+### 2026-11-20 (later) — Roadmap: from auto mode to orchestrator mode (start here next session)
+
+**Where things stand.** `PLAN-auto-mode.md` step 1 is built (1a–1i; user guide `docs/auto-mode.md`). Auto mode runs a
+plan's tasks **serially, in one process**: Go code (`agent/autorun.go`) picks tasks in `depends` order; each attempt is a
+fresh worker conversation (`runWorker`, `agent/autoworker.go`); a director conversation judges it (`judgeTask`,
+`agent/director/`); every tool call is journaled (`agent/autojournal.go`); a crash is resumed (`agent/autoresume.go`).
+Still planned before orchestrator work: **Step U** (small plan update, objective drift) and **step 2** (budgets, 2a–2d).
+Do step 2 first at the latest before parallel workers (O6): N workers multiply token use.
+
+**What orchestrator mode adds** (mvp4 = "auto mode with the worker moved out of process"): each worker is a separate
+`minagent -mode worker` child process, talked to over MCP stdio (tools `run_task`, `end_task`, `worker_info`); several
+tasks can run at once; worker types. Benefits: a worker crash doesn't kill the run; parallel tasks; per-worker config
+(model, prompt, later a sandbox). **Don't port mvp4's director-driven design**: there the director plans tasks and drives
+the run; here plan mode plans, Go code schedules, the director only judges. Keep that split.
+
+**Read first:** `mvp4/README.md`; `mvp4/worker/worker.go` (the `Worker` interface: `Info`, `RunTurn`, `EndTask`,
+`Close`) and `mvp4/worker/mcp.go` (the MCP client side); `mvp4/agent/workerserver.go` + `localworker.go` (the child's MCP
+server); `mvp4/agent/autonomous.go` (parallel rounds); `DECISIONS.md § mvp4 reference build`, `§ Slice D (parallel
+tasks)`, `§ Slice E (worker types)`. The mvp4 plan files are in `prompts/` (gitignored: local copies only).
+
+**Steps** (each a commit; give the shape first, then build, as in step 1):
+
+| # | Step | Notes |
+|---|---|---|
+| O1 | **Worker seam**: a `taskWorker` interface in `agent` (run one attempt: task message in → summary + tool log out); today's `runWorker` becomes its in-process implementation. No behaviour change. | The director needs the worker's tool calls (`director.ToolLog`), so the interface returns them, not just the summary. |
+| O2 | **`-mode worker`**: an MCP stdio server in the child (from mvp4's `workerserver.go`), running one attempt per `run_task` with the same tools, rules (ask = deny) and atomic writes; stdout carries only MCP; logs on stderr. Started with the parent's `-config`, `-workdir`, `-model`, `-maxsteps`. | Decide: does the child get its own trace file (`traces/<run>-w1.jsonl`), linked from the parent's journal? |
+| O3 | **Tool records across processes** (the hard part): every child tool call must be journaled before it runs. Options: (a) the child asks the parent to record (an MCP request/notification; the parent is the journal's only writer; one round trip per call), or (b) each child writes its own journal file in the run folder (`runs/0001/workers/w1.jsonl`) and `Load`/`Fold` merge them. | Decision needed. (b) keeps "not recorded = not run" local to the child; (a) keeps one file. Resume (1h) and idempotency keys must work either way. |
+| O4 | **Remote worker** (`-mode auto` with config `"workers"` or `-mode orchestrator`; decide): the `taskWorker` that starts a child (`procutils` process group, killed on Ctrl+C and at the end), talks MCP via `mcpconnect`, labels its stderr `[w1]`. A child that dies mid-attempt = a failed attempt, retried with a new child (not the end of the run); its open calls are settled as in 1h before the retry. | Serial still (one worker). Crash test: kill the child, not the parent. |
+| O5 | **Resume with children**: on start, no child of an earlier run may still be running (the plan lock covers the parent; children die with their process group); open calls from child journals settled as in 1h. | Mostly tests if O3/O4 are done right. |
+| O6 | **Parallel tasks**: one scheduler goroutine owns the state, a ready-list (tasks whose `depends` are done), up to N workers, results on one channel. A failed task: start nothing new, let running ones finish, stop. Output lines `[t3 w2]`. Shared `workDir`: tasks that touch the same files must be ordered by `depends` (tell the planner; maybe a per-path lock later). Budgets (step 2) shared across workers. | mvp4 slice D; there the director ran per task in parallel too: same here (one director conversation per attempt). |
+| O7 | **Worker types**: config `"workers"` (count, description, partial config over the top-level one, e.g. a tester prompt or another model); the plan says which type a task needs (a new task field, e.g. `worker: tester`, chosen by the planner; `docs/plan-format.md`, `CheckComplete` at run time). | mvp4 slice E; there the director assigned types, here the planner does. |
+| O8 | **Docs**: `docs/auto-mode.md`, CLAUDE.md, DECISIONS, SESSION. | |
+
+**What carries over unchanged** from step 1: the plan format and plan mode, `state/` (journal, manifest, lock, Load/Fold),
+approvals with nobody to ask, the director and its verdict tools, gates, atomic writes, idempotency keys, exit codes. What
+gets revised: `runWorker` becomes one of two `taskWorker`s; the journal gains records from children (O3); resume learns
+that a dead worker is not a dead run; `runPlan` becomes the parallel scheduler (O6).
+
+### 2026-11-20 (end of session) — Handoff: next is step 2 (token tracking and budgets), then step 3 (orchestrator mode)
+
+**State of the branch** (`feat/autonomous-mode-2`): step 1 of `PLAN-auto-mode.md` (1a–1i) is committed (last commit
+`c446d83`, 1i); only this file's two newest entries are uncommitted. All checks passed at 1i: `go test -race ./...`,
+`go vet`, gofmt, `go run ./cmd/codemap -check` and `-lint`, `GOOS=windows go build ./...`. Transcript:
+`prompts/20261119-session-autonomous-mode-2.md`.
+
+**Order agreed with Jerry for the next sessions:** step 2 (token tracking and budgets) → step 3 (orchestrator mode = steps
+O1–O8 of the roadmap entry above). **Step U** (small plan update, objective drift; `PLAN-auto-mode.md`) is not dropped,
+only not next; pick it up when plan updates are needed.
+
+**First thing next session:** one real run against a real model in a scratch folder (step 1 has only run against the fake
+provider): `go run . -mode plan -objective "<small task>" -workdir /tmp/scratch`, answer y to "Run now?". Expect prompt
+tuning of `workerPrompt` (`agent/autoworker.go`) and `director.Prompt`. Also untested on a real Windows machine: the plan
+lock (`state/lock_windows.go`) and rename-over-existing (`tools/builtin/atomicwrite.go`).
+
+**Step 2: token tracking and budgets** (`PLAN-auto-mode.md` § Budgets, commits 2a–2d). Facts found while building step 1:
+- **2a usage from the provider.** `model.Provider.Chat` returns a `model.ChatMessage` only; `model.ChatResponse`
+  (`model/provider.go`) parses `choices` and not `usage`. `trace.Usage` (`trace/event.go`) and
+  `ModelResponseData.Usage` already exist but stay zero (`GetModelResponseData`'s Notes say so). Decision needed: how
+  usage leaves the provider. Options: a `Usage` field on the response (changes the `Provider` interface and every fake,
+  incl. `model/modeltest.FakeProvider`), or a field on `ChatMessage` tagged `json:"-"` (no interface change, but
+  `ChatMessage` is stored in memory/context). A provider that reports nothing counts as 0 and the report says so.
+- **2b `maxTokens`.** Parsed and merged (`cfg.MaxTokens`, `-maxtokens`) but never sent; CLAUDE.md says so. Send it as the
+  per-response limit (`max_tokens`; newer OpenAI models want `max_completion_tokens`: check what the target servers accept).
+- **2c run budgets.** New keys `runTokenBudget` (total tokens for a run) and `runTimeoutMinutes` (**running time only**,
+  Jerry: summed over the run's sessions, start→crash, resume→end, from journal timestamps `Event.At`; time crashed or
+  waiting doesn't count). Check them where every model call passes: the session provider wrapper
+  (`cs.getSessionProvider` → `trace.TracedProvider`), so `reActLoop` doesn't change; worker, director and re-sends all
+  count. Stop reasons `budget` / `timeout` already exist in `state.StopReason`; map them in `runTask`/`runPlan` and pick
+  their exit code (1, or 3 "needs a person"?). Since 1h continues the same run after a crash, the totals carry over:
+  rebuild them in `Fold` from the journal.
+- **2d usage in the journal and report.** A `usage` event (per model call or per task attempt: decide; the PLAN's event
+  table lists it as step 2), folded into per-task and per-run totals; the report shows tokens and time per task and in
+  total. Config docs: `config/doc.go` gets the two keys; `docs/auto-mode.md` "Current limits" loses the budget line.
+- Budgets matter more once orchestrator mode runs N workers at once (shared counters across processes: plan for it in
+  O3/O6, e.g. the child reports usage per attempt in its `run_task` result).
+
+**Step 3: orchestrator mode** — follow the roadmap entry above (O1–O8, "start here"). Same working style as step 1: give
+the shape (functions, files, critical tests) first, discuss, then build; one-line commit message per step.
+
+**Tabled items still open** (all in DECISIONS.md): accepted plans kept in `~/.minagent/plans/<plan_id>.md` (protect the
+plan from the model; § 1d built); a larger `edit_file` cap and chunked writes for `write_file` (§ 1g built); a crash in
+chat/plan mode can leave a 1g temp file (no journal there; § 1h built).
+
+**Working rules that held all session:** shape first, then build; report every test deleted or whose expectation
+changed; append dated entries at the end of SESSION.md / DECISIONS.md only; `[agent]` teaching comments; every function
+has a header and `go run ./cmd/codemap` after signature changes; never edit mvp1–mvp4; never write to the real
+`~/.minagent` from tests or smoke runs (use a temp `stateDir`).
+
+### 2026-11-20 (end) — PR #44 review addressed (see DECISIONS.md § PR #44 review)
+
+Five comments: a failed `tool_after` now stops the run and leaves it open; resume asks before re-sending and starts a
+new run when tools or MCP servers changed (limited on purpose); files over 16 MB get a size+mtime fingerprint instead of
+a content hash; `Fold` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.
