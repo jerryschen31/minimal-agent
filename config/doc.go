@@ -85,7 +85,10 @@
 //	digestEnabled       also write <run_id>.digest.md, a readable summary; needs traceEnabled             [true]
 //	redactionLevel      how secrets are masked in the trace: "standard" (the only level so far)            ["standard"]
 //	traceDir            directory for trace files, relative to where the agent starts; read_file never
-//	                    reads inside it; must not be empty                                                [".agent-trace"]
+//	                    reads inside it; must not be empty. Auto mode ignores it: each run's trace goes in
+//	                    its run folder under stateDir                                                     [".agent-trace"]
+//	stateDir            auto mode's private state folder (run journals, a copy of each plan run, run
+//	                    traces); "~" is your home folder. The file tools never touch anything in it   ["~/.minagent"]
 //	traceMaxEventBytes  an event bigger than this (as JSON) is replaced by a marker; positive              [100 MB]
 //
 // Tool output caps (bytes, positive; they bound how much context one tool call can use):
@@ -219,6 +222,7 @@
 //	  func configJSONKeys() map[string]bool
 //	  func PrintConfig(cfg Config)
 //	  func DisplayURL(raw string) string
+//	  func (c Config) ResolveStateDir() (string, error)
 //
 //	flags.go
 //	  func normalizeMode(mode string) string

@@ -24,6 +24,7 @@ var writeDeniedNames = []string{".git"}
 type Workspace struct {
 	rootDir  string   // absolute path of the allowed directory (config workDir), with symlinks resolved
 	traceDir string   // absolute path of the trace directory, with symlinks resolved; "" = none configured
+	stateDir string   // absolute path of auto mode's state folder (run journals), symlinks resolved; "" = none (SetStateDir)
 	deny     DenyList // names never touched (the built-ins plus config denyPaths)
 	// writeDeny: names that may be read but never written, created or deleted by a file tool (see writeDeniedNames)
 	writeDeny []pathPattern
@@ -269,7 +270,7 @@ func (w *Workspace) checkWritable(requested, rel string, isDir bool) error {
 	return nil
 }
 
-// checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir.
+// checkPath refuses a resolved path that is outside rootDir, deny-listed, or inside traceDir or stateDir.
 //
 // Notes:
 //   - requested is used only in error messages.
@@ -291,7 +292,35 @@ func (w *Workspace) checkPath(requested, real string) (rel string, err error) {
 	if w.traceDir != "" && isWithin(w.traceDir, real) {
 		return "", fmt.Errorf("%s is blocked: it is inside the trace directory (the agent's own audit log)", requested)
 	}
+	if w.stateDir != "" && isWithin(w.stateDir, real) {
+		return "", fmt.Errorf("%s is blocked: it is inside the agent's state folder (its own run journals)", requested)
+	}
 	return rel, nil
+}
+
+// SetStateDir makes the file tools refuse everything inside dir, auto mode's state folder (run journals, plan copies,
+// run traces), like the trace directory.
+//
+// Notes:
+//   - Call it once, right after NewWorkspace and before any tool uses the workspace (the workspace is shared without a
+//     lock because it doesn't change after setup).
+//   - dir need not exist yet. It is matched by its resolved path, whatever its name. "" does nothing.
+//   - A dir that is workDir or contains it is an error: the file tools could reach nothing.
+//   - [agent] Usually the folder is outside workDir and unreachable anyway; this matters when workDir contains it (say,
+//     -workdir ~). run_command is not stopped by it (DECISIONS.md § run_command built: not contained).
+func (w *Workspace) SetStateDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	real, err := resolveSymLinks(dir)
+	if err != nil {
+		return fmt.Errorf("stateDir %q: %w", dir, err)
+	}
+	if isWithin(real, w.rootDir) {
+		return fmt.Errorf("stateDir %q is workDir or contains it, so the file tools could reach nothing", dir)
+	}
+	w.stateDir = real
+	return nil
 }
 
 // openRoot opens rootDir as an *os.Root, the second line of defence: it refuses ".." and symlink escapes when the file

@@ -1450,3 +1450,8 @@ plumbing), or Claude writes it all and Jerry reviews per commit. Nothing of step
 Working mode until Jerry's break (~2 days): per sub-step Claude gives the shape, Jerry discusses until it's right, Claude
 implements and gives a commit message. Done: 1a (`-mode auto -plan`, summary, `Run? [Y/n]`; plan carries the objective;
 `-plan` in plan mode). Not committed. **Next: 1b** (`state/`: run folders, lock, journal writer, reader).
+
+### 2026-11-19 (later) — 1b built (see DECISIONS.md § 1b built)
+
+`state/` package (journal, home/runs, per-plan OS lock, fold), `stateDir` config key, the workspace refuses the state
+folder. Not committed. **Next: 1c** (the full manifest: model, config and prompt hashes, tools).

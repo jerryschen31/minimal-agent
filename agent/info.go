@@ -200,6 +200,9 @@ func printBuiltinTools(w io.Writer, cfg config.Config) (names []string, ok bool)
 			if cfg.TraceDir != "" {
 				fmt.Fprintf(w, "  %-28s never reads: anything in the trace directory (%s)\n", "", safeText(cfg.TraceDir))
 			}
+			if cfg.StateDir != "" {
+				fmt.Fprintf(w, "  %-28s never reads: anything in the state folder (%s)\n", "", safeText(cfg.StateDir))
+			}
 		}
 	}
 	return names, true

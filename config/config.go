@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -87,7 +88,8 @@ type Config struct {
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
 	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
 	DigestEnabled      bool   `json:"digestEnabled"`      // also write an L1 digest, <run_id>.digest.md, next to the trace; needs traceEnabled
-	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace")
+	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace"); auto mode ignores it (each run's trace is in its run folder)
+	StateDir           string `json:"stateDir"`           // auto mode's private state folder: run journals, plan copies, run traces (default "~/.minagent"; "~" is your home)
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
@@ -253,6 +255,7 @@ func GetDefaultConfig(mode string) Config {
 		SummarizerPrompt:      "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely.",
 
 		TraceDir:              ".agent-trace",
+		StateDir:              "~/.minagent",
 		TraceMaxEventBytes:    100 << 20, // 100 MB
 		ReadFileMaxBytes:      1 << 20,   // 1 MB
 		CopyFileMaxBytes:      100 << 20, // 100 MB
@@ -401,6 +404,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  digestEnabled: %t\n", cfg.DigestEnabled)
 	fmt.Fprintf(w, "  redactionLevel: %s\n", cfg.RedactionLevel)
 	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
+	fmt.Fprintf(w, "  stateDir: %s\n", cfg.StateDir)
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  copyFileMaxBytes: %d\n", cfg.CopyFileMaxBytes)
@@ -456,4 +460,24 @@ func DisplayURL(raw string) string {
 		shown += "#[hidden]"
 	}
 	return shown
+}
+
+// ResolveStateDir returns StateDir as an absolute path, with a leading "~" or "~/" expanded to the home folder.
+//
+// Notes:
+//   - "" returns "" (no state folder configured). A relative path is relative to the process's folder.
+//   - Symlinks are not resolved here; the workspace resolves them when it guards the folder.
+func (c Config) ResolveStateDir() (string, error) {
+	dir := c.StateDir
+	if dir == "" {
+		return "", nil
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("stateDir %q: %w", c.StateDir, err)
+		}
+		dir = filepath.Join(home, dir[1:])
+	}
+	return filepath.Abs(dir)
 }

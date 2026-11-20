@@ -521,3 +521,42 @@ func Test_ReadFile_Subdirectory_IsADirectoryError(t *testing.T) {
 	}
 	expectErrorHidesWorkDir(t, "read_file(sub)", err, work, "sub is a directory, not a file")
 }
+
+//   - Verify SetStateDir makes the file tools refuse a path inside the state folder (reading and writing), with a message
+//     naming it, while other paths in workDir still pass; "" does nothing
+//   - Verify a state folder that is workDir or contains it is an error
+func Test_Unit_Workspace_SetStateDir(t *testing.T) {
+	work := t.TempDir()
+	state := filepath.Join(work, ".minagent")
+	if err := os.MkdirAll(filepath.Join(state, "runs", "0001"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "runs", "0001", "journal.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "notes.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ws := newWorkspace(t, work, "", DenyList{})
+	if err := ws.SetStateDir(""); err != nil || ws.stateDir != "" {
+		t.Fatalf(`SetStateDir(""): %v, stateDir %q`, err, ws.stateDir)
+	}
+	if err := ws.SetStateDir(state); err != nil {
+		t.Fatalf("SetStateDir: %v", err)
+	}
+	if _, _, err := ws.resolvePath(filepath.Join(".minagent", "runs", "0001", "journal.jsonl")); err == nil ||
+		!strings.Contains(err.Error(), "state folder") {
+		t.Errorf("reading the journal: err = %v, want a state-folder refusal", err)
+	}
+	if _, _, err := ws.resolvePathForWrite(filepath.Join(".minagent", "runs", "0001", "new.txt")); err == nil {
+		t.Error("writing into the state folder: want a refusal")
+	}
+	if _, _, err := ws.resolvePath("notes.md"); err != nil {
+		t.Errorf("notes.md: %v", err)
+	}
+	for name, dir := range map[string]string{"equal": work, "parent": filepath.Dir(work)} {
+		if err := newWorkspace(t, work, "", DenyList{}).SetStateDir(dir); err == nil || !strings.Contains(err.Error(), "could reach nothing") {
+			t.Errorf("%s: err = %v, want a could-reach-nothing error", name, err)
+		}
+	}
+}

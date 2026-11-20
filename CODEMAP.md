@@ -80,6 +80,15 @@ minimal-agent/
 │   ├── doc.go
 │   ├── procgroup_unix.go
 │   └── procgroup_windows.go
+├── state/
+│   ├── doc.go
+│   ├── fold.go
+│   ├── home.go
+│   ├── journal.go
+│   ├── lock.go
+│   ├── lock_other.go
+│   ├── lock_unix.go
+│   └── lock_windows.go
 ├── textutils/
 │   ├── cut.go
 │   └── doc.go
@@ -337,6 +346,7 @@ config.go
   func configJSONKeys() map[string]bool
   func PrintConfig(cfg Config)
   func DisplayURL(raw string) string
+  func (c Config) ResolveStateDir() (string, error)
 
 flags.go
   func normalizeMode(mode string) string
@@ -594,6 +604,54 @@ procgroup_windows.go
   func KillGroup(cmd *exec.Cmd)
 ```
 
+## state (package state)
+
+`github.com/jerryschen31/minimal-agent/state`
+
+```text
+fold.go
+  func Fold(runs []RunEvents) (State, error)
+
+home.go
+  func OpenHome(dir string) (Home, error)
+  func (h Home) Dir() string
+  func (r Run) TraceDir() string
+  func PlanKey(planPath string) (string, error)
+  func SHA256(data []byte) string
+  func (h Home) NewRun(m Manifest, plan []byte) (*Journal, Run, error)
+  func (h Home) ContinueRun(r Run) (*Journal, error)
+  func (h Home) Load(planPath string) (State, error)
+  func readManifest(path string) (Manifest, bool)
+  func (h Home) runsDir() string
+  func (h Home) runs() ([]Run, error)
+  func trimZeros(s string) string
+
+journal.go
+  func (j *Journal) Append(typ EventType, task string, data any) error
+  func (j *Journal) Seq() int
+  func (j *Journal) Close() error
+  func Read(r io.Reader) (events []Event, tornTail bool, err error)
+  func readEvents(r io.Reader) (events []Event, goodLen int64, tornTail bool, err error)
+  func decodeData(e Event, v any) error
+
+lock.go
+  func (e *LockedError) Error() string
+  func (h Home) Lock(planPath string) (unlock func() error, err error)
+  func readHolder(f *os.File) lockHolder
+
+lock_other.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
+
+lock_unix.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
+
+lock_windows.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
+```
+
 ## textutils (package textutils)
 
 `github.com/jerryschen31/minimal-agent/textutils`
@@ -718,6 +776,7 @@ workspace.go
   func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
   func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
+  func (w *Workspace) SetStateDir(dir string) error
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
   func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)

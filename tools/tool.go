@@ -31,8 +31,8 @@ type Tool interface {
 // SetupBuiltinTools builds the built-in tools named in cfg.BuiltinTools.
 //
 // Notes:
-//   - cfg.WorkDir, cfg.TraceDir and cfg.DenyPaths make the workspace the file tools share (workDir and below, minus the
-//     trace files and deny-listed names).
+//   - cfg.WorkDir, cfg.TraceDir, cfg.StateDir and cfg.DenyPaths make the workspace the file tools share (workDir and
+//     below, minus the trace files, auto mode's state folder and deny-listed names).
 //   - The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
 //     pattern always fails setup.
 //   - "run_command" is set up only when cfg.RunCommands names at least one usable program; otherwise a warning goes to
@@ -49,6 +49,13 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 	}
 	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, cfg.ConfigFile, deny)
 	if err != nil {
+		return nil, err
+	}
+	stateDir, err := cfg.ResolveStateDir()
+	if err != nil {
+		return nil, err
+	}
+	if err := ws.SetStateDir(stateDir); err != nil {
 		return nil, err
 	}
 	out := cfg.OutBuffer // setup warnings (run_command) go here; nil in a hand-built config means nowhere

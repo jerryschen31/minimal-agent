@@ -1279,3 +1279,26 @@ func Test_Unit_SetDefaultConfig_AgentModeAutonomous(t *testing.T) {
 		t.Errorf("AgentMode %q, MaxPlanTasks %d; want %q, 30", cfg.AgentMode, cfg.MaxPlanTasks, ModeAuto)
 	}
 }
+
+//   - Verify ResolveStateDir expands "~" and "~/x" to the home folder, makes a relative path absolute, keeps "" as "",
+//     and the default is ~/.minagent
+func Test_Unit_Config_ResolveStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // Windows
+	cwd, _ := os.Getwd()
+	for in, want := range map[string]string{
+		"~":           home,
+		"~/.minagent": filepath.Join(home, ".minagent"),
+		"state":       filepath.Join(cwd, "state"),
+		"":            "",
+	} {
+		got, err := Config{StateDir: in}.ResolveStateDir()
+		if err != nil || got != want {
+			t.Errorf("ResolveStateDir(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if d := GetDefaultConfig(ModeChat).StateDir; d != "~/.minagent" {
+		t.Errorf("default stateDir = %q", d)
+	}
+}

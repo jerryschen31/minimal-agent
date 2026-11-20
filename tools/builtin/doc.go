@@ -101,6 +101,7 @@
 //	  func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
 //	  func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
 //	  func (w *Workspace) checkPath(requested, real string) (rel string, err error)
+//	  func (w *Workspace) SetStateDir(dir string) error
 //	  func (w *Workspace) openRoot() (*os.Root, error)
 //	  func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
 //	  func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)

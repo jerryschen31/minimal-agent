@@ -4868,3 +4868,25 @@ Claude wrote it at Jerry's request (Jerry reviews the shape per sub-step, then C
   The plan's `objective:` is now written relative to the plan's folder (`objectivePathFromPlan`), not `filepath.Base`.
 - **Auto mode's defaults:** `askRules` `*delete*`, `*remove*` only; `maxPlanTasks` 30. `-mode autonomous` and
   `"agentMode": "autonomous"` become `auto` (`config.normalizeMode`).
+
+### 2026-11-19 (later) — 1b built: `state/`, a central private state folder
+
+Shape agreed with Jerry; Claude wrote it.
+- **One private folder for every run** (Jerry): `stateDir` (default `~/.minagent`), `runs/NNNN/` holding
+  `journal.jsonl` (0600; line 1 = the manifest: the plan's real path and hash), `plan.md` (a byte copy of the plan
+  that ran: the audit record) and `trace/` (the run's trace, wired in 1d). Supersedes the per-objective
+  `.minagent/<name>/` folder of `PLAN-plan-apply.md`. Chat and plan mode keep their trace in `traceDir`; auto mode
+  ignores `traceDir` so a run's record is one folder.
+- **Run numbers are shared by all plans**; `NewRun` takes the next with `os.Mkdir` (only one process wins) and retries.
+- **One lock per plan** in `locks/<16 hex of sha256(real plan path)>.lock`, a real OS lock: `flock` on Unix,
+  `LockFileEx` on Windows (`golang.org/x/sys`, now a direct dependency; it was already indirect). The OS releases it
+  when the process dies, so there are no stale locks. Different plans can run at once.
+- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and folds the runs whose
+  manifest names this plan, oldest first. Moving or renaming a plan starts it with no history (every task runs again):
+  the safe side, since an ID inside the plan would let a copy inherit its original's history. *Downside:* one small
+  read per run folder; an index can come later if there are thousands.
+- **Read all of a plan's runs, nothing copied forward:** a task done in run 1 is still done in run 5 because run 1's
+  journal says so. `run_ended` marks the tasks still running in that run as interrupted; a run with no `run_ended`
+  keeps them running (the cut-off task).
+- **The file tools refuse the state folder** (`Workspace.SetStateDir`, by resolved path, like `traceDir`; the
+  `run_command` argument guard too). Matters when `workDir` contains it (`-workdir ~`).

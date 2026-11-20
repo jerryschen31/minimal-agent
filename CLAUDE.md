@@ -149,6 +149,12 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `tools/builtin/` (`ReadFileTool`), `mcpconnect/` (MCP client connections + the adapter that
   wraps an MCP tool as a `tools.Tool`; `conn.go` + `tools.go`, with room for resources/prompts), and
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
+- **`state/`** is auto mode's durable record (stdlib + `golang.org/x/sys` only): one append-only journal per run in a
+  private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, trace/}`, `locks/`), rebuilt
+  into state by reading a plan's runs oldest first (`Home.Load`, `Fold`). `Journal.Append` syncs each line before it
+  returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
+  OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
+  (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
 - **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
   package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
   and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
