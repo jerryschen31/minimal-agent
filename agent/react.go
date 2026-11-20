@@ -33,24 +33,29 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 }
 
 // runToolCall executes a single tool call and returns the result as a tool ChatMessage, which the next iteration of the
-// ReAct loop sends back to the model.
+// ReAct loop sends back to the model, and whether the tool asked to end the turn.
 //
 // Notes:
 //   - It is essentially a wrapper around the actual tool call execution. This wrapper allows us to record the call
 //     before and after: tool_requested before it runs, tool_finished with what the model will see after.
 //   - Every failure becomes an observation the model can recover from: the content is "error: ..." and the message is
 //     still returned.
-func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage {
+//   - endTurn is true only when the tool returned tools.ErrEndTurn (wrapped or not). That is not a failure: the content
+//     is the tool's result, not "error: ...". Every other tool returns false.
+func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool) {
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
 
 	content, err := executeToolCall(ctx, cs, taskTrace, call)
+	if errors.Is(err, tools.ErrEndTurn) { // the tool finished and asked to end the turn: its result is a normal result
+		endTurn, err = true, nil
+	}
 	if err != nil {
 		content = fmt.Sprintf("error: %v", err) // every failure becomes an observation the model can recover from
 	}
 
 	taskTrace.Record(trace.ToolFinished, trace.GetToolFinishedData(call, content, err != nil, time.Since(start)))
-	return model.CreateChatMessage("tool", "tool", content, call.ID, nil)
+	return model.CreateChatMessage("tool", "tool", content, call.ID, nil), endTurn
 }
 
 // executeToolCall validates and runs a single tool call. It returns the tool's result, or an error for an unknown tool,
@@ -65,6 +70,8 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 //     passed instead.
 //   - The call runs under a context limited to cfg.ToolTimeoutSeconds. A tool that ignores its context cannot be
 //     stopped by this (the loop waits for it), so every tool must honour ctx.
+//   - With cs.ToolJournal set (auto mode), the call is recorded after the hooks and before it runs (a vetoed call never
+//     ran, so it has no record), and again when it returns. If it can't be recorded, it doesn't run.
 func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error) {
 	// 1. Look up call.Function.Name with cs.Tools.Lookup. If the tool is unknown, that is an error.
 	tool, ok := cs.Tools.Lookup(call.Function.Name)
@@ -101,7 +108,23 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 		toolCtx, cancel = context.WithTimeout(ctx, time.Duration(secs)*time.Second)
 		defer cancel()
 	}
-	result, err := callToolSafely(toolCtx, tool, args)
+	// 6. Auto mode: record the call before it runs (tool_before) and after it returns (tool_after). Not recorded → not run.
+	var recorded func(failed bool) error
+	if cs.ToolJournal != nil {
+		recCtx, done, err := cs.ToolJournal.recordCall(toolCtx, call, tool, args)
+		if err != nil {
+			return "", fmt.Errorf("the call was not run: it could not be recorded: %w", err)
+		}
+		toolCtx, recorded = recCtx, done
+	}
+	result, err := callToolSafely(toolCtx, tool, args) // never panics: a tool's panic comes back as an error
+	if recorded != nil {
+		// ending the turn is not a failure; an end that can't be recorded is reported instead of the result, and the run
+		// stops (runTask checks the journal)
+		if rerr := recorded(err != nil && !errors.Is(err, tools.ErrEndTurn)); rerr != nil {
+			return "", fmt.Errorf("the call ran, but its end could not be recorded; the run stops: %w", rerr)
+		}
+	}
 	// ctx still alive and only the tool's own deadline passed: say it timed out, so the model can react (a Ctrl+C or the
 	// turn timeout ends ctx itself and is reported by the caller instead)
 	if err != nil && ctx.Err() == nil && errors.Is(toolCtx.Err(), context.DeadlineExceeded) {
@@ -156,6 +179,8 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 //     task's scope ID; the trace records the turn's messages, while the system prompt and prior context are only
 //     counted.
 //   - A model error is returned as is: the caller reports it (cs.Output.Error), once.
+//   - A tool that returns tools.ErrEndTurn ends the turn: the other tool calls in that response still run (every call
+//     needs a result), then the turn's messages are returned with no further model call.
 //   - Returns ErrMaxSteps (wrapped with the limit) when the model is still asking for tools after cfg.MaxSteps steps.
 func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error) {
 	requestMsgs := []model.ChatMessage{initialMsg}
@@ -186,10 +211,16 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 			return requestMsgs, nil
 		}
 		// otherwise there are tool calls to be made
+		endTurn := false
 		for _, tc := range response.ToolCalls {
 			cs.Output.ToolCalled(tc.Function.Name)
-			toolResultMsg := runToolCall(ctx, cs, taskTrace, tc)
+			toolResultMsg, end := runToolCall(ctx, cs, taskTrace, tc)
 			requestMsgs = append(requestMsgs, toolResultMsg)
+			endTurn = endTurn || end
+		}
+		// a tool asked to end the turn (tools.ErrEndTurn): every call above has its result, so stop without another model call
+		if endTurn {
+			return requestMsgs, nil
 		}
 	}
 

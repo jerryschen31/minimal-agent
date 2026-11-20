@@ -1,4 +1,4 @@
-# SESSION.md — mvp2 progress (last updated 2026-10-21)
+# SESSION.md — mvp2 progress (last updated 2026-11-09; start with the last entry of the Session log)
 
 Scratch handoff notes for `mvp2/` (branch `mvp2-do-myself-phase-2`). Jerry writes the code;
 for the current teaching style see the first bullet below. This file is written so a **fresh session with no memory of prior
@@ -1264,3 +1264,330 @@ per-component `Mkdir` + `Lstat` + `OpenRoot` + `SameFile`); Windows Job Object f
 "`/reload` designed in detail, then deferred" entry; deferred, so ask Jerry first; `Config.ConfigFile` exists for it); (3) Jerry's
 own autonomous-mode port, which needs a sandbox/worktree before commands run unattended ("unattended means contained");
 (4) try `run_command` by hand with a real model (`runCommands: ["go"]`, ask rule `run_command:go run*`).
+
+### 2026-11-07 — autonomous mode planned; plan mode comes first
+
+Shape of autonomous mode (from mvp3/mvp4) and of a new `-mode plan` discussed with Jerry. Decisions:
+`DECISIONS.md § 2026-11-07 — Plan mode before autonomous mode`. Plan: `PLAN-plan-mode.md`.
+
+**Open (proposed by Claude, not yet confirmed):** output written next to the draft (`objective-full.md` in the current directory without one); a separate
+`objective/` package rather than objective parsing inside `director/`; a `planner/` package.
+
+**Still open for autonomous mode:** `run_command` unattended (proposal: refuse to start with it enabled until a
+worktree/sandbox exists); what `approval: allow-all` means with nobody to confirm it; rounds (`maxIterations`) deferred?
+
+**Next:** `PLAN-plan-mode.md` step 1, the `objective/` package (Jerry types it from a skeleton).
+
+**2026-11-07, later:** format v1 decided (`DECISIONS.md § Objective file format v1`): front-matter version, `### tN:` task
+sections, `Cleanup()` before `CheckComplete()`. Open questions put to Jerry: Cleanup as the lenient reader (replacing
+`Parse`) vs text-to-text; renumbering must rewrite `depends`; task-body newlines kept vs joined; `depends:` line syntax.
+The `objective/` skeleton (`parse.go`, tests) is written for the old bullet format and needs redoing once these are answered.
+
+**2026-11-07, review pass on the plan/objective shape — open items (not decided):**
+- Format: unknown front-matter keys error or warn (forward compatibility); BOM and `~~~` fences; `### tN:` headings
+  outside `## Tasks` / a missing `## Tasks` heading; `depends` leniency (`depends on:`, bare `1`).
+- Autonomous scheduling with `depends`: next = first ready task in file order; a failed task blocks its dependents
+  (new `blocked` status) — stop the run or continue independent tasks?
+- Plan mode: which worker tools the planner sees (MCP servers would have to start); no-LLM shortcut when the draft is
+  already complete; show a diff against the draft; cap printed fixes; `x-full.md` as input naming.
+- Trust: a file edited after approval runs unreviewed (option: body hash in front matter, warn on mismatch); plan and
+  apply should use the same `workDir`.
+- Tests/docs: `FuzzCleanup` (no panic; round trip with zero fixes); a user-facing format reference + example file.
+
+**2026-11-07, review pass answered:** items 1–4, 11, 13, 14 decided (`DECISIONS.md § Objective format v1: review pass`); the
+rest deferred to their steps (`PLAN-plan-mode.md § Deferred`). Skeleton in `objective/` updated; Jerry fills it in next.
+
+**2026-11-07, end of day:** `objective/` is complete and tested (`DECISIONS.md § objective/ package complete`); `Objective`
+stays a struct (`§ Objective stays a plain struct`). Uncommitted: the objective files (partly staged by Jerry),
+`objective/testdata/fuzz/` (8 regression inputs from fuzzing; keep them), `CODEMAP.md`, `DECISIONS.md`.
+**Next:** `PLAN-plan-mode.md` step 2, `-mode plan` wiring and flags (then the `planner/` package: `proposeArgs` +
+`toObjective`). Still deferred: the format reference + example file (end of step 1).
+
+**2026-11-07, later:** format reference `docs/objective-format.md` and example `examples/objective-example.md` written
+(linked from README); two tests keep them in step with the code (the example must be exactly what `Markdown` writes;
+the doc's before/after example must be what `Cleanup` does). Step 1 of `PLAN-plan-mode.md` is done; next is step 2.
+
+**2026-11-07, step 2 done:** `-mode plan` with `-objective`/`-obj` and `-out` is wired; `agent/planmode.go` is a stub that
+prints the cleaned-up draft (or asks for the objective) and writes nothing (`DECISIONS.md § -mode plan wired`).
+**Next:** step 3, `ErrEndTurn` in `reActLoop`; then step 4, `propose_objective` + the output-path chooser (uses `cfg.OutFile`).
+
+**2026-11-08, redesign:** the plan-mode shape was too heavy. New shape agreed: `objective.md` (you) → `objective.plan.md`
+(planner + Go) → `state.json` (Go), applied by diff like Terraform; see `PLAN-plan-apply.md` and
+`DECISIONS.md § 2026-11-08 — Plan/apply redesign`. The built `objective/` code and `-mode plan` stub get refactored
+(step 1 of the new plan). **Next:** step 1, split `objective/` into `objective/` (v2) + `plan/`, add `state/`.
+
+**2026-11-08, later:** full governance tabled (`DECISIONS.md § A fully governed harness is tabled`). Open before rewriting
+`PLAN-plan-apply.md`: one plan file holding the objective vs two files, and the remaining critique points (see chat).
+
+**2026-11-08, end:** `PLAN-plan-apply.md` rewritten to the simplified shape (`DECISIONS.md § Simplified plan/run shape
+agreed`). **Next:** step 1 (formats): `mdscan/`, `objective/` v2, `plan/`, `state/`; Jerry types from Claude's skeleton.
+
+**2026-11-08, mdscan/ + plan/ built** (`DECISIONS.md § mdscan/ and plan/ built`). **Next (rest of step 1):** `objective/`
+v2 (delete its task code), `state/`, docs + examples, the stub on `objective.Parse`.
+
+**2026-11-08, objective/ v2 built** (`DECISIONS.md § objective/ v2 built`), with docs and example files. **Next (end of
+step 1):** `state/`, from the skeleton (Jerry reviewing it; Claude proposed adding `ObjectiveText` to the snapshot).
+
+
+**2026-11-09, step 2 built** (`DECISIONS.md § 2026-11-09 — Step 2 built`): plan mode through `SetupAgent`/`RunAgent`,
+the objective chat (`update_objective`, `/save`, `/edit`), the planner run (`propose_plan`, `ErrEndTurn`), `Accept?` and
+revise, `-objective` file or text, `-yes`/`-y`, per-mode defaults, `agent/planner/`. Not committed (Jerry commits).
+`state/` was moved after step 2 (a first plan never reads state); its skeleton still waits for Jerry's review, with
+`ObjectiveText` added. **Next:** try plan mode against a real model; then step 3 (one complete serial run) with
+`state/`. Open: `/plan` in chat and `Run now?` are left of step 5. Follow-ups done the same day: `Save over <file>?`,
+one user message at a time, `maxPlanTasks` (`DECISIONS.md § Plan mode follow-ups`).
+
+### 2026-11-09 (end of session) — plan mode shipped (PR #42 merged); handoff for the next features
+
+**Where things stand.** PR #42 (`feat/autonomous-mode-1`) is merged into `master`: `PLAN-plan-apply.md` steps 1
+(formats, except `state/`) and 2 (plan mode, first plan) are done. Decisions: the `DECISIONS.md` entries dated
+2026-11-08 and 2026-11-09, in order: plan/apply redesign → simplified shape → `mdscan/` and `plan/` built →
+`objective/` v2 built → `Step 2 built` → `Plan mode follow-ups` → `PR #42 review`. Transcript of the step 2 session:
+`prompts/20261108-session-2.md` (gitignored; covers the design rounds up to the start of building).
+
+**How the last sessions worked (keep doing this unless Jerry says otherwise).**
+- Design first, in several short rounds: Claude proposes the flow, shape, structs and functions; Jerry corrects them;
+  nothing is coded until he says "proceed". Then **Claude writes the code** (no longer the skeleton-for-Jerry style),
+  and **a separate sub-agent writes the tests**. Before and after each sub-agent, diff the list of test names
+  (`grep -rhoE '^func (Test|Fuzz|Benchmark)[A-Za-z0-9_]+'` over `go list -f '{{.Dir}}' ./...`) and report every
+  removal. Sub-agent bug reports are checked and fixed by Claude, not by the sub-agent.
+- **Never touch `mvp1/`–`mvp4/`** from root work (a bulk sed broke mvp3/mvp4 tests in PR #42 and had to be reverted).
+  Scope bulk edits to `go list ./...` directories; `git diff --stat -- mvp1 mvp2 mvp3 mvp4` must stay empty.
+- Jerry wants **short, plain answers**: answer the question first, no surveys of options he didn't ask for; "answer
+  briefly" means a few lines. PR descriptions are at most ~5 one-sentence bullets of what was built.
+- Jerry commits and opens PRs himself. Checks before reporting: `go test -race ./...`, `go vet ./...`, gofmt on root
+  packages (three old files under `mvp3/runs/`, `mvp4/runs/` always show; ignore them), `go run ./cmd/codemap -check`
+  and `-lint`.
+
+**What plan mode is now (for orientation; details in `PLAN-plan-apply.md § The planning session`).**
+- `minagent -mode plan`: name prompt → `What is your objective? :` → objective chat (draft in memory,
+  `update_objective`, `/save`, `/edit`, `/exit`) → planner run (`propose_plan`, separate prompt, no chat history) →
+  `plan.Summary` → `Accept this plan? [Y/n]` → write `<objective>.plan.md`, or revise (chat again) or exit.
+- `-objective <file|text> [-y]`: plans a file or text; an up-to-date plan that passes `CheckComplete` is only shown;
+  a stale plan is an error until step 4.
+- Code: `agent/planmode.go` (flow, `planModeDetails` on `ChatSession.ModeDetails`), `agent/planner/` (prompts,
+  `update_objective`, `propose_plan`), `agent/chat.go` (`/save`, `/edit`, `nextChatLine`, the edit note),
+  `config` (`GetDefaultConfig(mode)`, `maxPlanTasks`, `-yes`/`-y`), `plan/` (`PathFor`, `Summary`, `NormalizeTaskID`),
+  `tools.ErrEndTurn` + `runToolCall`'s end-turn bool.
+- Rules kept on purpose: the config file is trusted in plan mode (write tools and MCP allowed); the request never holds
+  two user messages in a row (Anthropic compatibility); `/exit` as the answer to "What is your objective?" leaves.
+
+**Next, in order.**
+1. **Try plan mode against a real model** (not done yet): `go run . -mode plan` and
+   `go run . -mode plan -objective examples/objective-example.md`. Look at the planner prompt's output quality, the
+   `update_objective` behaviour in the chat, and whether `propose_plan`'s error messages get a weak model to a valid
+   plan. Expect prompt tweaks (`config.planSystemPrompt`, `planner.PlanPrompt`).
+2. **`state/` package** (moved from step 1 to just before step 3: a first plan never reads state). Jerry has not yet
+   approved the skeleton; show it again and wait for his OK. The skeleton as last proposed, with the changes found while
+   building `plan/` and `objective/`:
+   - Files: `.minagent/<objective-name>/` holds `lock` and `runs/NNNN/{state.json, report.md, trace.jsonl}`.
+   - `Snapshot{Format, Run, Started, Ended, Outcome, Objective Ref, ObjectiveText string, Plan Ref, NextID int,
+     Env Environment, Tasks []TaskState}`. **`ObjectiveText` is new**: the objective in standard form
+     (`objective.Markdown()`) the plan was made from, so the next run can parse it and call `ChangedSections` without
+     git.
+   - `Ref{Path, Hash, Version}`: for the objective, `Hash` = `objective.Hash()` (the plan's `objective_hash`); for the
+     plan, a hash of the file's bytes.
+   - `TaskState{ID, Parent, Kind, DefHash, Status, Attempts, LastRun, Reads, Writes []FileRecord, Summary, Verdict,
+     Effects []Effect}`; `DefHash` = `plan.Task.DefinitionHash()`; external effects come from `Task.External()`
+     (`effects: external`), not a bool field. Gates come from `Task.Gate`.
+   - `FileRecord{Path, SHA256, Size}`, `Effect{Key, What, Status, Ref, At}` (idempotency keys),
+     `Environment{Harness, Commit, Roles map[string]Role, ToolsHash}`, `Role{Provider, Model, PromptHash}` (add JSON
+     tags).
+   - Functions: `Dir(objectivePath)`, `Latest(dir)`, `Load(path)`, `NewRun(dir, prev)` (os.Mkdir `runs/NNNN`),
+     `Snapshot.Save(runDir)` (temp file + rename), `Lock(dir)` (O_EXCL, pid and time), `HashFile(root *os.Root,
+     path)`. Status values: pending, running, done, failed, interrupted, removed.
+   - `NextID` feeds `plan.AssignTaskIDs(tasks, nextID)` so removed IDs are never reused.
+3. **Step 3: one complete serial run** (`-mode autonomous -objective …`): lock, summary, `Run? [Y/n/c]`, a director and
+   workers in `depends` order (mvp3 is the reference: `mvp3/agent/autonomous.go`, `mvp3/director/`), the file tools
+   recording reads/writes, a state snapshot and report per run, resume from the last snapshot, idempotency keys for
+   external effects. Plan mode's `Run now? [y/N]` after saving comes with it.
+4. Step 4 (iteration: `propose_plan` operations keep/change/add/remove, drift check, `~ ↻ - ?` in `plan.Summary`,
+   the recorded-reads cascade, `-replace`); step 5's rest (`/plan` in chat with a background run); step 6 (gates that
+   pause only their dependents, capability preflight from `needs`, budgets).
+
+**Open questions to raise when they come up.**
+- Whether plan mode should warn at startup when the config gives it write tools (Copilot asked for an allowlist; Jerry
+  chose to trust the config, so at most a notice).
+- Updating a plan (step 4) must keep the user's hand edits in mind: today regenerating replaces the plan file.
+- The `Save over <file>?` question is asked once per plan-mode run, not per revision.
+
+### 2026-11-10 — Plan mode conversation reworked (see DECISIONS.md § Plan mode's chat reads like a conversation)
+
+**Done (written by Claude at Jerry's request, not typed by Jerry):** `planOutput` (no labels; `[tool]` only with
+`-debug`), `/view`, the reminder only at start and under the final draft, silent `update_objective`, new
+`present_objective` tool, rewritten `planSystemPrompt` (3 stages, "So far:" summary, one question per reply), planner
+prompt with the Approach/Produces/Check body layout and examples, `body` required by `propose_plan`. Tests updated and
+added; `go test -race ./...` passes. Removed on purpose: `Test_Unit_UpdateObjective_NilShow` (the `show` callback no
+longer exists).
+
+**Next.**
+1. Re-run Jerry's tic-tac-toe test (`go run . -mode plan`, same answers as `objective-test.log`) with gpt-4o-mini:
+   does the chat follow the stages, summarize, and call `present_objective` at the right time? Are task bodies detailed?
+2. Then decide on `planModel` (a stronger model for the planner run only).
+
+### 2026-11-10 (later) — plan display (see DECISIONS.md § Plan mode shows the plan itself)
+
+Done: the planner's reply text is hidden unless `-debug`; the plan is shown in full (`Plan.Body()`) before the summary
+and "Accept this plan?". Next unchanged: test with better models, then decide on `planModel`.
+
+### 2026-11-10 (later) — planner reminders (see DECISIONS.md § The planner is reminded to call propose_plan)
+
+Done: up to 2 reminders when the planner replies with text instead of calling `propose_plan`; the no-plan error shows
+its last reply and the re-plan command. Tip for test runs: use an empty `-workdir`, so the planner doesn't explore this
+repo. Next unchanged: test with better models, then decide on `planModel` (and `tool_choice` only if needed).
+
+### 2026-11-19 — Next: autonomous mode v1 (see `PLAN-auto-mode.md`, DECISIONS.md § 2026-11-19)
+
+Rebased `feat/autonomous-mode-2` onto `build` (now includes `ideas/`). Read the seven `ideas/` reports; agreed next work
+is one serial run with an append-only journal and resume (step 1, commits 1a–1i), then budgets (step 2, 2a–2d). Plan
+mode is considered done for v1; `planModel` waits for tests with stronger models.
+
+**Open:** how to split the writing (Jerry types the journal `Append`/`Read`, the tool hook and resume; Claude writes the
+plumbing), or Claude writes it all and Jerry reviews per commit. Nothing of step 1 is built.
+
+### 2026-11-19 (later) — 1a built (see DECISIONS.md § 1a built)
+
+Working mode until Jerry's break (~2 days): per sub-step Claude gives the shape, Jerry discusses until it's right, Claude
+implements and gives a commit message. Done: 1a (`-mode auto -plan`, summary, `Run? [Y/n]`; plan carries the objective;
+`-plan` in plan mode). Not committed. **Next: 1b** (`state/`: run folders, lock, journal writer, reader).
+
+### 2026-11-19 (later) — 1b built (see DECISIONS.md § 1b built)
+
+`state/` package (journal, home/runs, per-plan OS lock, fold), `stateDir` config key, the workspace refuses the state
+folder. Not committed. **Next: 1c** (the full manifest: model, config and prompt hashes, tools).
+
+### 2026-11-20 — 1c built (see DECISIONS.md § 1c built)
+
+Manifest (`agent/manifest.go`, `state.Manifest`), `config.json` per run, `plan_id` in plans, identity by `PlanRef`.
+Not committed. **Next: 1d** (open the run: lock, Load, move/copy check, NewRun with the manifest, trace into the run
+folder; then the serial scheduler and worker).
+
+### 2026-11-20 (later) — 1d built (see DECISIONS.md § 1d built)
+
+`-mode auto` now runs a plan: lock, history, run folder, tasks one at a time with a fresh worker each, journal, report.
+Copies run with a warning; traces in `<stateDir>/traces`. Not committed. **Next: 1e** (director: `task_done` /
+`task_failed` against `done when`, retry limit, gates). **Later sprint:** accepted plans kept in `~/.minagent/plans/`.
+
+### 2026-11-20 (later) — 1e built (see DECISIONS.md § 1e built)
+
+Director judges each attempt (`agent/director/`, `judgeTask`), up to `maxTaskAttempts` (3) attempts with its advice;
+gates asked on a terminal (`declined` / `waiting`). Not committed. **Next: 1f** (`tool_before` / `tool_after` for every
+call, file hashes, idempotency key in MCP `_meta`).
+
+### 2026-11-20 (later) — 1f built (see DECISIONS.md § 1f built)
+
+Every tool call recorded (`tool_before` / `tool_after`), file hashes via `tools.FileTool`, MCP idempotency key in
+`_meta`. Not committed. **Next: 1g** (write tools write via a temp file + rename).
+
+### 2026-11-20 (later) — 1g built (see DECISIONS.md § 1g built)
+
+`write_file`, `edit_file`, `copy_file` write a temp file in the same directory and rename it into place (all modes).
+Not committed. **Next: 1h** (resume: settle cut-off calls, remove leftover `.minagent-*.tmp` files, re-run the cut-off
+task; crash test). **Tabled:** a larger cap for `edit_file` (its 1 MB is a memory cap, not tokens); chunked writes
+(`append` on `write_file`, in place, not atomic) — see DECISIONS.md § 1g built.
+
+### 2026-11-20 (later) — 1h built (see DECISIONS.md § 1h built)
+
+Resume after a crash: cut-off calls settled before any task runs (file hashes, MCP idempotent re-send, ask for the
+rest), same run continued when plan and config are unchanged, crash note for the cut-off task's worker; crash test with a
+child process. Not committed. **Next: 1i** (plan mode's `Run now? [y/N]`; docs).
+
+### 2026-11-20 (later) — 1i built; step 1 done (see DECISIONS.md § 1i built)
+
+Plan mode's "Run now? [y/N]" (`-y` plans and runs), exit codes 0/1/2/3/130, `docs/auto-mode.md`. Not committed.
+**Next: Step U** (small plan update that keeps `plan_id`, objective drift check; `PLAN-auto-mode.md`), then **step 2**
+(budgets, 2a–2d). Still tabled: accepted plans in `~/.minagent/plans/`; a larger `edit_file` cap; chunked writes.
+
+### 2026-11-20 (later) — Roadmap: from auto mode to orchestrator mode (start here next session)
+
+**Where things stand.** `PLAN-auto-mode.md` step 1 is built (1a–1i; user guide `docs/auto-mode.md`). Auto mode runs a
+plan's tasks **serially, in one process**: Go code (`agent/autorun.go`) picks tasks in `depends` order; each attempt is a
+fresh worker conversation (`runWorker`, `agent/autoworker.go`); a director conversation judges it (`judgeTask`,
+`agent/director/`); every tool call is journaled (`agent/autojournal.go`); a crash is resumed (`agent/autoresume.go`).
+Still planned before orchestrator work: **Step U** (small plan update, objective drift) and **step 2** (budgets, 2a–2d).
+Do step 2 first at the latest before parallel workers (O6): N workers multiply token use.
+
+**What orchestrator mode adds** (mvp4 = "auto mode with the worker moved out of process"): each worker is a separate
+`minagent -mode worker` child process, talked to over MCP stdio (tools `run_task`, `end_task`, `worker_info`); several
+tasks can run at once; worker types. Benefits: a worker crash doesn't kill the run; parallel tasks; per-worker config
+(model, prompt, later a sandbox). **Don't port mvp4's director-driven design**: there the director plans tasks and drives
+the run; here plan mode plans, Go code schedules, the director only judges. Keep that split.
+
+**Read first:** `mvp4/README.md`; `mvp4/worker/worker.go` (the `Worker` interface: `Info`, `RunTurn`, `EndTask`,
+`Close`) and `mvp4/worker/mcp.go` (the MCP client side); `mvp4/agent/workerserver.go` + `localworker.go` (the child's MCP
+server); `mvp4/agent/autonomous.go` (parallel rounds); `DECISIONS.md § mvp4 reference build`, `§ Slice D (parallel
+tasks)`, `§ Slice E (worker types)`. The mvp4 plan files are in `prompts/` (gitignored: local copies only).
+
+**Steps** (each a commit; give the shape first, then build, as in step 1):
+
+| # | Step | Notes |
+|---|---|---|
+| O1 | **Worker seam**: a `taskWorker` interface in `agent` (run one attempt: task message in → summary + tool log out); today's `runWorker` becomes its in-process implementation. No behaviour change. | The director needs the worker's tool calls (`director.ToolLog`), so the interface returns them, not just the summary. |
+| O2 | **`-mode worker`**: an MCP stdio server in the child (from mvp4's `workerserver.go`), running one attempt per `run_task` with the same tools, rules (ask = deny) and atomic writes; stdout carries only MCP; logs on stderr. Started with the parent's `-config`, `-workdir`, `-model`, `-maxsteps`. | Decide: does the child get its own trace file (`traces/<run>-w1.jsonl`), linked from the parent's journal? |
+| O3 | **Tool records across processes** (the hard part): every child tool call must be journaled before it runs. Options: (a) the child asks the parent to record (an MCP request/notification; the parent is the journal's only writer; one round trip per call), or (b) each child writes its own journal file in the run folder (`runs/0001/workers/w1.jsonl`) and `Load`/`Fold` merge them. | Decision needed. (b) keeps "not recorded = not run" local to the child; (a) keeps one file. Resume (1h) and idempotency keys must work either way. |
+| O4 | **Remote worker** (`-mode auto` with config `"workers"` or `-mode orchestrator`; decide): the `taskWorker` that starts a child (`procutils` process group, killed on Ctrl+C and at the end), talks MCP via `mcpconnect`, labels its stderr `[w1]`. A child that dies mid-attempt = a failed attempt, retried with a new child (not the end of the run); its open calls are settled as in 1h before the retry. | Serial still (one worker). Crash test: kill the child, not the parent. |
+| O5 | **Resume with children**: on start, no child of an earlier run may still be running (the plan lock covers the parent; children die with their process group); open calls from child journals settled as in 1h. | Mostly tests if O3/O4 are done right. |
+| O6 | **Parallel tasks**: one scheduler goroutine owns the state, a ready-list (tasks whose `depends` are done), up to N workers, results on one channel. A failed task: start nothing new, let running ones finish, stop. Output lines `[t3 w2]`. Shared `workDir`: tasks that touch the same files must be ordered by `depends` (tell the planner; maybe a per-path lock later). Budgets (step 2) shared across workers. | mvp4 slice D; there the director ran per task in parallel too: same here (one director conversation per attempt). |
+| O7 | **Worker types**: config `"workers"` (count, description, partial config over the top-level one, e.g. a tester prompt or another model); the plan says which type a task needs (a new task field, e.g. `worker: tester`, chosen by the planner; `docs/plan-format.md`, `CheckComplete` at run time). | mvp4 slice E; there the director assigned types, here the planner does. |
+| O8 | **Docs**: `docs/auto-mode.md`, CLAUDE.md, DECISIONS, SESSION. | |
+
+**What carries over unchanged** from step 1: the plan format and plan mode, `state/` (journal, manifest, lock, Load/Fold),
+approvals with nobody to ask, the director and its verdict tools, gates, atomic writes, idempotency keys, exit codes. What
+gets revised: `runWorker` becomes one of two `taskWorker`s; the journal gains records from children (O3); resume learns
+that a dead worker is not a dead run; `runPlan` becomes the parallel scheduler (O6).
+
+### 2026-11-20 (end of session) — Handoff: next is step 2 (token tracking and budgets), then step 3 (orchestrator mode)
+
+**State of the branch** (`feat/autonomous-mode-2`): step 1 of `PLAN-auto-mode.md` (1a–1i) is committed (last commit
+`c446d83`, 1i); only this file's two newest entries are uncommitted. All checks passed at 1i: `go test -race ./...`,
+`go vet`, gofmt, `go run ./cmd/codemap -check` and `-lint`, `GOOS=windows go build ./...`. Transcript:
+`prompts/20261119-session-autonomous-mode-2.md`.
+
+**Order agreed with Jerry for the next sessions:** step 2 (token tracking and budgets) → step 3 (orchestrator mode = steps
+O1–O8 of the roadmap entry above). **Step U** (small plan update, objective drift; `PLAN-auto-mode.md`) is not dropped,
+only not next; pick it up when plan updates are needed.
+
+**First thing next session:** one real run against a real model in a scratch folder (step 1 has only run against the fake
+provider): `go run . -mode plan -objective "<small task>" -workdir /tmp/scratch`, answer y to "Run now?". Expect prompt
+tuning of `workerPrompt` (`agent/autoworker.go`) and `director.Prompt`. Also untested on a real Windows machine: the plan
+lock (`state/lock_windows.go`) and rename-over-existing (`tools/builtin/atomicwrite.go`).
+
+**Step 2: token tracking and budgets** (`PLAN-auto-mode.md` § Budgets, commits 2a–2d). Facts found while building step 1:
+- **2a usage from the provider.** `model.Provider.Chat` returns a `model.ChatMessage` only; `model.ChatResponse`
+  (`model/provider.go`) parses `choices` and not `usage`. `trace.Usage` (`trace/event.go`) and
+  `ModelResponseData.Usage` already exist but stay zero (`GetModelResponseData`'s Notes say so). Decision needed: how
+  usage leaves the provider. Options: a `Usage` field on the response (changes the `Provider` interface and every fake,
+  incl. `model/modeltest.FakeProvider`), or a field on `ChatMessage` tagged `json:"-"` (no interface change, but
+  `ChatMessage` is stored in memory/context). A provider that reports nothing counts as 0 and the report says so.
+- **2b `maxTokens`.** Parsed and merged (`cfg.MaxTokens`, `-maxtokens`) but never sent; CLAUDE.md says so. Send it as the
+  per-response limit (`max_tokens`; newer OpenAI models want `max_completion_tokens`: check what the target servers accept).
+- **2c run budgets.** New keys `runTokenBudget` (total tokens for a run) and `runTimeoutMinutes` (**running time only**,
+  Jerry: summed over the run's sessions, start→crash, resume→end, from journal timestamps `Event.At`; time crashed or
+  waiting doesn't count). Check them where every model call passes: the session provider wrapper
+  (`cs.getSessionProvider` → `trace.TracedProvider`), so `reActLoop` doesn't change; worker, director and re-sends all
+  count. Stop reasons `budget` / `timeout` already exist in `state.StopReason`; map them in `runTask`/`runPlan` and pick
+  their exit code (1, or 3 "needs a person"?). Since 1h continues the same run after a crash, the totals carry over:
+  rebuild them in `Fold` from the journal.
+- **2d usage in the journal and report.** A `usage` event (per model call or per task attempt: decide; the PLAN's event
+  table lists it as step 2), folded into per-task and per-run totals; the report shows tokens and time per task and in
+  total. Config docs: `config/doc.go` gets the two keys; `docs/auto-mode.md` "Current limits" loses the budget line.
+- Budgets matter more once orchestrator mode runs N workers at once (shared counters across processes: plan for it in
+  O3/O6, e.g. the child reports usage per attempt in its `run_task` result).
+
+**Step 3: orchestrator mode** — follow the roadmap entry above (O1–O8, "start here"). Same working style as step 1: give
+the shape (functions, files, critical tests) first, discuss, then build; one-line commit message per step.
+
+**Tabled items still open** (all in DECISIONS.md): accepted plans kept in `~/.minagent/plans/<plan_id>.md` (protect the
+plan from the model; § 1d built); a larger `edit_file` cap and chunked writes for `write_file` (§ 1g built); a crash in
+chat/plan mode can leave a 1g temp file (no journal there; § 1h built).
+
+**Working rules that held all session:** shape first, then build; report every test deleted or whose expectation
+changed; append dated entries at the end of SESSION.md / DECISIONS.md only; `[agent]` teaching comments; every function
+has a header and `go run ./cmd/codemap` after signature changes; never edit mvp1–mvp4; never write to the real
+`~/.minagent` from tests or smoke runs (use a temp `stateDir`).
+
+### 2026-11-20 (end) — PR #44 review addressed (see DECISIONS.md § PR #44 review)
+
+Five comments: a failed `tool_after` now stops the run and leaves it open; resume asks before re-sending and starts a
+new run when tools or MCP servers changed (limited on purpose); files over 16 MB get a size+mtime fingerprint instead of
+a content hash; `Fold` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.

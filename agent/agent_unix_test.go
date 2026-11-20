@@ -33,7 +33,7 @@ func Test_SetupAgent_CtrlCWhileConnecting_AbortsAndKeepsConnectedServersForShutd
 	defer srv.Close()
 	// "b-hangs" starts (sorted after a-remote) but never answers the handshake; it records its pid first
 	pidFile := filepath.Join(t.TempDir(), "hang.pid")
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.OutBuffer, cfg.TraceEnabled, cfg.WorkDir = io.Discard, false, t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{
 		"a-remote": {URL: srv.URL},
@@ -85,7 +85,7 @@ func Test_Unit_PrintInfo_StdioServerStderrHidden(t *testing.T) {
 	os.Stderr = w // catches anything that would still go to the real stderr
 	defer func() { os.Stderr = realStderr }()
 
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.WorkDir = t.TempDir()
 	cfg.McpServers = map[string]config.McpServerConfig{
 		"leaky": {Command: "sh", Args: []string{"-c", "echo FAKE_SECRET_STDERR_456 >&2; exit 1"}},

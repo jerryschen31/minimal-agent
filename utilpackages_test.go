@@ -11,7 +11,7 @@ import (
 // module. That is what lets any package use them without an import cycle. A standard-library import path has no dot
 // in its first element ("os/exec"); a module path does ("github.com/...").
 func Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary(t *testing.T) {
-	for _, dir := range []string{"procutils", "textutils"} {
+	for _, dir := range []string{"mdscan", "procutils", "textutils"} {
 		pkgs, err := parser.ParseDir(token.NewFileSet(), dir, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatalf("parsing %s: %v", dir, err)

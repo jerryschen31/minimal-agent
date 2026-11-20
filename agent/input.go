@@ -22,6 +22,8 @@ import (
 
 type promptReader interface {
 	ReadPrompt(ctx context.Context) (string, error)
+	ReadPromptFilled(ctx context.Context, lines []string) (string, error) // the prompt starts out holding lines (plan mode's /edit)
+	AskLine(ctx context.Context, prompt string) (string, error)           // one answer to a question; io.EOF = Ctrl+D (cancel)
 }
 
 // newPromptReader creates a prompt reader that reads user input keystroke by keystroke from a terminal, or per line from
@@ -122,6 +124,59 @@ func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error) {
 	}
 }
 
+// ReadPromptFilled reads a prompt that starts out holding lines, which the user edits and then submits.
+//
+// Notes:
+//   - Used by plan mode's /edit: the draft objective is put in the prompt so the user can change it in place.
+//   - The cursor starts at the end of the last line.
+//   - Ctrl+C discards the changes and starts again from lines; Ctrl+D on an empty prompt returns io.EOF.
+//   - The answer is not added to the input history (a whole objective would crowd it), and the fill is cleared
+//     afterwards, so the next ReadPrompt starts empty.
+func (r *ttyReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error) {
+	r.ed.SetDefault(lines)
+	r.ed.SetMoveEnd(true) // the cursor starts at the end of the last line, where an edit usually adds text
+	defer func() {
+		r.ed.SetDefault(nil) // the next prompt starts empty
+		r.ed.SetMoveEnd(false)
+	}()
+	for {
+		got, err := r.ed.Read(ctx)
+		if errors.Is(err, readline.CtrlC) {
+			continue // discard the changes: the prompt starts again from lines
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(got, "\n"), nil
+	}
+}
+
+// AskLine asks the user a question at the terminal and returns the answer as typed.
+//
+// Notes:
+//   - prompt is shown instead of "> ", and the normal prompt is put back afterwards; the history is empty while asking,
+//     so Up can't bring back an old chat message.
+//   - Ctrl+C clears what was typed and asks again; Ctrl+D on an empty line returns io.EOF, which callers treat as
+//     cancel.
+//   - A multi-line answer comes back joined with newlines; callers trim it.
+func (r *ttyReader) AskLine(ctx context.Context, prompt string) (string, error) {
+	r.ed.SetPrompt(func(w io.Writer, _ int) (int, error) { return io.WriteString(w, prompt) })
+	defer r.ed.SetPrompt(writePrompt) // put the normal "> " prompt back for the next ReadPrompt
+	r.ed.SetHistory(simplehistory.New())
+	defer r.ed.SetHistory(r.history)
+
+	for {
+		lines, err := r.ed.Read(ctx)
+		if errors.Is(err, readline.CtrlC) {
+			continue // Ctrl+C clears the line and asks again; only Ctrl+D cancels
+		}
+		if err != nil {
+			return "", err
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+}
+
 // AskYesNo asks the user a yes/no question at the terminal, such as allowing a tool call to execute.
 //
 // Notes:
@@ -200,6 +255,35 @@ func (r *plainReader) ReadPrompt(ctx context.Context) (string, error) {
 			return "", io.EOF // reader goroutine closed the channel: input ended
 		}
 		return line, nil
+	}
+}
+
+// ReadPromptFilled reads one line, like ReadPrompt, after printing lines so the reader can see what is being edited.
+//
+// Notes:
+//   - A pipe can't be edited in place, so the answer is the next line read (it replaces lines). Plan mode only edits
+//     on a terminal; this is for tests.
+//   - The trailing newline is removed; io.EOF means input ended.
+func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error) {
+	io.WriteString(r.out, "\n"+strings.Join(lines, "\n")+"\n")
+	line, err := r.ReadPrompt(ctx)
+	return strings.TrimRight(line, "\r\n"), err
+}
+
+// AskLine prints prompt and returns the next line read, without its trailing newline.
+//
+// Notes:
+//   - io.EOF means input ended (callers treat it as cancel); a cancelled ctx returns its error.
+func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error) {
+	io.WriteString(r.out, prompt)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case line, ok := <-r.lines:
+		if !ok {
+			return "", io.EOF // reader goroutine closed the channel: input ended
+		}
+		return strings.TrimRight(line, "\r\n"), nil
 	}
 }
 

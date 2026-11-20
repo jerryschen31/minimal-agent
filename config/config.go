@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -38,11 +39,14 @@ type Config struct {
 	// run configuration
 	AgentName    string `json:"agentName"`
 	AgentVersion string `json:"agentVersion"`
-	AgentMode    string `json:"agentMode"`   // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info"
-	MissionFile  string `json:"missionFile"` // path to mission file, autonomous mode only (TODO)
-	WorkDir      string `json:"workDir"`     // the only directory (and subdirectories) the read_file tool may read from; default "."
-	MaxSteps     int    `json:"maxSteps"`    // max ReAct steps per turn; must be positive (default 10)
-	MaxTokens    int    `json:"maxTokens"`   // 0 = unspecified (TODO)
+	AgentMode    string `json:"agentMode"`    // "chat" | "autonomous" (TODO) | "oneshot" (TODO) | "info" | "plan"
+	MissionFile  string `json:"missionFile"`  // path to mission file, autonomous mode only (TODO)
+	WorkDir      string `json:"workDir"`      // the only directory (and subdirectories) the read_file tool may read from; default "."
+	MaxSteps     int    `json:"maxSteps"`     // max ReAct steps per turn; must be positive (default 10)
+	MaxPlanTasks int    `json:"maxPlanTasks"` // plan mode: the most tasks a plan may have; must be positive there (default 30 in plan mode, 0 otherwise)
+	// MaxTaskAttempts is auto mode's most tries per task (worker + director); must be positive there (default 3, 0 otherwise)
+	MaxTaskAttempts int `json:"maxTaskAttempts"`
+	MaxTokens       int `json:"maxTokens"` // 0 = unspecified (TODO)
 
 	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
 	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
@@ -70,6 +74,11 @@ type Config struct {
 	AutoCompactThreshold  float64 `json:"autoCompactThreshold"`  // how full the window is (0 < x <= 1) when auto-compaction starts (default 0.9)
 	SummarizerPrompt      string  `json:"summarizerPrompt"`      // the system prompt for /summary, /compact and auto-compaction; must not be empty
 
+	// per-run settings, set only by flags (an objective is input to one run, not a setting to keep in a config file)
+	ObjectiveFile string `json:"-"` // -objective/-obj: an objective file or the objective's text; "" = plan mode asks for a new one
+	PlanFile      string `json:"-"` // -plan: plan mode writes the plan here ("" = next to the objective); auto mode runs it
+	AssumeYes     bool   `json:"-"` // -yes/-y: plan mode accepts the plan, auto mode runs it, without asking
+
 	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
 
 	// tool rules configuration (glob rules on model-facing tool names; a config file's list replaces that list's default, [] means no rules)
@@ -81,7 +90,8 @@ type Config struct {
 	TraceEnabled       bool   `json:"traceEnabled"`       // write an event trace log for this run; false = tracing is off (trace.Nop)
 	RedactionLevel     string `json:"redactionLevel"`     // how strictly secrets are masked in the trace: "standard"
 	DigestEnabled      bool   `json:"digestEnabled"`      // also write an L1 digest, <run_id>.digest.md, next to the trace; needs traceEnabled
-	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace")
+	TraceDir           string `json:"traceDir"`           // directory for trace files, one <run_id>.jsonl per run (default ".agent-trace"); auto mode ignores it (its traces go to <stateDir>/traces)
+	StateDir           string `json:"stateDir"`           // auto mode's private state folder: run journals, plan copies, run traces (default "~/.minagent"; "~" is your home)
 	TraceMaxEventBytes int    `json:"traceMaxEventBytes"` // an event payload larger than this (as JSON) is replaced by a marker holding its size; must be positive (default 100 MB)
 
 	// tool output caps (bytes, all must be positive). These bound how much of the model's context one tool call can use.
@@ -169,14 +179,51 @@ func (m McpServerConfig) TransportType() (string, error) {
 	return kind, nil
 }
 
-// GetDefaultConfig returns the built-in defaults every setting starts from.
+// planSystemPrompt is plan mode's default system prompt: the chat that drafts an objective with the user.
+// [agent] update_objective, present_objective, /view, /save and /edit are added by plan mode (PLAN-plan-apply.md
+// step 2); a config file's "systemPrompt" replaces this text like any other default. The flow (three stages, a running
+// summary, one question at a time, the final draft shown once) follows Claude Code's plan mode.
+const planSystemPrompt = `You help the user write an objective for an autonomous agent run. You lead the conversation
+until the objective is a final draft that a planner can turn into tasks without asking anything.
+
+An objective has three sections, and you work through them in this order:
+1. Objective (required): what to achieve and why, in a few sentences.
+2. Instructions: how to work: constraints and requirements (tools, technologies, things to avoid), the quality bar,
+   and how to tell it is done.
+3. Context: background facts the work needs (existing files, people, references, earlier attempts).
+Move to the next stage once the current one is clear; go back if a later answer changes an earlier one.
+
+Every reply has this shape:
+- One short sentence acknowledging what the user just said.
+- "So far:" and a few short bullets with your current understanding of the objective, instructions and context
+  (only what you know; this is how the user follows your understanding, so keep it current and brief).
+- One question about the most important gap, with an example answer when that helps.
+Never end a reply without a question, unless you call present_objective.
+
+Call update_objective whenever your understanding changes, with only the sections that change, each as the full new
+text of that section in Markdown, without the section's heading. The user does not see the draft when you call it.
+When all three stages are settled and nothing important is open, call update_objective if needed, then
+present_objective to show the user the final draft; write nothing after that call. If the user then asks for changes,
+make them and call present_objective again.
+
+Use your tools to look at the working directory when that helps. The user saves with /save, views the draft with
+/view and edits it directly with /edit; you never save it. Don't break the work into tasks: a planner does that after
+the objective is saved. Keep replies short.`
+
+// GetDefaultConfig returns the built-in defaults every setting starts from, for the given mode.
 //
 // Notes:
 //   - Each call returns a fresh Config, but InBuffer and OutBuffer point at os.Stdin and os.Stdout.
 //   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
 //     FlagsOverlay layers the flags.
-func GetDefaultConfig() Config {
-	return Config{
+//   - Most defaults are the same in every mode. Plan mode (ModePlan) differs in SystemPrompt (planSystemPrompt) and
+//     BuiltinTools (read-only: read_file, list_files, search_files). Auto mode (ModeAuto) differs in AskRules: only
+//     "*delete*" and "*remove*", because with nobody to ask an ask rule denies, and the chat default would deny every
+//     file write (DECISIONS.md § 2026-11-19 later). Plan and auto mode set MaxPlanTasks (30; CheckComplete needs it).
+//     Any other mode, including an unknown one, gets the chat defaults; ValidateMode reports an unknown mode later.
+//   - AgentMode is set to mode.
+func GetDefaultConfig(mode string) Config {
+	cfg := Config{
 		UserID:        "default_user",
 		Provider:      "openai",
 		Model:         "gpt-4o-mini",
@@ -184,7 +231,7 @@ func GetDefaultConfig() Config {
 		ApiKeyName:    "OPENAI_API_KEY",
 		AgentName:     "minagent",
 		AgentVersion:  "0.1.13",
-		AgentMode:     ModeChat,
+		AgentMode:     mode,
 		WorkDir:       ".",
 		SystemPrompt:  "You are a helpful assistant. Keep your responses concise and relevant.",
 		ChatStoreType: "in-memory",
@@ -210,6 +257,7 @@ func GetDefaultConfig() Config {
 		SummarizerPrompt:      "You are a helpful assistant that summarizes chat history. Summarize the key conversational points and important details concisely.",
 
 		TraceDir:              ".agent-trace",
+		StateDir:              "~/.minagent",
 		TraceMaxEventBytes:    100 << 20, // 100 MB
 		ReadFileMaxBytes:      1 << 20,   // 1 MB
 		CopyFileMaxBytes:      100 << 20, // 100 MB
@@ -218,6 +266,19 @@ func GetDefaultConfig() Config {
 		CommandMaxOutputBytes: 128 << 10, // 128 KB
 		IgnorePaths:           []string{".git/", "node_modules/", "__pycache__/", ".venv/", "*.pyc"},
 	}
+
+	// the settings that differ by mode
+	if mode == ModePlan {
+		cfg.SystemPrompt = planSystemPrompt
+		cfg.BuiltinTools = []string{"read_file", "list_files", "search_files"} // planning reads the working directory, never changes it
+		cfg.MaxPlanTasks = 30
+	}
+	if mode == ModeAuto {
+		cfg.AskRules = []string{"*delete*", "*remove*"} // with nobody to ask, ask = deny: the write tools must not be ask rules here
+		cfg.MaxPlanTasks = 30
+		cfg.MaxTaskAttempts = 3 // a task the director judges not done is tried again, with its advice, up to 3 times in all
+	}
+	return cfg
 }
 
 // SetDefaultConfig builds a Config from a config JSON file. An empty filename causes the agent to use the built-in
@@ -226,30 +287,53 @@ func GetDefaultConfig() Config {
 // Notes:
 //   - The file is read from flags.Config; the defaults are loaded first, so missing keys in the file keep their
 //     defaults.
+//   - The defaults depend on the mode (GetDefaultConfig), so the mode is worked out first: the -mode flag, else the
+//     file's "agentMode", else chat.
 //   - Unrecognized fields display a warning (on cfg.OutBuffer, sorted so the warnings are stable) and get ignored;
 //     a file that cannot be read or parsed is an error.
 //   - Key matching is case-insensitive, as in encoding/json.
+//   - The file's "agentMode": "autonomous" becomes "auto" (normalizeMode), like the -mode flag.
 func SetDefaultConfig(flags Flags) (Config, error) {
-	// first get the default config, so missing keys in the file keep their defaults
-	cfg := GetDefaultConfig()
-
-	// if no config file is specified in the flags, just return the built-in config defaults
+	// no config file: the built-in defaults for the -mode flag's mode (chat if none)
 	if flags.Config == nil || *flags.Config == "" {
-		return cfg, nil
+		mode := ModeChat
+		if flags.Mode != nil {
+			mode = *flags.Mode
+		}
+		return GetDefaultConfig(mode), nil
 	}
 
-	// otherwise for the config file, read its contents and parse the JSON
+	// otherwise read the config file and parse the JSON
 	filename := *flags.Config
-	cfg.ConfigFile = filename
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return Config{}, fmt.Errorf("read config file: %w", err)
 	}
 
+	// work out the mode first, since the defaults depend on it: the -mode flag, else the file's "agentMode", else chat
+	var fileMode struct {
+		AgentMode string `json:"agentMode"`
+	}
+	if err := json.Unmarshal(data, &fileMode); err != nil {
+		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
+	}
+	mode := ModeChat
+	switch {
+	case flags.Mode != nil:
+		mode = *flags.Mode
+	case fileMode.AgentMode != "":
+		mode = normalizeMode(fileMode.AgentMode)
+	}
+
+	// then the defaults for that mode, so missing keys in the file keep their defaults
+	cfg := GetDefaultConfig(mode)
+	cfg.ConfigFile = filename
+
 	// parse config JSON - unrecognized fields display a warning and get ignored ; error if JSON cannot be parsed
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
 	}
+	cfg.AgentMode = normalizeMode(cfg.AgentMode) // the file's own "agentMode" was read into cfg again just now
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
@@ -305,6 +389,8 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  missionFile:   %s\n", cfg.MissionFile)
 	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
+	fmt.Fprintf(w, "  maxPlanTasks:  %d\n", cfg.MaxPlanTasks)
+	fmt.Fprintf(w, "  maxTaskAttempts: %d\n", cfg.MaxTaskAttempts)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
@@ -322,6 +408,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  digestEnabled: %t\n", cfg.DigestEnabled)
 	fmt.Fprintf(w, "  redactionLevel: %s\n", cfg.RedactionLevel)
 	fmt.Fprintf(w, "  traceDir: %s\n", cfg.TraceDir)
+	fmt.Fprintf(w, "  stateDir: %s\n", cfg.StateDir)
 	fmt.Fprintf(w, "  traceMaxEventBytes: %d\n", cfg.TraceMaxEventBytes)
 	fmt.Fprintf(w, "  readFileMaxBytes: %d\n", cfg.ReadFileMaxBytes)
 	fmt.Fprintf(w, "  copyFileMaxBytes: %d\n", cfg.CopyFileMaxBytes)
@@ -377,4 +464,24 @@ func DisplayURL(raw string) string {
 		shown += "#[hidden]"
 	}
 	return shown
+}
+
+// ResolveStateDir returns StateDir as an absolute path, with a leading "~" or "~/" expanded to the home folder.
+//
+// Notes:
+//   - "" returns "" (no state folder configured). A relative path is relative to the process's folder.
+//   - Symlinks are not resolved here; the workspace resolves them when it guards the folder.
+func (c Config) ResolveStateDir() (string, error) {
+	dir := c.StateDir
+	if dir == "" {
+		return "", nil
+	}
+	if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("stateDir %q: %w", c.StateDir, err)
+		}
+		dir = filepath.Join(home, dir[1:])
+	}
+	return filepath.Abs(dir)
 }

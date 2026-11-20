@@ -575,7 +575,7 @@ func Test_SetupBuiltinTools_ListFiles_IgnorePaths(t *testing.T) {
 
 // builtinCfg builds the config SetupBuiltinTools reads, from the settings these tests vary.
 func builtinCfg(toolList []string, workDir, traceDir string, readFileMaxBytes, maxSearchFiles int, denyPaths, ignorePaths []string) config.Config {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.BuiltinTools, cfg.WorkDir, cfg.TraceDir = toolList, workDir, traceDir
 	cfg.ReadFileMaxBytes, cfg.MaxSearchFiles = readFileMaxBytes, maxSearchFiles
 	cfg.DenyPaths, cfg.IgnorePaths = denyPaths, ignorePaths
@@ -764,5 +764,39 @@ func Test_SetupBuiltinTools_RunCommand(t *testing.T) {
 	cfg.CommandMaxOutputBytes, cfg.RunCommands = 100, []string{"/bin/sh"}
 	if _, err := SetupBuiltinTools(cfg); err == nil || !strings.Contains(err.Error(), "bare program name") {
 		t.Errorf("path in runCommands: %v", err)
+	}
+}
+
+// - Verify exactly the built-in tools that change files are FileTools (so auto mode's journal hashes what they change)
+// - Verify ChangedPaths returns the absolute path for a good call and an error for a path the tool refuses (.env)
+func Test_Unit_BuiltinFileTools(t *testing.T) {
+	work := t.TempDir()
+	cfg := builtinCfg([]string{"read_file", "list_files", "search_files", "write_file", "edit_file", "create_directory", "copy_file", "move_file"},
+		work, "", 4096, 1000, nil, nil)
+	built, err := SetupBuiltinTools(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileTools []string
+	for _, tool := range built {
+		if ft, ok := tool.(FileTool); ok {
+			name := tool.GetToolDefinition().Function.Name
+			fileTools = append(fileTools, name)
+			args := `{"path":"x.txt"}`
+			if name == "copy_file" || name == "move_file" {
+				args = `{"source":"x.txt","destination":"y.txt"}`
+			}
+			paths, err := ft.ChangedPaths(json.RawMessage(args))
+			if err != nil || len(paths) == 0 || !filepath.IsAbs(paths[0]) {
+				t.Errorf("%s.ChangedPaths = %v, %v", name, paths, err)
+			}
+			if _, err := ft.ChangedPaths(json.RawMessage(`{"path":".env","source":".env","destination":".env"}`)); err == nil {
+				t.Errorf("%s.ChangedPaths(.env): no error", name)
+			}
+		}
+	}
+	sort.Strings(fileTools)
+	if got := strings.Join(fileTools, " "); got != "copy_file create_directory edit_file move_file write_file" {
+		t.Errorf("FileTools = %s", got)
 	}
 }

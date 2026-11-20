@@ -112,19 +112,7 @@ func GetRunStartData(cfg config.Config) RunStartData {
 		d.Hostname = host
 	}
 
-	// the commit this agent binary was built from; the Go toolchain records it for `go build` but not for `go run` dev testing
-	if info, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range info.Settings {
-			switch setting.Key {
-			case "vcs.revision":
-				d.GitCommit = setting.Value
-			case "vcs.modified":
-				if setting.Value == "true" {
-					d.GitCommit += "+dirty" // built with uncommitted changes
-				}
-			}
-		}
-	}
+	d.GitCommit = GitCommit()
 
 	// name and transport type only: a server's command, args, env, url and headers commonly hold tokens
 	if len(cfg.McpServers) > 0 {
@@ -138,6 +126,30 @@ func GetRunStartData(cfg config.Config) RunStartData {
 		}
 	}
 	return d
+}
+
+// GitCommit returns the git commit this binary was built from, with "+dirty" when it had uncommitted changes; "" when
+// unknown.
+//
+// Notes:
+//   - From the build info (vcs.revision, vcs.modified). The Go toolchain records it for `go build` but not for `go run`
+//     or `go test`, so it is empty then.
+//   - Also used by auto mode's run manifest.
+func GitCommit() string {
+	commit := ""
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				commit = setting.Value
+			case "vcs.modified":
+				if setting.Value == "true" {
+					commit += "+dirty" // built with uncommitted changes
+				}
+			}
+		}
+	}
+	return commit
 }
 
 // RunEndData is the EventData for a RunEnd event.

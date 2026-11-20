@@ -25,12 +25,59 @@
 //	  func previewFirstLine(s string) string
 //	  func commandPreview(command string, args *[]string, dir *string) []string
 //
+//	autodirector.go
+//	  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+//
+//	autojournal.go
+//	  func withResend(ctx context.Context, orig state.ToolBefore) context.Context
+//	  func (rj *runToolJournal) err() error
+//	  func (rj *runToolJournal) fail(err error) error
+//	  func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
+//	  func (rj *runToolJournal) setTask(id string)
+//	  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error)
+//	  func (rj *runToolJournal) preview(args json.RawMessage) string
+//	  func newIdempotencyKey() string
+//	  func hashPath(path string) string
+//
+//	automode.go
+//	  func (*autoModeDetails) ModeName() string
+//	  func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
+//	  func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+//	  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error
+//	  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
+//	  func (o autoOutput) ToolCalled(name string)
+//
+//	autoresume.go
+//	  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
+//	  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
+//	  func toolsDiffer(was, now state.Manifest) bool
+//	  func resendable(cs *ChatSession, c state.ToolBefore) string
+//	  func settle(ctx context.Context, cs *ChatSession, rj *runToolJournal, plans []settlePlan, w io.Writer) ([]state.SettledCall, map[string]string)
+//	  func resendCall(ctx context.Context, cs *ChatSession, c state.ToolBefore) (string, error)
+//	  func oneLine(s string, max int) string
+//
+//	autorun.go
+//	  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
+//	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
+//	  func hasPlanID(path, id string) bool
+//	  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
+//	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
+//	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
+//	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
+//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
+//	  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
+//
+//	autoworker.go
+//	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
+//	  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
+//
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
 //	  func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession)
 //	  func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader)
 //	  func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error
 //	  func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
 //	  func discardStrayInterrupts(interrupts <-chan os.Signal)
 //	  func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
 //	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
@@ -64,10 +111,19 @@
 //	  func newTTYReader() *ttyReader
 //	  func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader
 //	  func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error)
+//	  func (r *ttyReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+//	  func (r *ttyReader) AskLine(ctx context.Context, prompt string) (string, error)
 //	  func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool
 //	  func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainReader
 //	  func (r *plainReader) ReadPrompt(ctx context.Context) (string, error)
+//	  func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+//	  func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
 //	  func writePrompt(w io.Writer, lnum int) (int, error)
+//
+//	manifest.go
+//	  func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error)
+//	  func configSnapshot(cfg config.Config) ([]byte, error)
+//	  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
 //
 //	output.go
 //	  func (o chatOutput) Assistant(text string)
@@ -76,10 +132,41 @@
 //	  func (o chatOutput) System(text string)
 //	  func (o chatOutput) Error(what string, err error)
 //	  func (o chatOutput) Interrupted()
+//	  func newPlanOutput(w io.Writer, debug bool) planOutput
+//	  func (o planOutput) Assistant(text string)
+//	  func (o planOutput) ToolCalled(name string)
+//	  func (o planOutput) System(text string)
+//
+//	planmode.go
+//	  func (*planModeDetails) ModeName() string
+//	  func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error
+//	  func runPlanMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+//	  func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
+//	  func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
+//	  func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
+//	  func plannerNoPlanError(lastReply string, reminded int, replan string) error
+//	  func planPathFor(planFlag, objectivePath string) string
+//	  func replanCommand(cs *ChatSession, pd *planModeDetails) string
+//	  func objectivePathFromPlan(planPath, objectivePath string) string
+//	  func hasFrontMatter(data []byte) bool
+//	  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
+//	  func newObjectivePath(answer string) (string, error)
+//	  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
+//	  func askLineNotBlank(ctx context.Context, reader promptReader, prompt string) (string, error)
+//	  func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
+//	  func showObjective(cs *ChatSession, pd *planModeDetails)
+//	  func presentObjective(cs *ChatSession, pd *planModeDetails)
+//	  func saveObjective(cs *ChatSession, pd *planModeDetails) error
+//	  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
+//	  func writeFileAtomic(path string, data []byte) error
+//	  func isYes(answer string, def bool) bool
+//	  func (e *ErrRunPlan) Error() string
+//	  func askRunNow(ctx context.Context, cs *ChatSession, reader promptReader, planPath string) error
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage
+//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
 //	  func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
 //	  func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
 //	  func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)

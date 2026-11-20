@@ -4339,3 +4339,777 @@ position, wait for all before returning). This closes `§ Deferred for Later`, i
 
 Files: `mcpconnect/conn.go`, `mcpconnect/conn_test.go`, `mcpconnect/conn_unix_test.go`, `config/config.go`, `config/doc.go`,
 `agent/agent.go`, `agent/agent_test.go`, `agent/info_test.go`, `CLAUDE.md`.
+
+### 2026-11-07 — Plan mode before autonomous mode; autonomous mode requires `## Tasks`
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
+Decided with Jerry. Not built. Plan: `PLAN-plan-mode.md`.
+
+- **`-mode plan` (the `terraform plan` step):** takes `-objective`/`-obj draft.md`, or asks for the objective, and talks
+  it through with the user until it can write a complete objective file with `## Tasks`. The user approves the file
+  before it is saved. Autonomous mode is the `apply` step.
+- **Autonomous mode requires `## Tasks`** (Jerry): no in-run PLAN phase, no `set_tasks`. A file without tasks is a
+  startup error pointing at `-mode plan`. *Why:* a person reviews the tasks before anything runs unattended, and
+  autonomous mode gets simpler. *Downside:* every new objective costs a planning session first; mitigated by the
+  planner proposing at once when the draft is already clear, and by a saved plan being reusable for later runs. A
+  one-command plan-confirm-apply path is deferred, not rejected.
+- **Sections:** `# Objective`, `## Instructions` and `## Tasks` required; `## Constraints` and `## Context` optional.
+  `## Instructions` replaces mvp4's `## Quality bar` and absorbs `## Done when` (no separate done section).
+- **Never overwrite:** if `<name>-full.md` exists, the user is asked for a new name, suggested default
+  `<name>-full-<timestamp>.md`.
+- **Tasks are plain bullets** for now (no IDs or `depends_on`).
+- **Order:** plan mode is built before autonomous mode (Claude's recommendation, accepted): its output runs with mvp4's
+  binary today, it has no unattended-execution problem, and it settles the objective format (`objective/` package:
+  parse + render) that autonomous mode then reuses. *Downside:* the headline feature arrives later, and the planner's
+  idea of a good task is written before Jerry's own director exists.
+
+### 2026-11-07 — `objective/` package: no legacy folding; `Parse` is syntax only, `CheckComplete` lives with the type
+
+Decided with Jerry while scaffolding step 1 of `PLAN-plan-mode.md`. Files: `objective/objective.go`, `parse.go`, `render.go`.
+
+- **No folding of `## Quality bar` / `## Done…` into Instructions** (Jerry): the mvp4 examples are not a format to support.
+  Those headings are ordinary unknown sections, kept in `Objective.Other`. Claude's proposed `kindFold` marker is dropped.
+- **`Parse` checks syntax only; `CheckComplete(maxTasks)` checks readiness to run**, so a rough draft (only
+  `# Objective`, or too many tasks) still loads in plan mode. `CheckComplete` is a method in `objective.go` next to the
+  type, not in `parse.go`: it also checks objectives built from the planner's tool arguments, which are never parsed.
+- **`Markdown()` renders the struct** so Go, not the model, decides the file layout; `Parse(o.Markdown()) == o` is the
+  test that what the user approves is what autonomous mode reads.
+- A second `## Instructions` (or any known section twice) stays a parse error.
+
+### 2026-11-07 — Objective file format v1: version, task sections, Cleanup
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
+Decided with Jerry (after `§ objective/ package` above, which this extends). Plan: `PLAN-plan-mode.md`.
+
+- **Version in front matter:** `format: minagent-objective/v1`. A hand-written file may leave it out (missing = v1, never
+  "latest", so an old draft keeps its meaning when v2 exists); `Markdown()` always writes it; an unknown version is an
+  error listing the supported ones. Like the `go` line in `go.mod`. *Downside:* a header-less file using newer syntax is
+  read as v1; mitigated by a hint.
+- **Tasks are subsections from the start**, not bullets: `## Tasks` holds `### t1: <title>`, `### t2: …`, so task IDs
+  and dependencies exist in v1 (Jerry). Bullets under `## Tasks` are a malformed form that Cleanup converts.
+- **`Cleanup()`** tidies slightly malformed files (Jerry's list): wrong heading level for a known section
+  (`## Objective`, `### Constraints`), no space after `#` (`#Objective`), singular names (`## Instruction`), extra spaces
+  after a bullet dash, a stray line that belongs to the item above; for tasks: task headings at `###`, missing `tN`
+  IDs added, IDs made sequential.
+- **`CheckComplete` runs only after Cleanup** and reports what is still wrong or missing.
+- **Plan mode runs Cleanup** on the draft and on its own output. **Autonomous mode (later) runs Cleanup + CheckComplete**
+  on the given file, writes **no** new file, warns the user that fixes were made (listing them), and traces the
+  objective's sections and fixes at the start of the run.
+- Open, asked 2026-11-07 (see `SESSION.md`): Cleanup's shape (lenient reader returning the `Objective` and its fixes,
+  vs a text-to-text pass before a strict parser); renumbering vs `depends` references; whether lines inside a task are
+  joined; the `depends:` syntax.
+
+### 2026-11-07 — Objective format v1: open points settled (task IDs, newlines, `depends`, Cleanup replaces Parse)
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
+Answers to the open points of the entry above (Jerry). This **reverses** that entry's "IDs made sequential".
+
+- **Task IDs are never renumbered.** If every task has an ID, Cleanup leaves them as they are (gaps and file order
+  included). A task without one gets the next number after the **highest** existing ID (none → t1, t2, …), in file
+  order. *Why:* an ID that changes on every edit breaks `depends` and makes old traces misleading. *Downside:* IDs can
+  look out of order (`t1, t4, t2`). Only `t<digits>` counts as an ID; a duplicate ID is an error, not a fix.
+- **Newlines inside a task are kept:** the lines under `### tN: title` are the task's body (lists, code, paragraphs).
+- **`depends: t1, t2`** is an optional line straight under the task heading; later per-task fields use the same
+  `key: value` form.
+- **`Cleanup` replaces `Parse`**: the one reader, returning the `Objective` and the fixes it made. `Markdown()` is the
+  one writer; a file it wrote cleans up with zero fixes.
+- **Flows:**
+  - plan mode: (draft → Cleanup, fixes shown →) planner conversation → `propose_objective` builds an `Objective` →
+    `CheckComplete` → `Markdown()` → Cleanup must make zero fixes (else a bug) → show → `[y/N]` → write.
+  - autonomous mode: Cleanup → fixes printed as warnings and traced (`objective_loaded`) → `CheckComplete` → stop on
+    any error (exit 2, pointing at `-mode plan`), else run. No file is written.
+
+### 2026-11-07 — Objective format v1: review pass (front matter, task headings, depends, approval hash)
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
+Decided with Jerry after Claude's review of the plan/objective shape. Files: `objective/*.go`, `PLAN-plan-mode.md`.
+
+- **Unknown front-matter keys are warned about and ignored** (a `Fix` with `Now: ""`), not errors, so a newer file
+  still runs on an older binary. **The version is bumped only when the file's shape changes** (a new required section,
+  a new named optional section the parser reads); a new front-matter key is not a bump.
+- **A task heading outside `## Tasks` is an error** (Jerry), not a fix: "every task must be under ## Tasks".
+- **Flexible `depends`:** `depends:` or `depends on:`; `t1`, `T1`, `task1`, `Task 1` and a bare `1` all mean `t1`.
+  Task headings accept the same forms (`### Task 2: x` → `t2`). An item that still isn't an ID is kept for
+  `CheckComplete` to report.
+- **A UTF-8 byte-order mark is stripped; `~~~` fences count like ```** (simplified: any fence line toggles).
+- **Approval hash:** plan mode writes `approved: sha256:<hex>`, the hash of the body in the standard layout (so a
+  cosmetic fix is not an edit, and the front matter is left out). `ApprovalStatus` → `approved` / `edited` /
+  `unplanned`; autonomous mode warns on the last two and still runs (Jerry). *Downside, stated in the code:* a
+  fingerprint, not a signature; whoever edits the file can recompute it.
+- **`FuzzCleanup`** (Go fuzzing): no panic on any input; a successful Cleanup round-trips through Markdown with zero
+  fixes.
+- **A user-facing format reference and an example file** are part of step 1 (locations proposed in the plan).
+- **Deferred to their steps:** depends-aware scheduling and `blocked` status, which worker tools the planner sees, the
+  no-LLM save, a diff against the draft, capping printed fixes, `x-full.md` naming, same `workDir` for plan and apply.
+
+### 2026-11-07 — `Cleanup` built (Claude, at Jerry's request), with these details settled while coding
+
+Files: `objective/cleanup.go`, `objective/cleanup_test.go`; `AssignTaskIDs` and `taskNumber` in `objective.go` (needed
+by Cleanup's tests); comment fixes in `render.go`. `Markdown`, `CheckComplete`, `Fix.String`, the hash functions and
+`findCycle` are still Jerry's to write.
+
+- **One fix per changed line:** a task line without an ID (a bullet or a `### title` heading) gets a single fix,
+  written after `AssignTaskIDs` (Was = the line as written, Now = `### tN: title`). Replaces the "two fixes" in the
+  skeleton notes. **Fixes are sorted by line number.**
+- **Also errors:** a file that isn't UTF-8.
+- **Leniency added:** up to three leading spaces before a heading (four is a Markdown code block); "Objectives" and the
+  other singular/plural forms; a closing `#` run (`## Notes ##`); an unknown heading not exactly `## <text>` is fixed.
+  A digit must end at a separator, space or end of text to be a task ID (`t2x` is not one).
+- **`taskNumber` accepts at most 9 digits**, so `AssignTaskIDs`' "highest + 1" can't overflow on a silly ID.
+- **`Markdown` must write an `Other` section even with an empty body** (Cleanup keeps it); noted in `writeSection`.
+- **Checks done:** 23 test functions (89 cases) pass with `-race`; mutation checks (no sort, no BOM strip, no bullet
+  fix, heading indentation, level-4 tasks, continuation exclusions) each fail a test; a 30-second panic-only fuzz run
+  (~4M inputs) found nothing. The real `FuzzCleanup` (round trip) waits for `Markdown`.
+
+### 2026-11-07 — `Objective` stays a plain struct; the planner converts tool arguments in one function
+
+Jerry asked whether `Objective` should be an interface with setters (`SetObjective`, `SetTask`, …) to hide the struct
+from the planner. Decided (Jerry, on a subagent's review): **no**.
+
+- *Why:* `Objective` is data, one-to-one with the file's sections; the real contract between plan and autonomous mode
+  is the versioned file format, so a new section changes the struct, `Markdown` and `Cleanup` either way. A setter
+  interface would have one implementation, need getters too (autonomous mode reads `Tasks`, `Depends`, `Approved`),
+  lose struct literals in tests, and raise questions fields don't (does `SetTask` append or replace?). Go convention:
+  the consumer defines an interface, for behaviour it needs to swap ("accept interfaces, return structs").
+- *Downside:* any package can build an invalid `Objective`; `CheckComplete` runs on every one before it is written.
+- **Planner shape:** a private `proposeArgs` struct (the tool's JSON arguments, owned by `planner`, since the wording is
+  for the LLM) and one function `toObjective(proposeArgs) objective.Objective`, the only place the planner touches the
+  struct's fields. An interface in `planner` is for its side effects (asking the user, writing the file), not the data.
+- Revisit if a second implementation appears; add the interface then, in the package that uses it.
+
+### 2026-11-07 — `objective/` package complete: render, checks, approval hash; six round-trip bugs found by fuzzing
+
+Claude finished `render.go` and `objective.go` at Jerry's request; all unit tests pass with `-race`. Files:
+`objective/render.go`, `objective.go`, `cleanup.go`, `objective_test.go`, `cleanup_test.go`, `doc.go`; the failing fuzz
+inputs are kept as regression cases in `objective/testdata/fuzz/FuzzCleanup/`.
+
+- `writeSection` / `writeTask` became `sectionBlock` / `taskBlock`, returning strings joined with one blank line.
+- `CheckComplete` names a task by its ID, or by position and title when the ID is the problem; a self-dependency is
+  reported once, not also as a loop.
+- **`FuzzCleanup` found six real bugs, each fixed with a test:** (1) an empty `depends:` line is now body text, not a
+  depends line (dropping it let a second one move up); (2) a lone `\r` is a line break; (3) heading text of only `#`s
+  is not a heading; (4) closing `#` runs are stripped repeatedly and from every title (`stripClosingHashes`), since a
+  title is written back as a heading; (5) a code fence left open at the end of a section is closed (a fix), since
+  Markdown reorders sections; (6) `dedent` leaves a bullet task's body alone if dedenting would create a heading.
+- Fuzzing ended with a 4-minute clean run; a longer run was skipped (Jerry).
+
+### 2026-11-07 — `-mode plan` wired (step 2): flags, config fields, a stub that prints the draft
+
+**Superseded by `§ 2026-11-08 — Plan/apply redesign`** (objective file v2; tasks move to a separate plan file).
+
+Claude built step 2 of `PLAN-plan-mode.md` at Jerry's request. Files: `config/flags.go`, `config/config.go`,
+`config/doc.go`, `config/flags_test.go`, `agent/planmode.go` (new), `agent/planmode_test.go` (new), `main.go`.
+
+- **Flags:** `-objective` with alias `-obj` (one flag, like `-q`/`-query`; both with different values is an error; the
+  file must exist) and `-out` (only checked for being non-empty: whether it exists is a runtime question, since plan mode
+  never overwrites and will ask for another name, step 4). Both are refused outside `-mode plan`; autonomous mode will
+  accept `-objective` too. `--json` is refused in plan mode.
+- **Flag-only config fields:** `Config.ObjectiveFile` and `Config.OutFile` are `json:"-"`, like `ConfigFile`. An objective
+  is input to one run, not a setting, and an `"objectiveFile"` in a config file would make plain `go run .` quietly
+  pick up a stale draft. *Downside:* unlike `missionFile`, it can't be set from a config file; add a key if that's ever
+  wanted.
+- **The terminal check is in `agent.RunPlanMode`, not `validateMode`:** `validateMode` looks at flags only, and the
+  question is about stdin, which `agent` already tests (`isTerminal`). Piped stdin is an error (exit 1): plan mode asks
+  questions and asks before saving, so there is nobody to answer.
+- **The stub runs before `SetupAgent`** (like info mode): no model call, MCP server or trace. With a draft it prints
+  `Cleanup`'s fixes and `o.Markdown()`; without one it asks "What do you want to build?" and prints that as the
+  objective. Nothing is written. Step 5 replaces the end of `planStub` with the planner session, and plan mode then
+  calls `SetupAgent`.
+
+### 2026-11-08 — Plan/apply redesign: objective (you) → plan file (planner + Go) → state; iterate by diff
+
+Jerry and Claude, after Jerry found the plan-mode shape too heavy for users. Plan: `PLAN-plan-apply.md` (supersedes
+`PLAN-plan-mode.md`). New requirements: as few user steps as possible; tool-agnostic tasks that name the capability
+they need; easy objective files; long-running multi-step work; **version-controlled iteration**, where a new run
+deploys only the difference.
+
+- **Three files, three owners** (the Terraform model): `objective.md` (you; config), `objective.plan.md` (planner LLM +
+  Go; execution plan), `.minagent/<objective>/state.json` (Go only; tfstate). Formal tasks are only ever written by the
+  planner + Go. *Why:* the user writes prose; machine-checked structure lives where the user doesn't have to write it.
+  *Downside:* two files to keep in step; handled by `objective_sha256` in the plan (stale = replan).
+- **Objective file v2:** only `# Objective` required; `# Instructions` and `# Context` optional; Constraints, other
+  sections and informal tasks fold into Instructions; no front matter. *Why:* a one-line objective must be runnable
+  (and it allows `/plan <text>` in chat). The planner states missing "done when" rules as Assumptions, shown before the run.
+- **Plan file is Markdown** (`minagent-plan/v1`), reusing the built task code; new task fields `reason`, `gate`, `needs`
+  (capabilities, free text), `done when`. *Why Markdown over JSON:* it's read at the confirm prompt and diffs well in git.
+- **Apply = reconcile against state:** `+` new, `~` changed (worker told what changed), `↻` dependents re-run, `-`
+  removed (nothing undone), unchanged + done skipped. First run, iteration and resume are one operation. **Go computes
+  the diff** by task ID + definition hash; the LLM only keeps IDs stable and gives reasons. IDs are never reused
+  (`next_id`). Irreversible (gated) tasks never re-run automatically.
+- **State records the environment** (harness version + commit; provider, model and prompt hash per role; tool
+  definitions and MCP `serverInfo` versions; run-affecting config), never secrets. Changes are shown, re-run nothing by
+  themselves; `-replace tN` forces a re-run.
+- **Commands:** `-mode autonomous -objective x.md` is the one command (plan if needed → summary → confirm → apply);
+  `-mode plan -objective x.md` only plans, non-interactively; **`/plan` in chat** is the LLM-assisted way to write an
+  objective (interview → `objective.md` → plan → background run). The earlier objection to `/plan` (a plan leaning on
+  chat context) no longer applies, since its output is a file the planner reads cold.
+- **Workers are per task and finish**; long-lived services (start/restart/stop on the same diff) are deferred.
+- **Refactor:** `objective/` shrinks to the v2 reader; a new `plan/` package takes the task code (IDs, depends, cycles,
+  Cleanup/Markdown round trip, fuzzing); new `state/`. `-out` and `ApprovalStatus` go; `-objective` stays.
+
+### 2026-11-08 — Plan mode confirms by default; one planning session behind four entry points
+
+**Superseded in part by `§ 2026-11-09 — Step 2 built: plan mode`**: the session became an objective chat with an
+in-memory draft (`update_objective`, `/save`, `/edit`) instead of `edit_objective`; the planner is a separate run with
+its own prompt; `-mode plan` with no objective asks for a file name first.
+
+Jerry's clarification of the commands in `PLAN-plan-apply.md § Commands`.
+
+- `-mode plan` shows a new or refreshed plan and asks `Accept this plan? [Y/n]`; **n** opens an interactive planning
+  session until you accept; after saving, `Run now? [y/N]` (N prints the command for later). `-yes` answers the plan
+  and run questions (never a gate), so scripts still work.
+- `-objective` takes a file or text; text is saved to an objective file first (never overwriting), since iteration
+  needs a file. A missing path-like value is an error, not text.
+- `-mode plan` with no objective, `/plan` in chat, and "change" at the plan or run prompt are **the same planning
+  session** (chat loop, planner prompt, read-only tools, `propose_plan`, `edit_objective`), with different starts.
+- Confirmed by Jerry: changes asked for in the session go into `objective.md` (diff shown, approved),
+  then the plan is redone, so the objective stays the one source of intent across iterations.
+
+### 2026-11-08 — A fully governed harness is tabled; state is a run snapshot/journal, checked against reality before reuse
+
+Claude's critique of the Terraform analogy: state is only trustworthy when the agents own the environment exclusively,
+and a shared project (humans and other agents changing things) breaks that. Jerry weighed making the harness a fully
+governed one (every change only through the plan, state protected like Terraform's) and **tabled it**: too much effort,
+and Terraform-style adoption can't be assumed.
+
+- The plan file and state are **a snapshot and journal of a run**, for provenance, logging, evals, resuming a stalled or
+  failed run, and continuing with more work. They are not a claim to own the environment.
+- Iterating on the same plan reuses the previous plan + state to re-run only what changed, **after checking state
+  against reality** (drift since the last run).
+- Tabled for later (with Claude's analysis): declared managed resources with per-resource drift policy and `adopt`;
+  git as the gate (runs on branches); a hash-chained journal as source of truth; policy as code; containment of what
+  agents may write.
+
+### 2026-11-08 — Simplified plan/run shape agreed; step 1 is the three formats
+
+Jerry and Claude, closing the day's redesign. `PLAN-plan-apply.md` rewritten to this shape.
+
+- **You pass `objective.md`; the plan follows it.** When the objective changes, Go finds the plan stale, and the planner
+  updates `objective.plan.md` using the previous objective, plan and state; only what changed is re-run. (Jerry first
+  wrote "pass the existing plan"; he meant the objective file.)
+- **`propose_plan` on an update takes operations** (`keep`, `change`, `add`, `remove`); Go copies kept tasks exactly, and
+  every existing task must be named. *Why:* a planner that rewords unchanged tasks would cause needless re-runs.
+- **State is one snapshot per run** (`.minagent/<objective>/runs/NNNN/state.json`, frozen at the end), checked against
+  reality (file hashes) before a done task is skipped. Separate snapshots avoid merge conflicts.
+- **Accepted from Claude's critique:** idempotency keys for external effects (a resume can't repeat a trade);
+  per-task recorded file reads/writes (catch dependencies the planner didn't list, and feed the drift check); a lock file
+  per objective; build a complete serial run before the iteration machinery.
+- **Accepted defaults:** director tasks are children (`t3.1`) in state only; the summary shows cascade size and the
+  planner may mark a dependent unaffected; a gate pauses only what depends on it; objective edits replace in place; a
+  minimal environment record; `kind` in state from the start.
+- **New task line `effects: external`**, and the definition hash leaves out `reason`.
+- **Shared Markdown helpers go to a new helper package `mdscan/`** (standard library only), since `objective/` and
+  `plan/` both need them; it joins the helper-package import test.
+
+### 2026-11-08 — `mdscan/` and `plan/` built (step 1, first half)
+
+Claude built them at Jerry's request; `go test -race ./...`, vet, gofmt and codemap check/lint pass; a 90-second
+`FuzzCleanup` run on `plan/` found nothing; three mutation checks (reason in the hash, `nextID` ignored, a repeated
+field key) each failed a test.
+
+- **`mdscan/`** (helper, standard library only, added to the import test): `Lines` (size, UTF-8, BOM, line endings,
+  empty), `ReadHeading(s, known)`, `IsCodeBlockFence`, `StripClosingHashes`, `FirstTextLine`, `LastTextLine`, moved from
+  `objective/cleanup.go`. `ReadHeading` takes a `known` callback because "#Name" without a space counts only for names
+  the caller knows (section names, task IDs), which differ between objective and plan files.
+- **`plan/`**: the task code moved from `objective/` (Cleanup, Markdown, CheckComplete, AssignTaskIDs, findCycle, the
+  round trip and `FuzzCleanup` with its corpus), plus: front matter `format`, `objective`, `objective_hash`,
+  `plan_version`; a `# Plan: <title>` heading with an optional summary under it; `## Assumptions`; task field lines
+  `depends`, `reason`, `effects`, `gate`, `needs`, `done when` (read in any case, `-`/`_` for spaces, any order; written
+  in standard order; the block ends at a blank line, a repeated key, or a non-field line; an empty value stays body
+  text); `Task.DefinitionHash` (without `reason`); `Plan.IsStale`; `AssignTaskIDs(tasks, nextID)`.
+- **Front-matter key is `objective_hash`, not `objective_sha256`** as first written in the plan: the value is already
+  `sha256:<hex>` (as from `objective.Hash`), so the key doesn't repeat the algorithm. `PLAN-plan-apply.md` updated.
+- **Text before the first heading is an error in a plan file** (an objective file reads it as the objective): a plan is
+  written by Go, so stray text means a hand edit went wrong.
+- **`objective/` is still v1 for now**, switched to `mdscan` (its own `readHeading` etc. removed; `Test_Unit_ReadHeading`
+  moved to `mdscan`), so it keeps a copy of the task code until v2 replaces it. Nothing else removed.
+
+### 2026-11-08 — `objective/` v2 built: three sections, no task code; the section level is the deepest known heading
+
+Claude built it at Jerry's request. `go test -race ./...`, vet, gofmt and codemap check/lint pass; `FuzzParse` ran 60s
+clean after one fix.
+
+- **`objective/` is now:** `Objective{ObjText, Instructions, Context}`, `Parse` (no fixes: Go never rewrites the file),
+  `Markdown` (standard form, `# ` headings), `Hash` (sha256 of `Markdown`), `ChangedSections`. Deleted: `cleanup.go`,
+  `render.go`, `cleanup_test.go`, front matter, tasks, `Constraints`, `Other`, `Fix`, `CheckComplete`, `BodyHash`,
+  `ApprovalStatus` (the task parts live on in `plan/`). Testdata: `objective-fib.md` (v1 task syntax) removed,
+  `objective-deepwiki.md` lost its front matter; the v1 fuzz corpus removed (a copy is in `plan/`).
+- **Which other headings become sections, decided while coding.** The first rule ("at the current section's level or
+  above") put `## Constraints` inside the objective in a real draft that uses `# Objective` + `## Instructions` (the
+  old standard layout, still common). The rule is now: compared with **the deepest known heading in the file**; at
+  that level or above, a section added to Instructions (heading kept, after Instructions' own text, in file order);
+  deeper, a subheading. With none of the three known headings, every heading starts such a section. *Downside:* in
+  `# Objective` + `## Background` + `## Instructions`, Background goes to Instructions, not the objective; the planner
+  reads all of it either way.
+- **`FuzzParse` found one bug:** a folded section with an empty body followed by a deeper one ("# 0", then "## 0")
+  merged on the second read and lost a blank line. Folded sections now keep the blank lines between heading and body.
+  Regression input kept in `objective/testdata/fuzz/FuzzParse/`.
+- **Text before the first heading** stays an error when the file has `# Objective` (otherwise it is the objective).
+- **Docs:** `docs/objective-format.md` rewritten for v2; new `docs/plan-format.md`; `examples/objective-example.md` in
+  v2 form (its steps are informal, under Instructions) and new `examples/objective-example.plan.md`, which tests keep
+  in the standard form and not stale against the example objective. The plan-mode stub reads with `objective.Parse`.
+
+### 2026-11-09 — Step 2 built: plan mode writes an objective with you, then plans it
+
+Designed with Jerry over several rounds, then built by Claude (tests by sub-agents). `go test -race ./...`, vet, gofmt
+and codemap check/lint pass. `PLAN-plan-apply.md § The planning session` and `§ Build order` updated.
+
+- **Plan mode goes through `SetupAgent` and `RunAgent`** like chat (`RunAgent` has a plan branch; `main.go` lost its
+  special case; the stub is gone), so it gets MCP servers, tracing, approvals, `-config` and `-model`. *Why:* a
+  planning config can add research MCP servers, and nothing about setup is plan-specific.
+- **Defaults per mode: `GetDefaultConfig(mode)`.** Shared defaults once; plan mode differs in `systemPrompt` (the
+  objective-writing prompt) and `builtinTools` (`read_file`, `list_files`, `search_files`). `SetDefaultConfig` works out
+  the mode first (`-mode`, else the file's `agentMode`, else chat). **A config file is trusted** (Jerry): its
+  `builtinTools` is used as given in plan mode too, write tools included. *Downside:* a chat config used with
+  `-mode plan` can let planning write files.
+- **The draft lives in memory, as an `objective.Objective`** (Jerry: "this is the utility of the Objective struct").
+  The model changes it with `update_objective` (one section per field; absent = unchanged), and **only `/save` writes
+  the file** (Go code, not a tool), so leaving the chat never leaves a half-made objective on disk. Go prints the draft
+  and a fixed footer after each change, rather than relying on the model to say how to save (*superseded by
+  `§ 2026-11-10 Plan mode's chat reads like a conversation`*: the draft and footer are now shown only by
+  `present_objective`, and the footer also at the start). `/edit` fills the prompt
+  with the draft (cursor at the end); what you submit replaces it if `objective.Parse` accepts it, and the model is told
+  by a user message (no model call). Considered and rejected: the model writing the file on each change (overwrites an
+  existing file before `/save`); `cs.Done` set by a save tool (an LLM deciding when the session ends).
+- **`ChatSession.ModeDetails`** (an interface, `ModeName() string`) holds a mode's own state: `*planModeDetails` in plan
+  mode (objective path, draft, the tools the planner gets, the queued first line, saved), nil in chat. Jerry wanted the
+  session struct to stay mode-agnostic. `/save` (in `handleUserInput`) and `/edit` (in `chatLoop`, since it needs the
+  prompt reader) exist only when it is `*planModeDetails`; in chat they are unrecognized. *Downside:* type assertions,
+  checked at run time.
+- **`-mode plan` without `-objective`** asks `Planning mode for a new objective: Name or path for the new objective
+  file (default: objective.md | Ctrl+D to cancel):`, then `objective.md already exists. Overwrite (y/N)?:` (**N** asks
+  the name again), then `What is your objective? :`, whose answer is the chat's first turn. Ctrl+D cancels (Jerry:
+  Ctrl+D, not Ctrl+C, which keeps clearing the line). Overwriting the objective implies replacing its plan, but the old
+  plan file is kept until a new plan is accepted.
+- **The planner is a separate run** (`runPlanner`): one turn on a shallow copy of the session with `PlanPrompt`, no chat
+  history, the read-only and MCP tools plus `propose_plan`. `propose_plan` checks one-line fields, writes the plan and
+  reads it back through `plan.Cleanup` (tidying accepted; a body line read as a heading or field refused), then
+  `CheckComplete`; problems go back to the model; on success it returns **`tools.ErrEndTurn`**, which `runToolCall`
+  now reports (`(msg, endTurn bool)`) and which ends `reActLoop` after that response's other calls. IDs and depends are
+  put in standard form first (`plan.NormalizeTaskID`, now exported), after a test sub-agent found "T1" being refused
+  with a misleading message.
+- **Accept and revise:** summary (`plan.Summary`), `Accept this plan? [Y/n]` (`-yes`/`-y` answers it); **n** →
+  `Enter chat mode to discuss and revise the plan (Y/n)?`; **y** → "What would you like to change in the plan?", the
+  turned-down plan goes into the chat (`planner.RevisionNote`), the objective chat reopens, and `/save` plans again;
+  **n** exits with the command to plan again (Jerry: "back to the prompt" means exiting).
+- **`-objective <file|text>`**: a file is planned as is; one word ending in `.md` that doesn't exist is an error; other
+  text is saved to `objective.md` (`objective-<timestamp>.md` if taken; never overwritten). An up-to-date plan is just
+  shown; a stale one is an error until step 4 ("delete the plan to plan from scratch"). A terminal is needed unless
+  `-objective` comes with `-yes`.
+- **Package layout:** the prompts and the two tools are in **`agent/planner/`** (Jerry's choice over a top-level
+  `planner/`, folding them into `plan/`, or into `agent/`): a separate package, imported only by `agent`, never
+  importing it, so `plan/` stays a file-format package. `-out` is gone; `Config.ObjectiveFile` may hold text.
+- **Left as is (Jerry):** the answer to "What is your objective?" goes through slash-command handling, so `/exit` there
+  leaves.
+
+### 2026-11-09 — Plan mode follow-ups: ask before saving over your file; one user message at a time; `maxPlanTasks`
+
+Jerry's answers to what the step 2 tests turned up.
+
+- **Saving over your own objective file asks first.** After `-objective <existing file>` and a revision, the first
+  `/save` asks `Save over <file>? (y/N): ` (only once), because `/save` writes the standard form and your layout is
+  lost. Text given to `-objective` (a file Go just created) and the no-objective path (you already chose to overwrite)
+  don't ask.
+- **Never two user messages in a row** (Anthropic compatibility from the start). The revise chat opens with one message
+  holding the turned-down plan and the change asked for (`planner.RevisionNote(p, change)`); the `/edit` note is put at
+  the start of your next message (`planModeDetails.editNote`, cleared once that turn succeeds) instead of being a
+  message of its own.
+- **`maxPlanTasks` is a config key** (default 30 in plan mode, 0 elsewhere; must be positive in plan mode), replacing
+  the `planner.MaxTasks` constant.
+
+### 2026-11-09 — PR #42 review (Copilot): planner sets gates; an existing plan is checked; plan-mode tools stay trusted
+
+- **`propose_plan` takes a `gate`** (one line: why a person must approve the task before it runs), mapped to
+  `plan.Task.Gate`; the planner prompt says when to set one (external effects, hard to undo). The plan format already
+  had `gate:`, but the planner couldn't set it, so plans made before gates are enforced (step 6) would have lacked
+  them. A gate is the one point where an autonomous run stops for a person; `-yes` never answers it.
+- **An existing plan that is up to date is also checked with `CheckComplete(maxPlanTasks)`** before plan mode calls it
+  up to date, so a hand edit that broke it (no tasks, a dangling depends, a loop, too many tasks) is an error listing
+  the problems ("fix it, or delete it to plan from scratch"), the same checks a new plan passes.
+- **Not changed (Jerry):** plan mode keeps passing the configured built-in and MCP tools through, write tools and
+  `run_command` included; the config file is trusted (`§ Step 2 built`). Copilot asked for a read-only allowlist.
+- **mvp3/ and mvp4/ reverted:** a bulk rename of `GetDefaultConfig()` had also edited three of their test files, which
+  broke them (they have their own `GetDefaultConfig()`). They are reference builds and stay as they were.
+
+### 2026-11-09 — `state/` moves from step 1 to the start of step 3
+
+Jerry asked why `state/` should come before the planner; it shouldn't: a first plan reads no state (there is no
+previous run), so step 2 needed only `objective/` and `plan/`. State is first read and written by a run (step 3:
+status, attempts, file hashes, resume) and by plan updates (step 4: last-run summary, drift check). Building the planner
+first gave real plans to look at before fixing the state format. *Downside:* the planner's update form (step 4) will
+take a state summary, so its prompt and inputs grow then. The skeleton (with `ObjectiveText` added) waits for Jerry's
+review; it is written out in `SESSION.md`'s 2026-11-09 handoff entry.
+
+### 2026-11-10 — Plan mode's chat reads like a conversation (after Jerry's first real test run, `objective-test.log`)
+
+Jerry's run with gpt-4o-mini showed the objective chat full of labels and repeated drafts, and the plan tasks generic.
+The model for these changes is Claude Code's plan mode. Files: `agent/output.go`, `agent/planmode.go`, `agent/chat.go`,
+`agent/planner/{update,present,prompt,propose}.go`, `config/config.go`.
+
+- **`planOutput`** (plan mode's `Output`, set in `setupPlanMode`): replies and notices without `[assistant]`/`[system]`
+  labels, nothing for an empty reply (a tool-only step), `[tool]` lines only with `-debug`. `[error]` and
+  `[interrupted]` keep their labels. It embeds `chatOutput` and replaces three methods. Chat mode is unchanged.
+  *Downside:* without labels, notices and the model's text look alike; dimming notices on a terminal is a possible
+  follow-up.
+- **`update_objective` is silent** (no `show` callback; result "Draft updated. The user has not seen it."). Showing the
+  draft after every change was distracting, and the old prompt line "the user sees the draft, so don't repeat it" was
+  why the model never summarized. **Supersedes** the "user sees the draft after each change" part of `§ Step 2 built`.
+- **New tool `present_objective`** (no arguments): the model calls it when it judges the draft final; it prints the
+  draft and the reminder and ends the turn (`tools.ErrEndTurn`). Like `ExitPlanMode`: the model chooses the moment, Go
+  prints the real draft (never the model's retelling). Refused while the draft has no objective text. *Downside:* a
+  weak model may call it too early or never; `/view` and `/save` always work.
+- **`/view`** (plan mode only) prints the current draft without the reminder, or "Nothing in the draft yet."
+- **The reminder (`planFooter`) is shown twice only**: at the start of the objective chat (plus "/exit leaves without
+  saving.") and under the final draft. `/edit` now says "Draft updated." instead of reprinting the draft.
+- **New `planSystemPrompt`**: three stages in order (objective, instructions/constraints, context); every reply is an
+  acknowledgement, a "So far:" summary and one question; never end without a question unless calling
+  `present_objective`. Guidance, not enforcement.
+- **Planner prompt asks for detailed tasks**: specific titles, and a `body` laid out as **Approach** (numbered steps),
+  **Produces**, **Check**, with one weak-vs-strong coding example and one non-coding example; no glue-only tasks.
+  **`propose_plan` requires `body`** (schema `required`, and `toPlan` refuses an empty one naming the task). Only
+  `propose_plan` requires it: a hand-written plan file may still leave a body out (`CheckComplete` unchanged). Go can
+  check that a body exists, not that it is good.
+- **Deferred:** a `planModel` setting for the planner run only; decide after the next test run.
+
+### 2026-11-10 — Plan mode shows the plan itself, not the planner's text (`objective-test-2.log`)
+
+The planner model wrote the whole plan as JSON in its reply before calling `propose_plan`, and `planOutput` printed it.
+- **The planner's reply text is hidden** (`planOutput.hideReplies`, set on the planner run's copy of the session in
+  `runPlanner`; `-debug` shows it). The planner can't ask the user anything, so its prose isn't for the user.
+  `PlanPrompt` also says not to write the plan in the reply (saves tokens).
+- **Before "Accept this plan?", the new plan is shown in full as its file will read**, without the front matter
+  (`plan.Plan.Body()`, exported from `body()`), then `plan.Summary`. Markdown rather than YAML or a custom view: what
+  you accept is exactly what gets written, with one renderer. *Downside:* a long plan (up to `maxPlanTasks`) scrolls;
+  the summary after it keeps the short view next to the question. An up-to-date existing plan (`-objective`) still
+  shows only the summary.
+
+### 2026-11-10 — The planner is reminded to call propose_plan (`objective-test-3.log`)
+
+gpt-4o-mini ended the planner run with "I'll now call `propose_plan` with this structured plan." and no tool call, so
+the turn ended with no plan; the bare error said nothing because the planner's text is hidden.
+- **Reminders:** when the planner's loop ends on a text reply without an accepted plan, `runPlanner` sends
+  `planner.ProposeReminder` as the next user message (after the model's reply, so never two user messages in a row) and
+  runs the loop again, up to `plannerReminders` (2) times, in the same task and turn timeout. *Downside:* up to two
+  extra model calls when it happens.
+- **The no-plan error shows the planner's last reply** (indented, cut to 800 characters) and how to plan the saved
+  objective again (`plannerNoPlanError`).
+- **Not done (an option if reminders aren't enough):** forcing a tool call with OpenAI's `tool_choice: "required"`. It
+  is the robust fix but changes the `model.Provider` interface and every adapter.
+
+### 2026-11-19 — Autonomous mode v1: journal, resume, budgets (`PLAN-auto-mode.md`)
+
+After reading the `ideas/` reports (all seven agree the root build plans but never runs a plan), Jerry chose step 3
+(one serial run) and then budgets as the next work. Agreed in discussion:
+- **`-mode auto`** (alias `autonomous`), replacing the `-mode autonomous` / `Run? [Y/n/c]` naming in `PLAN-plan-apply.md`.
+- **An append-only journal replaces the per-run `state.json` snapshot** (supersedes `PLAN-plan-apply.md § state.json`
+  and the `state/` skeleton in SESSION.md 2026-11-09). The journal is the only record; state is rebuilt by reading it.
+  Reason: a crash leaves a journal that is correct up to its last line; a snapshot is either stale or half-written.
+  *Downside:* reading cost grows with the run; a snapshot can come later as a cache.
+- **Every tool call gets `tool_before` / `tool_after`**, with no marker on tools. An earlier idea (an interface on each
+  tool saying whether it changes things) was dropped: the information is only needed on resume, for the one cut-off
+  call, so resume decides by tool name, file hashes and MCP hints. *Downside:* two journal lines per read.
+- **Cut-off calls on resume:** read tools → nothing; file tools → checked against the before/after hashes; MCP with
+  `idempotentHint` → re-sent with the same idempotency key (sent in `_meta`); anything else (non-idempotent MCP,
+  `run_command`) → **resume is manual and warns and asks at its start** ("re-send it? [y/N]"; `-y` never answers;
+  no terminal → stop with `waiting`). Jerry wants autonomous runs without asks eventually; considered and **deferred to
+  v2**: the worker checks whether the action happened, a per-tool `onUnknownOutcome` policy in config, automatic retries
+  and automatic resume. Exactly-once is impossible without the server's help: a sent call with a lost reply has an
+  unknown outcome, so something has to decide, and in v1 that is the user.
+- **Write tools will write via a temporary file and a rename** so a crash never leaves half a file (commit 1g; security
+  review needed, it touches the guarded write path).
+- **Budgets:** `maxTokens` is the per-response output limit (as in the provider APIs); new `runTokenBudget` and
+  `runTimeoutMinutes` for the whole run, checked in the session provider wrapper, not the loop.
+- **Stop reasons:** `done`, `max_steps`, `budget`, `timeout`, `interrupted`, `error`, plus `waiting` (a gate or a
+  resume question with nobody to answer).
+
+### 2026-11-19 (later) — Auto mode: run time, approval defaults, atomic writes stay in step 1
+
+- **`runTimeoutMinutes` counts running time only**, summed over the run's sessions from the journal; time spent
+  crashed or waiting to be resumed doesn't count.
+- **Approval in auto mode follows `§ 2026-11-01 — Approval levels`:** deny → refused, ask → denied (nobody to ask;
+  `allow-all` turns ask into run), anything else runs, `run_command` command lines included. So
+  `GetDefaultConfig("auto")` drops the write tools from `askRules` (keeps `*delete*`, `*remove*`); otherwise every file
+  write would be denied. `runCommands` stays empty by default (opt-in). *Downside:* an unattended run writes files in
+  `workDir` without anyone seeing each write; the journal records each one.
+- **Atomic writes (commit 1g) stay in step 1** (Jerry): no half-written files from day one.
+
+### 2026-11-19 (later) — The plan file is auto mode's input; updates by hash; a small plan update
+
+- **`-mode auto -plan <file>.plan.md`** (Jerry). The plan is the reviewed contract, like Terraform's saved plan; the
+  objective is found from the plan's front matter and used for context and the stale check. A stale plan is refused.
+- **Which tasks run is decided by hash, whoever edited the plan:** the journal records each finished task's
+  `DefinitionHash`; done + same hash → skip, changed hash or new ID → run, failed or cut off → run again, removed →
+  listed. Hand edits and planner updates go through the same rule.
+- **Step U, a small plan update, comes after step 1 and before budgets.** The planner only rewrites the plan (old and new
+  objective, current plan, done tasks), copying unchanged tasks exactly (checked by Go). Supersedes most of
+  `PLAN-plan-apply.md` step 4: drift check, recorded-reads cascade and `-replace` are left out.
+  *Why:* two files (objective + plan) only pay off if updating the plan is easy; the hash rule makes the runner
+  indifferent to who changed the plan, which keeps the update step small.
+
+### 2026-11-19 (later) — 1a built: `-mode auto -plan`, the plan carries the objective, `-plan` in plan mode
+
+Claude wrote it at Jerry's request (Jerry reviews the shape per sub-step, then Claude implements).
+- **The plan is auto mode's only input, under any name** (Jerry): no naming rule, no stale check, the objective file is
+  never read. A file is a plan by content (Cleanup reads it and it has tasks).
+- **The plan carries the objective** (Jerry: "everything the autonomous workflow needs"): `plan.Plan.Objective`, a
+  `## Objective` section that Go fills word for word (`plan.ObjectiveSection`: the objective's Markdown with headings
+  two levels down), never the model. Cleanup recognizes `## Objective` only at level 1–2 and keeps level 3+ headings
+  inside it, so the copy reads back exactly. Hand edits of the copy are fine; the drift against the objective file is
+  dealt with when planning again (step U).
+- **`CheckComplete` no longer requires `objective:`, `objective_hash:` or `plan_version:`.** They record where a plan
+  came from (plan mode reads them), not what it needs to run; a hand-written plan may have no front matter.
+  `propose_plan` still always sets them; a plan without a hash is stale to plan mode (`IsStale`), as before.
+- **`-plan <file>` in plan mode** sets where the plan is written (default `plan.PathFor`). A file there that is not a plan
+  and has no front matter is the user's: replaced only after `Replace it? [y/N]`; `-yes` never answers it (error).
+  The plan's `objective:` is now written relative to the plan's folder (`objectivePathFromPlan`), not `filepath.Base`.
+- **Auto mode's defaults:** `askRules` `*delete*`, `*remove*` only; `maxPlanTasks` 30. `-mode autonomous` and
+  `"agentMode": "autonomous"` become `auto` (`config.normalizeMode`).
+
+### 2026-11-19 (later) — 1b built: `state/`, a central private state folder
+
+Shape agreed with Jerry; Claude wrote it.
+- **One private folder for every run** (Jerry): `stateDir` (default `~/.minagent`), `runs/NNNN/` holding
+  `journal.jsonl` (0600; line 1 = the manifest: the plan's real path and hash), `plan.md` (a byte copy of the plan
+  that ran: the audit record) and `trace/` (the run's trace, wired in 1d). Supersedes the per-objective
+  `.minagent/<name>/` folder of `PLAN-plan-apply.md`. Chat and plan mode keep their trace in `traceDir`; auto mode
+  ignores `traceDir` so a run's record is one folder.
+- **Run numbers are shared by all plans**; `NewRun` takes the next with `os.Mkdir` (only one process wins) and retries.
+- **One lock per plan** in `locks/<16 hex of sha256(real plan path)>.lock`, a real OS lock: `flock` on Unix,
+  `LockFileEx` on Windows (`golang.org/x/sys`, now a direct dependency; it was already indirect). The OS releases it
+  when the process dies, so there are no stale locks. Different plans can run at once.
+- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and folds the runs whose
+  manifest names this plan, oldest first. Moving or renaming a plan starts it with no history (every task runs again):
+  the safe side, since an ID inside the plan would let a copy inherit its original's history. *Downside:* one small
+  read per run folder; an index can come later if there are thousands.
+- **Read all of a plan's runs, nothing copied forward:** a task done in run 1 is still done in run 5 because run 1's
+  journal says so. `run_ended` marks the tasks still running in that run as interrupted; a run with no `run_ended`
+  keeps them running (the cut-off task).
+- **The file tools refuse the state folder** (`Workspace.SetStateDir`, by resolved path, like `traceDir`; the
+  `run_command` argument guard too). Matters when `workDir` contains it (`-workdir ~`).
+
+### 2026-11-20 — 1c built: the full run manifest, config.json, and `plan_id`
+
+Shape agreed with Jerry; Claude wrote it.
+- **The manifest (journal line 1) is the "agent lockfile":** plan ID, path and hash; harness name, version and git
+  commit (`trace.GitCommit`, shared with run_start; empty under `go run`); host, pid, absolute work dir; provider, model,
+  base URL (as `config.DisplayURL` shows it); config hash; prompt hashes by role (`worker`, `summarizer` now; 1e adds
+  `director`); the sorted tool names and a hash over each tool's name, description and parameters; each MCP server's
+  name, transport and the name/version it reported (`McpConnection.ServerInfo`); the trace run ID (from 1d).
+  Built by `agent.buildManifest`; nothing calls it until 1d opens runs.
+- **The config itself goes in the run folder** (`config.json`, 0600; Jerry), so "something changed" becomes a `diff`.
+  Secrets removed by the trace's rule: an MCP server keeps only its transport type; base URL without user:password or
+  query. A token change doesn't change the config hash (a token isn't behaviour).
+- **`plan_id` (Jerry, after weighing path identity's flaw: moving a plan lost its history).** Plan mode writes a random
+  16-hex `plan_id` into a new plan's front matter (`plan.NewPlanID`); step U will keep it. A plan's identity is its
+  `plan_id`, else its real path (`state.PlanRef`); runs, the lock and `Load` use it. Identity (which plan) is separate
+  from version (`plan_sha256`) and task definitions (`DefinitionHash`): editing a task changes the latter two, never
+  the identity. **Moves vs copies** (both show as an earlier run of this ID at another path) are told apart in 1d by
+  the old path: nothing there with this ID → a move, history carries over; a file with the same ID → a copy, refused
+  with what to do (delete the copy's `plan_id` to run it fresh). *Superseded by § 1d built: a copy runs, with a
+  warning.* Each `state.Run` carries the path it ran at for this.
+
+### 2026-11-20 — 1d built: the first real run (serial), copies allowed, traces in the state folder
+
+Shape agreed with Jerry; Claude wrote it.
+- **The run:** after `Run?`, `openRun` takes the plan's lock, loads its history, notes a move / copy / unfinished run,
+  and creates the run folder with the manifest (`agent/autorun.go`). `tasksToRun` orders the tasks (each after its
+  `depends`, else file order) and marks each skip (done, same `DefinitionHash`) or run (everything else); IDs gone from
+  the plan are listed. `runPlan` runs them **one at a time** (serial, Jerry: parallel is its own feature; the later
+  shape is one scheduler goroutine with a ready-list and N workers, not a WaitGroup per dependency). Journal per task:
+  `task_started{attempt 1}`, `task_finished{status, def_hash, summary}`; an interrupted task gets no `task_finished`
+  (its `run_ended` marks it). Report: done / skipped / failed / not started, the run folder and the trace file.
+- **The worker** (`agent/autoworker.go`): a fresh `reActLoop` per task (no earlier messages), system prompt
+  `workerPrompt` (the manifest's `worker` hash is now of the prompt the session sends), first message `taskMessage`:
+  plan title and summary, `## Objective`, `## Assumptions`, the summaries of the tasks it depends on (from this run or
+  an earlier one), and the task. Its final reply, cut to 4 KB, is the summary. *Downside:* until 1e, "done" only means
+  the worker finished without an error; nothing checks `done when`.
+- **A failed task stops the run** (Jerry). Stop reasons: `done`; `max_steps` (`ErrMaxSteps`); `interrupted` (Ctrl+C or
+  SIGTERM; one interrupt watcher covers the run); `waiting` (a gated task is next: gates are 1e, so nothing gated runs
+  by accident); `error`. `max_steps` and `error` return an error; the others only report.
+- **Dependents of a changed task are not re-run** (no cascade in v1, as the "Which tasks run" table says).
+- **A copied plan runs, with a warning** (Jerry; reverses 1c's refusal). Refusing would let anything that can copy a
+  file (a prompt-injected model) stop an important plan from running. The copy shares the original's history and lock,
+  so the warning says a task done by either counts for both. **Tabled for a later sprint (Jerry's choice of the five
+  options):** keep accepted plans in the state folder (`~/.minagent/plans/<plan_id>.md`, out of the file tools' reach)
+  and run from there; the work-dir file becomes a draft you accept again. The other options weighed: the run uses its
+  own copy of the plan (already true), write-deny the plan file (misses `run_command`), signed plans (a copy still
+  passes), an OS sandbox (the real boundary).
+- **Auto mode's traces go to `<stateDir>/traces/`** (Jerry, option A of two), not into each run folder: the recorder is
+  made in `SetupAgent` before the run folder exists, so putting it in the folder needed a placeholder recorder and a
+  swap. The manifest's `trace_run_id` links a run to its trace. *Downside:* the trace isn't inside the run folder, and
+  answering "n" to `Run?` still leaves a small trace file (as chat does). `state.Run.TraceDir` was removed.
+- **Approval:** nobody is asked (`PromptAllowDenyCall` nil → an ask-rule call is denied); `approval: allow-all` sets
+  `AllowAskRules`, the `Run?` answer (or `-y`) being the confirmation. Output is `autoOutput`: task lines and every tool
+  name; the worker's text only with `-debug` (it is in the trace).
+
+### 2026-11-20 — 1e built: the director, retries and gates
+
+Shape agreed with Jerry; Claude wrote it.
+- **After each worker attempt, a director judges it** (`judgeTask`, `agent/autodirector.go`; prompt, message and tools
+  in the new `agent/director/` package, like `planner`). A fresh ReAct loop on a shallow copy of the session: system
+  prompt `director.Prompt`, first message the task (with `done when`), the worker's summary and **what the worker
+  actually did** (`director.ToolLog`: each call's arguments and result, 500 B each, 8 KB in all), so it checks the
+  work rather than the claim. It must end with `task_done(reason)` or `task_failed(reason, advice)` (`ErrEndTurn`); no
+  verdict → one reminder → the attempt is not done. Same provider and model as the worker (a `directorModel` can come
+  later). The manifest records the `director` prompt hash.
+- **The director can run commands** (Jerry): its tools are `read_file`, `list_files`, `search_files` and `run_command`
+  (when the session has them), never the write tools. Many `done when` lines are "tests pass", checkable only by
+  running them. *Downside:* a command it runs can change things (build caches, anything a listed program writes); the
+  prompt says not to fix anything, and the deny/ask rules bind it as they bind the worker.
+- **Retries:** `maxTaskAttempts` (new key, auto mode, **default 3**, Jerry). A not-done attempt starts a fresh worker
+  told why and the advice; the earlier attempt's files stay and it is told to build on them. A worker out of steps is a
+  failed attempt (the director isn't asked). A provider error (worker or director) stops the run with `error`, no
+  retry. Each attempt is in the journal (`task_started{attempt}`, `task_finished{status, verdict}`); the last decides.
+- **Stop reasons:** new `task_failed` (judged not done on every attempt: the work, not a breakage) and `declined`
+  (Jerry: a person said no to a gate). `max_steps` is no longer produced.
+- **Gates:** before a gated task, `"<id>: <title> has a gate: "<reason>". Run it? [y/N]"`, asked only on a terminal;
+  `-yes` never answers it. No terminal → `waiting`; no / Ctrl+D → `declined`; the answer is journaled
+  (`gate_answered`). A later run on a terminal skips the done tasks and asks again.
+
+### 2026-11-20 — 1f built: every tool call recorded, file hashes, MCP idempotency key
+
+Shape agreed with Jerry; Claude wrote it.
+- **Every tool call that runs is recorded** in the run's journal: `tool_before` after the approval hooks and before the
+  call, `tool_after` when it returns (success, error, timeout, Ctrl+C). A vetoed, unknown or bad-argument call never ran
+  and has no record. **Not recorded → not run.** The hook is `ChatSession.ToolJournal` (`toolRecorder`; nil in chat and
+  plan mode) in `executeToolCall`; auto mode's `runToolJournal` (`agent/autojournal.go`). The director's calls are
+  recorded too (shared via the session copy), under the task. A crash mid-call leaves a `tool_before` with no
+  `tool_after`: what 1h settles.
+- **Call IDs are the run's own** (`c1`, `c2`, …): a model's IDs can repeat; it is kept as `model_call_id`. The preview is
+  the arguments through the trace's redactor, cut to 300 bytes; `args_sha256` is of the exact arguments.
+- **File hashes:** each write tool implements `tools.FileTool.ChangedPaths(args)` (only the tool knows which arguments
+  are paths), resolved and checked exactly as the write is (`Workspace.changedPaths`), so a refused path is never
+  hashed. Hash = `sha256:…`, `absent` or `dir`. **"Before" in `tool_before`, "after" in `tool_after`** (Jerry): what
+  actually happened, not a prediction (predicting `edit_file` means doing the edit twice). *Downside:* for a cut-off
+  call 1h can say "not as before", not "exactly what this call writes"; with 1g's atomic writes, "not as before" means
+  it happened unless something else changed the file. `run_command` can't say what it changes: records, no files.
+- **Idempotency key on every MCP call** (Jerry): random per call (`minagent-<16 hex>`, Jerry), recorded and sent in the
+  request's `_meta` as `io.minagent/idempotency-key` (MCP has no standard key; namespaced). Passed through the context
+  (`mcpconnect.WithIdempotencyKey`), so `Tool.CallTool` doesn't change; servers that don't know it ignore it. The tool's
+  `idempotentHint` is recorded with it; 1h re-sends automatically only for those.
+
+### 2026-11-20 — 1g built: write tools write a temporary file and rename it into place
+
+Shape agreed with Jerry; Claude wrote it.
+- **`write_file`, `edit_file` and `copy_file` no longer write into the file they change.** `Workspace.replaceFile`
+  (`tools/builtin/atomicwrite.go`) writes the new content to `.<name>.minagent-<8 hex>.tmp` in the same directory
+  (created with `O_EXCL` through the directory handle `openDir` approved), syncs it to disk, gives it the old file's
+  permission bits, checks the target once more, renames it over the target, and syncs the directory. A rename within one
+  directory is a single step, so the file is always all old or all new: a crash, Ctrl+C or a full disk part-way leaves
+  the old file. Before, a failure part-way left a truncated file (an accepted downside since Slice 4). `create_directory`
+  and `move_file` were already single steps. **All modes** (Jerry): the tools don't know the mode.
+- **Checks kept, and where they moved.** Path approval (`resolveNewPath` / `resolvePathForWrite`, deny list, write-deny,
+  trace and state folders) and `openDir` are unchanged. `openForWrite` is gone; `checkReplaceTarget` allows only a new
+  name or a regular file with one name (**hard links still refused**, Jerry: a rename would split the two names
+  silently). Just before the rename (`replaceTarget.unchanged`; `edit_file` its own size/mtime + `stillAtPath` check):
+  a new name must still be free (was `O_EXCL`'s job) and an existing file must be the same file, unchanged; otherwise
+  the temp file is removed and the call refused. The rename replaces a directory entry, so a symlink swapped in at the
+  name is replaced itself, never followed. `edit_file` now reads through the approved parent (`openDir`), opens
+  read-only, and re-resolves the path after taking its per-file lock (the edit before it made a new file).
+- **Accepted downsides.** An overwritten file is a new file (new inode): permission bits are kept, owner, ACLs and
+  extended attributes are not, and a program holding the old file open keeps the old content. Two `fsync`s per write
+  (about a millisecond for the 1 MB tools; a 100 MB `copy_file` can take seconds on a slow disk). Disk space for the
+  file is briefly needed twice. On Windows the rename fails if another program holds the target open without sharing
+  (compiled, not tested there). A crash between creating and renaming the temp file leaves it; **1h removes them** for
+  the paths of cut-off calls (Jerry).
+- **`git diff`** is unaffected: git compares content at the path; a new inode only makes it re-read the file.
+
+**Current limits of `edit_file` and `write_file`, and proposed improvements** (Jerry, 2026-11-20; tabled):
+- *`edit_file` does not send the file to the model.* The model sends `old_string` and `new_string`; Go reads the file
+  into its own memory, replaces the text, and writes it back. The model gets one line back ("edited x (1 replacement,
+  N bytes)"). To pick `old_string`, the model reads only the region it needs (`read_file` with `offset`/`limit`, or
+  `search_files`). So changing one word in a big file costs a few dozen tokens, not the file's size.
+- *Its 1 MB cap is not about tokens.* `edit_file` reuses `write_file`'s constant `maxWriteBytes` as the largest file it
+  will load into memory and rewrite. A 5 MB file is refused ("is 5242880 bytes; edit_file edits files up to 1048576
+  bytes"). **Proposal:** give `edit_file` its own, larger cap (for example `copyFileMaxBytes`, 100 MB, or a new
+  `editFileMaxBytes` key). It costs memory (the old and the new text, briefly) and disk time, never model tokens.
+- *`write_file`'s 1 MB cap is about tokens.* Every byte of its content is written by the model, so 1 MB is already about
+  250k tokens; it also matches `readFileMaxBytes`, so anything written can be read back in one call. A larger file can
+  only be produced today by `run_command` (a program writes it) or `copy_file` / `move_file`.
+- **Proposal: write a large file in chunks**, with an `append` option on `write_file` (or an `append_file` tool), each
+  call adding up to 1 MB at the end. Trade-off with 1g: an atomic append would copy the whole file into a temporary
+  file for every chunk (quadratic in the file's size), so append should write in place with `O_APPEND`. A crash
+  mid-chunk can then leave a partial chunk at the end; the journal's before/after hashes show the call was cut off, and
+  1h tells the worker to check the end of the file.
+
+### 2026-11-20 — 1h built: resume after a crash
+
+Shape agreed with Jerry; Claude wrote it (`agent/autoresume.go`).
+- **Manual resume:** start the same command again. When the plan's last run has no `run_ended`, `openRun` calls
+  `resumeRun` before any task runs. Each **cut-off call** (a `tool_before` with no `tool_after`, `State.Latest.OpenCalls`,
+  now with its task) is settled first, then the cut-off task runs again from the start with a fresh worker whose first
+  message lists what happened to its calls (`taskMessage`'s crash section). Done tasks are skipped as always. The
+  cut-off attempt doesn't count toward `maxTaskAttempts`.
+- **Continue or new (Jerry):** if the plan file and the config are byte for byte what the run started with (manifest
+  `plan_sha256`, `config_sha256`), the same run continues (`ContinueRun`, a `resumed` event), so step 2's budgets carry
+  across a crash. Otherwise the cut-off calls are still settled in the old run (they are real actions), it gets
+  `run_ended{interrupted}`, and a new run starts; the history carries over through `Load`.
+- **Settling, decided first, done second** (`decideSettlement`, then `settle`): no effect (reads, verdicts, MCP
+  `readOnlyHint`, a file tool with no recorded paths) → nothing; a file call → compare each path with its "before" hash
+  (all equal: `not_happened`; else `happened`) and remove leftover `.<name>.minagent-*.tmp` files
+  (`builtin.RemoveTempFiles`; Jerry); an MCP call with `idempotentHint` → re-sent automatically; anything else (other MCP
+  calls, `run_command`) → asked "Send it again? [y/N]" (n: `user_said_done`). A call that can't be re-sent (no kept
+  arguments, a hash mismatch, the tool gone) asks "Carry on, treating it as done? [y/N]". No terminal (`-yes` never
+  answers), Ctrl+D (Jerry), or n to that second question → `errResumeWaiting`: "Stopped: waiting", nothing done or
+  written, asked again next start. Outcomes go in the `resumed` event; `Fold` closes settled calls, so a second crash
+  doesn't settle them twice.
+- **Exact arguments are kept for re-sending** (Jerry): `tool_before.args` for MCP and `run_command` calls only, up to
+  64 KB (larger: can't be re-sent, asked instead). *Downside:* they are unredacted in the journal; it is private (0600
+  in the state folder). File tools don't need them (settled by hashes). `read_only` (MCP `readOnlyHint`) is recorded too.
+- **Re-sends go through the normal path** (`resendCall` → `executeToolCall`; Jerry): deny and ask rules apply again (a
+  rule added since the crash counts; an ask rule is denied), the tool timeout applies, and the re-send is recorded with
+  `resend_of` and the cut-off call's own idempotency key.
+- **The plan's done test** (`Test_Unit_AutoResume_AfterCrash`): a child process (the test binary re-run) dies inside a
+  `run_command` call; the resume asks, "n" means it isn't repeated, "y" re-sends it exactly once, done t1 isn't re-run,
+  and run 0001 is continued.
+- *Not covered:* a crash in chat or plan mode (no journal) can leave a temp file of 1g; it is harmless and clearly named.
+
+### 2026-11-20 — 1i built: "Run now?", exit codes, docs; step 1 done
+
+Shape agreed with Jerry; Claude wrote it.
+- **"Run now? [y/N]"** after plan mode writes a plan (or finds it up to date). Yes returns `*agent.ErrRunPlan{Path}` up
+  through `RunAgent` (traced as success). `main` shuts the plan-mode agent down (MCP servers closed, trace ended; the
+  planner conversation is dropped on purpose: the plan file is the whole input) and sets up **a new `Agent` for auto
+  mode in the same process** from the same flags (`config.FlagsForAuto`: `-mode auto -plan <file> -yes`, `-objective`
+  dropped), so auto mode's own defaults, tools, rules, prompt and trace folder apply. *Why not reuse the session:* a
+  plan-mode setting left over would quietly change the run. *Why not a child process* (Jerry): two processes sharing
+  the terminal and Ctrl+C. *Cost:* MCP servers start twice.
+- **`-y` in plan mode also answers "Run now?"** (Jerry): `-mode plan -objective x -y` plans, accepts and runs in one go.
+  `-y` still never answers a gate or a resume question.
+- **Exit codes** (Jerry; every mode exited 0 before, even on failure): 0 finished or the user said no; 1 failed (setup,
+  run error, `task_failed`); 2 bad flags/config; 3 needs a person (`waiting`, `declined`: `agent.ErrNeedsPerson`); 130
+  Ctrl+C or SIGTERM (an interrupted auto run returns `context.Canceled`). `main` is now `os.Exit(run())`, so deferred
+  shutdowns still run. A setup failure, which exited 0, now exits 1.
+- **Docs:** `docs/auto-mode.md` (user guide), README, CLAUDE.md commands, `PLAN-auto-mode.md` "What it does" brought in
+  line with what was built (no objective read, no stale check), `PLAN-plan-apply.md` status.
+- **Step 1 of `PLAN-auto-mode.md` is built** (1a–1i, 2026-11-19/20).
+
+### 2026-11-20 — PR #44 review: four fixes, one deliberately limited
+
+Jerry's line for this review: be reasonable on guardrails; don't overfix obscure edge cases.
+- **A `tool_after` that can't be written now stops the run and leaves it open.** Before, `done` dropped the error: the
+  run went on and could write `run_ended`, after which `Fold` ignores the open call, losing the evidence resume needs.
+  Now `runToolJournal` keeps the first failed write (`err`); `executeToolCall` reports "the call ran, but its end could
+  not be recorded" instead of the result; every later call is refused (not recorded = not run); `runTask` stops with
+  `error` after the worker or director; `end` writes **no** `run_ended` and says the run was left open, so the next
+  start settles that call. A re-send during resume that can't be recorded leaves the run open the same way.
+- **Resume and changed MCP servers: limited fix** (Jerry, partly disagreeing with the review). The review asked for a
+  fingerprint of each server's settings (URL, command, args) or a new run on any MCP change. Two points: settling
+  happens before the continue-or-new choice, so a new run alone wouldn't stop a re-send to a changed server; and the
+  settings can hold tokens (`config.json` leaves them out on purpose). What was done: `toolsDiffer` compares the crashed
+  run's manifest with this start's (the tools hash over names, descriptions and parameters; each server's name,
+  transport and reported name/version). If they differ, no call is re-sent without asking ("The tools or MCP servers
+  changed since. Send it again?") and a new run starts. *Accepted gap:* a server that changed behind the same identity
+  and tools (another address, other data) is not detected.
+- **`hashPath` no longer reads huge files.** A file over `hashContentMaxBytes` (16 MB) gets `meta:<size>:<mtime ns>`
+  instead of a content hash, so journaling a `move_file` of a multi-GB file stays a metadata lookup. Covers every
+  `write_file`/`edit_file` result (max 1 MB) with full hashes. Kept general rather than special-casing `move_file`:
+  resume only asks "is it as before?", which presence plus size and mtime answer. *Accepted gap:* a same-size change
+  within the same nanosecond to a file over 16 MB.
+- **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
+  naming the run and seq, not a counted attempt.
+- **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.

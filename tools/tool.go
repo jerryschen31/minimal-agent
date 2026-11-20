@@ -15,6 +15,22 @@ import (
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 )
 
+// ErrEndTurn is returned by a tool's CallTool to end the ReAct turn right after this call: its result is still recorded
+// as the tool's message, but the model is not called again for this turn.
+// [agent] A "sentinel error", like agent.ErrMaxSteps: callers check it with errors.Is. Used by plan mode's
+// propose_plan, where one more model call would only produce an acknowledgement nobody reads.
+var ErrEndTurn = errors.New("end turn")
+
+// FileTool is a tool whose calls change files: it can say, from a call's arguments, which paths the call would change.
+// [agent] Only the tool knows which of its arguments are paths ("path" for write_file, "source" and "destination" for
+// move_file), so it answers this itself. Auto mode's journal hashes those paths before and after the call, so that after
+// a crash it can tell whether a cut-off write happened.
+type FileTool interface {
+	// ChangedPaths returns the absolute paths (symlinks resolved) a call with args would change, checked as the call
+	// would check them; a path the call would refuse is an error.
+	ChangedPaths(args json.RawMessage) ([]string, error)
+}
+
 // Tool interface - Tool is any tool function the model can call (built-in tools for now, an MCP tool later)
 // Note that when getting a tools list from an MCP server, the tools will be instantiated as many Tool values, one per listed tool.
 type Tool interface {
@@ -25,8 +41,8 @@ type Tool interface {
 // SetupBuiltinTools builds the built-in tools named in cfg.BuiltinTools.
 //
 // Notes:
-//   - cfg.WorkDir, cfg.TraceDir and cfg.DenyPaths make the workspace the file tools share (workDir and below, minus the
-//     trace files and deny-listed names).
+//   - cfg.WorkDir, cfg.TraceDir, cfg.StateDir and cfg.DenyPaths make the workspace the file tools share (workDir and
+//     below, minus the trace files, auto mode's state folder and deny-listed names).
 //   - The workspace and the ignore list are built even when no file tool is enabled, so a bad workDir, traceDir or
 //     pattern always fails setup.
 //   - "run_command" is set up only when cfg.RunCommands names at least one usable program; otherwise a warning goes to
@@ -43,6 +59,13 @@ func SetupBuiltinTools(cfg config.Config) ([]Tool, error) {
 	}
 	ws, err := builtin.NewWorkspace(cfg.WorkDir, cfg.TraceDir, cfg.ConfigFile, deny)
 	if err != nil {
+		return nil, err
+	}
+	stateDir, err := cfg.ResolveStateDir()
+	if err != nil {
+		return nil, err
+	}
+	if err := ws.SetStateDir(stateDir); err != nil {
 		return nil, err
 	}
 	out := cfg.OutBuffer // setup warnings (run_command) go here; nil in a hand-built config means nowhere

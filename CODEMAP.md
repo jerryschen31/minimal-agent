@@ -12,14 +12,32 @@ minimal-agent/
 ├── agent/
 │   ├── agent.go
 │   ├── approval_preview.go
+│   ├── autodirector.go
+│   ├── autojournal.go
+│   ├── automode.go
+│   ├── autoresume.go
+│   ├── autorun.go
+│   ├── autoworker.go
 │   ├── chat.go
 │   ├── compaction.go
 │   ├── doc.go
 │   ├── info.go
 │   ├── input.go
+│   ├── manifest.go
 │   ├── output.go
+│   ├── planmode.go
 │   ├── react.go
-│   └── session.go
+│   ├── session.go
+│   ├── director/
+│   │   ├── doc.go
+│   │   ├── prompt.go
+│   │   └── tools.go
+│   └── planner/
+│       ├── doc.go
+│       ├── present.go
+│       ├── prompt.go
+│       ├── propose.go
+│       └── update.go
 ├── cmd/
 │   └── codemap/
 │       ├── doc.go
@@ -45,6 +63,9 @@ minimal-agent/
 │   ├── conn.go
 │   ├── doc.go
 │   └── tools.go
+├── mdscan/
+│   ├── doc.go
+│   └── mdscan.go
 ├── memory/
 │   ├── doc.go
 │   └── msghistory.go
@@ -55,10 +76,29 @@ minimal-agent/
 │   └── modeltest/
 │       ├── doc.go
 │       └── fake_provider.go
+├── objective/
+│   ├── doc.go
+│   ├── objective.go
+│   └── parse.go
+├── plan/
+│   ├── cleanup.go
+│   ├── doc.go
+│   ├── objective.go
+│   ├── plan.go
+│   └── render.go
 ├── procutils/
 │   ├── doc.go
 │   ├── procgroup_unix.go
 │   └── procgroup_windows.go
+├── state/
+│   ├── doc.go
+│   ├── fold.go
+│   ├── home.go
+│   ├── journal.go
+│   ├── lock.go
+│   ├── lock_other.go
+│   ├── lock_unix.go
+│   └── lock_windows.go
 ├── textutils/
 │   ├── cut.go
 │   └── doc.go
@@ -66,6 +106,7 @@ minimal-agent/
 │   ├── doc.go
 │   ├── tool.go
 │   └── builtin/
+│       ├── atomicwrite.go
 │       ├── commandenv.go
 │       ├── copyfile.go
 │       ├── createdirectory.go
@@ -103,6 +144,9 @@ minimal-agent/
 ```text
 main.go
   func main()
+  func run() int
+  func loadConfig(flags config.Flags) (config.Config, error)
+  func exitCode(err error) int
 ```
 
 ## agent (package agent)
@@ -125,12 +169,59 @@ approval_preview.go
   func previewFirstLine(s string) string
   func commandPreview(command string, args *[]string, dir *string) []string
 
+autodirector.go
+  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+
+autojournal.go
+  func withResend(ctx context.Context, orig state.ToolBefore) context.Context
+  func (rj *runToolJournal) err() error
+  func (rj *runToolJournal) fail(err error) error
+  func newRunToolJournal(j *state.Journal, level string) (*runToolJournal, error)
+  func (rj *runToolJournal) setTask(id string)
+  func (rj *runToolJournal) recordCall(ctx context.Context, call model.ToolCall, tool tools.Tool, args json.RawMessage) (context.Context, func(failed bool) error, error)
+  func (rj *runToolJournal) preview(args json.RawMessage) string
+  func newIdempotencyKey() string
+  func hashPath(path string) string
+
+automode.go
+  func (*autoModeDetails) ModeName() string
+  func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
+  func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error
+  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
+  func (o autoOutput) ToolCalled(name string)
+
+autoresume.go
+  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
+  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
+  func toolsDiffer(was, now state.Manifest) bool
+  func resendable(cs *ChatSession, c state.ToolBefore) string
+  func settle(ctx context.Context, cs *ChatSession, rj *runToolJournal, plans []settlePlan, w io.Writer) ([]state.SettledCall, map[string]string)
+  func resendCall(ctx context.Context, cs *ChatSession, c state.ToolBefore) (string, error)
+  func oneLine(s string, max int) string
+
+autorun.go
+  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
+  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
+  func hasPlanID(path, id string) bool
+  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
+  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
+  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
+  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
+  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
+  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
+
+autoworker.go
+  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
+  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
+
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
   func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession)
   func confirmAllowAll(ctx context.Context, cs *ChatSession, tty *ttyReader)
   func runChatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession) error
   func chatLoop(ctx context.Context, intsigChRecv <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
   func discardStrayInterrupts(interrupts <-chan os.Signal)
   func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
   func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
@@ -164,10 +255,19 @@ input.go
   func newTTYReader() *ttyReader
   func newTTYReaderWith(tty ttyadapter.Tty, out io.Writer) *ttyReader
   func (r *ttyReader) ReadPrompt(ctx context.Context) (string, error)
+  func (r *ttyReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+  func (r *ttyReader) AskLine(ctx context.Context, prompt string) (string, error)
   func (r *ttyReader) AskYesNo(ctx context.Context, prompt string) bool
   func newPlainReader(ctx context.Context, in io.Reader, out io.Writer) *plainReader
   func (r *plainReader) ReadPrompt(ctx context.Context) (string, error)
+  func (r *plainReader) ReadPromptFilled(ctx context.Context, lines []string) (string, error)
+  func (r *plainReader) AskLine(ctx context.Context, prompt string) (string, error)
   func writePrompt(w io.Writer, lnum int) (int, error)
+
+manifest.go
+  func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error)
+  func configSnapshot(cfg config.Config) ([]byte, error)
+  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
 
 output.go
   func (o chatOutput) Assistant(text string)
@@ -176,10 +276,41 @@ output.go
   func (o chatOutput) System(text string)
   func (o chatOutput) Error(what string, err error)
   func (o chatOutput) Interrupted()
+  func newPlanOutput(w io.Writer, debug bool) planOutput
+  func (o planOutput) Assistant(text string)
+  func (o planOutput) ToolCalled(name string)
+  func (o planOutput) System(text string)
+
+planmode.go
+  func (*planModeDetails) ModeName() string
+  func setupPlanMode(cs *ChatSession, baseTools []tools.Tool) error
+  func runPlanMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+  func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
+  func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
+  func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
+  func plannerNoPlanError(lastReply string, reminded int, replan string) error
+  func planPathFor(planFlag, objectivePath string) string
+  func replanCommand(cs *ChatSession, pd *planModeDetails) string
+  func objectivePathFromPlan(planPath, objectivePath string) string
+  func hasFrontMatter(data []byte) bool
+  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
+  func newObjectivePath(answer string) (string, error)
+  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
+  func askLineNotBlank(ctx context.Context, reader promptReader, prompt string) (string, error)
+  func runObjectiveChat(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, first string) (bool, error)
+  func showObjective(cs *ChatSession, pd *planModeDetails)
+  func presentObjective(cs *ChatSession, pd *planModeDetails)
+  func saveObjective(cs *ChatSession, pd *planModeDetails) error
+  func editObjective(ctx context.Context, cs *ChatSession, pd *planModeDetails, reader promptReader)
+  func writeFileAtomic(path string, data []byte) error
+  func isYes(answer string, def bool) bool
+  func (e *ErrRunPlan) Error() string
+  func askRunNow(ctx context.Context, cs *ChatSession, reader promptReader, planPath string) error
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) model.ChatMessage
+  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
   func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
   func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
   func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)
@@ -188,6 +319,54 @@ session.go
   func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
   func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider
   func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
+```
+
+## agent/director (package director)
+
+`github.com/jerryschen31/minimal-agent/agent/director`
+
+```text
+prompt.go
+  func Message(t plan.Task, attempt, maxAttempts int, summary string, workerMsgs []model.ChatMessage) string
+  func ToolLog(msgs []model.ChatMessage) string
+  func cut(s string) string
+
+tools.go
+  func NewTaskDone(v *Verdict) *TaskDone
+  func NewTaskFailed(v *Verdict) *TaskFailed
+  func (t *TaskDone) GetToolDefinition() model.ToolDef
+  func (t *TaskDone) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *TaskFailed) GetToolDefinition() model.ToolDef
+  func (t *TaskFailed) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func record(v *Verdict, done bool, args json.RawMessage) (string, error)
+```
+
+## agent/planner (package planner)
+
+`github.com/jerryschen31/minimal-agent/agent/planner`
+
+```text
+present.go
+  func NewPresentObjective(draft *objective.Objective, show func()) *PresentObjective
+  func (t *PresentObjective) GetToolDefinition() model.ToolDef
+  func (t *PresentObjective) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+
+prompt.go
+  func PlanMessage(objectivePath string, o objective.Objective) string
+  func RevisionNote(p plan.Plan, change string) string
+
+propose.go
+  func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan
+  func (t *ProposePlan) GetToolDefinition() model.ToolDef
+  func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (prop proposal) toPlan(objectivePath string, o objective.Objective) (plan.Plan, error)
+  func standardID(id string) string
+  func readBack(p plan.Plan) (plan.Plan, error)
+
+update.go
+  func NewUpdateObjective(draft *objective.Objective) *UpdateObjective
+  func (t *UpdateObjective) GetToolDefinition() model.ToolDef
+  func (t *UpdateObjective) CallTool(ctx context.Context, args json.RawMessage) (string, error)
 ```
 
 ## cmd/codemap (package main)
@@ -242,16 +421,19 @@ render.go
 ```text
 config.go
   func (m McpServerConfig) TransportType() (string, error)
-  func GetDefaultConfig() Config
+  func GetDefaultConfig(mode string) Config
   func SetDefaultConfig(flags Flags) (Config, error)
   func configJSONKeys() map[string]bool
   func PrintConfig(cfg Config)
   func DisplayURL(raw string) string
+  func (c Config) ResolveStateDir() (string, error)
 
 flags.go
+  func normalizeMode(mode string) string
   func ParseFlags(args []string, out io.Writer) (Flags, error)
   func ValidateMode(cfg Config, f Flags) error
   func (f Flags) validateMode(mode string) error
+  func FlagsForAuto(f Flags, planPath string) Flags
   func requireDir(flagName, path string) error
   func requireFile(flagName, path string) error
   func printUsage(w io.Writer)
@@ -351,17 +533,33 @@ conn.go
   func (o origin) String() string
   func newRemoteHTTPClient(endpoint string, headers map[string]string) (*http.Client, error)
   func (h *headerTransport) RoundTrip(req *http.Request) (*http.Response, error)
+  func (s *McpConnection) ServerInfo() (name, version string)
   func (s *McpConnection) Close() error
 
 tools.go
   func HintsOf(t tools.Tool) (hints ToolHints, ok bool)
   func hintsFrom(a *mcp.ToolAnnotations) ToolHints
+  func WithIdempotencyKey(ctx context.Context, key string) context.Context
   func (t *mcpTool) GetToolDefinition() model.ToolDef
   func (t *mcpTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
   func flattenMCPResult(res *mcp.CallToolResult, maxBytes int) (string, error)
   func newMCPTool(mcpConn *McpConnection, t *mcp.Tool, maxBytes int) (*mcpTool, error)
   func GetMCPTools(ctx context.Context, mcpConn *McpConnection, maxResultBytes int) ([]tools.Tool, error)
   func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error)
+```
+
+## mdscan (package mdscan)
+
+`github.com/jerryschen31/minimal-agent/mdscan`
+
+```text
+mdscan.go
+  func Lines(data []byte, what string) ([]Line, error)
+  func FirstTextLine(lines []Line) int
+  func LastTextLine(lines []Line) int
+  func IsCodeBlockFence(s string) bool
+  func ReadHeading(s string, known func(text string) bool) (level int, text string, ok bool)
+  func StripClosingHashes(s string) string
 ```
 
 ## memory (package memory)
@@ -405,6 +603,77 @@ fake_provider.go
   func Msgs(n int) []model.ChatMessage
 ```
 
+## objective (package objective)
+
+`github.com/jerryschen31/minimal-agent/objective`
+
+```text
+objective.go
+  func (o Objective) Markdown() string
+  func sectionBlock(heading, body string) string
+  func (o Objective) Hash() string
+  func (o Objective) ChangedSections(old Objective) []string
+
+parse.go
+  func Parse(data []byte) (Objective, error)
+  func sectionLevel(lines []mdscan.Line) int
+  func splitSections(lines []mdscan.Line, topLevel int) []section
+  func sectionName(text string) (string, bool)
+  func isKnownName(text string) bool
+  func sectionText(lines []mdscan.Line, keepLeading bool) string
+  func joinNonEmpty(parts []string) string
+```
+
+## plan (package plan)
+
+`github.com/jerryschen31/minimal-agent/plan`
+
+```text
+cleanup.go
+  func Cleanup(data []byte) (Plan, []Fix, error)
+  func readFrontMatter(lines []line) (fm frontMatter, rest []line, fixes []Fix, err error)
+  func splitSections(lines []line) ([]rawSection, []Fix, error)
+  func headingLine(name string) string
+  func titleLine(title string) string
+  func planTitle(text string) (string, bool)
+  func sectionName(text string) (string, bool)
+  func knownHeading(text string) bool
+  func taskHeading(text string) (id, title string, hasID bool)
+  func taskIDFromDigits(digits string) string
+  func taskHeadingLine(t Task) string
+  func fieldLines(t Task) []string
+  func readField(s string) (key, value string, depends []string, ok bool)
+  func parseFields(body []line, t *Task) (rest []line, fixes []Fix)
+  func parseTasks(lines []line) (tasks []Task, notes string, heads []line, fixes []Fix, err error)
+  func dedent(lines []line) []line
+  func parseDepends(value string) (ids []string, ok bool)
+  func NormalizeTaskID(s string) (string, bool)
+  func tidyBody(lines []line) (string, []Fix)
+
+objective.go
+  func ObjectiveSection(objectiveMarkdown string) string
+
+plan.go
+  func (f Fix) String() string
+  func (t Task) External() bool
+  func (t Task) DefinitionHash() string
+  func (p Plan) IsStale(objectiveHash string) bool
+  func (p Plan) CheckComplete(maxTasks int) error
+  func AssignTaskIDs(tasks []Task, nextID int) []int
+  func taskNumber(id string) (int, bool)
+  func findCycle(tasks []Task) []string
+  func PathFor(objectivePath string) string
+  func NewPlanID() string
+
+render.go
+  func (p Plan) Markdown() string
+  func (p Plan) frontMatter() string
+  func (p Plan) Body() string
+  func sectionBlock(heading, body string) string
+  func taskBlock(t Task) string
+  func Summary(p Plan) string
+```
+
 ## procutils (package procutils)
 
 `github.com/jerryschen31/minimal-agent/procutils`
@@ -417,6 +686,55 @@ procgroup_unix.go
 procgroup_windows.go
   func StartInOwnGroup(cmd *exec.Cmd)
   func KillGroup(cmd *exec.Cmd)
+```
+
+## state (package state)
+
+`github.com/jerryschen31/minimal-agent/state`
+
+```text
+fold.go
+  func Fold(runs []RunEvents) (State, error)
+
+home.go
+  func OpenHome(dir string) (Home, error)
+  func (h Home) Dir() string
+  func NewPlanRef(planID, planPath string) (PlanRef, error)
+  func (p PlanRef) key() string
+  func (p PlanRef) matches(m Manifest) bool
+  func SHA256(data []byte) string
+  func (h Home) NewRun(m Manifest, plan, config []byte) (*Journal, Run, error)
+  func (h Home) ContinueRun(r Run) (*Journal, error)
+  func (h Home) Load(p PlanRef) (State, error)
+  func readManifest(path string) (Manifest, bool)
+  func (h Home) runsDir() string
+  func (h Home) runs() ([]Run, error)
+  func trimZeros(s string) string
+
+journal.go
+  func (j *Journal) Append(typ EventType, task string, data any) error
+  func (j *Journal) Seq() int
+  func (j *Journal) Close() error
+  func Read(r io.Reader) (events []Event, tornTail bool, err error)
+  func readEvents(r io.Reader) (events []Event, goodLen int64, tornTail bool, err error)
+  func decodeData(e Event, v any) error
+
+lock.go
+  func (e *LockedError) Error() string
+  func (h Home) Lock(p PlanRef) (unlock func() error, err error)
+  func readHolder(f *os.File) lockHolder
+
+lock_other.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
+
+lock_unix.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
+
+lock_windows.go
+  func tryLock(f *os.File) error
+  func unlockFile(f *os.File) error
 ```
 
 ## textutils (package textutils)
@@ -451,17 +769,27 @@ tool.go
 `github.com/jerryschen31/minimal-agent/tools/builtin`
 
 ```text
+atomicwrite.go
+  func (w *Workspace) checkReplaceTarget(dir *os.Root, requested, name string, newPerm os.FileMode) (replaceTarget, error)
+  func (t replaceTarget) unchanged(dir *os.Root, requested, name string) func() error
+  func refuseHardLink(requested string, info os.FileInfo) error
+  func (w *Workspace) replaceFile(dir *os.Root, requested, name string, t replaceTarget, verify func() error, write func(io.Writer) error) (err error)
+  func tempName(name string) string
+  func RemoveTempFiles(path string) ([]string, error)
+
 copyfile.go
   func NewCopyFileTool(ws *Workspace, maxBytes int) (*CopyFileTool, error)
   func (t *CopyFileTool) GetToolDefinition() model.ToolDef
   func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (int64, error)
   func pathErrorOnly(requested string, err error) error
   func (t *CopyFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *CopyFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 createdirectory.go
   func NewCreateDirectoryTool(ws *Workspace) (*CreateDirectoryTool, error)
   func (t *CreateDirectoryTool) GetToolDefinition() model.ToolDef
   func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 denylist.go
   func DeniedNames() []string
@@ -476,6 +804,7 @@ editfile.go
   func applyEdit(content, old, new string, all bool, maxBytes int) (string, int, error)
   func (t *EditFileTool) lockFor(rel string) *sync.Mutex
   func (t *EditFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *EditFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
   func missingFileHint(err error, requested string) error
 
 ignorelist.go
@@ -494,6 +823,7 @@ movefile.go
   func (t *MoveFileTool) GetToolDefinition() model.ToolDef
   func renameError(source, destination string, err error) error
   func (t *MoveFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *MoveFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 
 nlink_other.go
   func linkCount(fi os.FileInfo) (uint64, bool)
@@ -538,11 +868,13 @@ workspace.go
   func (w *Workspace) resolvePath(requested string) (string, os.FileInfo, error)
   func errMsgHidePath(requested string, err error) error
   func (w *Workspace) resolveNewPath(requested string) (newTarget, error)
+  func (w *Workspace) changedPaths(requested ...string) ([]string, error)
   func (w *Workspace) anchorFor(requested, rel, real string) (newTarget, error)
   func (w *Workspace) openDir(root *os.Root, requested string, t newTarget) (*os.Root, string, error)
   func (w *Workspace) resolvePathForWrite(requested string) (newTarget, os.FileInfo, error)
   func (w *Workspace) checkWritable(requested, rel string, isDir bool) error
   func (w *Workspace) checkPath(requested, real string) (rel string, err error)
+  func (w *Workspace) SetStateDir(dir string) error
   func (w *Workspace) openRoot() (*os.Root, error)
   func (w *Workspace) openFile(root *os.Root, requested, rel string, want os.FileInfo) (*os.File, os.FileInfo, error)
   func (w *Workspace) openExisting(root *os.Root, requested, rel string, want os.FileInfo, flag int) (*os.File, os.FileInfo, error)
@@ -554,7 +886,7 @@ writefile.go
   func NewWriteFileTool(ws *Workspace) (*WriteFileTool, error)
   func (t *WriteFileTool) GetToolDefinition() model.ToolDef
   func (t *WriteFileTool) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-  func (w *Workspace) openForWrite(root *os.Root, requested, name string, perm os.FileMode) (*os.File, string, error)
+  func (t *WriteFileTool) ChangedPaths(args json.RawMessage) ([]string, error)
 ```
 
 ## trace (package trace)
@@ -581,6 +913,7 @@ digest_activity.go
 
 event.go
   func GetRunStartData(cfg config.Config) RunStartData
+  func GitCommit() string
   func GetRunEndData(status, err string, durationMS int64) RunEndData
   func GetTaskStartData(input string) TaskStartData
   func GetTaskEndData(status, err string, durationMS int64) TaskEndData

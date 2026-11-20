@@ -13,7 +13,7 @@ import (
 // renderDigest records events through a real recorder with a digest subscriber and returns the digest file's text.
 func renderDigest(t *testing.T, record func(rec Recorder)) (digest, jsonl string, dir string) {
 	t.Helper()
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
 	rec, err := SetupRecorder(t.Context(), cfg)
 	if err != nil {
@@ -35,7 +35,7 @@ func renderDigest(t *testing.T, record func(rec Recorder)) (digest, jsonl string
 
 func Test_Digest_GroupsToolCallsPerTask_AndShowsTextOnlyTurns(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		defer run.End()
 
 		task := StartTask(rec, "fix script2.py")
@@ -71,7 +71,7 @@ func Test_Digest_GroupsToolCallsPerTask_AndShowsTextOnlyTurns(t *testing.T) {
 }
 
 func Test_Digest_File_IsOwnerOnly(t *testing.T) {
-	_, _, dir := renderDigest(t, func(rec Recorder) { StartRun(rec, config.GetDefaultConfig()).End() })
+	_, _, dir := renderDigest(t, func(rec Recorder) { StartRun(rec, config.GetDefaultConfig(config.ModeChat)).End() })
 	files, _ := filepath.Glob(filepath.Join(dir, "*.digest.md"))
 	info, err := os.Stat(files[0])
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -81,7 +81,7 @@ func Test_Digest_File_IsOwnerOnly(t *testing.T) {
 
 func Test_Digest_ShowsFailuresUnfinishedCallsAndCounts(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		task := StartTask(rec, "go")
 		task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "shell", Arguments: `{"command":"grep x f | wc -l"}`})
 		task.Record(ModelError, ModelErrorData{Error: "boom"})
@@ -187,7 +187,7 @@ func Test_Digest_UnfinishedRun_SaysSo(t *testing.T) {
 
 func Test_Replay_RebuildsTheSameDigestAsTheLiveOne(t *testing.T) {
 	live, jsonl, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		task := StartTask(rec, "read it")
 		task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`})
 		task.Record(ToolFinished, ToolFinishedData{CallID: "c1", Name: "read_file", Content: "x"})
@@ -221,7 +221,7 @@ func Test_Replay_HandlesVeryLongLines_AndRejectsGarbage(t *testing.T) {
 }
 
 func Test_SetupRecorder_DigestDisabled_WritesNoDigest(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.DigestEnabled = false
 	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
 	rec, err := SetupRecorder(t.Context(), cfg)
@@ -240,7 +240,7 @@ func Test_SetupRecorder_DigestDisabled_WritesNoDigest(t *testing.T) {
 
 func Test_Digest_SlashCommandsShowTheirEffect(t *testing.T) {
 	digest, _, _ := renderDigest(t, func(rec Recorder) {
-		run := StartRun(rec, config.GetDefaultConfig())
+		run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 		clear := StartTask(rec, "/clear")
 		clear.Record(ContextCleared, GetContextClearedData(4))
 		clear.End()
@@ -263,14 +263,14 @@ func Test_Digest_SlashCommandsShowTheirEffect(t *testing.T) {
 // - Verify a truncated or dropped payload is reported as incomplete data, not read as a nameless finished call
 // while the real request is reported as never finished
 func Test_Digest_MissingPayloadMarkers_AreReportedAsIncomplete(t *testing.T) {
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.TraceMaxEventBytes = 200 // small, so the big tool result below is over the cap
 	cfg.TraceDir = filepath.Join(t.TempDir(), "traces")
 	rec, err := SetupRecorder(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := StartRun(rec, config.GetDefaultConfig())
+	run := StartRun(rec, config.GetDefaultConfig(config.ModeChat))
 	task := StartTask(rec, "read big file")
 	task.Record(ToolRequested, ToolRequestedData{CallID: "c1", Name: "read_file", Arguments: `{"path":"big.txt"}`})
 	task.Record(ToolFinished, ToolFinishedData{CallID: "c1", Name: "read_file", Content: strings.Repeat("x", 1000)}) // truncated by the recorder

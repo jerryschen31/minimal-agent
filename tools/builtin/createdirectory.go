@@ -103,3 +103,17 @@ func (t *CreateDirectoryTool) CallTool(ctx context.Context, args json.RawMessage
 	}
 	return fmt.Sprintf("created directory %s", shown), nil
 }
+
+// ChangedPaths returns the directory a create_directory call with args would create, for auto mode's journal (tools.FileTool).
+//
+// Notes:
+//   - Checked as CallTool checks it (Workspace.changedPaths); bad JSON or a refused path is an error.
+func (t *CreateDirectoryTool) ChangedPaths(args json.RawMessage) ([]string, error) {
+	var p struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	return t.ws.changedPaths(p.Path)
+}

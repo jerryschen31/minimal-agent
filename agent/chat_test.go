@@ -620,7 +620,7 @@ func Test_ShouldShowProgress(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config.GetDefaultConfig()
+			cfg := config.GetDefaultConfig(config.ModeChat)
 			cfg.AgentMode = tc.mode
 			cfg.OutBuffer = tc.out
 			if shouldShowProgress(cfg) {

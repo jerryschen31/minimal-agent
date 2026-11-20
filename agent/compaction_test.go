@@ -649,7 +649,7 @@ func Test_ContextCompaction_SummarizerPromptFromConfig_IsSystemMessage(t *testin
 // every provider call is a chat turn, and the window just keeps its newest messages
 func Test_ContextCompaction_AutoCompactOff_NoAutoCompactionAtMax(t *testing.T) {
 	fx := newChatSessionFixture(t, 10, 100)
-	cfg := config.GetDefaultConfig()
+	cfg := config.GetDefaultConfig(config.ModeChat)
 	cfg.ContextWindowMessages = 4
 	cfg.AutoCompact = false
 	chatContext, err := contextwindow.SetupChatContext(cfg)

@@ -33,7 +33,7 @@ func runBlocker(t *testing.T, ctx context.Context, toolSecs int) (string, time.D
 		t.Fatal(err)
 	}
 	start := time.Now()
-	msg := runToolCall(ctx, fx.Session, trace.StartTask(fx.Session.Recorder, "t"), model.ToolCall{ID: "c1", Function: model.ToolCallFunc{Name: "blocker", Arguments: "{}"}})
+	msg, _ := runToolCall(ctx, fx.Session, trace.StartTask(fx.Session.Recorder, "t"), model.ToolCall{ID: "c1", Function: model.ToolCallFunc{Name: "blocker", Arguments: "{}"}})
 	return msg.Content, time.Since(start)
 }
 
@@ -135,7 +135,7 @@ func Test_Unit_CheckConfig_Timeouts(t *testing.T) {
 		{"defaults", 300, 600, ""},
 	}
 	for _, c := range cases {
-		cfg := config.GetDefaultConfig()
+		cfg := config.GetDefaultConfig(config.ModeChat)
 		cfg.ToolTimeoutSeconds, cfg.TurnTimeoutSeconds = c.tool, c.turn
 		err := checkConfig(cfg)
 		switch {
@@ -145,7 +145,7 @@ func Test_Unit_CheckConfig_Timeouts(t *testing.T) {
 			t.Errorf("%s: err = %v, want one containing %q", c.name, err, c.want)
 		}
 	}
-	d := config.GetDefaultConfig()
+	d := config.GetDefaultConfig(config.ModeChat)
 	if d.ToolTimeoutSeconds != 300 || d.TurnTimeoutSeconds != 600 || errors.Is(checkConfig(d), context.Canceled) {
 		t.Errorf("defaults: tool %d, turn %d", d.ToolTimeoutSeconds, d.TurnTimeoutSeconds)
 	}

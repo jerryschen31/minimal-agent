@@ -2,8 +2,9 @@
 //
 // # Where a setting comes from
 //
-// flags > config file > defaults. GetDefaultConfig holds every default. A config file (-config <file>) is decoded on
-// top of the defaults, so:
+// flags > config file > defaults. GetDefaultConfig(mode) holds every default; a few differ by mode (marked "plan:"
+// below). The mode is worked out first (-mode, else the file's "agentMode", else chat), then the file is decoded on
+// top of that mode's defaults, so:
 //
 //   - a key missing from the file keeps its default;
 //   - a key in the file replaces the default, a list included (it is not merged): "denyRules": [] means no rules;
@@ -29,11 +30,16 @@
 //	userId          who the chat session belongs to                                                       ["default_user"]
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
-//	agentMode       "chat" | "info" | "autonomous" | "oneshot"; -mode. Only chat and info run so far       ["chat"]
+//	agentMode       "chat" | "info" | "plan" | "auto" | "oneshot"; -mode ("autonomous" = "auto"). Chat,
+//	                info, plan and auto run; the mode also picks the defaults                              ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
+//	maxPlanTasks    the most tasks a plan may have (the planner's, and the plan auto mode runs); must be
+//	                positive in plan and auto mode. plan, auto: [30]; other modes don't use it             [0]
+//	maxTaskAttempts auto mode: the most tries per task; a try the director judges not done is tried
+//	                again with its advice. Must be positive in auto mode. auto: [3]; others don't use it   [0]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]
@@ -44,7 +50,9 @@
 //	mcpConnectTimeoutSeconds  most seconds one MCP server may take to connect at startup; a server that takes
 //	                longer is stopped and skipped (the others keep their tools). Positive                  [120]
 //	debug           print the context window each turn, log MCP protocol traffic to stderr; -debug         [false]
-//	systemPrompt    the model's system message; "" sends no system message                                 ["You are a helpful assistant. …"]
+//	systemPrompt    the model's system message; "" sends no system message. Auto mode's workers use
+//	                their own prompt instead                                                               ["You are a helpful assistant. …"]
+//	                plan: the objective-writing prompt (planSystemPrompt in config.go)
 //	chatStoreType   where chat history is kept: "in-memory" (the only one built so far)                    ["in-memory"]
 //
 // Context window and compaction (checked by contextwindow.CheckConfig):
@@ -66,9 +74,10 @@
 //	denyRules       glob rules on model-facing tool names (<server>_<tool>, case-insensitive); a matching
 //	                tool call is always refused, in every mode, never asked. [] = no rules                 [[]]
 //	askRules        same form; a matching call needs the user's approval ("Allow once? [y/N]" in chat on a
-//	                terminal). With nobody to ask (piped input, tests, autonomous) it is refused. A deny
+//	                terminal). With nobody to ask (piped input, tests, auto mode) it is refused. A deny
 //	                rule wins over an ask rule. [] = no rules        [["*delete*", "*remove*", "write_file", "edit_file",
 //	                                                                    "create_directory", "copy_file", "move_file"]]
+//	                auto: ["*delete*", "*remove*"] (an ask is a deny there, so the write tools are left out)
 //	approval        "ask" | "allow-all". allow-all runs ask-rule calls without asking; it applies ONLY to
 //	                askRules, never to denyRules. Chat asks you to confirm it once at startup (no terminal
 //	                = not confirmed, so calls stay denied). Flag: -approve                                 ["ask"]
@@ -79,7 +88,11 @@
 //	digestEnabled       also write <run_id>.digest.md, a readable summary; needs traceEnabled             [true]
 //	redactionLevel      how secrets are masked in the trace: "standard" (the only level so far)            ["standard"]
 //	traceDir            directory for trace files, relative to where the agent starts; read_file never
-//	                    reads inside it; must not be empty                                                [".agent-trace"]
+//	                    reads inside it; must not be empty. Auto mode ignores it: its traces go in
+//	                    <stateDir>/traces (each run's journal names its trace)                           [".agent-trace"]
+//	stateDir            auto mode's private state folder (runs/: run journals, a copy of each plan run,
+//	                    its config; traces/; locks/); "~" is your home folder. The file tools never touch
+//	                    anything in it                                                                 ["~/.minagent"]
 //	traceMaxEventBytes  an event bigger than this (as JSON) is replaced by a marker; positive              [100 MB]
 //
 // Tool output caps (bytes, positive; they bound how much context one tool call can use):
@@ -102,6 +115,7 @@
 //	                the old spelling, still works), "list_files", "search_files",
 //	                "create_directory", "write_file", "edit_file", "copy_file", "move_file", "run_command"
 //	                [every tool except "run_command", which must be listed by hand together with runCommands]
+//	                plan: ["read_file", "list_files", "search_files"]; a config file's list is used as given
 //	runCommands     programs run_command may start: bare names, looked up on PATH once at startup. The
 //	                only way to enable run_command: with [] (the default) the tool is not set up, and a
 //	                warning says so. A listed program runs unasked unless a deny or ask rule matches
@@ -195,6 +209,10 @@
 //	-config <file>   the config file to load (none = defaults only)
 //	-q, -query       the query; required for, and only used in, oneshot mode
 //	--json           JSON output; oneshot and headless modes only
+//	-obj, -objective an objective file, or the objective's text; plan mode only (none = write a new one in a chat)
+//	-plan <file>     plan mode: where to write the plan (default <objective>.plan.md next to the objective);
+//	                 auto mode: the plan to run (required, any name). Plan and auto mode only
+//	-y, -yes         plan mode: accept the plan without asking; auto mode: run it without asking
 //
 // # Codemap (auto-generated)
 //
@@ -203,16 +221,19 @@
 //
 //	config.go
 //	  func (m McpServerConfig) TransportType() (string, error)
-//	  func GetDefaultConfig() Config
+//	  func GetDefaultConfig(mode string) Config
 //	  func SetDefaultConfig(flags Flags) (Config, error)
 //	  func configJSONKeys() map[string]bool
 //	  func PrintConfig(cfg Config)
 //	  func DisplayURL(raw string) string
+//	  func (c Config) ResolveStateDir() (string, error)
 //
 //	flags.go
+//	  func normalizeMode(mode string) string
 //	  func ParseFlags(args []string, out io.Writer) (Flags, error)
 //	  func ValidateMode(cfg Config, f Flags) error
 //	  func (f Flags) validateMode(mode string) error
+//	  func FlagsForAuto(f Flags, planPath string) Flags
 //	  func requireDir(flagName, path string) error
 //	  func requireFile(flagName, path string) error
 //	  func printUsage(w io.Writer)
