@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jerryschen31/minimal-agent/agent/director"
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/model"
@@ -124,7 +125,7 @@ func connectInMemoryMCP(t *testing.T, label, name, version string) *mcpconnect.M
 }
 
 //   - Verify buildManifest fills the plan identity, harness, pid, absolute work dir, provider, model, the base URL as
-//     DisplayURL shows it, the worker prompt's hash (the system prompt the session sends) and the summarizer's, the session's tools, and each MCP server's transport
+//     DisplayURL shows it, the worker prompt's hash (the system prompt the session sends), the director's and the summarizer's, the session's tools, and each MCP server's transport
 //     with the name and version it reported (sorted by name); and returns the config snapshot
 //   - Verify the manifest written by NewRun with that snapshot carries the config's hash, and Load finds the run
 func Test_Unit_BuildManifest(t *testing.T) {
@@ -157,7 +158,7 @@ func Test_Unit_BuildManifest(t *testing.T) {
 	if m.BaseURL != config.DisplayURL(cfg.BaseURL) || strings.Contains(m.BaseURL, "tok_AAAA") {
 		t.Errorf("base URL = %q", m.BaseURL)
 	}
-	if m.Prompts["worker"] != state.SHA256([]byte(workerPrompt)) || m.Prompts["summarizer"] != state.SHA256([]byte(cfg.SummarizerPrompt)) {
+	if m.Prompts["worker"] != state.SHA256([]byte(workerPrompt)) || m.Prompts["director"] != state.SHA256([]byte(director.Prompt)) || m.Prompts["summarizer"] != state.SHA256([]byte(cfg.SummarizerPrompt)) {
 		t.Errorf("prompts = %v", m.Prompts)
 	}
 	if names, hash := toolsDigest(fx.Session.Tools.GetToolDefs()); !slices.Equal(m.Tools, names) || m.ToolsSHA256 != hash {

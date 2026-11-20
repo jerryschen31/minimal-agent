@@ -249,18 +249,26 @@ func Test_Unit_AutoRun_DependencySummaryAcrossRuns(t *testing.T) {
 	}
 }
 
-//   - Verify a task that reaches maxSteps fails the run with "max_steps", the tasks after it are not started, and the
-//     error is returned
-func Test_Unit_AutoRun_MaxSteps(t *testing.T) {
+//   - Verify a worker that runs out of steps is a failed attempt (the director isn't asked) and is tried again; after
+//     maxTaskAttempts such attempts the run stops with "task_failed", the tasks after it not started, an error returned
+func Test_Unit_AutoRun_WorkerOutOfStepsRetries(t *testing.T) {
 	fx := newThreeTaskFixture(t)
 	fx.Session.Config.MaxSteps = 1
-	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantToolCall("c1", "no_such_tool", `{}`)}
+	call := modeltest.AssistantToolCall("c1", "no_such_tool", `{}`)
+	fx.Provider.Script = []model.ChatMessage{call, call, call}
 	out, err := runAutoYes(t, fx)
-	if !errors.Is(err, ErrMaxSteps) || !strings.Contains(out, "Stopped: max_steps. 0 done, 0 skipped, 1 failed, 2 not started.") {
+	if err == nil || !strings.Contains(err.Error(), "t1 not done after 3 attempts") ||
+		!strings.Contains(out, "Stopped: task_failed. 0 done, 0 skipped, 1 failed, 2 not started.") {
 		t.Errorf("err = %v:\n%s", err, out)
 	}
-	if r := lastRunEnded(t, journal(t, fx, 1)); r.Reason != state.StopMaxSteps {
-		t.Errorf("run_ended = %+v, want max_steps", r)
+	if !strings.Contains(out, "the worker ran out of steps (maxSteps 1) (attempt 3 of 3)") {
+		t.Errorf("output lacks the out-of-steps verdict:\n%s", out)
+	}
+	if n := directorOf(fx).calls; n != 0 {
+		t.Errorf("director asked %d times, want 0", n)
+	}
+	if r := lastRunEnded(t, journal(t, fx, 1)); r.Reason != state.StopTaskFailed {
+		t.Errorf("run_ended = %+v, want task_failed", r)
 	}
 }
 
@@ -273,7 +281,8 @@ func Test_Unit_AutoRun_Interrupted(t *testing.T) {
 	interrupts := make(chan os.Signal, 1)
 	done := make(chan error)
 	go func() {
-		done <- autoMode(t.Context(), interrupts, fx.Session, newPlainReader(t.Context(), strings.NewReader(""), fx.Out))
+		reader := newPlainReader(t.Context(), strings.NewReader(""), fx.Out)
+		done <- autoMode(t.Context(), interrupts, fx.Session, reader, reader)
 	}()
 	<-fx.Provider.Waiting
 	interrupts <- os.Interrupt
@@ -345,29 +354,82 @@ func Test_Unit_AutoRun_Locked(t *testing.T) {
 	}
 }
 
-// - Verify a task with a gate stops the run with "waiting" before it starts; the tasks before it ran, none after
-func Test_Unit_AutoRun_GateWaits(t *testing.T) {
+// gatedThreeTasks is threeTasks with a gate on t2.
+var gatedThreeTasks = strings.Replace(threeTasks, "depends: t1\ndone when: b exists", "depends: t1\ngate: a person checks a first\ndone when: b exists", 1)
+
+//   - Verify a gated task's question: "y" runs it (gate_answered yes), "n" or Ctrl+D stops the run with "declined"
+//     (gate_answered no) before it starts, and -yes does not answer it (it is still asked)
+func Test_Unit_AutoRun_GateAnswers(t *testing.T) {
+	tests := []struct {
+		name, input string
+		yes         bool
+		reason      state.StopReason
+		answer      string
+	}{
+		{"yes", "y\ny\n", false, state.StopDone, "yes"},
+		{"no", "y\nn\n", false, state.StopDeclined, "no"},
+		{"Ctrl+D", "y\n", false, state.StopDeclined, "no"},
+		{"-yes still asks", "y\n", true, state.StopDone, "yes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx := newThreeTaskFixture(t)
+			if err := os.WriteFile("plan.md", []byte(gatedThreeTasks), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fx.Session.Config.AssumeYes = tt.yes
+			if err := runAutoModeWith(t, fx, tt.input); err != nil {
+				t.Fatalf("autoMode: %v", err)
+			}
+			out := fx.Out.String()
+			if !strings.Contains(out, `t2: Second has a gate: "a person checks a first". Run it? [y/N]`) {
+				t.Errorf("gate not asked:\n%s", out)
+			}
+			events := journal(t, fx, 1)
+			if r := lastRunEnded(t, events); r.Reason != tt.reason {
+				t.Errorf("run_ended = %+v, want %s\n%s", r, tt.reason, out)
+			}
+			i := slices.Index(eventTypes(events), "gate_answered:t2")
+			var ga state.GateAnswered
+			if i < 0 || json.Unmarshal(events[i].Data, &ga) != nil || ga.Answer != tt.answer {
+				t.Errorf("gate_answered = %+v (at %d), want %q", ga, i, tt.answer)
+			}
+			if tt.reason == state.StopDeclined && (len(fx.Provider.Calls) != 1 || !strings.Contains(out, "Stopped: declined. 1 done, 0 skipped, 0 failed, 2 not started.")) {
+				t.Errorf("declined: %d worker calls, want 1 (t1 only):\n%s", len(fx.Provider.Calls), out)
+			}
+		})
+	}
+}
+
+//   - Verify a gated task with no terminal to ask stops the run with "waiting" before it starts (nothing recorded for
+//     the gate), and the next run on a terminal skips the done task and asks
+func Test_Unit_AutoRun_GateWithoutTerminalWaits(t *testing.T) {
 	fx := newThreeTaskFixture(t)
-	gated := strings.Replace(threeTasks, "depends: t1\ndone when: b exists", "depends: t1\ngate: a person checks a first\ndone when: b exists", 1)
-	if err := os.WriteFile("plan.md", []byte(gated), 0o644); err != nil {
+	if err := os.WriteFile("plan.md", []byte(gatedThreeTasks), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := runAutoYes(t, fx)
-	if err != nil || !strings.Contains(out, "Waiting at t2") || !strings.Contains(out, "Stopped: waiting. 1 done, 0 skipped, 0 failed, 2 not started.") {
-		t.Errorf("err %v:\n%s", err, out)
+	fx.Session.Config.AssumeYes = true
+	reader := newPlainReader(t.Context(), strings.NewReader(""), fx.Out)
+	if err := autoMode(t.Context(), nil, fx.Session, reader, nil); err != nil {
+		t.Fatalf("autoMode: %v", err)
 	}
-	if len(fx.Provider.Calls) != 1 {
-		t.Errorf("%d model calls, want 1 (t1 only)", len(fx.Provider.Calls))
+	out := fx.Out.String()
+	if !strings.Contains(out, "no terminal to ask") || !strings.Contains(out, "Stopped: waiting. 1 done, 0 skipped, 0 failed, 2 not started.") {
+		t.Errorf("output:\n%s", out)
 	}
-	if r := lastRunEnded(t, journal(t, fx, 1)); r.Reason != state.StopWaiting {
-		t.Errorf("run_ended = %+v, want waiting", r)
+	if got := eventTypes(journal(t, fx, 1)); slices.Contains(got, "gate_answered:t2") {
+		t.Errorf("journal records an answer nobody gave: %v", got)
+	}
+	out, err := runAutoYes(t, fx) // the -yes run, now with a reader that answers (Ctrl+D: no)
+	if err != nil || !strings.Contains(out, "skip t1") || !strings.Contains(out, "Run it? [y/N]") {
+		t.Errorf("second run: %v\n%s", err, out)
 	}
 }
 
 // - Verify taskMessage holds the plan's objective, the dependencies' summaries in depends order, and the task's fields
 func Test_Unit_TaskMessage(t *testing.T) {
 	p, _, _ := plan.Cleanup([]byte(threeTasks))
-	msg := taskMessage(p, p.Tasks[1], map[string]string{"t1": "a is ready", "t3": "not a dependency"})
+	msg := taskMessage(p, p.Tasks[1], map[string]string{"t1": "a is ready", "t3": "not a dependency"}, nil)
 	for _, want := range []string{"# Plan: Three steps", "## Objective\n\nDo three things.", "### t1\n\na is ready",
 		"## Your task: t2: Second", "Done when: b exists", "Make b."} {
 		if !strings.Contains(msg, want) {

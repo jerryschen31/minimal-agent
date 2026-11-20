@@ -38,6 +38,8 @@
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
 //	maxPlanTasks    the most tasks a plan may have (the planner's, and the plan auto mode runs); must be
 //	                positive in plan and auto mode. plan, auto: [30]; other modes don't use it             [0]
+//	maxTaskAttempts auto mode: the most tries per task; a try the director judges not done is tried
+//	                again with its advice. Must be positive in auto mode. auto: [3]; others don't use it   [0]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]

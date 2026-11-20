@@ -240,6 +240,10 @@ func checkConfig(cfg config.Config) error {
 	if (cfg.AgentMode == config.ModePlan || cfg.AgentMode == config.ModeAuto) && cfg.MaxPlanTasks <= 0 {
 		return fmt.Errorf("maxPlanTasks must be a positive integer in %s mode, got %d", cfg.AgentMode, cfg.MaxPlanTasks)
 	}
+	// only auto mode reads it; 0 would fail every task without running it
+	if cfg.AgentMode == config.ModeAuto && cfg.MaxTaskAttempts <= 0 {
+		return fmt.Errorf("maxTaskAttempts must be a positive integer in auto mode, got %d", cfg.MaxTaskAttempts)
+	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {
 		return fmt.Errorf("responseTimeoutSeconds must be a positive integer, got %d", cfg.ResponseTimeoutSeconds)

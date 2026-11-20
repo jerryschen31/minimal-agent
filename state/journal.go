@@ -26,6 +26,7 @@ const (
 	EventToolBefore   EventType = "tool_before"   // ToolBefore: written before a tool call runs
 	EventToolAfter    EventType = "tool_after"    // ToolAfter: written after it returns
 	EventResumed      EventType = "resumed"       // Resumed: a later process took up this run after it was cut off
+	EventGateAnswered EventType = "gate_answered" // GateAnswered: a person answered a task's gate
 	EventRunEnded     EventType = "run_ended"     // RunEnded: the run is over, and why
 )
 
@@ -139,8 +140,15 @@ const (
 	StopTimeout     StopReason = "timeout"
 	StopInterrupted StopReason = "interrupted"
 	StopError       StopReason = "error"
-	StopWaiting     StopReason = "waiting" // a question (a gate, a cut-off call) with nobody to answer it
+	StopWaiting     StopReason = "waiting"     // a question (a gate, a cut-off call) with nobody to answer it
+	StopTaskFailed  StopReason = "task_failed" // a task was judged not done on every attempt (maxTaskAttempts)
+	StopDeclined    StopReason = "declined"    // a person answered no to a task's gate
 )
+
+// GateAnswered is EventGateAnswered's data.
+type GateAnswered struct {
+	Answer string `json:"answer"` // "yes" or "no"
+}
 
 // RunEnded is EventRunEnded's data.
 type RunEnded struct {

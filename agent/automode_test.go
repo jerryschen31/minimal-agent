@@ -12,23 +12,28 @@ import (
 )
 
 // newAutoFixture returns a session fixture set up for auto mode, with the plan at planPath (not written) and a state
-// folder in a new temp dir (outside the current directory). The fake model replies "" to every call unless a test sets
-// fx.Provider.Script, so each task's worker finishes at once.
+// folder in a new temp dir (outside the current directory). The session's provider is an autoProvider: worker calls go
+// to fx.Provider, which replies "" unless a test sets its Script (so each worker finishes at once), and the director
+// says task_done unless the test sets a director script (directorOf).
 func newAutoFixture(t *testing.T, planPath string) (*chatSessionFixture, *autoModeDetails) {
 	t.Helper()
 	fx := newChatSessionFixture(t, 10, 100)
+	fx.Session.Provider = &autoProvider{worker: fx.Provider}
 	fx.Session.Config.MaxPlanTasks = config.GetDefaultConfig(config.ModeAuto).MaxPlanTasks
+	fx.Session.Config.MaxTaskAttempts = config.GetDefaultConfig(config.ModeAuto).MaxTaskAttempts
 	fx.Session.Config.PlanFile = planPath
 	fx.Session.Config.StateDir = t.TempDir()
 	setupAutoMode(fx.Session, nil)
 	return fx, fx.Session.ModeDetails.(*autoModeDetails)
 }
 
-// runAutoModeWith runs autoMode on fx with input as the typed lines (a plainReader whose prompts go to fx.Out).
+// runAutoModeWith runs autoMode on fx with input as the typed lines (a plainReader whose prompts go to fx.Out), which
+// answers both "Run?" and any gate, as on a terminal.
 func runAutoModeWith(t *testing.T, fx *chatSessionFixture, input string) error {
 	t.Helper()
 	ctx := t.Context()
-	return autoMode(ctx, nil, fx.Session, newPlainReader(ctx, strings.NewReader(input), fx.Out))
+	reader := newPlainReader(ctx, strings.NewReader(input), fx.Out)
+	return autoMode(ctx, nil, fx.Session, reader, reader)
 }
 
 // writeAutoPlan writes the plan propose_plan accepts for validPlanArgs to path in a new temp dir (also the cwd), and
@@ -70,6 +75,7 @@ func Test_Unit_SetupAgent_AutoMode(t *testing.T) {
 	cfg := denyWiringConfig(t)
 	auto := config.GetDefaultConfig(config.ModeAuto)
 	cfg.AgentMode, cfg.AskRules, cfg.MaxPlanTasks, cfg.PlanFile = auto.AgentMode, auto.AskRules, auto.MaxPlanTasks, "run.md"
+	cfg.MaxTaskAttempts = auto.MaxTaskAttempts
 	cfg.StateDir, cfg.TraceEnabled, cfg.TraceDir = t.TempDir(), true, filepath.Join(t.TempDir(), "not-used")
 	a := &Agent{}
 	if err := a.SetupAgent(context.Background(), cfg, nil); err != nil {

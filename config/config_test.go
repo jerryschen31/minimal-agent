@@ -313,6 +313,15 @@ func Test_Unit_GetDefaultConfig_MaxPlanTasks_PerMode(t *testing.T) {
 	}
 }
 
+// - Verify the default maxTaskAttempts is 3 in auto mode and 0 in every other mode
+func Test_Unit_GetDefaultConfig_MaxTaskAttempts_PerMode(t *testing.T) {
+	for mode, want := range map[string]int{ModeAuto: 3, ModePlan: 0, ModeChat: 0, ModeInfo: 0} {
+		if got := GetDefaultConfig(mode).MaxTaskAttempts; got != want {
+			t.Errorf("%q: MaxTaskAttempts = %d, want %d", mode, got, want)
+		}
+	}
+}
+
 // - Verify "maxPlanTasks" in a config file is read without a warning, over plan mode's default
 // - Verify PrintConfig shows it
 func Test_Unit_SetDefaultConfig_MaxPlanTasks_FromFile(t *testing.T) {

@@ -44,7 +44,9 @@ type Config struct {
 	WorkDir      string `json:"workDir"`      // the only directory (and subdirectories) the read_file tool may read from; default "."
 	MaxSteps     int    `json:"maxSteps"`     // max ReAct steps per turn; must be positive (default 10)
 	MaxPlanTasks int    `json:"maxPlanTasks"` // plan mode: the most tasks a plan may have; must be positive there (default 30 in plan mode, 0 otherwise)
-	MaxTokens    int    `json:"maxTokens"`    // 0 = unspecified (TODO)
+	// MaxTaskAttempts is auto mode's most tries per task (worker + director); must be positive there (default 3, 0 otherwise)
+	MaxTaskAttempts int `json:"maxTaskAttempts"`
+	MaxTokens       int `json:"maxTokens"` // 0 = unspecified (TODO)
 
 	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
 	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
@@ -274,6 +276,7 @@ func GetDefaultConfig(mode string) Config {
 	if mode == ModeAuto {
 		cfg.AskRules = []string{"*delete*", "*remove*"} // with nobody to ask, ask = deny: the write tools must not be ask rules here
 		cfg.MaxPlanTasks = 30
+		cfg.MaxTaskAttempts = 3 // a task the director judges not done is tried again, with its advice, up to 3 times in all
 	}
 	return cfg
 }
@@ -387,6 +390,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  workDir:       %s\n", cfg.WorkDir)
 	fmt.Fprintf(w, "  maxSteps:      %d\n", cfg.MaxSteps)
 	fmt.Fprintf(w, "  maxPlanTasks:  %d\n", cfg.MaxPlanTasks)
+	fmt.Fprintf(w, "  maxTaskAttempts: %d\n", cfg.MaxTaskAttempts)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)

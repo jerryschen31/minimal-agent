@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/jerryschen31/minimal-agent/agent/director"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
 )
@@ -174,14 +175,12 @@ func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string
 // run ended.
 //
 // Notes:
-//   - Serial: one task at a time. A failed task stops the run; the tasks after it are "not started".
-//   - Each task that runs gets task_started (attempt 1: retries arrive in 1e) and, when it ends, task_finished with its
-//     status, definition hash and summary (for a failure, the error). An interrupted task gets no task_finished: the
-//     run_ended event marks it interrupted (state.Fold).
+//   - Serial: one task at a time (runTask: worker, director, retries). A task that doesn't end done stops the run; the
+//     tasks after it are "not started".
+//   - A task with a gate is asked about first (askGate; gates is nil when there is nobody to ask): no answer possible
+//     → "waiting", no → "declined", yes → it runs. -yes never answers a gate.
 //   - The worker of a task is told the summaries of the tasks it depends on, from this run or an earlier one.
-//   - A task with a gate stops the run with "waiting" before it starts. [agent] 1e asks the gate's question instead.
-//   - A journal write that fails stops the run with "error": a run must not go on without its record.
-func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan) runResult {
+func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult {
 	w := cs.OutBuffer
 	steps, removed := tasksToRun(p, ar.before)
 	if len(removed) > 0 {
@@ -211,58 +210,145 @@ func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan) run
 			continue
 		}
 		if t.Gate != "" {
-			fmt.Fprintf(w, "Waiting at %s: it has a gate (%s), and gates can't be answered yet (step 1e).\n", t.ID, t.Gate)
-			return stop(i, state.StopWaiting, nil)
-		}
-		if err := ar.journal.Append(state.EventTaskStarted, t.ID, state.TaskStarted{Attempt: 1}); err != nil {
-			return stop(i, state.StopError, err)
-		}
-		fmt.Fprintf(w, "▶ %s: %s\n", t.ID, t.Title)
-		summary, err := runWorker(ctx, cs, p, t, summaries)
-		if err != nil && ctx.Err() != nil {
-			fmt.Fprintf(w, "■ %s interrupted\n", t.ID)
-			return stop(i+1, state.StopInterrupted, nil)
-		}
-		if err != nil {
-			res.failed++
-			fmt.Fprintf(w, "✗ %s failed: %v\n", t.ID, err)
-			fin := state.TaskFinished{Status: state.TaskFailed, DefHash: t.DefinitionHash(), Summary: err.Error()}
-			if jerr := ar.journal.Append(state.EventTaskFinished, t.ID, fin); jerr != nil {
-				err = errors.Join(err, jerr)
+			if reason, err := askGate(ctx, ar, t, gates, w); reason != "" {
+				return stop(i, reason, err)
 			}
-			return stop(i+1, stopReasonFor(err), fmt.Errorf("%s failed: %w", t.ID, err))
 		}
-		fin := state.TaskFinished{Status: state.TaskDone, DefHash: t.DefinitionHash(), Summary: summary}
-		if err := ar.journal.Append(state.EventTaskFinished, t.ID, fin); err != nil {
-			return stop(i+1, state.StopError, err)
+		summary, reason, err := runTask(ctx, cs, ar, p, t, summaries)
+		switch reason {
+		case "":
+			res.done++
+			summaries[t.ID] = summary
+			continue
+		case state.StopInterrupted:
+			fmt.Fprintf(w, "■ %s interrupted\n", t.ID)
+		default:
+			res.failed++
 		}
-		res.done++
-		summaries[t.ID] = summary
-		fmt.Fprintf(w, "✓ %s done\n", t.ID)
+		return stop(i+1, reason, err)
 	}
 	return stop(len(steps), state.StopDone, nil)
 }
 
-// stopReasonFor returns the stop reason for a task that failed with err.
+// askGate asks whether gated task t may run, records the answer, and returns the stop reason when it may not ("" when
+// it may).
 //
 // Notes:
-//   - ErrMaxSteps → max_steps; a cancel (Ctrl+C, SIGTERM) → interrupted; anything else → error.
-func stopReasonFor(err error) state.StopReason {
-	switch {
-	case errors.Is(err, ErrMaxSteps):
-		return state.StopMaxSteps
-	case errors.Is(err, context.Canceled):
-		return state.StopInterrupted
+//   - gates nil (no terminal) → "waiting": nothing is recorded, and the next run on a terminal asks again (the done
+//     tasks are skipped). -yes never answers a gate: a gate exists for a person to decide.
+//   - The answer goes to the journal (gate_answered: "yes" or "no") before anything else happens. No, or Ctrl+D, →
+//     "declined". Ctrl+C at the question → "interrupted".
+func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error) {
+	if gates == nil {
+		fmt.Fprintf(w, "%s has a gate (%s) and there is no terminal to ask; run it again on a terminal.\n", t.ID, t.Gate)
+		return state.StopWaiting, nil
 	}
-	return state.StopError
+	answer, err := gates.AskLine(ctx, fmt.Sprintf("%s: %s has a gate: %q. Run it? [y/N]: ", t.ID, t.Title, t.Gate))
+	if err != nil && !errors.Is(err, io.EOF) {
+		if ctx.Err() != nil {
+			return state.StopInterrupted, nil
+		}
+		return state.StopError, err
+	}
+	yes := err == nil && isYes(answer, false)
+	recorded := "no"
+	if yes {
+		recorded = "yes"
+	}
+	if jerr := ar.journal.Append(state.EventGateAnswered, t.ID, state.GateAnswered{Answer: recorded}); jerr != nil {
+		return state.StopError, jerr
+	}
+	if !yes {
+		fmt.Fprintf(w, "Declined: %s does not run.\n", t.ID)
+		return state.StopDeclined, nil
+	}
+	return "", nil
+}
+
+// runTask runs task t until the director judges it done or it has had cs.Config.MaxTaskAttempts attempts, and returns
+// its summary and, when it did not end done, the stop reason and error.
+//
+// Notes:
+//   - Each attempt: task_started{attempt}, a fresh worker (runWorker; a retry is told why the attempt before was not
+//     done), the director's verdict (judgeTask), task_finished{status, def_hash, summary, verdict}. Every attempt stays in
+//     the journal; the last one decides the task's state (state.Fold).
+//   - A worker that runs out of steps is a failed attempt (the director isn't asked). A director with no verdict is a
+//     failed attempt too (judgeTask). Out of attempts → "task_failed".
+//   - Ctrl+C → "interrupted", with no task_finished for the attempt (run_ended marks it). Any other error (the
+//     provider, a journal write) → "error", no retry.
+func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error) {
+	w := cs.OutBuffer
+	maxAttempts := cs.Config.MaxTaskAttempts
+	var retry *retryNote
+	for attempt := 1; ; attempt++ {
+		if err := ar.journal.Append(state.EventTaskStarted, t.ID, state.TaskStarted{Attempt: attempt}); err != nil {
+			return "", state.StopError, err
+		}
+		if attempt == 1 {
+			fmt.Fprintf(w, "▶ %s: %s\n", t.ID, t.Title)
+		} else {
+			fmt.Fprintf(w, "▶ %s: %s (attempt %d of %d)\n", t.ID, t.Title, attempt, maxAttempts)
+		}
+		summary, workerMsgs, err := runWorker(ctx, cs, p, t, deps, retry)
+		var v director.Verdict
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return "", state.StopInterrupted, nil
+		case errors.Is(err, ErrMaxSteps):
+			v.Reason = fmt.Sprintf("the worker ran out of steps (maxSteps %d)", cs.Config.MaxSteps)
+		case err != nil:
+			return "", state.StopError, finishFailed(ar, t, err.Error(), "", err)
+		default:
+			v, err = judgeTask(ctx, cs, t, attempt, summary, workerMsgs)
+			if err != nil && ctx.Err() != nil {
+				return "", state.StopInterrupted, nil
+			}
+			if err != nil {
+				err = fmt.Errorf("the director failed: %w", err)
+				return "", state.StopError, finishFailed(ar, t, summary, "", err)
+			}
+		}
+		fin := state.TaskFinished{Status: state.TaskFailed, DefHash: t.DefinitionHash(), Summary: summary, Verdict: v.Reason}
+		if v.Done {
+			fin.Status = state.TaskDone
+		} else if v.Advice != "" {
+			fin.Verdict += " Advice: " + v.Advice
+		}
+		if err := ar.journal.Append(state.EventTaskFinished, t.ID, fin); err != nil {
+			return "", state.StopError, err
+		}
+		if v.Done {
+			fmt.Fprintf(w, "✓ %s done — %s\n", t.ID, v.Reason)
+			return summary, "", nil
+		}
+		fmt.Fprintf(w, "  not done — %s (attempt %d of %d)\n", v.Reason, attempt, maxAttempts)
+		if attempt >= maxAttempts {
+			fmt.Fprintf(w, "✗ %s failed after %d attempts\n", t.ID, attempt)
+			return "", state.StopTaskFailed, fmt.Errorf("%s not done after %d attempts: %s", t.ID, attempt, v.Reason)
+		}
+		retry = &retryNote{Attempt: attempt, Summary: summary, Reason: v.Reason, Advice: v.Advice}
+	}
+}
+
+// finishFailed records a failed task_finished for t with summary and verdict, and returns err (joined with the journal's
+// error if that write fails too).
+//
+// Notes:
+//   - For an attempt that ended in an error: the run stops, but the journal still says which task failed and why.
+func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error {
+	fin := state.TaskFinished{Status: state.TaskFailed, DefHash: t.DefinitionHash(), Summary: summary, Verdict: verdict}
+	if jerr := ar.journal.Append(state.EventTaskFinished, t.ID, fin); jerr != nil {
+		return errors.Join(err, jerr)
+	}
+	return fmt.Errorf("%s failed: %w", t.ID, err)
 }
 
 // end records run_ended, closes the journal, releases the lock and prints the report; it returns an error when the run
 // stopped on a failure.
 //
 // Notes:
-//   - done, waiting and interrupted return nil (the report says what happened); max_steps and error return res.err, so
-//     the caller sees the run did not finish.
+//   - done, waiting, declined and interrupted return nil (the report says what happened); task_failed and error
+//     return res.err, so the caller sees the run did not finish.
 //   - The report names the run folder and the trace file (<traceDir>/<trace run ID>.jsonl; none when tracing is off).
 func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error {
 	ended := state.RunEnded{Reason: res.reason}

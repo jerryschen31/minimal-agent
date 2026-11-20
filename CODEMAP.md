@@ -12,6 +12,7 @@ minimal-agent/
 ├── agent/
 │   ├── agent.go
 │   ├── approval_preview.go
+│   ├── autodirector.go
 │   ├── automode.go
 │   ├── autorun.go
 │   ├── autoworker.go
@@ -25,6 +26,10 @@ minimal-agent/
 │   ├── planmode.go
 │   ├── react.go
 │   ├── session.go
+│   ├── director/
+│   │   ├── doc.go
+│   │   ├── prompt.go
+│   │   └── tools.go
 │   └── planner/
 │       ├── doc.go
 │       ├── present.go
@@ -158,11 +163,14 @@ approval_preview.go
   func previewFirstLine(s string) string
   func commandPreview(command string, args *[]string, dir *string) []string
 
+autodirector.go
+  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+
 automode.go
   func (*autoModeDetails) ModeName() string
   func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
   func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
-  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error
   func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
   func (o autoOutput) ToolCalled(name string)
 
@@ -171,13 +179,15 @@ autorun.go
   func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
   func hasPlanID(path, id string) bool
   func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
-  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan) runResult
-  func stopReasonFor(err error) state.StopReason
+  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
+  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
+  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error)
+  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
   func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error
 
 autoworker.go
-  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string) string
-  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string) (string, error)
+  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string
+  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) (string, []model.ChatMessage, error)
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -281,6 +291,26 @@ session.go
   func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
   func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider
   func setupChatSession(provider model.Provider, chatHistory memory.ChatHistory, chatContext *contextwindow.ChatContext, tools *tools.ToolRegistry, recorder trace.Recorder, cfg config.Config) (*ChatSession, error)
+```
+
+## agent/director (package director)
+
+`github.com/jerryschen31/minimal-agent/agent/director`
+
+```text
+prompt.go
+  func Message(t plan.Task, attempt, maxAttempts int, summary string, workerMsgs []model.ChatMessage) string
+  func ToolLog(msgs []model.ChatMessage) string
+  func cut(s string) string
+
+tools.go
+  func NewTaskDone(v *Verdict) *TaskDone
+  func NewTaskFailed(v *Verdict) *TaskFailed
+  func (t *TaskDone) GetToolDefinition() model.ToolDef
+  func (t *TaskDone) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func (t *TaskFailed) GetToolDefinition() model.ToolDef
+  func (t *TaskFailed) CallTool(ctx context.Context, args json.RawMessage) (string, error)
+  func record(v *Verdict, done bool, args json.RawMessage) (string, error)
 ```
 
 ## agent/planner (package planner)

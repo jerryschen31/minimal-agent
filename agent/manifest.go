@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/jerryschen31/minimal-agent/agent/director"
 	"github.com/jerryschen31/minimal-agent/config"
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/model"
@@ -22,8 +23,8 @@ import (
 // Notes:
 //   - PlanSHA256 and ConfigSHA256 are left for state.Home.NewRun, which hashes the bytes it writes. TraceRunID is set
 //     by the caller.
-//   - Prompts: "worker" (the system prompt the session sends: workerPrompt in auto mode) and "summarizer" (compaction),
-//     when not empty. [agent] 1e adds "director"; the map form means the journal format doesn't change.
+//   - Prompts: "worker" (the system prompt the session sends: workerPrompt in auto mode), "director" (director.Prompt)
+//     and "summarizer" (compaction), when not empty. The map form means a new role doesn't change the journal format.
 //   - conns are the MCP servers that connected; each is recorded with the name and version it reported.
 //   - A hostname error leaves Host empty; a manifest must not fail a run over it.
 func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error) {
@@ -53,6 +54,7 @@ func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state
 	if cs.SystemMsg.Content != "" {
 		m.Prompts["worker"] = state.SHA256([]byte(cs.SystemMsg.Content))
 	}
+	m.Prompts["director"] = state.SHA256([]byte(director.Prompt))
 	if cfg.SummarizerPrompt != "" {
 		m.Prompts["summarizer"] = state.SHA256([]byte(cfg.SummarizerPrompt))
 	}

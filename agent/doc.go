@@ -25,11 +25,14 @@
 //	  func previewFirstLine(s string) string
 //	  func commandPreview(command string, args *[]string, dir *string) []string
 //
+//	autodirector.go
+//	  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+//
 //	automode.go
 //	  func (*autoModeDetails) ModeName() string
 //	  func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection)
 //	  func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
-//	  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error
 //	  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
 //	  func (o autoOutput) ToolCalled(name string)
 //
@@ -38,13 +41,15 @@
 //	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
 //	  func hasPlanID(path, id string) bool
 //	  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
-//	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan) runResult
-//	  func stopReasonFor(err error) state.StopReason
+//	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
+//	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
+//	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string) (string, state.StopReason, error)
+//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
 //	  func (ar *autoRun) end(res runResult, traceDir, traceRunID string, w io.Writer) error
 //
 //	autoworker.go
-//	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string) string
-//	  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string) (string, error)
+//	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) string
+//	  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote) (string, []model.ChatMessage, error)
 //
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool

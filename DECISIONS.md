@@ -4945,3 +4945,27 @@ Shape agreed with Jerry; Claude wrote it.
 - **Approval:** nobody is asked (`PromptAllowDenyCall` nil → an ask-rule call is denied); `approval: allow-all` sets
   `AllowAskRules`, the `Run?` answer (or `-y`) being the confirmation. Output is `autoOutput`: task lines and every tool
   name; the worker's text only with `-debug` (it is in the trace).
+
+### 2026-11-20 — 1e built: the director, retries and gates
+
+Shape agreed with Jerry; Claude wrote it.
+- **After each worker attempt, a director judges it** (`judgeTask`, `agent/autodirector.go`; prompt, message and tools
+  in the new `agent/director/` package, like `planner`). A fresh ReAct loop on a shallow copy of the session: system
+  prompt `director.Prompt`, first message the task (with `done when`), the worker's summary and **what the worker
+  actually did** (`director.ToolLog`: each call's arguments and result, 500 B each, 8 KB in all), so it checks the
+  work rather than the claim. It must end with `task_done(reason)` or `task_failed(reason, advice)` (`ErrEndTurn`); no
+  verdict → one reminder → the attempt is not done. Same provider and model as the worker (a `directorModel` can come
+  later). The manifest records the `director` prompt hash.
+- **The director can run commands** (Jerry): its tools are `read_file`, `list_files`, `search_files` and `run_command`
+  (when the session has them), never the write tools. Many `done when` lines are "tests pass", checkable only by
+  running them. *Downside:* a command it runs can change things (build caches, anything a listed program writes); the
+  prompt says not to fix anything, and the deny/ask rules bind it as they bind the worker.
+- **Retries:** `maxTaskAttempts` (new key, auto mode, **default 3**, Jerry). A not-done attempt starts a fresh worker
+  told why and the advice; the earlier attempt's files stay and it is told to build on them. A worker out of steps is a
+  failed attempt (the director isn't asked). A provider error (worker or director) stops the run with `error`, no
+  retry. Each attempt is in the journal (`task_started{attempt}`, `task_finished{status, verdict}`); the last decides.
+- **Stop reasons:** new `task_failed` (judged not done on every attempt: the work, not a breakage) and `declined`
+  (Jerry: a person said no to a gate). `max_steps` is no longer produced.
+- **Gates:** before a gated task, `"<id>: <title> has a gate: "<reason>". Run it? [y/N]"`, asked only on a terminal;
+  `-yes` never answers it. No terminal → `waiting`; no / Ctrl+D → `declined`; the answer is journaled
+  (`gate_answered`). A later run on a terminal skips the done tasks and asks again.

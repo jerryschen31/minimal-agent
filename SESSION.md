@@ -1467,3 +1467,9 @@ folder; then the serial scheduler and worker).
 `-mode auto` now runs a plan: lock, history, run folder, tasks one at a time with a fresh worker each, journal, report.
 Copies run with a warning; traces in `<stateDir>/traces`. Not committed. **Next: 1e** (director: `task_done` /
 `task_failed` against `done when`, retry limit, gates). **Later sprint:** accepted plans kept in `~/.minagent/plans/`.
+
+### 2026-11-20 (later) — 1e built (see DECISIONS.md § 1e built)
+
+Director judges each attempt (`agent/director/`, `judgeTask`), up to `maxTaskAttempts` (3) attempts with its advice;
+gates asked on a terminal (`declined` / `waiting`). Not committed. **Next: 1f** (`tool_before` / `tool_after` for every
+call, file hashes, idempotency key in MCP `_meta`).

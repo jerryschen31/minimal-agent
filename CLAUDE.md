@@ -165,6 +165,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   only by `agent` and never imports it (that would be a cycle); the tools get the draft and a show function as
   arguments. Plan mode's state lives in `ChatSession.ModeDetails` (`*planModeDetails`, nil in chat); `/save` and `/edit`
   exist only when it is set.
+- **`agent/director/`** is auto mode's equivalent: the director's prompt, first message (`Message`, with `ToolLog` of the
+  worker's calls) and its verdict tools (`task_done`, `task_failed`, ending the turn). Same import rule as `planner`.
+  `agent/autodirector.go` (`judgeTask`) runs it on a shallow copy of the session with the read tools and `run_command`.
 - **`agent/`** holds the ReAct loop, the chat session and the wiring (`SetupAgent`, `RunAgent`,
   `ShutdownAgent`), and **imports the capability packages**.
 - **Shared types** (`ChatMessage`, `ToolCall`, `ToolDef`) live in `model/`, below the capabilities,

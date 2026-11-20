@@ -16,7 +16,8 @@ import (
 // (PLAN-auto-mode.md). The plan file is its only input, like Terraform's saved plan: auto mode never reads the objective
 // file and doesn't check whether the plan is stale; the plan carries the objective in its "## Objective" section.
 // [agent] 1a: read and check the plan, show the summary, ask Run? [Y/n]. 1d: run the tasks one at a time
-// (autorun.go), each with a fresh worker (autoworker.go). 1e adds the director.
+// (autorun.go), each with a fresh worker (autoworker.go). 1e: the director judges each attempt (autodirector.go,
+// agent/director), with retries, and gates are asked.
 
 // autoModeDetails is what auto mode keeps on the session (ChatSession.ModeDetails).
 type autoModeDetails struct {
@@ -52,21 +53,29 @@ func setupAutoMode(cs *ChatSession, conns []*mcpconnect.McpConnection) {
 //
 // Notes:
 //   - Without -yes it asks "Run? [Y/n]", so it needs a terminal; piped or redirected stdin is an error naming -yes.
+//   - Gates are asked only on a terminal, -yes or not: without one, a gated task stops the run with "waiting".
 func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error {
-	if !cs.Config.AssumeYes && !isTerminal(cs.InBuffer) {
+	terminal := isTerminal(cs.InBuffer)
+	if !cs.Config.AssumeYes && !terminal {
 		return errors.New("auto mode asks before it runs, so it needs a terminal; to run without one, add -yes")
 	}
-	return autoMode(ctx, interrupts, cs, newPromptReader(ctx, cs.InBuffer, cs.OutBuffer))
+	reader := newPromptReader(ctx, cs.InBuffer, cs.OutBuffer)
+	var gates promptReader
+	if terminal {
+		gates = reader
+	}
+	return autoMode(ctx, interrupts, cs, reader, gates)
 }
 
-// autoMode is runAutoMode with the prompt reader passed in, so tests can use a plainReader or a scripted terminal.
+// autoMode is runAutoMode with the prompt readers passed in, so tests can use a plainReader or a scripted terminal:
+// reader asks "Run?", gates asks a gated task's question (nil = nobody to ask).
 //
 // Notes:
 //   - Reads the plan (loadRunnablePlan), prints its summary (plan.Summary), then asks "Run? [Y/n]: " (-yes answers
 //     yes). No, or Ctrl+D at the question, prints "Not run." and ends with no error.
 //   - Yes: opens a run (openRun: lock, history, run folder), runs the tasks (runPlan) and ends the run (end: run_ended,
 //     report). Ctrl+C stops the run (an interrupt watcher covers all of it); the run is recorded as interrupted.
-func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error {
+func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader, gates promptReader) error {
 	ad, ok := cs.ModeDetails.(*autoModeDetails)
 	if !ok {
 		return errors.New("auto mode was not set up (no auto mode details on the session)")
@@ -105,7 +114,7 @@ func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 		return err
 	}
 	fmt.Fprintf(w, "Run %04d (%s)\n", ar.run.Number, ar.run.Dir)
-	res := runPlan(runCtx, cs, ar, p)
+	res := runPlan(runCtx, cs, ar, p, gates)
 	return ar.end(res, cs.Config.TraceDir, cs.Recorder.RunID(), w)
 }
 
@@ -142,11 +151,14 @@ func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte
 	return p, data, nil
 }
 
-// autoOutput is auto mode's Output: plan mode's (the worker's replies hidden unless -debug), but every tool call is
-// shown as an indented "[tool] <name>" line, so a long task shows it is moving.
-type autoOutput struct{ planOutput }
+// autoOutput is auto mode's Output: plan mode's (the worker's and director's replies hidden unless -debug), but every
+// tool call is shown as an indented "[tool] <name>" line, so a long task shows it is moving.
+type autoOutput struct {
+	planOutput
+	label string // before "[tool]": "" for the worker, "director: " for the director
+}
 
-// ToolCalled prints an indented "[tool] <name>" line for every tool call.
+// ToolCalled prints an indented "<label>[tool] <name>" line for every tool call.
 //
 // Notes: none.
-func (o autoOutput) ToolCalled(name string) { fmt.Fprintf(o.w, "    [tool] %s\n", name) }
+func (o autoOutput) ToolCalled(name string) { fmt.Fprintf(o.w, "    %s[tool] %s\n", o.label, name) }
