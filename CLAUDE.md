@@ -129,6 +129,10 @@ go run . -mode plan                              # write a new objective in a ch
 go run . -mode plan -obj <file|text> [-y]        # plan an objective file (or text, saved to objective.md first); writes
                                                  # <name>.plan.md after "Accept this plan? [Y/n]" (-y accepts; then no
                                                  # terminal needed). Own defaults: GetDefaultConfig("plan")
+go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you name (a non-plan file there is replaced
+                                                 # only after "Replace it? [y/N]"); the plan copies the objective in
+go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
+                                                 # "Run? [Y/n]"; the plan is its only input. Running tasks: 1d (PLAN-auto-mode.md)
 ```
 
 `mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.

@@ -46,8 +46,13 @@ func (p Plan) frontMatter() string {
 //   - Plan mode shows it before asking to accept the plan: it is the file that will be written, without the format and
 //     hash fields.
 //   - The title heading is always written ("# Plan" with no title), so the file always starts the same way.
+//   - Order: title and summary, Objective, Assumptions, the other sections, Tasks. Empty Objective and Assumptions are
+//     left out.
 func (p Plan) Body() string {
 	blocks := []string{sectionBlock(titleLine(p.Title), p.Summary)}
+	if p.Objective != "" {
+		blocks = append(blocks, sectionBlock(headingLine(HeadingObjective), p.Objective))
+	}
 	if p.Assumptions != "" {
 		blocks = append(blocks, sectionBlock(headingLine(HeadingAssumptions), p.Assumptions))
 	}

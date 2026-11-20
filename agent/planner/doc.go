@@ -32,7 +32,7 @@
 //	  func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan
 //	  func (t *ProposePlan) GetToolDefinition() model.ToolDef
 //	  func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-//	  func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, error)
+//	  func (prop proposal) toPlan(objectivePath string, o objective.Objective) (plan.Plan, error)
 //	  func standardID(id string) string
 //	  func readBack(p plan.Plan) (plan.Plan, error)
 //

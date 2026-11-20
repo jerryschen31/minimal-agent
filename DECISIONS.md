@@ -4799,3 +4799,72 @@ the turn ended with no plan; the bare error said nothing because the planner's t
   objective again (`plannerNoPlanError`).
 - **Not done (an option if reminders aren't enough):** forcing a tool call with OpenAI's `tool_choice: "required"`. It
   is the robust fix but changes the `model.Provider` interface and every adapter.
+
+### 2026-11-19 — Autonomous mode v1: journal, resume, budgets (`PLAN-auto-mode.md`)
+
+After reading the `ideas/` reports (all seven agree the root build plans but never runs a plan), Jerry chose step 3
+(one serial run) and then budgets as the next work. Agreed in discussion:
+- **`-mode auto`** (alias `autonomous`), replacing the `-mode autonomous` / `Run? [Y/n/c]` naming in `PLAN-plan-apply.md`.
+- **An append-only journal replaces the per-run `state.json` snapshot** (supersedes `PLAN-plan-apply.md § state.json`
+  and the `state/` skeleton in SESSION.md 2026-11-09). The journal is the only record; state is rebuilt by reading it.
+  Reason: a crash leaves a journal that is correct up to its last line; a snapshot is either stale or half-written.
+  *Downside:* reading cost grows with the run; a snapshot can come later as a cache.
+- **Every tool call gets `tool_before` / `tool_after`**, with no marker on tools. An earlier idea (an interface on each
+  tool saying whether it changes things) was dropped: the information is only needed on resume, for the one cut-off
+  call, so resume decides by tool name, file hashes and MCP hints. *Downside:* two journal lines per read.
+- **Cut-off calls on resume:** read tools → nothing; file tools → checked against the before/after hashes; MCP with
+  `idempotentHint` → re-sent with the same idempotency key (sent in `_meta`); anything else (non-idempotent MCP,
+  `run_command`) → **resume is manual and warns and asks at its start** ("re-send it? [y/N]"; `-y` never answers;
+  no terminal → stop with `waiting`). Jerry wants autonomous runs without asks eventually; considered and **deferred to
+  v2**: the worker checks whether the action happened, a per-tool `onUnknownOutcome` policy in config, automatic retries
+  and automatic resume. Exactly-once is impossible without the server's help: a sent call with a lost reply has an
+  unknown outcome, so something has to decide, and in v1 that is the user.
+- **Write tools will write via a temporary file and a rename** so a crash never leaves half a file (commit 1g; security
+  review needed, it touches the guarded write path).
+- **Budgets:** `maxTokens` is the per-response output limit (as in the provider APIs); new `runTokenBudget` and
+  `runTimeoutMinutes` for the whole run, checked in the session provider wrapper, not the loop.
+- **Stop reasons:** `done`, `max_steps`, `budget`, `timeout`, `interrupted`, `error`, plus `waiting` (a gate or a
+  resume question with nobody to answer).
+
+### 2026-11-19 (later) — Auto mode: run time, approval defaults, atomic writes stay in step 1
+
+- **`runTimeoutMinutes` counts running time only**, summed over the run's sessions from the journal; time spent
+  crashed or waiting to be resumed doesn't count.
+- **Approval in auto mode follows `§ 2026-11-01 — Approval levels`:** deny → refused, ask → denied (nobody to ask;
+  `allow-all` turns ask into run), anything else runs, `run_command` command lines included. So
+  `GetDefaultConfig("auto")` drops the write tools from `askRules` (keeps `*delete*`, `*remove*`); otherwise every file
+  write would be denied. `runCommands` stays empty by default (opt-in). *Downside:* an unattended run writes files in
+  `workDir` without anyone seeing each write; the journal records each one.
+- **Atomic writes (commit 1g) stay in step 1** (Jerry): no half-written files from day one.
+
+### 2026-11-19 (later) — The plan file is auto mode's input; updates by hash; a small plan update
+
+- **`-mode auto -plan <file>.plan.md`** (Jerry). The plan is the reviewed contract, like Terraform's saved plan; the
+  objective is found from the plan's front matter and used for context and the stale check. A stale plan is refused.
+- **Which tasks run is decided by hash, whoever edited the plan:** the journal records each finished task's
+  `DefinitionHash`; done + same hash → skip, changed hash or new ID → run, failed or cut off → run again, removed →
+  listed. Hand edits and planner updates go through the same rule.
+- **Step U, a small plan update, comes after step 1 and before budgets.** The planner only rewrites the plan (old and new
+  objective, current plan, done tasks), copying unchanged tasks exactly (checked by Go). Supersedes most of
+  `PLAN-plan-apply.md` step 4: drift check, recorded-reads cascade and `-replace` are left out.
+  *Why:* two files (objective + plan) only pay off if updating the plan is easy; the hash rule makes the runner
+  indifferent to who changed the plan, which keeps the update step small.
+
+### 2026-11-19 (later) — 1a built: `-mode auto -plan`, the plan carries the objective, `-plan` in plan mode
+
+Claude wrote it at Jerry's request (Jerry reviews the shape per sub-step, then Claude implements).
+- **The plan is auto mode's only input, under any name** (Jerry): no naming rule, no stale check, the objective file is
+  never read. A file is a plan by content (Cleanup reads it and it has tasks).
+- **The plan carries the objective** (Jerry: "everything the autonomous workflow needs"): `plan.Plan.Objective`, a
+  `## Objective` section that Go fills word for word (`plan.ObjectiveSection`: the objective's Markdown with headings
+  two levels down), never the model. Cleanup recognizes `## Objective` only at level 1–2 and keeps level 3+ headings
+  inside it, so the copy reads back exactly. Hand edits of the copy are fine; the drift against the objective file is
+  dealt with when planning again (step U).
+- **`CheckComplete` no longer requires `objective:`, `objective_hash:` or `plan_version:`.** They record where a plan
+  came from (plan mode reads them), not what it needs to run; a hand-written plan may have no front matter.
+  `propose_plan` still always sets them; a plan without a hash is stale to plan mode (`IsStale`), as before.
+- **`-plan <file>` in plan mode** sets where the plan is written (default `plan.PathFor`). A file there that is not a plan
+  and has no front matter is the user's: replaced only after `Replace it? [y/N]`; `-yes` never answers it (error).
+  The plan's `objective:` is now written relative to the plan's folder (`objectivePathFromPlan`), not `filepath.Base`.
+- **Auto mode's defaults:** `askRules` `*delete*`, `*remove*` only; `maxPlanTasks` 30. `-mode autonomous` and
+  `"agentMode": "autonomous"` become `auto` (`config.normalizeMode`).

@@ -59,6 +59,7 @@ func Test_Unit_ProposePlan_Definition(t *testing.T) {
 // - Verify a valid proposal returns tools.ErrEndTurn and sets Accepted to the read-back plan
 // - Verify the accepted plan has FormatV1, the objective's base name, its hash and version 1, and the given tasks
 // - Verify the accepted plan is not stale against the objective and its Markdown cleans up with zero fixes
+// - Verify the objective is copied into the plan's Objective section (plan.ObjectiveSection)
 func Test_Unit_ProposePlan_Accepts(t *testing.T) {
 	tool := NewProposePlan("/some/dir/goal.md", testObjective, testMaxTasks)
 	result, err := callPropose(t, tool, validProposal())
@@ -85,6 +86,9 @@ func Test_Unit_ProposePlan_Accepts(t *testing.T) {
 	}
 	if p.IsStale(testObjective.Hash()) {
 		t.Error("the accepted plan is stale against its own objective")
+	}
+	if want := plan.ObjectiveSection(testObjective.Markdown()); p.Objective != want {
+		t.Errorf("plan's Objective = %q, want the objective copied: %q", p.Objective, want)
 	}
 	if _, fixes, err := plan.Cleanup([]byte(p.Markdown())); err != nil || len(fixes) != 0 {
 		t.Errorf("Cleanup of the accepted plan: fixes %v, err %v", fixes, err)

@@ -25,6 +25,13 @@
 //	  func previewFirstLine(s string) string
 //	  func commandPreview(command string, args *[]string, dir *string) []string
 //
+//	automode.go
+//	  func (*autoModeDetails) ModeName() string
+//	  func setupAutoMode(cs *ChatSession)
+//	  func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+//	  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+//	  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, error)
+//
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
 //	  func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession)
@@ -94,7 +101,11 @@
 //	  func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 //	  func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
 //	  func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
-//	  func plannerNoPlanError(lastReply string, reminded int, objectivePath string) error
+//	  func plannerNoPlanError(lastReply string, reminded int, replan string) error
+//	  func planPathFor(planFlag, objectivePath string) string
+//	  func replanCommand(cs *ChatSession, pd *planModeDetails) string
+//	  func objectivePathFromPlan(planPath, objectivePath string) string
+//	  func hasFrontMatter(data []byte) bool
 //	  func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
 //	  func newObjectivePath(answer string) (string, error)
 //	  func askObjectiveText(ctx context.Context, reader promptReader) (string, error)

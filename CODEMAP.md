@@ -12,6 +12,7 @@ minimal-agent/
 ├── agent/
 │   ├── agent.go
 │   ├── approval_preview.go
+│   ├── automode.go
 │   ├── chat.go
 │   ├── compaction.go
 │   ├── doc.go
@@ -72,6 +73,7 @@ minimal-agent/
 ├── plan/
 │   ├── cleanup.go
 │   ├── doc.go
+│   ├── objective.go
 │   ├── plan.go
 │   └── render.go
 ├── procutils/
@@ -144,6 +146,13 @@ approval_preview.go
   func previewFirstLine(s string) string
   func commandPreview(command string, args *[]string, dir *string) []string
 
+automode.go
+  func (*autoModeDetails) ModeName() string
+  func setupAutoMode(cs *ChatSession)
+  func runAutoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) error
+  func autoMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader) error
+  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, error)
+
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
   func maybeStartAutoCompaction(ctx context.Context, cs *ChatSession)
@@ -213,7 +222,11 @@ planmode.go
   func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
   func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error
   func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession) (plan.Plan, error)
-  func plannerNoPlanError(lastReply string, reminded int, objectivePath string) error
+  func plannerNoPlanError(lastReply string, reminded int, replan string) error
+  func planPathFor(planFlag, objectivePath string) string
+  func replanCommand(cs *ChatSession, pd *planModeDetails) string
+  func objectivePathFromPlan(planPath, objectivePath string) string
+  func hasFrontMatter(data []byte) bool
   func askObjectivePath(ctx context.Context, reader promptReader, w io.Writer) (string, error)
   func newObjectivePath(answer string) (string, error)
   func askObjectiveText(ctx context.Context, reader promptReader) (string, error)
@@ -257,7 +270,7 @@ propose.go
   func NewProposePlan(objectivePath string, o objective.Objective, maxTasks int) *ProposePlan
   func (t *ProposePlan) GetToolDefinition() model.ToolDef
   func (t *ProposePlan) CallTool(ctx context.Context, args json.RawMessage) (string, error)
-  func (prop proposal) toPlan(objectivePath, objectiveHash string) (plan.Plan, error)
+  func (prop proposal) toPlan(objectivePath string, o objective.Objective) (plan.Plan, error)
   func standardID(id string) string
   func readBack(p plan.Plan) (plan.Plan, error)
 
@@ -326,6 +339,7 @@ config.go
   func DisplayURL(raw string) string
 
 flags.go
+  func normalizeMode(mode string) string
   func ParseFlags(args []string, out io.Writer) (Flags, error)
   func ValidateMode(cfg Config, f Flags) error
   func (f Flags) validateMode(mode string) error
@@ -542,6 +556,9 @@ cleanup.go
   func parseDepends(value string) (ids []string, ok bool)
   func NormalizeTaskID(s string) (string, bool)
   func tidyBody(lines []line) (string, []Fix)
+
+objective.go
+  func ObjectiveSection(objectiveMarkdown string) string
 
 plan.go
   func (f Fix) String() string

@@ -33,6 +33,7 @@ const planFooter = "Type /view to see the current objective, /save to save it an
 // planModeDetails is what plan mode keeps on the session (ChatSession.ModeDetails).
 type planModeDetails struct {
 	ObjectivePath string               // where /save writes the objective
+	PlanPath      string               // where the plan is written: -plan, else plan.PathFor(ObjectivePath)
 	Objective     *objective.Objective // the draft: update_objective and /edit change it, /save writes it
 	plannerTools  []tools.Tool         // the built-in and MCP tools, without plan mode's own: what the planner run gets
 	queued        string               // a line chatLoop takes as the user's next input before asking (the first answer)
@@ -93,6 +94,11 @@ func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 		return errors.New("plan mode was not set up (no plan mode details on the session)")
 	}
 	w := cs.OutBuffer
+	if f := cs.Config.PlanFile; f != "" { // fail now, not after the chat and the planner run
+		if info, err := os.Stat(filepath.Dir(f)); err != nil || !info.IsDir() {
+			return fmt.Errorf("-plan %s: its folder %s does not exist", f, filepath.Dir(f))
+		}
+	}
 
 	if cs.Config.ObjectiveFile != "" {
 		_, statErr := os.Stat(strings.TrimSpace(cs.Config.ObjectiveFile))
@@ -117,6 +123,7 @@ func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		pd.ObjectivePath = path
+		pd.PlanPath = planPathFor(cs.Config.PlanFile, path)
 		*pd.Objective = o
 		return planStep(ctx, interrupts, cs, reader, true)
 	}
@@ -138,6 +145,7 @@ func planMode(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 		return err
 	}
 	pd.ObjectivePath = path
+	pd.PlanPath = planPathFor(cs.Config.PlanFile, path)
 
 	saved, err := runObjectiveChat(ctx, interrupts, cs, reader, first)
 	if err != nil {
@@ -199,7 +207,11 @@ func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 //     listing the problems. A plan file that can't
 //     be read back is an error naming it. Without fromFlag the user chose to write the objective anew, so an existing
 //     plan is replaced.
-//   - The old plan file is only replaced when a new plan is accepted (writeFileAtomic).
+//   - The plan goes to pd.PlanPath (-plan, else next to the objective). A file there that is not a plan (no front
+//     matter, and Cleanup fails or finds no tasks) is the user's own file: only at a -plan path, and it is replaced
+//     only after "<file> exists and is not a plan. Replace it? [y/N]: " (-yes never answers it: an error instead).
+//   - The old plan file is only replaced when a new plan is accepted (writeFileAtomic). Its "objective:" line is
+//     written relative to the plan's folder (objectivePathFromPlan).
 //   - A new plan is shown in full (p.Body(): the file without its front matter), then plan.Summary, before the question.
 //   - -yes (AssumeYes) accepts without asking. Otherwise "Accept this plan? [Y/n]: "; no asks
 //     "Enter chat mode to discuss and revise the plan (Y/n)? : ". Yes there asks "What would you like to change in the
@@ -211,18 +223,30 @@ func objectiveFromFlag(value string, now time.Time, w io.Writer) (string, error)
 func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession, reader promptReader, fromFlag bool) error {
 	pd := cs.ModeDetails.(*planModeDetails)
 	w := cs.OutBuffer
-	planPath := plan.PathFor(pd.ObjectivePath)
+	planPath := pd.PlanPath
 	noPlan := func() error {
-		fmt.Fprintf(w, "No plan written. To plan again: minagent -mode plan -objective %s\n", pd.ObjectivePath)
+		fmt.Fprintf(w, "No plan written. To plan again: %s\n", replanCommand(cs, pd))
 		return nil
 	}
 
-	if fromFlag {
-		if data, err := os.ReadFile(planPath); err == nil {
-			old, _, err := plan.Cleanup(data)
-			if err != nil {
-				return fmt.Errorf("%s: %w", planPath, err)
-			}
+	// what is at planPath now: nothing, a plan, a broken plan, or (only at a -plan path) a file of the user's that isn't a plan
+	replaceAsk := false // a -plan file that isn't a plan: ask before replacing it
+	data, err := os.ReadFile(planPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		old, _, cleanupErr := plan.Cleanup(data)
+		isPlan := cleanupErr == nil && len(old.Tasks) > 0
+		switch {
+		case !isPlan && cs.Config.PlanFile != "" && !hasFrontMatter(data):
+			replaceAsk = true
+		case !fromFlag:
+			// the user is writing the objective anew: an existing plan is replaced once a new one is accepted
+		case cleanupErr != nil:
+			return fmt.Errorf("%s: %w", planPath, cleanupErr)
+		default:
 			if old.IsStale(pd.Objective.Hash()) {
 				return fmt.Errorf("%s changed since %s was made. Updating a plan comes in step 4; for now, delete %s to plan from scratch",
 					pd.ObjectivePath, planPath, planPath)
@@ -234,8 +258,6 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 			fmt.Fprint(w, plan.Summary(old))
 			fmt.Fprintf(w, "%s is up to date with %s.\n", planPath, pd.ObjectivePath)
 			return nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
 		}
 	}
 
@@ -261,7 +283,20 @@ func planStep(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSession,
 			}
 			accept = isYes(answer, true)
 		}
+		if accept && replaceAsk {
+			if cs.Config.AssumeYes {
+				return fmt.Errorf("%s exists and is not a plan; -yes doesn't replace it. Choose another -plan file, or move it away", planPath)
+			}
+			answer, err := reader.AskLine(ctx, planPath+" exists and is not a plan. Replace it? [y/N]: ")
+			if errors.Is(err, io.EOF) || (err == nil && !isYes(answer, false)) {
+				return noPlan()
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if accept {
+			p.ObjectivePath = objectivePathFromPlan(planPath, pd.ObjectivePath)
 			if err := writeFileAtomic(planPath, []byte(p.Markdown())); err != nil {
 				return fmt.Errorf("could not save %s: %w", planPath, err)
 			}
@@ -363,7 +398,7 @@ func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessio
 		}
 		// [agent] no error and no plan: the loop ended on a reply without tool calls (the last message)
 		if reminded == plannerReminders {
-			err := plannerNoPlanError(turnMsgs[len(turnMsgs)-1].Content, reminded, pd.ObjectivePath)
+			err := plannerNoPlanError(turnMsgs[len(turnMsgs)-1].Content, reminded, replanCommand(cs, pd))
 			taskTrace.Fail(err)
 			return plan.Plan{}, err
 		}
@@ -373,11 +408,11 @@ func runPlanner(ctx context.Context, interrupts <-chan os.Signal, cs *ChatSessio
 }
 
 // plannerNoPlanError returns the error for a planner that never called propose_plan: the planner's last reply
-// (indented, cut to plannerReplyMax characters), and how to plan the saved objective again.
+// (indented, cut to plannerReplyMax characters), and replan, the command that plans the saved objective again.
 //
 // Notes:
 //   - The reply is shown because the planner's text is hidden while it runs; without it the error says nothing about why.
-func plannerNoPlanError(lastReply string, reminded int, objectivePath string) error {
+func plannerNoPlanError(lastReply string, reminded int, replan string) error {
 	reply := strings.TrimSpace(lastReply)
 	if reply == "" {
 		reply = "(no text)"
@@ -385,8 +420,61 @@ func plannerNoPlanError(lastReply string, reminded int, objectivePath string) er
 		reply = cut + " …"
 	}
 	return fmt.Errorf("the planner stopped without proposing a plan (reminded %d times). Its last reply:\n  %s\n"+
-		"The objective is saved; to plan it again: minagent -mode plan -objective %s",
-		reminded, strings.ReplaceAll(reply, "\n", "\n  "), objectivePath)
+		"The objective is saved; to plan it again: %s",
+		reminded, strings.ReplaceAll(reply, "\n", "\n  "), replan)
+}
+
+// planPathFor returns where plan mode writes the plan for the objective at objectivePath: planFlag (-plan) if given,
+// else plan.PathFor(objectivePath).
+//
+// Notes: none.
+func planPathFor(planFlag, objectivePath string) string {
+	if planFlag != "" {
+		return planFlag
+	}
+	return plan.PathFor(objectivePath)
+}
+
+// replanCommand returns the command that plans pd's objective again: "minagent -mode plan -objective <file>", plus
+// "-plan <file>" when the plan's path came from -plan.
+//
+// Notes: none.
+func replanCommand(cs *ChatSession, pd *planModeDetails) string {
+	cmd := "minagent -mode plan -objective " + pd.ObjectivePath
+	if cs.Config.PlanFile != "" {
+		cmd += " -plan " + pd.PlanPath
+	}
+	return cmd
+}
+
+// objectivePathFromPlan returns objectivePath written relative to the plan file's folder, for the plan's "objective:"
+// line.
+//
+// Notes:
+//   - Uses "/" on every OS. If either path can't be made absolute, or no relative path exists (another Windows drive),
+//     objectivePath is returned as given.
+//   - [agent] Only plan mode's update (step U) reads "objective:"; auto mode never does.
+func objectivePathFromPlan(planPath, objectivePath string) string {
+	planDir, err1 := filepath.Abs(filepath.Dir(planPath))
+	obj, err2 := filepath.Abs(objectivePath)
+	if err1 != nil || err2 != nil {
+		return objectivePath
+	}
+	rel, err := filepath.Rel(planDir, obj)
+	if err != nil {
+		return objectivePath
+	}
+	return filepath.ToSlash(rel)
+}
+
+// hasFrontMatter reports whether data starts with a "---" line (after blank lines), as every plan file plan mode writes
+// does.
+//
+// Notes:
+//   - Tells a broken plan (an error to fix) from a file of the user's that isn't a plan at all (asked before it is
+//     replaced).
+func hasFrontMatter(data []byte) bool {
+	return strings.HasPrefix(strings.TrimLeft(string(data), " \t\r\n\ufeff"), "---")
 }
 
 // askObjectivePath asks where to save the new objective until it gets a usable answer, and returns the path.

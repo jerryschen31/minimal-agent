@@ -823,11 +823,11 @@ func Test_Unit_PlanMode_PlannerRemindedThenProposes(t *testing.T) {
 
 // - Verify plannerNoPlanError shows "(no text)" for an empty reply and cuts a long one with " …"
 func Test_Unit_PlannerNoPlanError_EmptyAndLongReply(t *testing.T) {
-	if err := plannerNoPlanError("  ", 2, "goal.md"); !strings.Contains(err.Error(), "Its last reply:\n  (no text)\n") {
+	if err := plannerNoPlanError("  ", 2, "minagent -mode plan -objective goal.md"); !strings.Contains(err.Error(), "Its last reply:\n  (no text)\n") {
 		t.Errorf("empty reply: %v", err)
 	}
 	long := strings.Repeat("x", plannerReplyMax+10)
-	err := plannerNoPlanError(long, 2, "goal.md").Error()
+	err := plannerNoPlanError(long, 2, "minagent -mode plan -objective goal.md").Error()
 	if !strings.Contains(err, strings.Repeat("x", plannerReplyMax)+" …") || strings.Contains(err, strings.Repeat("x", plannerReplyMax+1)) {
 		t.Errorf("long reply not cut at %d characters:\n%s", plannerReplyMax, err)
 	}
@@ -911,5 +911,122 @@ func Test_Unit_PlanMode_PlannerInterrupted(t *testing.T) {
 	}
 	if _, err := os.Stat(plan.PathFor(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a plan file was written (%v)", err)
+	}
+}
+
+// ---- planMode with -plan ----
+
+//   - Verify -objective with -plan in another folder writes the plan exactly there, with "objective:" relative to the
+//     plan's folder, and the objective copied into "## Objective"
+func Test_Unit_PlanMode_PlanFlag_WritesThere(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	if err := os.Mkdir("plans", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx.Session.Config.PlanFile = filepath.Join("plans", "my-run.md")
+	fx.Session.Config.AssumeYes = true
+	fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
+	if err := runPlanModeWith(t, fx, ""); err != nil {
+		t.Fatalf("planMode: %v", err)
+	}
+	p := readPlanFile(t, filepath.Join("plans", "my-run.md"))
+	if p.ObjectivePath != "../goal.md" {
+		t.Errorf("objective: = %q, want ../goal.md", p.ObjectivePath)
+	}
+	if !strings.Contains(p.Objective, countObjective.ObjText) {
+		t.Errorf("plan's Objective = %q, want the objective copied", p.Objective)
+	}
+	if _, err := os.Stat(plan.PathFor(path)); err == nil {
+		t.Errorf("a plan was also written next to the objective")
+	}
+}
+
+// - Verify a -plan whose folder doesn't exist is an error before any model call
+func Test_Unit_PlanMode_PlanFlag_MissingFolder(t *testing.T) {
+	fx, _, _ := newFlagPlanFixture(t, countObjective)
+	fx.Session.Config.PlanFile = filepath.Join("nowhere", "run.md")
+	err := runPlanModeWith(t, fx, "")
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("err = %v, want a missing-folder error", err)
+	}
+	if len(fx.Provider.Calls) != 0 {
+		t.Errorf("expected no model call, got %d", len(fx.Provider.Calls))
+	}
+}
+
+//   - Verify a -plan file that exists and isn't a plan (the user's notes) is replaced only after "Replace it? [y/N]":
+//     no (and Ctrl+D) keeps it and prints the replan command with -plan; yes replaces it; -yes refuses with an error
+func Test_Unit_PlanMode_PlanFlag_ReplacesNonPlanOnlyIfAsked(t *testing.T) {
+	const notes = "# My notes\n\nKeep these.\n"
+	tests := []struct {
+		name, answers string
+		yes, replaced bool
+		wantErr       string
+	}{
+		{"no", "y\nn\n", false, false, ""},
+		{"Ctrl+D", "y\n", false, false, ""},
+		{"yes", "y\ny\n", false, true, ""},
+		{"-yes refuses", "", true, false, "-yes doesn't replace it"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fx, _, path := newFlagPlanFixture(t, countObjective)
+			if err := os.WriteFile("notes.md", []byte(notes), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fx.Session.Config.PlanFile = "notes.md"
+			fx.Session.Config.AssumeYes = tt.yes
+			fx.Provider.Script = []model.ChatMessage{proposeCall("call_1", validPlanArgs)}
+			err := runPlanModeWith(t, fx, tt.answers)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("err = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("planMode: %v", err)
+			}
+			data, _ := os.ReadFile("notes.md")
+			if replaced := string(data) != notes; replaced != tt.replaced {
+				t.Errorf("replaced = %v, want %v; file:\n%s", replaced, tt.replaced, data)
+			}
+			if !tt.replaced && tt.wantErr == "" {
+				if want := noPlanLine(path) + " -plan notes.md"; !strings.Contains(fx.Out.String(), want) {
+					t.Errorf("output lacks %q:\n%s", want, fx.Out.String())
+				}
+			}
+			if !tt.yes && !strings.Contains(fx.Out.String(), "notes.md exists and is not a plan. Replace it? [y/N]") {
+				t.Errorf("the replace question was not asked:\n%s", fx.Out.String())
+			}
+		})
+	}
+}
+
+// - Verify an up-to-date plan at the -plan path is shown, as one next to the objective is, with no model call
+func Test_Unit_PlanMode_PlanFlag_UpToDatePlan(t *testing.T) {
+	fx, _, path := newFlagPlanFixture(t, countObjective)
+	p := acceptedPlan(t, path, countObjective, validPlanArgs)
+	if err := os.WriteFile("run.md", []byte(p.Markdown()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fx.Session.Config.PlanFile = "run.md"
+	if err := runPlanModeWith(t, fx, ""); err != nil {
+		t.Fatalf("planMode: %v", err)
+	}
+	if !strings.Contains(fx.Out.String(), "run.md is up to date with") || len(fx.Provider.Calls) != 0 {
+		t.Errorf("calls %d, output:\n%s", len(fx.Provider.Calls), fx.Out.String())
+	}
+}
+
+// - Verify objectivePathFromPlan writes the objective's path relative to the plan's folder, with "/" separators
+func Test_Unit_ObjectivePathFromPlan(t *testing.T) {
+	tests := []struct{ planPath, objPath, want string }{
+		{"goal.plan.md", "goal.md", "goal.md"},
+		{"plans/run.md", "goal.md", "../goal.md"},
+		{"run.md", "docs/goal.md", "docs/goal.md"},
+	}
+	for _, tt := range tests {
+		if got := objectivePathFromPlan(tt.planPath, tt.objPath); got != tt.want {
+			t.Errorf("objectivePathFromPlan(%q, %q) = %q, want %q", tt.planPath, tt.objPath, got, tt.want)
+		}
 	}
 }

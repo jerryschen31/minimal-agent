@@ -88,6 +88,9 @@
 //	  func NormalizeTaskID(s string) (string, bool)
 //	  func tidyBody(lines []line) (string, []Fix)
 //
+//	objective.go
+//	  func ObjectiveSection(objectiveMarkdown string) string
+//
 //	plan.go
 //	  func (f Fix) String() string
 //	  func (t Task) External() bool

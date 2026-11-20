@@ -29,7 +29,8 @@ type Agent struct {
 // registry, trace recorder and chat session, in that order.
 //
 // Notes:
-//   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode).
+//   - In plan mode it then adds the session's planModeDetails and the update_objective tool (setupPlanMode); in auto mode
+//     the session's autoModeDetails (setupAutoMode).
 //   - A Ctrl+C on interrupts (or SIGTERM, which cancels ctx) aborts it: SetupAgent then returns context.Canceled, and
 //     the MCP servers that had already connected are kept in agent.mcpConns, so ShutdownAgent closes them. A nil
 //     interrupts channel means setup cannot be interrupted by Ctrl+C (tests).
@@ -132,6 +133,10 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 			return err
 		}
 	}
+	// 11. auto mode: adds auto mode details into the session
+	if cfg.AgentMode == config.ModeAuto {
+		setupAutoMode(chatSession)
+	}
 
 	return nil
 }
@@ -140,7 +145,7 @@ func (agent *Agent) SetupAgent(ctx context.Context, cfg config.Config, interrupt
 //
 // Notes:
 //   - intsigChRecv of type <-chan os.Signal only receives OS interrupt signals (e.g., Ctrl+C).
-//   - Chat and plan modes are supported; any other agent mode returns an "unsupported agent mode" error. This function
+//   - Chat, plan and auto modes are supported; any other agent mode returns an "unsupported agent mode" error. This function
 //     needs to be updated to handle headless and oneshot modes.
 //   - Records run_start now. run_end is recorded by ShutdownAgent, not here: background work such as auto-compaction
 //     can still be running when this function returns, and its events must land before run_end.
@@ -158,6 +163,8 @@ func (agent *Agent) RunAgent(ctx context.Context, intsigChRecv <-chan os.Signal)
 		err = runChatLoop(ctx, intsigChRecv, agent.session)
 	} else if agent.agentMode == config.ModePlan {
 		err = runPlanMode(ctx, intsigChRecv, agent.session)
+	} else if agent.agentMode == config.ModeAuto {
+		err = runAutoMode(ctx, intsigChRecv, agent.session)
 	} else {
 		err = fmt.Errorf("unsupported agent mode: %s", agent.agentMode)
 	}
@@ -214,9 +221,9 @@ func checkConfig(cfg config.Config) error {
 	if cfg.MaxSteps <= 0 {
 		return fmt.Errorf("maxSteps must be a positive integer, got %d", cfg.MaxSteps)
 	}
-	// only plan mode reads it; 0 would refuse every plan
-	if cfg.AgentMode == config.ModePlan && cfg.MaxPlanTasks <= 0 {
-		return fmt.Errorf("maxPlanTasks must be a positive integer in plan mode, got %d", cfg.MaxPlanTasks)
+	// only plan and auto mode read it; 0 would refuse every plan
+	if (cfg.AgentMode == config.ModePlan || cfg.AgentMode == config.ModeAuto) && cfg.MaxPlanTasks <= 0 {
+		return fmt.Errorf("maxPlanTasks must be a positive integer in %s mode, got %d", cfg.AgentMode, cfg.MaxPlanTasks)
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

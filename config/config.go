@@ -73,7 +73,8 @@ type Config struct {
 
 	// per-run settings, set only by flags (an objective is input to one run, not a setting to keep in a config file)
 	ObjectiveFile string `json:"-"` // -objective/-obj: an objective file or the objective's text; "" = plan mode asks for a new one
-	AssumeYes     bool   `json:"-"` // -yes/-y: plan mode accepts the plan without asking
+	PlanFile      string `json:"-"` // -plan: plan mode writes the plan here ("" = next to the objective); auto mode runs it
+	AssumeYes     bool   `json:"-"` // -yes/-y: plan mode accepts the plan, auto mode runs it, without asking
 
 	ConfigFile string `json:"-"` // the -config path, "" = none; set by SetDefaultConfig, never read from a file. The file tools refuse to write it
 
@@ -212,8 +213,10 @@ the objective is saved. Keep replies short.`
 //   - Precedence is flags > config file > these defaults; SetDefaultConfig layers the file over this and
 //     FlagsOverlay layers the flags.
 //   - Most defaults are the same in every mode. Plan mode (ModePlan) differs in SystemPrompt (planSystemPrompt) and
-//     BuiltinTools (read-only: read_file, list_files, search_files), and is the only mode with MaxPlanTasks (30). Any other mode, including an unknown one, gets the
-//     chat defaults; ValidateMode reports an unknown mode later.
+//     BuiltinTools (read-only: read_file, list_files, search_files). Auto mode (ModeAuto) differs in AskRules: only
+//     "*delete*" and "*remove*", because with nobody to ask an ask rule denies, and the chat default would deny every
+//     file write (DECISIONS.md § 2026-11-19 later). Plan and auto mode set MaxPlanTasks (30; CheckComplete needs it).
+//     Any other mode, including an unknown one, gets the chat defaults; ValidateMode reports an unknown mode later.
 //   - AgentMode is set to mode.
 func GetDefaultConfig(mode string) Config {
 	cfg := Config{
@@ -265,6 +268,10 @@ func GetDefaultConfig(mode string) Config {
 		cfg.BuiltinTools = []string{"read_file", "list_files", "search_files"} // planning reads the working directory, never changes it
 		cfg.MaxPlanTasks = 30
 	}
+	if mode == ModeAuto {
+		cfg.AskRules = []string{"*delete*", "*remove*"} // with nobody to ask, ask = deny: the write tools must not be ask rules here
+		cfg.MaxPlanTasks = 30
+	}
 	return cfg
 }
 
@@ -279,6 +286,7 @@ func GetDefaultConfig(mode string) Config {
 //   - Unrecognized fields display a warning (on cfg.OutBuffer, sorted so the warnings are stable) and get ignored;
 //     a file that cannot be read or parsed is an error.
 //   - Key matching is case-insensitive, as in encoding/json.
+//   - The file's "agentMode": "autonomous" becomes "auto" (normalizeMode), like the -mode flag.
 func SetDefaultConfig(flags Flags) (Config, error) {
 	// no config file: the built-in defaults for the -mode flag's mode (chat if none)
 	if flags.Config == nil || *flags.Config == "" {
@@ -308,7 +316,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 	case flags.Mode != nil:
 		mode = *flags.Mode
 	case fileMode.AgentMode != "":
-		mode = fileMode.AgentMode
+		mode = normalizeMode(fileMode.AgentMode)
 	}
 
 	// then the defaults for that mode, so missing keys in the file keep their defaults
@@ -319,6 +327,7 @@ func SetDefaultConfig(flags Flags) (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)
 	}
+	cfg.AgentMode = normalizeMode(cfg.AgentMode) // the file's own "agentMode" was read into cfg again just now
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Config{}, fmt.Errorf("parse config file %s: %w", filename, err)

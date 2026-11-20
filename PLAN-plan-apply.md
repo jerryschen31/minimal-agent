@@ -121,6 +121,9 @@ done when: the submission ID is in submission.md
 
 ## `state.json` (one snapshot per run)
 
+> **Superseded 2026-11-19 by `PLAN-auto-mode.md`:** an append-only journal (`runs/NNNN/journal.jsonl`) replaces the
+> snapshot, and step 3 is planned there (`DECISIONS.md § 2026-11-19 — Autonomous mode v1`).
+
 Written by Go during the run and frozen when it ends; the next run starts from the latest snapshot. Never holds
 secrets.
 

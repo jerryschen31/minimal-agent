@@ -30,14 +30,14 @@
 //	userId          who the chat session belongs to                                                       ["default_user"]
 //	agentName       shown in info mode and the trace                                                       ["minagent"]
 //	agentVersion    shown in info mode and the trace                                                       ["0.1.0"]
-//	agentMode       "chat" | "info" | "plan" | "autonomous" | "oneshot"; -mode. Chat, info and plan run;
-//	                the mode also picks the defaults                                                       ["chat"]
+//	agentMode       "chat" | "info" | "plan" | "auto" | "oneshot"; -mode ("autonomous" = "auto"). Chat,
+//	                info, plan and auto run; the mode also picks the defaults                              ["chat"]
 //	missionFile     mission file for headless mode; -mission                                               [""]
 //	workDir         the only directory (and below) the file tools (read_file) may use; must exist, even
 //	                with no file tool enabled; -workdir                                                    ["."]
 //	maxSteps        most ReAct steps (model call + tool calls) per turn; must be positive; -maxsteps       [10]
-//	maxPlanTasks    plan mode: the most tasks the planner's plan may have; must be positive in plan mode
-//	                plan: [30]; other modes don't use it                                                   [0]
+//	maxPlanTasks    the most tasks a plan may have (the planner's, and the plan auto mode runs); must be
+//	                positive in plan and auto mode. plan, auto: [30]; other modes don't use it             [0]
 //	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]
@@ -71,9 +71,10 @@
 //	denyRules       glob rules on model-facing tool names (<server>_<tool>, case-insensitive); a matching
 //	                tool call is always refused, in every mode, never asked. [] = no rules                 [[]]
 //	askRules        same form; a matching call needs the user's approval ("Allow once? [y/N]" in chat on a
-//	                terminal). With nobody to ask (piped input, tests, autonomous) it is refused. A deny
+//	                terminal). With nobody to ask (piped input, tests, auto mode) it is refused. A deny
 //	                rule wins over an ask rule. [] = no rules        [["*delete*", "*remove*", "write_file", "edit_file",
 //	                                                                    "create_directory", "copy_file", "move_file"]]
+//	                auto: ["*delete*", "*remove*"] (an ask is a deny there, so the write tools are left out)
 //	approval        "ask" | "allow-all". allow-all runs ask-rule calls without asking; it applies ONLY to
 //	                askRules, never to denyRules. Chat asks you to confirm it once at startup (no terminal
 //	                = not confirmed, so calls stay denied). Flag: -approve                                 ["ask"]
@@ -202,7 +203,9 @@
 //	-q, -query       the query; required for, and only used in, oneshot mode
 //	--json           JSON output; oneshot and headless modes only
 //	-obj, -objective an objective file, or the objective's text; plan mode only (none = write a new one in a chat)
-//	-y, -yes         accept the plan without asking; plan mode only
+//	-plan <file>     plan mode: where to write the plan (default <objective>.plan.md next to the objective);
+//	                 auto mode: the plan to run (required, any name). Plan and auto mode only
+//	-y, -yes         plan mode: accept the plan without asking; auto mode: run it without asking
 //
 // # Codemap (auto-generated)
 //
@@ -218,6 +221,7 @@
 //	  func DisplayURL(raw string) string
 //
 //	flags.go
+//	  func normalizeMode(mode string) string
 //	  func ParseFlags(args []string, out io.Writer) (Flags, error)
 //	  func ValidateMode(cfg Config, f Flags) error
 //	  func (f Flags) validateMode(mode string) error

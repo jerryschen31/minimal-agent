@@ -1435,3 +1435,18 @@ and "Accept this plan?". Next unchanged: test with better models, then decide on
 Done: up to 2 reminders when the planner replies with text instead of calling `propose_plan`; the no-plan error shows
 its last reply and the re-plan command. Tip for test runs: use an empty `-workdir`, so the planner doesn't explore this
 repo. Next unchanged: test with better models, then decide on `planModel` (and `tool_choice` only if needed).
+
+### 2026-11-19 — Next: autonomous mode v1 (see `PLAN-auto-mode.md`, DECISIONS.md § 2026-11-19)
+
+Rebased `feat/autonomous-mode-2` onto `build` (now includes `ideas/`). Read the seven `ideas/` reports; agreed next work
+is one serial run with an append-only journal and resume (step 1, commits 1a–1i), then budgets (step 2, 2a–2d). Plan
+mode is considered done for v1; `planModel` waits for tests with stronger models.
+
+**Open:** how to split the writing (Jerry types the journal `Append`/`Read`, the tool hook and resume; Claude writes the
+plumbing), or Claude writes it all and Jerry reviews per commit. Nothing of step 1 is built.
+
+### 2026-11-19 (later) — 1a built (see DECISIONS.md § 1a built)
+
+Working mode until Jerry's break (~2 days): per sub-step Claude gives the shape, Jerry discusses until it's right, Claude
+implements and gives a commit message. Done: 1a (`-mode auto -plan`, summary, `Run? [Y/n]`; plan carries the objective;
+`-plan` in plan mode). Not committed. **Next: 1b** (`state/`: run folders, lock, journal writer, reader).

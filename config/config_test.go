@@ -306,7 +306,7 @@ func Test_Unit_GetDefaultConfig_MaxSteps_Is10(t *testing.T) {
 
 // - Verify the default maxPlanTasks is 30 in plan mode and 0 in every other mode
 func Test_Unit_GetDefaultConfig_MaxPlanTasks_PerMode(t *testing.T) {
-	for mode, want := range map[string]int{ModePlan: 30, ModeChat: 0, ModeInfo: 0, ModeOneshot: 0, ModeHeadless: 0} {
+	for mode, want := range map[string]int{ModePlan: 30, ModeAuto: 30, ModeChat: 0, ModeInfo: 0, ModeOneshot: 0, ModeHeadless: 0} {
 		if got := GetDefaultConfig(mode).MaxPlanTasks; got != want {
 			t.Errorf("%q: MaxPlanTasks = %d, want %d", mode, got, want)
 		}
@@ -1248,5 +1248,34 @@ func Test_Unit_ValidateMode_Yes_ModeFromConfigFile(t *testing.T) {
 		if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 			t.Errorf("%s: ValidateMode = %v, want error containing %q", tc.fileMode, err, tc.wantErr)
 		}
+	}
+}
+
+//   - Verify auto mode's defaults: ask rules without the write tools (an ask is a deny with nobody to ask), no run_command,
+//     and the chat defaults' file tools
+func Test_Unit_GetDefaultConfig_AutoMode(t *testing.T) {
+	cfg := GetDefaultConfig(ModeAuto)
+	if strings.Join(cfg.AskRules, ",") != "*delete*,*remove*" {
+		t.Errorf("auto AskRules = %v, want [*delete* *remove*]", cfg.AskRules)
+	}
+	for _, name := range cfg.BuiltinTools {
+		if name == "run_command" {
+			t.Error("run_command is enabled by default in auto mode")
+		}
+	}
+	if chat := GetDefaultConfig(ModeChat); strings.Join(cfg.BuiltinTools, ",") != strings.Join(chat.BuiltinTools, ",") {
+		t.Errorf("auto BuiltinTools = %v, want chat's %v", cfg.BuiltinTools, chat.BuiltinTools)
+	}
+}
+
+// - Verify a config file's "agentMode": "autonomous" becomes auto, with auto's defaults
+func Test_Unit_SetDefaultConfig_AgentModeAutonomous(t *testing.T) {
+	path := writeTempFile(t, "config.json", []byte(`{"agentMode": "autonomous"}`))
+	cfg, err := SetDefaultConfig(Flags{Config: new(path)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentMode != ModeAuto || cfg.MaxPlanTasks != 30 {
+		t.Errorf("AgentMode %q, MaxPlanTasks %d; want %q, 30", cfg.AgentMode, cfg.MaxPlanTasks, ModeAuto)
 	}
 }

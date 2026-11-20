@@ -21,6 +21,7 @@ var SupportedFormats = []string{FormatV1}
 // this by Markdown. The title heading is "# Plan: <title>".
 const (
 	HeadingPlan        = "Plan"
+	HeadingObjective   = "Objective" // matched only at level 1 or 2: "### Objective" is a subheading (the copied objective has one)
 	HeadingAssumptions = "Assumptions"
 	HeadingTasks       = "Tasks"
 )
@@ -37,6 +38,7 @@ type Plan struct {
 	Version       int       // "plan_version:" — 1 for a first plan, +1 per update; 0 when absent
 	Title         string    // the text after "# Plan: "
 	Summary       string    // text under the title heading; "" if none
+	Objective     string    // "## Objective": the objective the plan was made from, copied word for word (ObjectiveSection); "" if none
 	Assumptions   string    // "## Assumptions": what the planner had to guess; "" if none
 	TaskNotes     string    // text under "## Tasks" before the first task
 	Tasks         []Task    // the "### tN: title" subsections of "## Tasks", in file order; nil when there are none
@@ -122,20 +124,14 @@ func (p Plan) IsStale(objectiveHash string) bool {
 //   - Returns every problem at once (errors.Join): the planner LLM fixes them all in one go.
 //   - The wording is read by a person and by the planner LLM: say what to add or change.
 //   - A task is named by its ID, or by its position and title when the ID is the problem.
+//   - The front matter's objective, objective_hash and plan_version are not required: they record where a plan came
+//     from (plan mode's update reads them), not what it needs to run, and a hand-written plan may have none
+//     (DECISIONS.md § 2026-11-19, the plan file is auto mode's input). propose_plan always sets them.
 func (p Plan) CheckComplete(maxTasks int) error {
 	var errs []error
 	if p.Format != "" && !slices.Contains(SupportedFormats, p.Format) {
 		errs = append(errs, fmt.Errorf("format %q is not supported; supported: %s", p.Format,
 			strings.Join(SupportedFormats, ", ")))
-	}
-	if strings.TrimSpace(p.ObjectivePath) == "" {
-		errs = append(errs, errors.New(`"objective:" is missing: name the objective file this plan was made from`))
-	}
-	if strings.TrimSpace(p.ObjectiveHash) == "" {
-		errs = append(errs, errors.New(`"objective_hash:" is missing: the hash of the objective this plan was made from`))
-	}
-	if p.Version < 1 {
-		errs = append(errs, fmt.Errorf(`"plan_version:" is %d: it must be 1 or more`, p.Version))
 	}
 	switch {
 	case len(p.Tasks) == 0:
