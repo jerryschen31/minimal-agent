@@ -14,7 +14,58 @@ import (
 )
 
 type Provider interface {
-	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
+	Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)
+}
+
+// Response is what one model call returned: the message, plus facts about the call itself.
+// [agent] Every provider returns this same type. Each adapter decodes its own wire format (openAIResponse, later an
+// Anthropic one) and converts it into a Response, so callers never see a provider's JSON.
+type Response struct {
+	Message    ChatMessage // what goes into memory
+	Usage      Usage       // tokens this call used; per call, so never stored on the message
+	StopReason string      // StopEnd, StopToolCalls or StopMaxTokens; any other stop is the provider's own word; "" = not reported
+}
+
+// Why the model stopped, in the same words for every provider.
+const (
+	StopEnd       = "end"        // OpenAI "stop", Anthropic "end_turn"
+	StopToolCalls = "tool_calls" // OpenAI "tool_calls", Anthropic "tool_use"
+	StopMaxTokens = "max_tokens" // OpenAI "length", Anthropic "max_tokens": the reply was cut off at the output limit
+)
+
+// Usage is token accounting for one model call, or a sum of calls, with the same meaning for every provider.
+// [agent] The providers count input differently: OpenAI's prompt_tokens includes cached tokens, Anthropic's
+// input_tokens leaves them out (they come as cache_read_input_tokens and cache_creation_input_tokens). Here
+// InputTokens is always the whole input, and the cache fields are parts of it, so a budget compares like with like.
+type Usage struct {
+	InputTokens      int  `json:"input_tokens"`                 // every input token sent, cached ones included
+	OutputTokens     int  `json:"output_tokens"`                // includes reasoning / thinking tokens
+	CacheReadTokens  int  `json:"cache_read_tokens,omitempty"`  // part of InputTokens: read from the provider's prompt cache
+	CacheWriteTokens int  `json:"cache_write_tokens,omitempty"` // part of InputTokens: written to the prompt cache (Anthropic)
+	Reported         bool `json:"reported"`                     // false: the server sent no usage, so the counts are unknown, not 0
+}
+
+// Add returns the sum of u and other.
+//
+// Notes:
+//   - Reported is true if either part was reported: a sum of some reported calls is a lower bound, not unknown.
+//     A report that needs "every call reported" has to count the unreported calls itself.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:      u.InputTokens + other.InputTokens,
+		OutputTokens:     u.OutputTokens + other.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + other.CacheWriteTokens,
+		Reported:         u.Reported || other.Reported,
+	}
+}
+
+// Total returns the number of tokens counted against a token budget: input plus output.
+//
+// Notes:
+//   - the cache fields are not added: they are already inside InputTokens
+func (u Usage) Total() int {
+	return u.InputTokens + u.OutputTokens
 }
 
 // ChatMessage is sent to the provider as-is, so only the fields the chat completions API defines
@@ -57,19 +108,6 @@ type ToolCall struct {
 	Function ToolCallFunc `json:"function"`
 }
 
-// chat request and response structs
-type ChatRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Tools    []ToolDef     `json:"tools,omitempty"`
-}
-
-type ChatResponse struct {
-	Choices []struct {
-		Message ChatMessage `json:"message"`
-	} `json:"choices"`
-}
-
 // SetupProvider sets up the provider named in cfg.
 //
 // Notes:
@@ -77,6 +115,7 @@ type ChatResponse struct {
 //   - the API key is read from the environment variable named by cfg.ApiKeyName; an unset variable gives an empty key, which is
 //     fine for Ollama
 //   - ResponseTimeoutSeconds becomes the provider's Timeout
+//   - MaxTokens is passed on (0 = not sent), and the key it is sent as is resolved here once (maxTokensFieldFor)
 func SetupProvider(cfg config.Config) (Provider, error) {
 	if cfg.Provider == "openai" {
 		return &OpenAICompat{
@@ -84,6 +123,9 @@ func SetupProvider(cfg config.Config) (Provider, error) {
 			BaseURL: cfg.BaseURL,
 			ApiKey:  os.Getenv(cfg.ApiKeyName),
 			Timeout: time.Duration(cfg.ResponseTimeoutSeconds) * time.Second,
+
+			MaxTokens:      cfg.MaxTokens,
+			MaxTokensField: maxTokensFieldFor(cfg.BaseURL, cfg.MaxTokensField),
 		}, nil
 	} else {
 		// provider not supported

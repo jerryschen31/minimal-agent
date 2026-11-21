@@ -4881,7 +4881,7 @@ Shape agreed with Jerry; Claude wrote it.
 - **One lock per plan** in `locks/<16 hex of sha256(real plan path)>.lock`, a real OS lock: `flock` on Unix,
   `LockFileEx` on Windows (`golang.org/x/sys`, now a direct dependency; it was already indirect). The OS releases it
   when the process dies, so there are no stale locks. Different plans can run at once.
-- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and folds the runs whose
+- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and rebuilds the state from the runs whose
   manifest names this plan, oldest first. Moving or renaming a plan starts it with no history (every task runs again):
   the safe side, since an ID inside the plan would let a copy inherit its original's history. *Downside:* one small
   read per run folder; an index can come later if there are thousands.
@@ -5055,7 +5055,7 @@ Shape agreed with Jerry; Claude wrote it (`agent/autoresume.go`).
   calls, `run_command`) → asked "Send it again? [y/N]" (n: `user_said_done`). A call that can't be re-sent (no kept
   arguments, a hash mismatch, the tool gone) asks "Carry on, treating it as done? [y/N]". No terminal (`-yes` never
   answers), Ctrl+D (Jerry), or n to that second question → `errResumeWaiting`: "Stopped: waiting", nothing done or
-  written, asked again next start. Outcomes go in the `resumed` event; `Fold` closes settled calls, so a second crash
+  written, asked again next start. Outcomes go in the `resumed` event; `Rebuild` closes settled calls, so a second crash
   doesn't settle them twice.
 - **Exact arguments are kept for re-sending** (Jerry): `tool_before.args` for MCP and `run_command` calls only, up to
   64 KB (larger: can't be re-sent, asked instead). *Downside:* they are unredacted in the journal; it is private (0600
@@ -5092,7 +5092,7 @@ Shape agreed with Jerry; Claude wrote it.
 
 Jerry's line for this review: be reasonable on guardrails; don't overfix obscure edge cases.
 - **A `tool_after` that can't be written now stops the run and leaves it open.** Before, `done` dropped the error: the
-  run went on and could write `run_ended`, after which `Fold` ignores the open call, losing the evidence resume needs.
+  run went on and could write `run_ended`, after which `Rebuild` ignores the open call, losing the evidence resume needs.
   Now `runToolJournal` keeps the first failed write (`err`); `executeToolCall` reports "the call ran, but its end could
   not be recorded" instead of the result; every later call is refused (not recorded = not run); `runTask` stops with
   `error` after the worker or director; `end` writes **no** `run_ended` and says the run was left open, so the next
@@ -5110,6 +5110,164 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   `write_file`/`edit_file` result (max 1 MB) with full hashes. Kept general rather than special-casing `move_file`:
   resume only asks "is it as before?", which presence plus size and mtime answer. *Accepted gap:* a same-size change
   within the same nanosecond to a file over 16 MB.
-- **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
+- **`Rebuild` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
   naming the run and seq, not a counted attempt.
 - **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.
+
+### 2026-11-20 — Step 2 (token usage and budgets): a run stopped by a budget exits 3
+
+- **A run that hits `runTokenBudget` or `runTimeoutMinutes` exits 3 ("needs a person"), not 1 (failed)** (Jerry). The
+  work did not fail; someone has to decide whether to raise the budget and resume, which is the same kind of stop as a
+  gate with nobody to answer. Stop reasons stay `budget` / `timeout` in the journal. Affects `agent/autorun.go` (2d).
+
+### 2026-11-20 — Step 2: response type, normalized usage, `max_tokens` field chosen by host
+
+- **`Provider.Chat` returns `model.Response{Message, Usage, StopReason}`** instead of a bare `ChatMessage`. Usage and
+  the stop reason describe one call, not one message; a `json:"-"` field on `ChatMessage` was rejected because messages
+  are stored in memory and copied into compaction, so each would carry a stale per-call count. The Anthropic adapter
+  will also need per-call room (thinking blocks). OpenAI's wire structs move into `openai.go`, unexported
+  (`openAIRequest`, `openAIResponse`): they are one adapter's format, not shared types.
+- **`model.Usage` means the same for every provider:** `InputTokens` = every input token sent, cached ones included
+  (OpenAI's `prompt_tokens`; Anthropic's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`);
+  `CacheReadTokens` / `CacheWriteTokens` are parts of it; `OutputTokens` includes reasoning/thinking; `Reported` = false
+  when the server sent no usage. Stop reasons are mapped to `end` / `tool_calls` / `max_tokens`, else the raw value.
+  Budgets count tokens, not money (cache reads cost ~10%); a cost budget needs a price table and is deferred.
+- **`max_tokens` vs `max_completion_tokens` is chosen by host** (Jerry): `max_completion_tokens` for OpenAI
+  (`api.openai.com`) and Azure OpenAI (`*.openai.azure.com`), whose reasoning models reject `max_tokens`; `max_tokens`
+  everywhere else. There is no way to ask a server or model which one it takes (`/v1/models` lists IDs only; guessing
+  from model names breaks with each new family). **A config key `maxTokensField` overrides the choice** (Jerry), for a
+  gateway such as LiteLLM in front of OpenAI, which the host rule can't recognize. Built in 2c.
+
+### 2026-11-20 — 2b built: usage and stop reason from the server, in the trace and the digest
+
+- **`openai.go`** reads `usage` into `model.Usage` (`toUsage`: `prompt_tokens`, `completion_tokens`,
+  `prompt_tokens_details.cached_tokens`; `reasoning_tokens` skipped, already inside `completion_tokens`) and
+  `finish_reason` into the shared stop reasons (`openAIStopReason`; unknown values pass through). `usage` is a pointer,
+  so a missing or `null` key is `Reported: false`, not zero.
+- **`StopReason` never drives the loop**: some servers send `finish_reason: "stop"` together with tool calls, so the
+  loop keeps checking `len(ToolCalls)`. The stop reason is for the record and for 2c's cut-off warning.
+- **`trace.Usage` is gone**; `ModelResponseData.Usage` is a `model.Usage` (same JSON keys plus `reported`, so older
+  traces replay as "not reported"). `GetModelResponseData` takes the whole `Response`.
+- **The L1 digest shows tokens**: a line per task with model calls and a run total in the footer that also counts calls
+  outside any task (auto compaction), plus replies cut off at max tokens. Unreported calls are never shown as zero:
+  "not reported" when none reported, "(K reported no usage)" when some didn't. The digest is per trace file (one
+  process run); the budget and the totals across a resume belong to the journal (2d/2e).
+
+### 2026-11-20 — 2c built: `maxTokens` sent, cut-off replies reported
+
+- **`maxTokens` 0 stays the default and sends nothing** (Jerry): the server's own limit applies, which is the most
+  generous choice and can't break a setup. A fixed default was rejected: OpenAI rejects a value above the model's
+  output limit, and vLLM rejects prompt + `max_tokens` above the context window. The Anthropic adapter, whose API
+  requires the field, will use its own generous fallback when `maxTokens` is 0.
+- **The key**: two `omitempty` fields on `openAIRequest` (`max_tokens`, `max_completion_tokens`), one set per call,
+  because a struct tag can't be chosen at run time. `maxTokensFieldFor` picks it by host; `maxTokensField` overrides.
+  `checkConfig` refuses a negative `maxTokens` and an unknown `maxTokensField`.
+- **A cut-off reply is used, not thrown away.** Text: kept as the answer, and `Output.System` says it was cut off
+  (with the limit, or "the server's output limit" when none was sent). Tool calls: they all run; one that fails (almost
+  always the last, its JSON cut in half) gets `cutOffCallHint` added to its error, so the model sends smaller pieces
+  instead of the same oversized call. `runToolCall` takes a `cutOff` flag rather than matching the error text.
+  Rejected: refusing every call of a cut-off reply (throws away complete calls), and retrying with a higher limit
+  (spends tokens, hides the setting).
+- **A cut-off summary fails compaction** (`SummarizeChatContext`), because compaction would otherwise replace the
+  messages with half a summary and the dropped messages can't be recovered.
+- `model_request` trace events record `max_tokens`; `FakeProvider.StopReasons` (parallel to `Script`) scripts stop
+  reasons. The real Ollama check (does it honour `max_tokens`, send `length`, and how does it count a cached prompt?)
+  is still to do.
+
+### 2026-11-20 — 2c live check against Ollama 0.40.13 (`qwen2.5:0.5b`)
+
+- **`max_tokens` is honoured**; a reply that hits it comes back with `finish_reason: "length"` → `StopMaxTokens`, and
+  the warning, the trace's `stop_reason`/`max_tokens` and the digest's "cut off" count all showed it.
+- **`max_completion_tokens` is ignored** (a 20-token limit gave a 434-token reply). The host rule's `max_tokens` for
+  non-OpenAI hosts is right; forcing `maxTokensField: "max_completion_tokens"` on Ollama means no limit, which
+  `config/doc.go` now says.
+- **Usage matches our meaning**: `prompt_tokens` is the whole input even when cached, and
+  `prompt_tokens_details.cached_tokens` is the cached part of it (33 in, 32 cached on a repeat). The 2b worry that Ollama
+  counts only uncached input does not hold for this version.
+- **Ollama drops a half-written tool call**: a reply cut off while writing `write_file` arguments came back with empty
+  content, no `tool_calls` and `finish_reason: "length"` (seen in the raw response too). So `cutOffCallHint` never fires
+  with Ollama; it is for servers that pass partial arguments through. **Change:** `cutOffNotice` takes `empty`, and for
+  an empty cut-off reply adds "the model was probably writing a tool call … that the server dropped".
+- **Tool definitions dominate small turns**: ~1,600 input tokens for a one-line question, nearly all of it the 8 built-in
+  tool definitions sent with every call. Worth remembering when setting `runTokenBudget` (2d).
+
+### 2026-11-20 — 2d: each worker gets a token allowance and reports its total when it ends (Jerry)
+
+- **Each task worker is started with its own token allowance** and keeps its own count; when it finishes it reports its
+  total once, and the run total is the sum of those reports. No per-call report to the parent (Jerry: a message per
+  model call is unnecessary overhead), and no shared counter, so parallel workers and child processes (step 3) have
+  nothing to race on: the scheduler adds each finished worker's total, one at a time.
+- **The allowance is never more than what is left of the run budget**: `min(taskTokenBudget, remaining run budget)`,
+  where `taskTokenBudget` is configurable and 0 means "what is left". With parallel workers (step 3) the remaining budget
+  is divided among the workers running at once, so the allowances never add up to more than is left.
+- **Accepted:** a run can go over by up to one model call per worker (a check happens before a call; its size is only
+  known after). The report shows the real total. Rejected: a usage message per model call (overhead) and reserving
+  tokens before each call (an estimate of output size is often wrong).
+- **Supersedes** the per-call `model_usage` journal event and the shared session meter in the first 2d shape: usage is
+  journaled once per attempt (see § 2d built, when built).
+
+### 2026-11-20 — 2d built: run token budget, task allowance, run time limit
+
+- **Built as agreed** (§ 2d: each worker gets a token allowance): `usageMeter` + `meteredProvider` (`agent/meter.go`),
+  one meter per worker attempt and one per director, set on a shallow copy of the session (`cs.Meter`;
+  `getSessionProvider` puts it under the tracer, so a refused call is a traced `model_error`). The meter is used by one
+  goroutine and has no lock. `autoRun.allowance(runBudget, taskBudget, pending)` = `min(taskTokenBudget, run left)`;
+  the director gets the run's left after the worker (`taskTokenBudget` does not apply to it).
+- **What a used-up allowance means**: a worker limited by `taskTokenBudget` → a failed attempt ("the worker used its
+  token allowance"), retried like running out of steps; limited by the run's budget (worker or director) → the run stops
+  with `budget`. Budget and `timeout` stops write no `task_finished` (the task is interrupted and runs again next time)
+  and return `ErrNeedsPerson` (exit 3, Jerry), with a report line naming the limit and how to go on.
+- **Journal**: an attempt's tokens go in `task_finished.usage`; an attempt that ends without one (budget, time limit,
+  Ctrl+C) gets `attempt_usage`. Changed: the expected journal in `Test_Unit_AutoRun_Interrupted` now has
+  `attempt_usage:t1` before `run_ended`. `state.Usage` mirrors `model.Usage` (state imports only the stdlib).
+- **Time**: `runTimeoutMinutes` is a context deadline per task (`taskContext`, cause `errRunTimeout`), so it also stops
+  a long tool call; gates are asked outside it and their wait is recorded (`gate_answered.waited_ms`) and not counted
+  (Jerry). `Rebuild` computes `RunState.Running` from session starts (the manifest; `resumed.started_at`, new, because a
+  resume re-sends cut-off calls *before* writing `resumed`) to each session's last event, minus gate waits. A continued
+  run starts its meter and clock from `Rebuild`'s `Usage` and `Running`. Accepted: an attempt cut off by a crash is
+  missing from the totals (its tokens are only in the trace).
+- **Live check** (Ollama, `qwen2.5:0.5b`, `runTokenBudget` 5000): stopped with `budget`, exit 3, "6406 of 5000": over
+  by about one call, as designed. About 1,600 input tokens per call are the tool definitions.
+
+### 2026-11-20 — `state.Fold` renamed `state.Rebuild` (Jerry)
+
+- **`Fold` → `Rebuild`, `state/fold.go` → `state/rebuild.go`** (tests: `Test_Unit_Rebuild*`), and the docs that named
+  it, earlier entries of this log included. *Why:* "rebuild" says what it does in plain words; "fold" is the
+  functional-programming name for the pattern (apply each event in order to a running result) and only helps readers
+  who already know it. "Folded into" is still fine in prose that describes that mechanism. Unrelated uses of the word
+  (case-folding, folding objective sections into Instructions) and Go's `strings.EqualFold` are unchanged; `mvp1`–`mvp4`
+  are not touched.
+
+### 2026-11-20 — 2e built: token and time report, `/usage`
+
+- **The end-of-run report is read back from the journals** (`home.Load` → `state.Rebuild` after `run_ended`), not
+  from memory, so a resumed run's report includes its crashed sessions. One row per plan task covering all runs
+  (status, attempts, tokens, running time, and the run that did it when not this one), then "this run" and, after more
+  than one run, "all runs". The rows need not add up to "this run" (they span runs). A failed read prints a note and
+  changes nothing about the result.
+- **`Rebuild` gains** `TaskState.Running` (each ended attempt, `task_started` to `task_finished`/`attempt_usage`; an
+  attempt cut off by a crash counts for nothing, like its tokens) and `State.Total` / `TotalRunning` over every run.
+- **Token text leads with the total** ("6382 tokens: 6305 in (3115 cached), 77 out"), so it can be compared with the
+  budget line directly; the first live run printed the budget as a total and the report as in/out, which read as a
+  mismatch.
+- **`/usage`** (chat and plan mode): `NewChatSession` gives every session a counting-only `usageMeter` (auto mode's
+  workers replace it on their copies). The meter now has a mutex: chat's auto-compaction calls the model from a
+  background goroutine (in 2d the meter had no lock; auto mode's single-goroutine use was the only one then).
+- The `✓ done` line shows the attempt's tokens and time; the `not done` line is unchanged (its "(attempt N of M)" is
+  matched by tests and read by people; the table has the rest).
+
+### 2026-11-20 — PR #46 review: three fixes
+
+- **A task the budget stops before it starts counts as "not started".** `runTask` refused the next attempt before
+  `task_started`, but `runPlan` stopped at `i+1`, so the report undercounted "not started" by one. `runPlan` now checks
+  the run's budget before each task (and before asking its gate) and stops at `i`; `runTask`'s own check stays for a
+  later attempt of a task that already started.
+- **The cut-off hint is only for arguments that don't parse.** It was added to every error of a cut-off reply (unknown
+  tool, a denial, the tool's own failure), telling the model to split a call whose problem was something else.
+  `executeToolCall` now wraps a new `errInvalidArgs`, and `runToolCall` adds the hint only for it (no text matching).
+- **A partly reported sum says so.** `Usage.Reported` is merged with OR, so a sum with some calls that reported no
+  usage looked exact in the report (the digest already counted them). `state.Usage` gains `UnreportedCalls`
+  (`unreported_calls` in the journal), filled from the meters in `endAttempt` and added up by `Rebuild`; the report and
+  the `✓ done` line add "(+K calls with no usage)". Changed: two expectations in `Test_Unit_AutoRun_PrintsTheUsageReport`
+  (the scripted director reports no usage, so its totals now say so).
+- `plural` moved from `trace` to `textutils.Plural`, since `agent` needed it too (the helper-package rule).

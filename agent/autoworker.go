@@ -107,11 +107,15 @@ func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryN
 //     conversation.
 //   - Traced as its own task scope, named "<id>: <title>".
 //   - Whether the task is done is the director's call (judgeTask), not the worker's.
-func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error) {
+//   - meter (may be nil) counts and limits the worker's tokens: the worker runs on a shallow copy of cs with Meter set, so
+//     the session itself is not changed. A used-up allowance is an error wrapping errAllowanceUsed.
+func runWorker(ctx context.Context, cs *ChatSession, meter *usageMeter, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error) {
 	taskTrace := trace.StartTask(cs.Recorder, t.ID+": "+t.Title)
 	defer taskTrace.End()
 	msg := model.CreateChatMessage("user", "user", taskMessage(p, t, deps, retry, crash), "", nil)
-	msgs, err := reActLoop(ctx, cs, taskTrace, nil, msg)
+	wcs := *cs // [agent] a shallow copy: the same provider, tools, hooks and journal; its own meter
+	wcs.Meter = meter
+	msgs, err := reActLoop(ctx, &wcs, taskTrace, nil, msg)
 	if err != nil {
 		taskTrace.Fail(err)
 		return "", nil, err

@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
@@ -22,6 +23,15 @@ type ActivityDigest struct {
 	runIncomplete int // same, for run-level events (their scope is the run ID, which is not a task)
 	compacts      int
 	vetoes        map[string]int // tool_vetoed count per decision (VetoDenied, VetoDeniedByUser, VetoAllowedByUser, VetoAllowedByConfig)
+	tokens        usageTally     // every model call in the trace, background compaction included
+	cutOff        int            // model replies that stopped at the output limit (model.StopMaxTokens)
+}
+
+// usageTally adds up the token usage of a number of model calls.
+type usageTally struct {
+	usage      model.Usage
+	calls      int // model calls seen
+	unreported int // calls whose provider sent no usage
 }
 
 type runSummary struct {
@@ -39,6 +49,7 @@ type taskSummary struct {
 	lastReplyChars  int      // length of the model's last text reply in this task
 	hasReply        bool
 	effect          string // what a slash command did to the context, e.g. "context cleared (4 messages)"; empty for chat turns
+	tokens          usageTally
 }
 
 // pendingCall is a tool call between tool_requested and tool_finished.
@@ -75,7 +86,7 @@ func (a *ActivityDigest) task(scope string) *taskSummary {
 	return t
 }
 
-// Add folds one event into the digest.
+// Add applies one event to the digest.
 //
 // Notes:
 //   - A payload that does not decode is skipped: the digest is a summary, L0 has the truth.
@@ -85,7 +96,9 @@ func (a *ActivityDigest) task(scope string) *taskSummary {
 //   - Every tool_vetoed is counted per decision; its note is attached to the pending call so it shows on that call's
 //     line.
 //   - A tool_finished without a tool_requested is still shown.
-//   - Only a model_response with no tool calls inside a task counts as the task's reply.
+//   - Only a model_response with no tool calls inside a task counts as the task's reply, but every model_response adds its
+//     usage to the run's total and, inside a task, to the task's; one under the run ID (auto compaction) counts only for
+//     the run.
 //   - A /compact is a task of its own; an auto compaction is recorded under the run ID, which is not a task, so it
 //     only counts.
 func (a *ActivityDigest) Add(ev Event) {
@@ -145,16 +158,26 @@ func (a *ActivityDigest) Add(ev Event) {
 		}
 	case ModelResponse:
 		var d ModelResponseData
-		if ev.ScopeID != ev.RunID && json.Unmarshal(ev.EventData, &d) == nil && len(d.Message.ToolCalls) == 0 {
+		if json.Unmarshal(ev.EventData, &d) != nil {
+			break
+		}
+		a.tokens.add(d.Usage)
+		if d.StopReason == model.StopMaxTokens {
+			a.cutOff++
+		}
+		if ev.ScopeID != ev.RunID {
 			t := a.task(ev.ScopeID)
-			t.hasReply, t.lastReplyChars = true, len([]rune(d.Message.Content))
+			t.tokens.add(d.Usage)
+			if len(d.Message.ToolCalls) == 0 {
+				t.hasReply, t.lastReplyChars = true, len([]rune(d.Message.Content))
+			}
 		}
 	case ModelError:
 		a.modelErrs++
 	case ContextCleared:
 		var d ContextClearedData
 		if json.Unmarshal(ev.EventData, &d) == nil {
-			a.task(ev.ScopeID).effect = fmt.Sprintf("context cleared (%d %s)", d.MessagesDropped, plural(d.MessagesDropped, "message", "messages"))
+			a.task(ev.ScopeID).effect = fmt.Sprintf("context cleared (%d %s)", d.MessagesDropped, textutils.Plural(d.MessagesDropped, "message", "messages"))
 		}
 	case Compaction:
 		a.compacts++
@@ -200,6 +223,8 @@ func isMissingPayload(data json.RawMessage) bool {
 //   - Requested-but-unfinished calls are reported as "result missing (trace incomplete)" when the task had incomplete
 //     events, else "never finished".
 //   - The vetoes line counts vetoes, not calls: a call vetoed by two hooks counts twice.
+//   - Each task with model calls gets a tokens line, and the footer one for the whole run (usageTally.line); the footer
+//     adds how many replies were cut off at the output limit. A trace with no model calls prints no tokens line.
 //   - The "allowed by allow-all" count is only shown when allow-all was in use, so older digests read the same;
 //     "unknown decision" counts a trace from a newer or hand-edited version.
 func (a *ActivityDigest) Render(w io.Writer) error {
@@ -215,7 +240,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	}
 	b.WriteString("\n")
 	if a.runIncomplete > 0 {
-		fmt.Fprintf(&b, "\n%d run-level %s had incomplete data (payload truncated or dropped); see the trace\n", a.runIncomplete, plural(a.runIncomplete, "event", "events"))
+		fmt.Fprintf(&b, "\n%d run-level %s had incomplete data (payload truncated or dropped); see the trace\n", a.runIncomplete, textutils.Plural(a.runIncomplete, "event", "events"))
 	}
 
 	for _, t := range a.tasks {
@@ -225,7 +250,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 		}
 		switch {
 		case len(t.calls) > 0 || t.pending > 0:
-			fmt.Fprintf(&b, "%d tool %s:\n", len(t.calls)+t.pending, plural(len(t.calls)+t.pending, "call", "calls"))
+			fmt.Fprintf(&b, "%d tool %s:\n", len(t.calls)+t.pending, textutils.Plural(len(t.calls)+t.pending, "call", "calls"))
 			for _, c := range t.calls {
 				fmt.Fprintf(&b, "- %s\n", c)
 			}
@@ -243,8 +268,11 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 		default:
 			b.WriteString("no tools, no reply\n")
 		}
+		if line := t.tokens.line(); line != "" {
+			fmt.Fprintf(&b, "%s\n", line)
+		}
 		if t.incomplete > 0 {
-			fmt.Fprintf(&b, "%d %s had incomplete data (payload truncated or dropped): the list above may be missing activity; see the trace\n", t.incomplete, plural(t.incomplete, "event", "events"))
+			fmt.Fprintf(&b, "%d %s had incomplete data (payload truncated or dropped): the list above may be missing activity; see the trace\n", t.incomplete, textutils.Plural(t.incomplete, "event", "events"))
 		}
 		if t.status != "" && t.status != "ok" {
 			fmt.Fprintf(&b, "task %s", t.status)
@@ -256,6 +284,13 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	}
 
 	fmt.Fprintf(&b, "\n---\nredactions: %d, model errors: %d, compactions: %d\n", a.redacted, a.modelErrs, a.compacts)
+	if line := a.tokens.line(); line != "" {
+		b.WriteString(line)
+		if a.cutOff > 0 {
+			fmt.Fprintf(&b, "; %d %s cut off at max tokens", a.cutOff, textutils.Plural(a.cutOff, "reply", "replies"))
+		}
+		b.WriteString("\n")
+	}
 	// vetoes, not calls: a call vetoed by two hooks counts twice
 	total := 0
 	for _, n := range a.vetoes {
@@ -274,6 +309,51 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// add counts one model call's usage.
+//
+// Notes:
+//   - a call whose provider sent no usage (Reported false) is counted in unreported; its zero counts change nothing
+func (u *usageTally) add(usage model.Usage) {
+	u.calls++
+	if !usage.Reported {
+		u.unreported++
+	}
+	u.usage = u.usage.Add(usage)
+}
+
+// line renders the tally, e.g. "tokens: 18240 in (15360 cached), 612 out, 4 model calls".
+//
+// Notes:
+//   - "" when no model call was seen
+//   - "tokens: not reported (N model calls)" when no call reported usage; when only some did, "(K reported no usage)" is
+//     added so a partial sum is not read as the whole
+//   - cached and cache-write counts are shown only when above 0 (both are already inside "in")
+func (u usageTally) line() string {
+	if u.calls == 0 {
+		return ""
+	}
+	calls := fmt.Sprintf("%d model %s", u.calls, textutils.Plural(u.calls, "call", "calls"))
+	if u.unreported == u.calls {
+		return "tokens: not reported (" + calls + ")"
+	}
+	in := fmt.Sprintf("%d in", u.usage.InputTokens)
+	var cache []string
+	if u.usage.CacheReadTokens > 0 {
+		cache = append(cache, fmt.Sprintf("%d cached", u.usage.CacheReadTokens))
+	}
+	if u.usage.CacheWriteTokens > 0 {
+		cache = append(cache, fmt.Sprintf("%d written to cache", u.usage.CacheWriteTokens))
+	}
+	if len(cache) > 0 {
+		in += " (" + strings.Join(cache, ", ") + ")"
+	}
+	line := fmt.Sprintf("tokens: %s, %d out, %s", in, u.usage.OutputTokens, calls)
+	if u.unreported > 0 {
+		line += fmt.Sprintf(" (%d reported no usage)", u.unreported)
+	}
+	return line
 }
 
 // describe turns one finished tool call into its digest line, e.g. "read_file : read script1.py".
@@ -437,14 +517,4 @@ func oneLine(s string, max int) string {
 		return cut + "…"
 	}
 	return s
-}
-
-// plural returns one when n is 1, otherwise many.
-//
-// Notes: none.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }

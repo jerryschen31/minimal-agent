@@ -104,7 +104,7 @@
 // Tasks in Autonomous mode: one task from objective.md is one task, no matter how many steps the agent takes.
 // Task IDs look like t20261021T101530Z-5be0d2a1 (prefix "t")
 // Task IDs help readers of the trace, such as the L1 digest or when grepping the trace log file - so that events can be grouped / collected by task.
-// Info-only commands (/config, unknown commands) and /quit are not tasks and are not traced.
+// Info-only commands (/config, /usage, unknown commands) and /quit are not tasks and are not traced.
 //
 // # Scope
 //
@@ -138,10 +138,11 @@
 //	  func (a *ActivityDigest) Add(ev Event)
 //	  func isMissingPayload(data json.RawMessage) bool
 //	  func (a *ActivityDigest) Render(w io.Writer) error
+//	  func (u *usageTally) add(usage model.Usage)
+//	  func (u usageTally) line() string
 //	  func describe(name, args, content string, failed bool) string
 //	  func vetoNote(d ToolVetoedData) string
 //	  func oneLine(s string, max int) string
-//	  func plural(n int, one, many string) string
 //
 //	event.go
 //	  func GetRunStartData(cfg config.Config) RunStartData
@@ -152,7 +153,7 @@
 //	  func GetContextClearedData(dropped int) ContextClearedData
 //	  func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData
 //	  func messageRecord(m model.ChatMessage) MessageRecord
-//	  func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData
+//	  func GetModelResponseData(resp model.Response, elapsed time.Duration) ModelResponseData
 //	  func GetToolRequestedData(call model.ToolCall) ToolRequestedData
 //	  func GetToolVetoedData(call model.ToolCall, reason error, decision string, wait time.Duration) ToolVetoedData
 //	  func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData
@@ -160,7 +161,7 @@
 //
 //	provider.go
 //	  func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg config.Config) *TracedProvider
-//	  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+//	  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 //
 //	recorder.go
 //	  func Nop() Recorder

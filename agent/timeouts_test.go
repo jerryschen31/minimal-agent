@@ -33,7 +33,7 @@ func runBlocker(t *testing.T, ctx context.Context, toolSecs int) (string, time.D
 		t.Fatal(err)
 	}
 	start := time.Now()
-	msg, _ := runToolCall(ctx, fx.Session, trace.StartTask(fx.Session.Recorder, "t"), model.ToolCall{ID: "c1", Function: model.ToolCallFunc{Name: "blocker", Arguments: "{}"}})
+	msg, _ := runToolCall(ctx, fx.Session, trace.StartTask(fx.Session.Recorder, "t"), model.ToolCall{ID: "c1", Function: model.ToolCallFunc{Name: "blocker", Arguments: "{}"}}, false)
 	return msg.Content, time.Since(start)
 }
 

@@ -349,7 +349,8 @@ func printUsage(w io.Writer) {
   -y, -yes               Plan mode: accept the plan without asking; auto mode: run without asking
   -workdir <dir>         Directory the read_file tool may read from, with its subdirectories (default ".")
   -maxsteps <n>          Maximum agent steps (positive integer)
-  -maxtokens <n>         Maximum tokens the agent may use (positive integer)
+  -maxtokens <n>         Most tokens one model reply may use (positive integer; default: not sent, the
+                         server's own limit applies)
   -debug                 Print the context window each turn and log MCP protocol messages to stderr
   -approve <value>       ask | allow-all: allow-all runs tool calls that match ask rules without asking
                          (chat asks you to confirm at startup); deny rules always apply

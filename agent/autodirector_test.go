@@ -26,7 +26,7 @@ type autoProvider struct {
 }
 
 // Chat routes the call by its system prompt.
-func (p *autoProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
+func (p *autoProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error) {
 	if len(msgs) == 0 || msgs[0].Content != director.Prompt {
 		return p.worker.Chat(ctx, msgs, toolDefs)
 	}
@@ -34,7 +34,7 @@ func (p *autoProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolD
 	p.msgs = append(p.msgs, slices.Clone(msgs))
 	p.toolDefs = append(p.toolDefs, slices.Clone(toolDefs))
 	if p.director == nil {
-		return modeltest.AssistantToolCall(fmt.Sprintf("v%d", p.calls), "task_done", `{"reason":"checked"}`), nil
+		return model.Response{Message: modeltest.AssistantToolCall(fmt.Sprintf("v%d", p.calls), "task_done", `{"reason":"checked"}`)}, nil
 	}
 	return p.director.Chat(ctx, msgs, toolDefs)
 }

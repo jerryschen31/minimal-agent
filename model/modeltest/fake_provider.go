@@ -25,10 +25,14 @@ import (
 // also set, Chat sends on it once it starts blocking, so a test knows when the call is in progress.
 // The mutex is not held while blocked, so other calls (e.g. a background compaction) still work.
 type FakeProvider struct {
-	mu       sync.Mutex
-	Reply    string
-	Err      error
-	Script   []model.ChatMessage
+	mu     sync.Mutex
+	Reply  string
+	Err    error
+	Script []model.ChatMessage
+	// StopReasons is parallel to Script: StopReasons[i] is the stop reason returned with Script[i]; missing = ""
+	StopReasons []string
+	// Usages is parallel to Script, like StopReasons: Usages[i] is the usage returned with Script[i]; missing = zero
+	Usages   []model.Usage
 	next     int // index of the next Script entry to play
 	Calls    [][]model.ChatMessage
 	ToolDefs [][]model.ToolDef
@@ -44,7 +48,8 @@ type FakeProvider struct {
 //     mutex is not held while blocked, so a concurrent call is not blocked behind this one
 //   - precedence after the gate: a cancelled ctx, then Err, then Script (once set, running past its end is an error), then Reply
 //     as an assistant message
-func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error) {
+//   - the reply is returned as a model.Response: Script[i] comes with StopReasons[i] and Usages[i] (each if there is one)
+func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
 	p.ToolDefs = append(p.ToolDefs, append([]model.ToolDef(nil), tools...))
@@ -57,33 +62,39 @@ func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage
 			select {
 			case waiting <- struct{}{}:
 			case <-ctx.Done():
-				return model.ChatMessage{}, ctx.Err()
+				return model.Response{}, ctx.Err()
 			}
 		}
 		select {
 		case <-gate:
 		case <-ctx.Done():
-			return model.ChatMessage{}, ctx.Err()
+			return model.Response{}, ctx.Err()
 		}
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if ctx.Err() != nil {
-		return model.ChatMessage{}, ctx.Err()
+		return model.Response{}, ctx.Err()
 	}
 	if p.Err != nil {
-		return model.ChatMessage{}, p.Err
+		return model.Response{}, p.Err
 	}
 	if p.Script != nil {
 		if p.next >= len(p.Script) {
-			return model.ChatMessage{}, fmt.Errorf("FakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
+			return model.Response{}, fmt.Errorf("FakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
 		}
-		reply := p.Script[p.next]
+		resp := model.Response{Message: p.Script[p.next]}
+		if p.next < len(p.StopReasons) {
+			resp.StopReason = p.StopReasons[p.next]
+		}
+		if p.next < len(p.Usages) {
+			resp.Usage = p.Usages[p.next]
+		}
 		p.next++
-		return reply, nil
+		return resp, nil
 	}
-	return model.ChatMessage{Role: "assistant", Content: p.Reply}, nil
+	return model.Response{Message: model.ChatMessage{Role: "assistant", Content: p.Reply}}, nil
 }
 
 // AssistantText builds a plain assistant reply with no tool calls (the "final answer" step).

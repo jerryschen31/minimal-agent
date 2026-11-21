@@ -35,8 +35,9 @@ func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg confi
 // Notes:
 //   - When TurnMsgs is set, only those messages are recorded and the rest of msgs is counted as context messages;
 //     otherwise all of msgs is recorded.
-//   - The wrapped provider's result and error are returned unchanged.
-func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
+//   - The wrapped provider's Response and error are returned unchanged; the whole Response, not just its message, so the
+//     callers above keep the usage.
+func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error) {
 	recorded, contextCount := msgs, 0
 	if t.TurnMsgs != nil {
 		recorded, contextCount = t.TurnMsgs, len(msgs)-len(t.TurnMsgs)

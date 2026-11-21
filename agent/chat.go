@@ -24,7 +24,7 @@ import (
 // whether the user asked to quit.
 //
 // Notes:
-//   - Slash commands are /exit and /quit (return true), /clear, /summary (or /summarize), /compact and /config. An
+//   - Slash commands are /exit and /quit (return true), /clear, /summary (or /summarize), /compact, /config and /usage. An
 //     unrecognized command prints a notice. Empty or all-space lines are skipped.
 //   - Plan mode: a pending /edit note (planModeDetails.editNote) is put at the start of the message sent to the model,
 //     and cleared once the turn succeeds.
@@ -89,6 +89,8 @@ func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool {
 			cs.Output.System("Compaction complete. Chat summary: " + summaryMsg.Content)
 		case "/config":
 			config.PrintConfig(cs.Config)
+		case "/usage":
+			cs.Output.System(sessionUsageLine(cs.Meter))
 		case "/view":
 			// plan mode only: show the current draft (showObjective); no model call
 			pd, ok := cs.ModeDetails.(*planModeDetails)
@@ -363,7 +365,7 @@ var progressDotInterval = 2 * time.Second
 // Notes:
 //   - Chat mode on a terminal prints thinking dots while waiting (see Output.Thinking); the dots stop when the reply or
 //     an error arrives.
-func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error) {
+func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error) {
 	stop := cs.Output.Thinking()
 	defer stop()
 	return provider.Chat(ctx, msgs, toolDefs)

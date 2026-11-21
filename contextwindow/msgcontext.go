@@ -326,6 +326,8 @@ func autoCompactAt(cfg config.Config) int {
 //
 // Notes:
 //   - returns an error for no messages, a provider error, or an empty summary (a Chat response with no text is an error)
+//   - a summary cut off at the output limit (model.StopMaxTokens) is an error too: compaction would otherwise replace the
+//     messages with half a summary, and the dropped messages can't be recovered
 //   - the messages are rendered as plain text, one block per message (tool calls and tool call IDs included), and sent inside
 //     <transcript> tags in a brand-new request slice, so the original backing array is never touched
 //   - the user's extra instructions (addlInstructions) go in the one system message, because some providers reject or ignore a system
@@ -366,8 +368,12 @@ func SummarizeChatContext(ctx context.Context, p model.Provider, msgs []model.Ch
 		return "", fmt.Errorf("summarize: %w", err)
 	}
 
+	if resp.StopReason == model.StopMaxTokens {
+		return "", fmt.Errorf("summarize: the summary was cut off at the output limit (raise maxTokens)")
+	}
+
 	// Chat response summary could be nil, which should be considered an error.
-	summary := strings.TrimSpace(resp.Content)
+	summary := strings.TrimSpace(resp.Message.Content)
 	if summary == "" {
 		return "", fmt.Errorf("summarize: model returned an empty summary")
 	}

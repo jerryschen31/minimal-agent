@@ -250,6 +250,7 @@ type ModelRequestData struct {
 	ContextMessages int             `json:"context_messages"` // how many messages at the front of the request are not repeated in Messages
 	Messages        []MessageRecord `json:"messages"`
 	ToolNames       []string        `json:"tool_names,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"` // the output limit sent with the call; 0 (omitted) = none sent
 }
 
 // GetModelRequestData builds the model_request payload.
@@ -258,6 +259,7 @@ type ModelRequestData struct {
 //   - msgs are the messages to record; contextMessages is how many more were sent in front of them and are only
 //     counted.
 //   - ToolNames lists the names of the tool definitions sent.
+//   - MaxTokens is cfg.MaxTokens, so a cut-off reply (stop_reason max_tokens) can be read next to its limit.
 func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
 	d := ModelRequestData{
 		Provider:        cfg.Provider,
@@ -265,6 +267,7 @@ func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []mo
 		Step:            step,
 		ContextMessages: contextMessages,
 		Messages:        make([]MessageRecord, len(msgs)),
+		MaxTokens:       cfg.MaxTokens,
 	}
 	for i, m := range msgs {
 		d.Messages[i] = messageRecord(m)
@@ -295,28 +298,20 @@ type ToolCallRecord struct {
 	Arguments string `json:"arguments"` // a string, not json.RawMessage: models sometimes emit invalid JSON
 }
 
-// Usage is token accounting for one model call. Zero means the provider did not report it.
-type Usage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-}
-
 // ModelResponseData is the EventData for a ModelResponse event: everything the model produced in one call.
 type ModelResponseData struct {
 	Message    MessageRecord `json:"message"`
-	StopReason string        `json:"stop_reason,omitempty"`
-	Usage      Usage         `json:"usage"`
+	StopReason string        `json:"stop_reason,omitempty"` // model.StopEnd / StopToolCalls / StopMaxTokens, or the provider's own word
+	Usage      model.Usage   `json:"usage"`                 // Reported false: the provider sent no usage (older traces lack the key, which reads the same)
 	DurationMS int64         `json:"duration_ms"`
 }
 
-// GetModelResponseData builds the model_response payload.
+// GetModelResponseData builds the model_response payload from one call's Response.
 //
 // Notes:
-//   - StopReason and Usage stay empty until model.Provider reports them.
-func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData {
-	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
+//   - StopReason and Usage are copied as the provider reported them; a provider that sends no usage gives Usage.Reported false.
+func GetModelResponseData(resp model.Response, elapsed time.Duration) ModelResponseData {
+	return ModelResponseData{Message: messageRecord(resp.Message), StopReason: resp.StopReason, Usage: resp.Usage, DurationMS: elapsed.Milliseconds()}
 }
 
 // ToolRequestedData is the EventData for a ToolRequested event: the model asked for this tool call. It is recorded for

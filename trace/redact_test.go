@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jerryschen31/minimal-agent/model"
 )
 
 // Fake secrets are built from repeated characters so no secret scanner flags this file.
@@ -136,7 +138,7 @@ func Test_Redact_LeavesNonSecretsAlone(t *testing.T) {
 	data := ModelResponseData{
 		Message:    MessageRecord{Role: "assistant", Content: "I set max_tokens=1024 and the token budget is fine. See https://example.com/a:b"},
 		StopReason: "end_turn",
-		Usage:      Usage{InputTokens: 1234, OutputTokens: 567, CacheReadTokens: 89},
+		Usage:      model.Usage{InputTokens: 1234, OutputTokens: 567, CacheReadTokens: 89, Reported: true},
 		DurationMS: 42,
 	}
 	want, _ := json.Marshal(data)

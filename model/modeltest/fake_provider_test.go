@@ -23,15 +23,15 @@ func Test_FakeProvider_Script_PlaysRepliesInOrderThenErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call 1: unexpected error: %v", err)
 	}
-	if len(first.ToolCalls) != 1 || first.ToolCalls[0].ID != "c1" || first.ToolCalls[0].Function.Name != "read_file" {
-		t.Errorf("call 1: expected the read_file tool call c1, got %+v", first.ToolCalls)
+	if len(first.Message.ToolCalls) != 1 || first.Message.ToolCalls[0].ID != "c1" || first.Message.ToolCalls[0].Function.Name != "read_file" {
+		t.Errorf("call 1: expected the read_file tool call c1, got %+v", first.Message.ToolCalls)
 	}
 
 	second, err := p.Chat(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("call 2: unexpected error: %v", err)
 	}
-	if second.Content != "done" || len(second.ToolCalls) != 0 {
+	if second.Message.Content != "done" || len(second.Message.ToolCalls) != 0 {
 		t.Errorf("call 2: expected final text %q with no tool calls, got %+v", "done", second)
 	}
 
@@ -60,7 +60,7 @@ func Test_FakeProvider_NoScript_ReturnsReplyEveryCall(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		got, err := p.Chat(context.Background(), nil, nil)
-		if err != nil || got.Role != "assistant" || got.Content != "same" {
+		if err != nil || got.Message.Role != "assistant" || got.Message.Content != "same" {
 			t.Fatalf("call %d: expected assistant %q, got (%+v, %v)", i+1, "same", got, err)
 		}
 	}
@@ -111,12 +111,39 @@ func Test_FakeProvider_Gate_ClosingReleasesWithReply(t *testing.T) {
 	resCh := make(chan result, 1)
 	go func() {
 		m, err := p.Chat(context.Background(), nil, nil)
-		resCh <- result{m.Content, err}
+		resCh <- result{m.Message.Content, err}
 	}()
 
 	<-p.Waiting
 	close(p.Gate)
 	if r := <-resCh; r.err != nil || r.msg != "released" {
 		t.Fatalf("expected (%q, nil) after the gate opened, got (%q, %v)", "released", r.msg, r.err)
+	}
+}
+
+// - Verify StopReasons pairs with Script by index, and a reply past its end gets no stop reason
+func Test_FakeProvider_StopReasons_PairWithScript(t *testing.T) {
+	p := &FakeProvider{
+		Script:      []model.ChatMessage{AssistantText("cut"), AssistantText("whole")},
+		StopReasons: []string{model.StopMaxTokens},
+	}
+	first, err := p.Chat(context.Background(), nil, nil)
+	if err != nil || first.Message.Content != "cut" || first.StopReason != model.StopMaxTokens {
+		t.Errorf("call 1: expected %q with stop %q, got %+v (%v)", "cut", model.StopMaxTokens, first, err)
+	}
+	second, err := p.Chat(context.Background(), nil, nil)
+	if err != nil || second.Message.Content != "whole" || second.StopReason != "" {
+		t.Errorf("call 2: expected %q with no stop reason, got %+v (%v)", "whole", second, err)
+	}
+}
+
+// - Verify Usages pairs with Script by index, like StopReasons, and a reply past its end has zero usage
+func Test_FakeProvider_Usages_PairWithScript(t *testing.T) {
+	u := model.Usage{InputTokens: 10, OutputTokens: 2, Reported: true}
+	p := &FakeProvider{Script: []model.ChatMessage{AssistantText("a"), AssistantText("b")}, Usages: []model.Usage{u}}
+	first, _ := p.Chat(context.Background(), nil, nil)
+	second, _ := p.Chat(context.Background(), nil, nil)
+	if first.Usage != u || second.Usage != (model.Usage{}) {
+		t.Errorf("usages = %+v, %+v; want %+v then zero", first.Usage, second.Usage, u)
 	}
 }

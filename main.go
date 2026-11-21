@@ -17,7 +17,7 @@ const LogoLines = `
   <[o_o]>  minimal-agent v%s
    /| |\   Ask me anything!
 `
-const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /exit to exit\n     /compact to compact the conversation\n     /config to see the current agent configuration\n"
+const WelcomeMsg = LogoLines + "\nType /clear to clear the conversation\n     /exit to exit\n     /compact to compact the conversation\n     /config to see the current agent configuration\n     /usage to see this session's token usage\n"
 
 // Exit codes (exitCode). [agent] So a script running auto mode unattended can tell "broken" from "needs a person".
 const (
