@@ -70,7 +70,7 @@ func (h Home) Dir() string { return h.dir }
 // Notes:
 //   - The plan file must exist (its path is resolved). With a plan_id, the identity survives moving or renaming the
 //     file; without one (a hand-written plan), moving it starts it with no history. Telling a moved plan from a copied
-//     one is the caller's job (each Run in State.Runs has the path it ran at).
+//     one is the caller's job (each Run in PlanState.Runs has the path it ran at).
 func NewPlanRef(planID, planPath string) (PlanRef, error) {
 	abs, err := filepath.Abs(planPath)
 	if err != nil {
@@ -206,14 +206,14 @@ func (h Home) ContinueRun(r Run) (*Journal, error) {
 //
 // Notes:
 //   - A run belongs to the plan when its manifest matches p (same plan_id; or, without one, same path). Only the first
-//     line of each other run's journal is read. Each Run in State.Runs carries the path the plan had in that run.
+//     line of each other run's journal is read. Each Run in PlanState.Runs carries the path the plan had in that run.
 //   - A run folder with no journal, an empty one, or a first line that isn't a manifest is skipped (a crash between
 //     creating the folder and writing the manifest leaves one). A damaged journal of this plan is an error.
-//   - No runs: an empty State (no tasks), not an error.
-func (h Home) Load(p PlanRef) (State, error) {
+//   - No runs: an empty PlanState (no tasks), not an error.
+func (h Home) Load(p PlanRef) (PlanState, error) {
 	runs, err := h.runs()
 	if err != nil {
-		return State{}, err
+		return PlanState{}, err
 	}
 	var mine []RunEvents
 	for _, r := range runs {
@@ -225,12 +225,12 @@ func (h Home) Load(p PlanRef) (State, error) {
 		r.PlanPath = m.PlanPath
 		f, err := os.Open(path)
 		if err != nil {
-			return State{}, fmt.Errorf("run %d: %w", r.Number, err)
+			return PlanState{}, fmt.Errorf("run %d: %w", r.Number, err)
 		}
 		events, _, torn, err := readEvents(f)
 		f.Close()
 		if err != nil {
-			return State{}, fmt.Errorf("run %d: %s: %w", r.Number, path, err)
+			return PlanState{}, fmt.Errorf("run %d: %s: %w", r.Number, path, err)
 		}
 		mine = append(mine, RunEvents{Run: r, Events: events, TornTail: torn})
 	}

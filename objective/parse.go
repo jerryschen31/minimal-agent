@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jerryschen31/minimal-agent/mdscan"
+	"github.com/jerryschen31/minimal-agent/utils/mdscan"
 )
 
 // section is one part of the file found by Parse, before it is put into the Objective.

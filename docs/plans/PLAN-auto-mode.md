@@ -173,5 +173,5 @@ model/ (step 2)                      usage on the response; max_tokens
 
 ## Reference
 
-mvp3 (`mvp3/agent/autonomous.go`, `mvp3/director/`) for the director's tools, fresh worker context per task,
+mvp3 (`mvps/mvp3/agent/autonomous.go`, `mvps/mvp3/director/`) for the director's tools, fresh worker context per task,
 `stopReason` and the report. New here: `state/`, the tool records, resume, reading `plan.Plan`.

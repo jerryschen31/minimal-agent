@@ -44,7 +44,7 @@ none of autonomous mode's "unattended means contained" questions.
 - No folding of legacy headings (decided 2026-11-07): `## Quality bar` and `## Done…` are ordinary unknown sections,
   kept in `Other`. The mvp4 examples are not a format to support.
 - mvp4's parser passes unknown sections through to the director, so plan-mode output also runs with
-  `mvp4/minagent -mode autonomous` for testing (`## Instructions` arrives as a free-text section).
+  `mvps/mvp4/minagent -mode autonomous` for testing (`## Instructions` arrives as a free-text section).
 
 ## Flow
 

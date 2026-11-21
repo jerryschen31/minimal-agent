@@ -42,8 +42,8 @@ type RunState struct {
 	Running   time.Duration // time the run was running: its sessions, without the gaps between a crash and a resume or gate waits (runningTime)
 }
 
-// State is a plan's state rebuilt from its runs' journals.
-type State struct {
+// PlanState is a plan's state rebuilt from its runs' journals.
+type PlanState struct {
 	Runs   []Run                // the plan's runs, oldest first
 	Tasks  map[string]TaskState // by task ID; a task never started has no entry
 	Latest RunState             // the last run; zero when there are no runs
@@ -63,11 +63,11 @@ type State struct {
 //     it settled, so a second crash doesn't settle them again.
 //   - task_finished and attempt_usage (an attempt that ended without task_finished) add to the run's and the task's Usage,
 //     and the attempt's time (from its task_started) to the task's Running; an attempt a crash cut off has neither, so
-//     it counts for neither. State.Total and TotalRunning add up every run. RunState.Running is the run's running time (runningTime).
+//     it counts for neither. PlanState.Total and TotalRunning add up every run. RunState.Running is the run's running time (runningTime).
 //   - Unknown event types are skipped (a newer harness's journal). Known types with data that can't be decoded are an
 //     error naming the run and seq.
-func Rebuild(runs []RunEvents) (State, error) {
-	s := State{Tasks: map[string]TaskState{}}
+func Rebuild(runs []RunEvents) (PlanState, error) {
+	s := PlanState{Tasks: map[string]TaskState{}}
 	attemptStart := map[string]time.Time{} // task ID → its current attempt's task_started time
 	for _, re := range runs {
 		rs := RunState{Run: re.Run, TornTail: re.TornTail}
@@ -143,7 +143,7 @@ func Rebuild(runs []RunEvents) (State, error) {
 				}
 			}
 			if err != nil {
-				return State{}, fmt.Errorf("run %d: %w", re.Run.Number, err)
+				return PlanState{}, fmt.Errorf("run %d: %w", re.Run.Number, err)
 			}
 		}
 		for _, id := range slices.Compact(order) {
@@ -154,7 +154,7 @@ func Rebuild(runs []RunEvents) (State, error) {
 		}
 		running, err := runningTime(re.Events)
 		if err != nil {
-			return State{}, fmt.Errorf("run %d: %w", re.Run.Number, err)
+			return PlanState{}, fmt.Errorf("run %d: %w", re.Run.Number, err)
 		}
 		rs.Running = max(running-waited, 0)
 		s.Runs = append(s.Runs, re.Run)

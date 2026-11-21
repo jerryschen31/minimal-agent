@@ -15,7 +15,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // ErrNeedsPerson is returned (wrapped) by auto mode when the run stopped because it needs a person: a gate or a resume
@@ -29,7 +29,7 @@ type autoRun struct {
 	journal *state.Journal
 	tools   *runToolJournal // records the run's tool calls; also on the session (cs.ToolJournal) while the run is open
 	unlock  func() error
-	before  state.State // what the plan's earlier runs left (state.Home.Load)
+	before  state.PlanState // what the plan's earlier runs left (state.Home.Load)
 	// crashNotes: after a resume, per task, what happened to the calls a crash cut off (for its next worker)
 	crashNotes map[string]string
 	home       state.Home    // the state folder, and
@@ -265,7 +265,7 @@ func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask prom
 //     copy, and a warning says the two share one history and one lock (a copy is allowed: refusing would let anyone who
 //     can copy a file stop a plan from running; protecting the plan file is planned for later, DECISIONS.md
 //     § 2026-11-20 — 1d). Otherwise the plan was moved, and its history carries over.
-func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State) {
+func notePlanHistory(w io.Writer, ref state.PlanRef, st state.PlanState) {
 	if len(st.Runs) == 0 {
 		return
 	}
@@ -300,9 +300,9 @@ func hasPlanID(path, id string) bool {
 //     first ready task in file order" each time is a topological sort that keeps the order you wrote where it can.
 //   - Skip: done in an earlier run and its definition hash is unchanged. Everything else runs: new, changed, failed,
 //     interrupted, or cut off by a crash (still "running" in a run that never ended).
-//   - A done task whose dependency runs again is still skipped (no cascade in v1; PLAN-auto-mode.md "Which tasks run").
+//   - A done task whose dependency runs again is still skipped (no cascade in v1; docs/plans/PLAN-auto-mode.md "Which tasks run").
 //   - A cycle or an unknown dependency can't happen (CheckComplete refuses both); if one did, the rest keep file order.
-func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string) {
+func tasksToRun(p plan.Plan, st state.PlanState) (steps []taskStep, removed []string) {
 	placed := map[string]bool{}
 	remaining := slices.Clone(p.Tasks)
 	for len(remaining) > 0 {

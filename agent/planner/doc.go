@@ -1,4 +1,4 @@
-// Package planner holds plan mode's prompts and its three model-facing tools (PLAN-plan-apply.md step 2).
+// Package planner holds plan mode's prompts and its three model-facing tools (docs/plans/PLAN-plan-apply.md step 2).
 //
 //   - update_objective (UpdateObjective): the objective chat's tool. It changes the in-memory draft, an
 //     objective.Objective, one section at a time, without showing it; it never writes a file (plan mode's /save does).

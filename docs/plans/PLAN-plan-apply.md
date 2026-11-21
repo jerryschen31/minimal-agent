@@ -234,14 +234,14 @@ A first plan shows every task as `+`. A large re-run says so ("re-runs 14 tasks"
 | Built | Becomes |
 |---|---|
 | `objective/` (sections, tasks, depends, IDs, cycles, Cleanup, Markdown, approval hash) | **`objective/`** shrinks to the v2 reader (three sections, lenient, no front matter, normalized hash). **`plan/`** (new) takes `Task`, `Fix`, `AssignTaskIDs`, the task checks, task parsing and rendering, front matter, the round trip and `FuzzCleanup`, plus the new fields. `Approved`, `BodyHash` and `ApprovalStatus` go. |
-| Heading and code-fence helpers in `cleanup.go` | **`mdscan/`** (new helper package, standard library only): input checks and line splitting, `ReadHeading`, `IsCodeBlockFence`, `StripClosingHashes`. Both `objective/` and `plan/` use it. |
+| Heading and code-fence helpers in `cleanup.go` | **`utils/mdscan/`** (new helper package, standard library only): input checks and line splitting, `ReadHeading`, `IsCodeBlockFence`, `StripClosingHashes`. Both `objective/` and `plan/` use it. |
 | — | **`state/`** (new): snapshot types, load, save, latest, run directories, lock, file hashes. |
 | `docs/objective-format.md`, `examples/objective-example.md` | Rewritten for v2 (much shorter); add `docs/plan-format.md` and an example plan. |
 | `-mode plan` stub, `-objective`/`-obj`, `-out` | `-objective` stays and accepts text (step 2). `-out` is dropped (step 2). The stub reads with `objective.Parse` (step 1). |
 
 ## Build order
 
-1. **Formats.** `mdscan/`, `plan/` and `objective/` v2 **built 2026-11-08** (`DECISIONS.md § mdscan/ and plan/ built`,
+1. **Formats.** `utils/mdscan/`, `plan/` and `objective/` v2 **built 2026-11-08** (`DECISIONS.md § mdscan/ and plan/ built`,
    `§ objective/ v2 built`), with docs (`docs/objective-format.md`, `docs/plan-format.md`) and examples (an objective
    and the plan made from it); the stub reads with `objective.Parse`. `state/` (types, load/save/latest, run dirs,
    lock, file hashes) **moved to the start of step 3**: a first plan never reads state (`DECISIONS.md § state/ moves
