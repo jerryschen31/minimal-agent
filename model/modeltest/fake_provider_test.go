@@ -136,3 +136,14 @@ func Test_FakeProvider_StopReasons_PairWithScript(t *testing.T) {
 		t.Errorf("call 2: expected %q with no stop reason, got %+v (%v)", "whole", second, err)
 	}
 }
+
+// - Verify Usages pairs with Script by index, like StopReasons, and a reply past its end has zero usage
+func Test_FakeProvider_Usages_PairWithScript(t *testing.T) {
+	u := model.Usage{InputTokens: 10, OutputTokens: 2, Reported: true}
+	p := &FakeProvider{Script: []model.ChatMessage{AssistantText("a"), AssistantText("b")}, Usages: []model.Usage{u}}
+	first, _ := p.Chat(context.Background(), nil, nil)
+	second, _ := p.Chat(context.Background(), nil, nil)
+	if first.Usage != u || second.Usage != (model.Usage{}) {
+		t.Errorf("usages = %+v, %+v; want %+v then zero", first.Usage, second.Usage, u)
+	}
+}

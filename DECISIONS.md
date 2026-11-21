@@ -5190,3 +5190,41 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   an empty cut-off reply adds "the model was probably writing a tool call … that the server dropped".
 - **Tool definitions dominate small turns**: ~1,600 input tokens for a one-line question, nearly all of it the 8 built-in
   tool definitions sent with every call. Worth remembering when setting `runTokenBudget` (2d).
+
+### 2026-11-20 — 2d: each worker gets a token allowance and reports its total when it ends (Jerry)
+
+- **Each task worker is started with its own token allowance** and keeps its own count; when it finishes it reports its
+  total once, and the run total is the sum of those reports. No per-call report to the parent (Jerry: a message per
+  model call is unnecessary overhead), and no shared counter, so parallel workers and child processes (step 3) have
+  nothing to race on: the scheduler adds each finished worker's total, one at a time.
+- **The allowance is never more than what is left of the run budget**: `min(taskTokenBudget, remaining run budget)`,
+  where `taskTokenBudget` is configurable and 0 means "what is left". With parallel workers (step 3) the remaining budget
+  is divided among the workers running at once, so the allowances never add up to more than is left.
+- **Accepted:** a run can go over by up to one model call per worker (a check happens before a call; its size is only
+  known after). The report shows the real total. Rejected: a usage message per model call (overhead) and reserving
+  tokens before each call (an estimate of output size is often wrong).
+- **Supersedes** the per-call `model_usage` journal event and the shared session meter in the first 2d shape: usage is
+  journaled once per attempt (see § 2d built, when built).
+
+### 2026-11-20 — 2d built: run token budget, task allowance, run time limit
+
+- **Built as agreed** (§ 2d: each worker gets a token allowance): `usageMeter` + `meteredProvider` (`agent/meter.go`),
+  one meter per worker attempt and one per director, set on a shallow copy of the session (`cs.Meter`;
+  `getSessionProvider` puts it under the tracer, so a refused call is a traced `model_error`). The meter is used by one
+  goroutine and has no lock. `autoRun.allowance(runBudget, taskBudget, pending)` = `min(taskTokenBudget, run left)`;
+  the director gets the run's left after the worker (`taskTokenBudget` does not apply to it).
+- **What a used-up allowance means**: a worker limited by `taskTokenBudget` → a failed attempt ("the worker used its
+  token allowance"), retried like running out of steps; limited by the run's budget (worker or director) → the run stops
+  with `budget`. Budget and `timeout` stops write no `task_finished` (the task is interrupted and runs again next time)
+  and return `ErrNeedsPerson` (exit 3, Jerry), with a report line naming the limit and how to go on.
+- **Journal**: an attempt's tokens go in `task_finished.usage`; an attempt that ends without one (budget, time limit,
+  Ctrl+C) gets `attempt_usage`. Changed: the expected journal in `Test_Unit_AutoRun_Interrupted` now has
+  `attempt_usage:t1` before `run_ended`. `state.Usage` mirrors `model.Usage` (state imports only the stdlib).
+- **Time**: `runTimeoutMinutes` is a context deadline per task (`taskContext`, cause `errRunTimeout`), so it also stops
+  a long tool call; gates are asked outside it and their wait is recorded (`gate_answered.waited_ms`) and not counted
+  (Jerry). `Fold` computes `RunState.Running` from session starts (the manifest; `resumed.started_at`, new, because a
+  resume re-sends cut-off calls *before* writing `resumed`) to each session's last event, minus gate waits. A continued
+  run starts its meter and clock from `Fold`'s `Usage` and `Running`. Accepted: an attempt cut off by a crash is
+  missing from the totals (its tokens are only in the trace).
+- **Live check** (Ollama, `qwen2.5:0.5b`, `runTokenBudget` 5000): stopped with `budget`, exit 3, "6406 of 5000": over
+  by about one call, as designed. About 1,600 input tokens per call are the tool definitions.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ev builds an event for Fold tests.
@@ -102,5 +103,85 @@ func Test_Unit_Fold_BadData(t *testing.T) {
 		} else if got := err.Error(); !strings.Contains(got, "run 3") || !strings.Contains(got, "seq 4") {
 			t.Errorf("%s: err = %v, want one naming run 3 and seq 4", bad.Type, err)
 		}
+	}
+}
+
+// at returns ev(...) with its time set to base + offset.
+func at(e Event, base time.Time, offset time.Duration) Event {
+	e.At = base.Add(offset)
+	return e
+}
+
+//   - Verify Fold adds up usage from task_finished and attempt_usage, per run (Latest) and per task over all runs, and an
+//     older journal without usage gives zero
+func Test_Unit_Fold_Usage(t *testing.T) {
+	u := func(in, out int) Usage { return Usage{InputTokens: in, OutputTokens: out, Reported: true} }
+	run1 := RunEvents{Run: Run{Number: 1}, Events: []Event{
+		ev(1, EventManifest, "", Manifest{PlanPath: "/p"}),
+		ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}),
+		ev(3, EventTaskFinished, "t1", TaskFinished{Status: TaskFailed, Usage: u(100, 10)}),
+		ev(4, EventTaskStarted, "t1", TaskStarted{Attempt: 2}),
+		ev(5, EventAttemptUsage, "t1", AttemptUsage{Attempt: 2, Usage: u(50, 5)}),
+		ev(6, EventRunEnded, "", RunEnded{Reason: StopBudget}),
+	}}
+	run2 := RunEvents{Run: Run{Number: 2}, Events: []Event{
+		ev(1, EventManifest, "", Manifest{PlanPath: "/p"}),
+		ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}),
+		ev(3, EventTaskFinished, "t1", TaskFinished{Status: TaskDone, Usage: u(200, 20)}),
+		ev(4, EventTaskStarted, "t2", TaskStarted{Attempt: 1}),
+		ev(5, EventTaskFinished, "t2", TaskFinished{Status: TaskDone}), // an older journal: no usage
+	}}
+	s, err := Fold([]RunEvents{run1, run2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Latest.Usage.Total(); got != 220 {
+		t.Errorf("run 2 usage = %d, want 220 (only its own attempts)", got)
+	}
+	if got := s.Tasks["t1"].Usage.Total(); got != 385 {
+		t.Errorf("t1 usage = %d, want 385 (110 + 55 + 220, over both runs)", got)
+	}
+	if got := s.Tasks["t2"].Usage; got != (Usage{}) {
+		t.Errorf("t2 usage = %+v, want zero", got)
+	}
+}
+
+//   - Verify a run's running time is its sessions' time: from the manifest to the last event before the crash, then from
+//     the resumed session's StartedAt (before its re-sent calls) to its last event; the gap between is not counted, nor
+//     are gate waits; an older resumed event without StartedAt starts its session at its own time
+func Test_Unit_Fold_RunningTime(t *testing.T) {
+	base := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	events := []Event{
+		at(ev(1, EventManifest, "", Manifest{PlanPath: "/p"}), base, 0),
+		at(ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}), base, time.Minute),
+		at(ev(3, EventToolBefore, "t1", ToolBefore{CallID: "c1", Tool: "x"}), base, 10*time.Minute), // then a crash
+		// the next session starts at +1h: it re-sends c1, then writes resumed
+		at(ev(4, EventToolBefore, "t1", ToolBefore{CallID: "c2", Tool: "x", ResendOf: "c1"}), base, time.Hour+time.Minute),
+		at(ev(5, EventToolAfter, "t1", ToolAfter{CallID: "c2"}), base, time.Hour+2*time.Minute),
+		at(ev(6, EventResumed, "", Resumed{StartedAt: base.Add(time.Hour), Settled: []SettledCall{{CallID: "c1"}}}), base, time.Hour+2*time.Minute),
+		at(ev(7, EventGateAnswered, "t2", GateAnswered{Answer: "yes", WaitedMS: 2 * 60 * 1000}), base, time.Hour+4*time.Minute),
+		at(ev(8, EventRunEnded, "", RunEnded{Reason: StopDone}), base, time.Hour+15*time.Minute),
+	}
+	s, err := Fold([]RunEvents{{Run: Run{Number: 1}, Events: events}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 10*time.Minute + 15*time.Minute - 2*time.Minute; s.Latest.Running != want {
+		t.Errorf("running = %s, want %s (10m + 15m, minus a 2m gate wait)", s.Latest.Running, want)
+	}
+
+	// an older journal: resumed without StartedAt starts the session at the resumed event's own time
+	old := []Event{
+		at(ev(1, EventManifest, "", Manifest{PlanPath: "/p"}), base, 0),
+		at(ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}), base, 5*time.Minute),
+		at(ev(3, EventResumed, "", Resumed{}), base, time.Hour),
+		at(ev(4, EventRunEnded, "", RunEnded{Reason: StopDone}), base, time.Hour+3*time.Minute),
+	}
+	s, err = Fold([]RunEvents{{Run: Run{Number: 1}, Events: old}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 8 * time.Minute; s.Latest.Running != want {
+		t.Errorf("older journal: running = %s, want %s", s.Latest.Running, want)
 	}
 }

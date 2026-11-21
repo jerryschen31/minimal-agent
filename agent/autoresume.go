@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/state"
@@ -73,6 +74,7 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 	if err != nil {
 		return nil, nil, err
 	}
+	sessionStart := time.Now() // [agent] before any re-send: those calls belong to this session's running time
 	j, err := home.ContinueRun(last.Run)
 	if err != nil {
 		return nil, nil, err
@@ -90,7 +92,7 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 		return nil, nil, fmt.Errorf("run %04d: the journal failed while settling: %w", last.Run.Number, jerr)
 	}
 	host, _ := os.Hostname()
-	resumed := state.Resumed{PID: os.Getpid(), Host: host, TraceRunID: cs.Recorder.RunID(), Settled: settled}
+	resumed := state.Resumed{PID: os.Getpid(), Host: host, TraceRunID: cs.Recorder.RunID(), StartedAt: sessionStart.UTC(), Settled: settled}
 	if err := j.Append(state.EventResumed, "", resumed); err != nil {
 		cs.ToolJournal = nil
 		j.Close()
@@ -98,7 +100,7 @@ func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.S
 	}
 	if last.Manifest.PlanSHA256 == state.SHA256(planData) && last.Manifest.ConfigSHA256 == state.SHA256(config) && !toolsChanged {
 		fmt.Fprintf(w, "Resuming run %04d.\n", last.Run.Number)
-		return &autoRun{run: last.Run, journal: j, tools: rj}, notes, nil
+		return &autoRun{run: last.Run, journal: j, tools: rj, sessionStart: sessionStart}, notes, nil
 	}
 	cs.ToolJournal = nil
 	ended := state.RunEnded{Reason: state.StopInterrupted, Error: "cut off by a crash; the plan, config or tools changed since, so a new run continues it"}

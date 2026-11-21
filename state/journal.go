@@ -27,6 +27,7 @@ const (
 	EventToolAfter    EventType = "tool_after"    // ToolAfter: written after it returns
 	EventResumed      EventType = "resumed"       // Resumed: a later process took up this run after it was cut off
 	EventGateAnswered EventType = "gate_answered" // GateAnswered: a person answered a task's gate
+	EventAttemptUsage EventType = "attempt_usage" // AttemptUsage: the tokens of an attempt that ended without a task_finished
 	EventRunEnded     EventType = "run_ended"     // RunEnded: the run is over, and why
 )
 
@@ -93,12 +94,50 @@ type TaskStarted struct {
 	Attempt int `json:"attempt"` // 1 for the first try in this run
 }
 
+// Usage is the tokens one attempt (or a sum of attempts) used. It mirrors model.Usage, which this package can't import:
+// InputTokens is the whole input, cached tokens included; the cache fields are parts of it.
+type Usage struct {
+	InputTokens      int  `json:"input_tokens"`
+	OutputTokens     int  `json:"output_tokens"`
+	CacheReadTokens  int  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int  `json:"cache_write_tokens,omitempty"`
+	Reported         bool `json:"reported"` // false: no model call in it reported usage
+}
+
+// Add returns the sum of u and other; Reported is true if either was.
+//
+// Notes: none.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:      u.InputTokens + other.InputTokens,
+		OutputTokens:     u.OutputTokens + other.OutputTokens,
+		CacheReadTokens:  u.CacheReadTokens + other.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens + other.CacheWriteTokens,
+		Reported:         u.Reported || other.Reported,
+	}
+}
+
+// Total returns input plus output tokens, the number counted against a token budget.
+//
+// Notes:
+//   - the cache fields are not added: they are already inside InputTokens
+func (u Usage) Total() int { return u.InputTokens + u.OutputTokens }
+
+// AttemptUsage is EventAttemptUsage's data: the tokens of an attempt that ended without a task_finished (stopped by a
+// budget, the time limit or Ctrl+C). A finished attempt's tokens are in its task_finished. An attempt cut off by a
+// crash has neither: its tokens are only in the trace.
+type AttemptUsage struct {
+	Attempt int   `json:"attempt"`
+	Usage   Usage `json:"usage"`
+}
+
 // TaskFinished is EventTaskFinished's data.
 type TaskFinished struct {
 	Status  TaskStatus `json:"status"`             // TaskDone or TaskFailed
 	DefHash string     `json:"def_hash,omitempty"` // plan.Task.DefinitionHash() of the task that ran
 	Summary string     `json:"summary,omitempty"`  // what the worker reported
 	Verdict string     `json:"verdict,omitempty"`  // what the director decided, and why
+	Usage   Usage      `json:"usage"`              // the attempt's tokens (worker + director)
 }
 
 // What a FileHashes hash is when the path holds no file's content.
@@ -140,10 +179,13 @@ type ToolAfter struct {
 
 // Resumed is EventResumed's data.
 type Resumed struct {
-	PID        int           `json:"pid"`
-	Host       string        `json:"host,omitempty"`
-	TraceRunID string        `json:"trace_run_id,omitempty"` // the resuming process's trace
-	Settled    []SettledCall `json:"settled,omitempty"`      // what was done about each cut-off call; Fold closes them
+	PID        int    `json:"pid"`
+	Host       string `json:"host,omitempty"`
+	TraceRunID string `json:"trace_run_id,omitempty"` // the resuming process's trace
+	// StartedAt is when the resuming session started, before it re-sent any cut-off call (those calls' events come before
+	// this one). Fold measures running time from it; zero (older journals) = this event's time.
+	StartedAt time.Time     `json:"started_at,omitzero"`
+	Settled   []SettledCall `json:"settled,omitempty"` // what was done about each cut-off call; Fold closes them
 }
 
 // SettledCall is what resume did about one cut-off call (a tool_before with no tool_after).
@@ -182,7 +224,8 @@ const (
 
 // GateAnswered is EventGateAnswered's data.
 type GateAnswered struct {
-	Answer string `json:"answer"` // "yes" or "no"
+	Answer   string `json:"answer"`              // "yes" or "no"
+	WaitedMS int64  `json:"waited_ms,omitempty"` // how long the question waited for the answer; not running time
 }
 
 // RunEnded is EventRunEnded's data.

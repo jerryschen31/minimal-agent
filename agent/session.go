@@ -35,6 +35,9 @@ type ChatSession struct {
 	// ToolJournal records every tool call that runs, before and after (auto mode's run journal); nil = not recorded
 	// (chat and plan mode). See executeToolCall.
 	ToolJournal toolRecorder
+	// Meter counts and limits the tokens of this session's model calls (auto mode: one per worker or director attempt,
+	// set on a copy of the session); nil = not counted. See getSessionProvider.
+	Meter *usageMeter
 	// ModeDetails holds what one mode keeps on the session: *planModeDetails in plan mode, nil in chat mode. Code that
 	// needs a mode's fields checks for its type (cs.ModeDetails.(*planModeDetails)), so the session itself stays
 	// mode-agnostic.
@@ -81,13 +84,17 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 	}, nil
 }
 
-// getSessionProvider returns the provider to use for model calls made under scopeID: the session's provider, traced.
+// getSessionProvider returns the provider to use for model calls made under scopeID: the session's provider, metered
+// when cs.Meter is set, then traced.
 //
-// Notes: none.
+// Notes:
+//   - The meter is under the tracer, so a call it refuses is traced as a model_error.
 func (cs *ChatSession) getSessionProvider(scopeID string) *trace.TracedProvider {
-	// [agent] 2d: the budget meter wraps cs.Provider here, under the tracer (GetTracedProvider(meter(cs.Provider), …)),
-	// so a refused call is traced as model_error and every caller (loop, director, compaction, /summary) is counted.
-	return trace.GetTracedProvider(cs.Provider, cs.Recorder, scopeID, cs.Config)
+	var p model.Provider = cs.Provider
+	if cs.Meter != nil {
+		p = meteredProvider{inner: p, meter: cs.Meter}
+	}
+	return trace.GetTracedProvider(p, cs.Recorder, scopeID, cs.Config)
 }
 
 // setupChatSession creates a new chat session instance.

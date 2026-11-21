@@ -57,6 +57,10 @@ type Config struct {
 	// MaxTokensField is the request key maxTokens is sent as: "" = by host, or MaxTokensFieldMaxTokens /
 	// MaxTokensFieldMaxCompletionTokens, for a gateway (e.g. LiteLLM) the host rule can't recognize
 	MaxTokensField string `json:"maxTokensField"`
+	// Auto mode budgets; 0 = no limit (the default). Not negative.
+	RunTokenBudget    int `json:"runTokenBudget"`    // most tokens (input + output) one run may use; a run that reaches it stops (exit 3)
+	TaskTokenBudget   int `json:"taskTokenBudget"`   // most tokens one worker attempt may use; 0 = what is left of runTokenBudget
+	RunTimeoutMinutes int `json:"runTimeoutMinutes"` // most minutes one run may be running (over its sessions; crashes and gate waits not counted)
 
 	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
 	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
@@ -403,6 +407,9 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  maxTaskAttempts: %d\n", cfg.MaxTaskAttempts)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
 	fmt.Fprintf(w, "  maxTokensField: %q\n", cfg.MaxTokensField)
+	fmt.Fprintf(w, "  runTokenBudget: %d\n", cfg.RunTokenBudget)
+	fmt.Fprintf(w, "  taskTokenBudget: %d\n", cfg.TaskTokenBudget)
+	fmt.Fprintf(w, "  runTimeoutMinutes: %d\n", cfg.RunTimeoutMinutes)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
 	fmt.Fprintf(w, "  turnTimeoutSeconds: %d\n", cfg.TurnTimeoutSeconds)

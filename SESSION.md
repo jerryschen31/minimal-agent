@@ -1622,3 +1622,8 @@ the trace for `finish_reason` → `max_tokens` and the `prompt_tokens` of a seco
 **2c live check done** against Ollama 0.40.13 (DECISIONS.md § 2c live check): `max_tokens` honoured,
 `max_completion_tokens` ignored, usage matches `model.Usage`'s meaning, a cut-off tool call arrives as an empty reply
 (the notice now says so). Not committed. Next: 2d.
+
+**2d built** (not committed): per-attempt token allowances (`usageMeter`), `runTokenBudget` / `taskTokenBudget` /
+`runTimeoutMinutes`, budget and timeout stops → exit 3, usage in `task_finished` / `attempt_usage`, running time from
+the journal (DECISIONS.md § 2d built). Live check against Ollama passed. Next: 2e (report: tokens and time per task and
+in total; chat `/usage`).

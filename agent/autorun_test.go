@@ -298,7 +298,8 @@ func Test_Unit_AutoRun_Interrupted(t *testing.T) {
 		t.Errorf("autoMode: %v, want context.Canceled", err)
 	}
 	events := journal(t, fx, 1)
-	if got := eventTypes(events); !slices.Equal(got, []string{"manifest", "task_started:t1", "run_ended"}) {
+	// [agent] attempt_usage (2d): an attempt stopped without a task_finished still records its tokens
+	if got := eventTypes(events); !slices.Equal(got, []string{"manifest", "task_started:t1", "attempt_usage:t1", "run_ended"}) {
 		t.Errorf("journal = %v", got)
 	}
 	if r := lastRunEnded(t, events); r.Reason != state.StopInterrupted {

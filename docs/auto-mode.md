@@ -102,7 +102,7 @@ A copy with the same `plan_id` shares that history and runs with a warning.
 | 0 | finished, or you said no (`Run?`, `Accept?`) |
 | 1 | failed: setup, an error, or a task not done after every attempt |
 | 2 | bad flags or config |
-| 3 | needs a person: a gate or a crash question nobody could answer, or a declined gate |
+| 3 | needs a person: a gate or a crash question nobody could answer, a declined gate, or a token or time budget reached |
 | 130 | stopped with Ctrl+C |
 
 ## Settings
@@ -114,11 +114,20 @@ A copy with the same `plan_id` shares that history and runs with a warning.
 | `askRules` | `["*delete*", "*remove*"]` | asked = refused in auto mode |
 | `runCommands` | none | programs `run_command` may start |
 | `maxSteps` | 10 | model steps per worker (and per director) |
+| `runTokenBudget` | 0 (no limit) | most tokens one run may use; reached → stops with `budget` (exit 3) |
+| `taskTokenBudget` | 0 (what the run has left) | most tokens one worker attempt may use; reached → a failed attempt |
+| `runTimeoutMinutes` | 0 (no limit) | most minutes a run may be running (crashes and gate waits don't count) |
+
+**Budgets.** Each worker attempt gets its own token allowance (`taskTokenBudget`, never more than the run has left)
+and reports what it used when it ends; the director then gets what is left. Each model call sends the whole tool list
+(about 1,600 tokens for the built-in tools alone), so even short tasks use a few thousand tokens. A run can go over its
+budget by about one model call (the check is before a call). A budget stop leaves the task to run again: raise the
+limit and start again (a new run with a fresh budget; done tasks are skipped). A crash keeps the budget: the resumed
+run starts from what the journal recorded (an attempt cut off by the crash is missing from it).
 
 ## Current limits
 
 - One task at a time (no parallel tasks yet).
-- No token or time budget for a whole run yet (step 2 of `PLAN-auto-mode.md`).
 - The director can only judge what it can check: a `done when` it can't verify with reads or your allowed commands is
   judged not done.
 - A crash in chat or plan mode isn't resumable (there is no journal there).

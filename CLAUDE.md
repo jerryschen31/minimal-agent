@@ -136,7 +136,8 @@ go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read
                                                  # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
                                                  # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
                                                  # the same command resumes: cut-off calls settled first (may ask).
-                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person, 130 Ctrl+C.
+                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person (incl. a
+                                                 # budget or time limit reached), 130 Ctrl+C.
                                                  # User guide: docs/auto-mode.md
 ```
 
@@ -306,6 +307,14 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   **`StopReason` never decides whether a reply has tool calls** (some servers send `stop` with tool calls): check
   `len(ToolCalls)`. Every provider returns `model.Response`; `model.Usage.InputTokens` is the whole input, cached
   tokens included (`DECISIONS.md § Step 2`).
+- **Auto mode budgets** (`runTokenBudget`, `taskTokenBudget`, `runTimeoutMinutes`; 0 = no limit): each worker attempt
+  and each director gets its own `usageMeter` (`agent/meter.go`) on a shallow copy of the session (`cs.Meter`, wrapped
+  under the tracer by `getSessionProvider`), with an allowance from `autoRun.allowance` (never more than the run has
+  left). Only the scheduling code (`runTask`) adds an attempt's total to the run's (`autoRun.used`); nothing is shared
+  while a worker runs (`DECISIONS.md § 2d`). The attempt's tokens go in `task_finished`, or `attempt_usage` when it ends
+  without one. The time limit is a per-task context deadline (`taskContext`, cause `errRunTimeout`, told apart from
+  Ctrl+C by `stopReasonOf`); gate waits are outside it. Budget and timeout stops leave the task interrupted and return
+  `ErrNeedsPerson` (exit 3). A continued run (resume) starts from `state.Fold`'s `Usage` and `Running`.
 
 ## Code map (root module only)
 

@@ -26,7 +26,7 @@
 //	  func commandPreview(command string, args *[]string, dir *string) []string
 //
 //	autodirector.go
-//	  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+//	  func judgeTask(ctx context.Context, cs *ChatSession, meter *usageMeter, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 //
 //	autojournal.go
 //	  func withResend(ctx context.Context, orig state.ToolBefore) context.Context
@@ -57,6 +57,14 @@
 //	  func oneLine(s string, max int) string
 //
 //	autorun.go
+//	  func (ar *autoRun) running() time.Duration
+//	  func (ar *autoRun) taskContext(ctx context.Context, limitMinutes int) (context.Context, context.CancelFunc, bool)
+//	  func stopReasonOf(ctx context.Context) state.StopReason
+//	  func (ar *autoRun) allowance(runBudget, taskBudget int, pending model.Usage) (n int, runLimited, ok bool)
+//	  func (ar *autoRun) budgetError(runBudget int, pending model.Usage) error
+//	  func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usage
+//	  func toStateUsage(u model.Usage) state.Usage
+//	  func fromStateUsage(u state.Usage) model.Usage
 //	  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
 //	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
 //	  func hasPlanID(path, id string) bool
@@ -64,12 +72,12 @@
 //	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
 //	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
 //	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
-//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
+//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, used state.Usage, err error) error
 //	  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 //
 //	autoworker.go
 //	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
-//	  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
+//	  func runWorker(ctx context.Context, cs *ChatSession, meter *usageMeter, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
 //
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -124,6 +132,11 @@
 //	  func buildManifest(cs *ChatSession, conns []*mcpconnect.McpConnection, ref state.PlanRef) (state.Manifest, []byte, error)
 //	  func configSnapshot(cfg config.Config) ([]byte, error)
 //	  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
+//
+//	meter.go
+//	  func (m *usageMeter) check() error
+//	  func (m *usageMeter) add(u model.Usage)
+//	  func (p meteredProvider) Chat(ctx context.Context, msgs []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
 //
 //	output.go
 //	  func (o chatOutput) Assistant(text string)

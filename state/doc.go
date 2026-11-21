@@ -25,6 +25,7 @@
 //
 //	fold.go
 //	  func Fold(runs []RunEvents) (State, error)
+//	  func runningTime(events []Event) (time.Duration, error)
 //
 //	home.go
 //	  func OpenHome(dir string) (Home, error)
@@ -42,6 +43,8 @@
 //	  func trimZeros(s string) string
 //
 //	journal.go
+//	  func (u Usage) Add(other Usage) Usage
+//	  func (u Usage) Total() int
 //	  func (j *Journal) Append(typ EventType, task string, data any) error
 //	  func (j *Journal) Seq() int
 //	  func (j *Journal) Close() error

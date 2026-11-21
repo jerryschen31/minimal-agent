@@ -230,6 +230,7 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 // Notes:
 //   - Shared by SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
 //   - maxTokens may be 0 (not sent) but not negative; maxTokensField must be empty (by host) or one of the two keys.
+//   - runTokenBudget, taskTokenBudget and runTimeoutMinutes may be 0 (no limit) but not negative.
 //   - ResponseTimeoutSeconds of 0 would time out every model call at once.
 //   - toolTimeoutSeconds and turnTimeoutSeconds must be positive, and the turn's limit at least the tool's.
 //   - mcpConnectTimeoutSeconds must be positive: 0 would fail every MCP server at once.
@@ -258,6 +259,15 @@ func checkConfig(cfg config.Config) error {
 	default:
 		return fmt.Errorf("maxTokensField must be %q, %q or empty (choose by host), got %q",
 			config.MaxTokensFieldMaxTokens, config.MaxTokensFieldMaxCompletionTokens, cfg.MaxTokensField)
+	}
+	// 0 means no limit; a negative budget is a typo, not a meaning
+	for _, b := range []struct {
+		name string
+		v    int
+	}{{"runTokenBudget", cfg.RunTokenBudget}, {"taskTokenBudget", cfg.TaskTokenBudget}, {"runTimeoutMinutes", cfg.RunTimeoutMinutes}} {
+		if b.v < 0 {
+			return fmt.Errorf("%s must not be negative (0 = no limit), got %d", b.name, b.v)
+		}
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

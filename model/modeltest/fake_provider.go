@@ -31,11 +31,13 @@ type FakeProvider struct {
 	Script []model.ChatMessage
 	// StopReasons is parallel to Script: StopReasons[i] is the stop reason returned with Script[i]; missing = ""
 	StopReasons []string
-	next        int // index of the next Script entry to play
-	Calls       [][]model.ChatMessage
-	ToolDefs    [][]model.ToolDef
-	Gate        chan struct{} // if set, Chat blocks until Gate is closed or ctx is cancelled
-	Waiting     chan struct{} // if set, Chat sends on it once it starts blocking on Gate
+	// Usages is parallel to Script, like StopReasons: Usages[i] is the usage returned with Script[i]; missing = zero
+	Usages   []model.Usage
+	next     int // index of the next Script entry to play
+	Calls    [][]model.ChatMessage
+	ToolDefs [][]model.ToolDef
+	Gate     chan struct{} // if set, Chat blocks until Gate is closed or ctx is cancelled
+	Waiting  chan struct{} // if set, Chat sends on it once it starts blocking on Gate
 }
 
 // Chat records the call and returns the next scripted reply, Reply, or Err, as the FakeProvider's fields say.
@@ -46,7 +48,7 @@ type FakeProvider struct {
 //     mutex is not held while blocked, so a concurrent call is not blocked behind this one
 //   - precedence after the gate: a cancelled ctx, then Err, then Script (once set, running past its end is an error), then Reply
 //     as an assistant message
-//   - the reply is returned as a model.Response: Script[i] comes with StopReasons[i] (if there is one); Usage stays zero
+//   - the reply is returned as a model.Response: Script[i] comes with StopReasons[i] and Usages[i] (each if there is one)
 func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
@@ -85,6 +87,9 @@ func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage
 		resp := model.Response{Message: p.Script[p.next]}
 		if p.next < len(p.StopReasons) {
 			resp.StopReason = p.StopReasons[p.next]
+		}
+		if p.next < len(p.Usages) {
+			resp.Usage = p.Usages[p.next]
 		}
 		p.next++
 		return resp, nil
