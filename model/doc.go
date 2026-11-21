@@ -9,6 +9,8 @@
 // method signatures in source order.
 //
 //	openai.go
+//	  func (u *openAIUsage) toUsage() Usage
+//	  func openAIStopReason(finishReason string) string
 //	  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)
 //
 //	provider.go

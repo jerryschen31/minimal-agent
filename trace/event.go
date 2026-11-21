@@ -295,28 +295,20 @@ type ToolCallRecord struct {
 	Arguments string `json:"arguments"` // a string, not json.RawMessage: models sometimes emit invalid JSON
 }
 
-// Usage is token accounting for one model call. Zero means the provider did not report it.
-type Usage struct {
-	InputTokens      int `json:"input_tokens"`
-	OutputTokens     int `json:"output_tokens"`
-	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
-}
-
 // ModelResponseData is the EventData for a ModelResponse event: everything the model produced in one call.
 type ModelResponseData struct {
 	Message    MessageRecord `json:"message"`
-	StopReason string        `json:"stop_reason,omitempty"`
-	Usage      Usage         `json:"usage"`
+	StopReason string        `json:"stop_reason,omitempty"` // model.StopEnd / StopToolCalls / StopMaxTokens, or the provider's own word
+	Usage      model.Usage   `json:"usage"`                 // Reported false: the provider sent no usage (older traces lack the key, which reads the same)
 	DurationMS int64         `json:"duration_ms"`
 }
 
-// GetModelResponseData builds the model_response payload.
+// GetModelResponseData builds the model_response payload from one call's Response.
 //
 // Notes:
-//   - StopReason and Usage stay empty until model.Provider reports them.
-func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData {
-	return ModelResponseData{Message: messageRecord(msg), DurationMS: elapsed.Milliseconds()}
+//   - StopReason and Usage are copied as the provider reported them; a provider that sends no usage gives Usage.Reported false.
+func GetModelResponseData(resp model.Response, elapsed time.Duration) ModelResponseData {
+	return ModelResponseData{Message: messageRecord(resp.Message), StopReason: resp.StopReason, Usage: resp.Usage, DurationMS: elapsed.Milliseconds()}
 }
 
 // ToolRequestedData is the EventData for a ToolRequested event: the model asked for this tool call. It is recorded for

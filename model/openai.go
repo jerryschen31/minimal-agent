@@ -29,11 +29,60 @@ type openAIRequest struct {
 // holds one.
 type openAIResponse struct {
 	Choices []openAIChoice `json:"choices"`
+	Usage   *openAIUsage   `json:"usage"` // [agent] a pointer: nil means the key was missing or null, which is not the same as zero tokens
 }
 
 // openAIChoice is one answer in an openAIResponse.
 type openAIChoice struct {
-	Message ChatMessage `json:"message"`
+	Message      ChatMessage `json:"message"`
+	FinishReason string      `json:"finish_reason"` // "stop" | "tool_calls" | "length" | "content_filter" | ...
+}
+
+// openAIUsage is the "usage" object of an openAIResponse.
+// [agent] completion_tokens_details.reasoning_tokens is not read: those tokens are already inside completion_tokens.
+type openAIUsage struct {
+	PromptTokens        int `json:"prompt_tokens"`     // the whole input, cached tokens included
+	CompletionTokens    int `json:"completion_tokens"` // the whole output, reasoning tokens included
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// toUsage converts the server's usage object into a Usage.
+//
+// Notes:
+//   - nil (no "usage" key, or "usage": null) gives a zero Usage with Reported false: unknown, not zero
+//   - a missing prompt_tokens_details gives CacheReadTokens 0; OpenAI reports no cache writes, so CacheWriteTokens is always 0
+//   - the numbers are taken as the server sends them; some servers (e.g. Ollama reusing a cached prompt prefix) may count
+//     less input than was sent
+func (u *openAIUsage) toUsage() Usage {
+	if u == nil {
+		return Usage{}
+	}
+	usage := Usage{InputTokens: u.PromptTokens, OutputTokens: u.CompletionTokens, Reported: true}
+	if u.PromptTokensDetails != nil {
+		usage.CacheReadTokens = u.PromptTokensDetails.CachedTokens
+	}
+	return usage
+}
+
+// openAIStopReason maps an OpenAI finish_reason to the shared stop reasons.
+//
+// Notes:
+//   - "stop" -> StopEnd, "tool_calls" -> StopToolCalls, "length" -> StopMaxTokens; anything else (e.g. "content_filter")
+//     is returned unchanged, and "" (not reported) stays ""
+//   - don't use the result to decide whether the reply has tool calls: some servers send "stop" together with tool calls
+func openAIStopReason(finishReason string) string {
+	switch finishReason {
+	case "stop":
+		return StopEnd
+	case "tool_calls":
+		return StopToolCalls
+	case "length":
+		return StopMaxTokens
+	default:
+		return finishReason
+	}
 }
 
 // Chat sends chatContext (and tools) to an OpenAI-compatible server's /chat/completions and returns the first choice's message as a Response.
@@ -45,7 +94,8 @@ type openAIChoice struct {
 //   - any status outside 200-299 is an error carrying only the status code, with the response body unread; a response with no
 //     choices is also an error
 //   - the returned message is exactly what the server sent: ID, Timestamp and Type are not filled in here
-//   - Usage and StopReason are not read from the response yet (left zero)
+//   - Usage comes from the response's "usage" (toUsage) and StopReason from the first choice's finish_reason
+//     (openAIStopReason); a server that sends no usage gives Usage.Reported false
 func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error) {
 	// make a request to the OpenAI-compatible server
 	// 1. build a chatRequest with p.Model and the provided chat context
@@ -100,5 +150,10 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 	if len(chatResp.Choices) == 0 {
 		return Response{}, fmt.Errorf("no choices in response")
 	}
-	return Response{Message: chatResp.Choices[0].Message}, nil
+	choice := chatResp.Choices[0]
+	return Response{
+		Message:    choice.Message,
+		Usage:      chatResp.Usage.toUsage(),
+		StopReason: openAIStopReason(choice.FinishReason),
+	}, nil
 }

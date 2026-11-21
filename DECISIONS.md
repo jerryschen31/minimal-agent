@@ -5137,3 +5137,18 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   everywhere else. There is no way to ask a server or model which one it takes (`/v1/models` lists IDs only; guessing
   from model names breaks with each new family). **A config key `maxTokensField` overrides the choice** (Jerry), for a
   gateway such as LiteLLM in front of OpenAI, which the host rule can't recognize. Built in 2c.
+
+### 2026-11-20 — 2b built: usage and stop reason from the server, in the trace and the digest
+
+- **`openai.go`** reads `usage` into `model.Usage` (`toUsage`: `prompt_tokens`, `completion_tokens`,
+  `prompt_tokens_details.cached_tokens`; `reasoning_tokens` skipped, already inside `completion_tokens`) and
+  `finish_reason` into the shared stop reasons (`openAIStopReason`; unknown values pass through). `usage` is a pointer,
+  so a missing or `null` key is `Reported: false`, not zero.
+- **`StopReason` never drives the loop**: some servers send `finish_reason: "stop"` together with tool calls, so the
+  loop keeps checking `len(ToolCalls)`. The stop reason is for the record and for 2c's cut-off warning.
+- **`trace.Usage` is gone**; `ModelResponseData.Usage` is a `model.Usage` (same JSON keys plus `reported`, so older
+  traces replay as "not reported"). `GetModelResponseData` takes the whole `Response`.
+- **The L1 digest shows tokens**: a line per task with model calls and a run total in the footer that also counts calls
+  outside any task (auto compaction), plus replies cut off at max tokens. Unreported calls are never shown as zero:
+  "not reported" when none reported, "(K reported no usage)" when some didn't. The digest is per trace file (one
+  process run); the budget and the totals across a resume belong to the journal (2d/2e).

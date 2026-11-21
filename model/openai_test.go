@@ -233,3 +233,81 @@ func Test_ChatRequest_ZeroTimeout_NoLimit(t *testing.T) {
 		t.Errorf("expected reply %q, got %q", "hi there", reply.Message.Content)
 	}
 }
+
+// replyServer answers every request with body, verbatim.
+func replyServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// - Verify Chat reads the server's usage (cached tokens included) and finish_reason into the Response
+func Test_ChatRequest_ReadsUsageAndFinishReason(t *testing.T) {
+	srv := replyServer(t, `{"choices":[{"message":{"role":"assistant","content":"",
+		"tool_calls":[{"id":"c1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},
+		"finish_reason":"tool_calls"}],
+		"usage":{"prompt_tokens":1200,"completion_tokens":85,"total_tokens":1285,
+		"prompt_tokens_details":{"cached_tokens":1024},"completion_tokens_details":{"reasoning_tokens":40}}}`)
+
+	got, err := OpenAICompat{BaseURL: srv.URL, Model: "m"}.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hi"}}, nil)
+	if err != nil {
+		t.Fatalf("Chat() returned an error: %v", err)
+	}
+	want := Usage{InputTokens: 1200, OutputTokens: 85, CacheReadTokens: 1024, Reported: true}
+	if got.Usage != want {
+		t.Errorf("expected usage %+v, got %+v", want, got.Usage)
+	}
+	if got.StopReason != StopToolCalls {
+		t.Errorf("expected stop reason %q, got %q", StopToolCalls, got.StopReason)
+	}
+}
+
+// - Verify a server that sends no usage (key missing or null) gives Reported false, and one without
+// prompt_tokens_details still reports input and output with no cached tokens
+func Test_ChatRequest_MissingUsage_NotReported(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want Usage
+	}{
+		{"no usage key", `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`, Usage{}},
+		{"usage null", `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":null}`, Usage{}},
+		{"no details", `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":30,"completion_tokens":5}}`, Usage{InputTokens: 30, OutputTokens: 5, Reported: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := replyServer(t, c.body)
+			got, err := OpenAICompat{BaseURL: srv.URL, Model: "m"}.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hi"}}, nil)
+			if err != nil {
+				t.Fatalf("Chat() returned an error: %v", err)
+			}
+			if got.Usage != c.want {
+				t.Errorf("expected usage %+v, got %+v", c.want, got.Usage)
+			}
+			if got.StopReason != StopEnd {
+				t.Errorf("expected stop reason %q, got %q", StopEnd, got.StopReason)
+			}
+		})
+	}
+}
+
+// - Verify finish_reason values map to the shared stop reasons, and unknown or missing ones pass through unchanged
+func Test_Unit_OpenAIStopReason_Mapping(t *testing.T) {
+	cases := map[string]string{
+		"stop":           StopEnd,
+		"tool_calls":     StopToolCalls,
+		"length":         StopMaxTokens,
+		"content_filter": "content_filter",
+		"":               "",
+	}
+	for in, want := range cases {
+		if got := openAIStopReason(in); got != want {
+			t.Errorf("openAIStopReason(%q): expected %q, got %q", in, want, got)
+		}
+	}
+}

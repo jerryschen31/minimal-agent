@@ -1607,3 +1607,8 @@ host; and § a run stopped by a budget exits 3):
 
 Working flow for each substep (Jerry): shape + critical tests + gotchas first; after his "okay" Claude writes the code
 and tests; end with a one-sentence commit message.
+
+**2b built** (not committed): `openai.go` reads `usage` and `finish_reason` (`toUsage`, `openAIStopReason`); the trace's
+`model_response` carries `model.Usage` and the stop reason; `digest.md` has a tokens line per task and a run total
+(see DECISIONS.md § 2b built). Next: 2c (`maxTokens`, host rule, `maxTokensField`; first real run against Ollama to
+check its `prompt_tokens` with a cached prompt prefix).

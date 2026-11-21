@@ -138,6 +138,8 @@
 //	  func (a *ActivityDigest) Add(ev Event)
 //	  func isMissingPayload(data json.RawMessage) bool
 //	  func (a *ActivityDigest) Render(w io.Writer) error
+//	  func (u *usageTally) add(usage model.Usage)
+//	  func (u usageTally) line() string
 //	  func describe(name, args, content string, failed bool) string
 //	  func vetoNote(d ToolVetoedData) string
 //	  func oneLine(s string, max int) string
@@ -152,7 +154,7 @@
 //	  func GetContextClearedData(dropped int) ContextClearedData
 //	  func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData
 //	  func messageRecord(m model.ChatMessage) MessageRecord
-//	  func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData
+//	  func GetModelResponseData(resp model.Response, elapsed time.Duration) ModelResponseData
 //	  func GetToolRequestedData(call model.ToolCall) ToolRequestedData
 //	  func GetToolVetoedData(call model.ToolCall, reason error, decision string, wait time.Duration) ToolVetoedData
 //	  func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData

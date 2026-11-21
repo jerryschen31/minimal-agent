@@ -49,6 +49,6 @@ func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, too
 		t.rec.Record(t.scopeID, ModelError, GetModelErrorData(err, time.Since(start)))
 		return resp, err
 	}
-	t.rec.Record(t.scopeID, ModelResponse, GetModelResponseData(resp.Message, time.Since(start)))
+	t.rec.Record(t.scopeID, ModelResponse, GetModelResponseData(resp, time.Since(start)))
 	return resp, nil
 }
