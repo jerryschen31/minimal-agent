@@ -86,7 +86,7 @@ func (a *ActivityDigest) task(scope string) *taskSummary {
 	return t
 }
 
-// Add folds one event into the digest.
+// Add applies one event to the digest.
 //
 // Notes:
 //   - A payload that does not decode is skipped: the digest is a summary, L0 has the truth.

@@ -202,7 +202,7 @@ func (h Home) ContinueRun(r Run) (*Journal, error) {
 	return j, nil
 }
 
-// Load rebuilds the state of the plan p from every earlier run of it, oldest first (Fold).
+// Load rebuilds the state of the plan p from every earlier run of it, oldest first (Rebuild).
 //
 // Notes:
 //   - A run belongs to the plan when its manifest matches p (same plan_id; or, without one, same path). Only the first
@@ -234,7 +234,7 @@ func (h Home) Load(p PlanRef) (State, error) {
 		}
 		mine = append(mine, RunEvents{Run: r, Events: events, TornTail: torn})
 	}
-	return Fold(mine)
+	return Rebuild(mine)
 }
 
 // readManifest reads the manifest from the first line of the journal at path; ok is false when there is none.

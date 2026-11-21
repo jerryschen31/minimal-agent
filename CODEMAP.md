@@ -93,13 +93,13 @@ minimal-agent/
 │   └── procgroup_windows.go
 ├── state/
 │   ├── doc.go
-│   ├── fold.go
 │   ├── home.go
 │   ├── journal.go
 │   ├── lock.go
 │   ├── lock_other.go
 │   ├── lock_unix.go
-│   └── lock_windows.go
+│   ├── lock_windows.go
+│   └── rebuild.go
 ├── textutils/
 │   ├── cut.go
 │   └── doc.go
@@ -713,10 +713,6 @@ procgroup_windows.go
 `github.com/jerryschen31/minimal-agent/state`
 
 ```text
-fold.go
-  func Fold(runs []RunEvents) (State, error)
-  func runningTime(events []Event) (time.Duration, error)
-
 home.go
   func OpenHome(dir string) (Home, error)
   func (h Home) Dir() string
@@ -758,6 +754,10 @@ lock_unix.go
 lock_windows.go
   func tryLock(f *os.File) error
   func unlockFile(f *os.File) error
+
+rebuild.go
+  func Rebuild(runs []RunEvents) (State, error)
+  func runningTime(events []Event) (time.Duration, error)
 ```
 
 ## textutils (package textutils)

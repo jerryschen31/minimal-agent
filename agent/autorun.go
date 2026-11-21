@@ -436,7 +436,7 @@ func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, 
 // Notes:
 //   - Each attempt: task_started{attempt}, a fresh worker (runWorker; a retry is told why the attempt before was not
 //     done), the director's verdict (judgeTask), task_finished{status, def_hash, summary, verdict}. Every attempt stays in
-//     the journal; the last one decides the task's state (state.Fold).
+//     the journal; the last one decides the task's state (state.Rebuild).
 //   - A worker that runs out of steps is a failed attempt (the director isn't asked). A director with no verdict is a
 //     failed attempt too (judgeTask). Out of attempts → "task_failed".
 //   - crash (after a resume: what happened to this task's cut-off calls) goes to the first attempt's worker.
@@ -570,7 +570,7 @@ func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, used state.
 func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error {
 	cs.ToolJournal = nil // the journal closes below: no call may be recorded after it
 	if terr := ar.tools.err(); terr != nil {
-		// [agent] no run_ended: a run marked ended has no open calls (Fold), and the call whose end wasn't recorded may
+		// [agent] no run_ended: a run marked ended has no open calls (Rebuild), and the call whose end wasn't recorded may
 		// have done something. Left open, the next start resumes it and settles that call.
 		ar.journal.Close()
 		ar.unlock()

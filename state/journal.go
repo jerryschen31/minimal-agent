@@ -183,9 +183,9 @@ type Resumed struct {
 	Host       string `json:"host,omitempty"`
 	TraceRunID string `json:"trace_run_id,omitempty"` // the resuming process's trace
 	// StartedAt is when the resuming session started, before it re-sent any cut-off call (those calls' events come before
-	// this one). Fold measures running time from it; zero (older journals) = this event's time.
+	// this one). Rebuild measures running time from it; zero (older journals) = this event's time.
 	StartedAt time.Time     `json:"started_at,omitzero"`
-	Settled   []SettledCall `json:"settled,omitempty"` // what was done about each cut-off call; Fold closes them
+	Settled   []SettledCall `json:"settled,omitempty"` // what was done about each cut-off call; Rebuild closes them
 }
 
 // SettledCall is what resume did about one cut-off call (a tool_before with no tool_after).

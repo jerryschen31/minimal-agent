@@ -66,7 +66,7 @@ from the top and ignores a half-written last line. There is no snapshot file: th
 | `task_finished` | status (`done` / `failed`), summary, verdict |
 | `tool_before` | call ID, tool, arguments hash + preview, idempotency key; file tools also: path(s) and file hash before and after |
 | `tool_after` | call ID, failed |
-| `resumed` | pid, host, trace run ID, and each cut-off call's outcome (`no_effect`, `not_happened`, `happened`, `resent`, `resend_failed`, `user_said_done`); `Fold` closes the calls it settled |
+| `resumed` | pid, host, trace run ID, and each cut-off call's outcome (`no_effect`, `not_happened`, `happened`, `resent`, `resend_failed`, `user_said_done`); `Rebuild` closes the calls it settled |
 | `gate_answered` | `yes` / `no`: a person's answer to a task's gate (1e) |
 | `usage` (step 2) | tokens per model call or per task |
 | `run_ended` | reason: `done`, `task_failed` (judged not done on every attempt), `declined` (no to a gate), `budget`, `timeout`, `interrupted`, `error`, `waiting` (a gate with nobody to answer); `max_steps` is defined but no longer used (a worker out of steps is a failed attempt) |

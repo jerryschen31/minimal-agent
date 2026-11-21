@@ -152,7 +152,7 @@ func Test_Unit_Home_ContinueRun_CutsTornTail(t *testing.T) {
 	}
 }
 
-// - Verify Load finds only the runs of this plan (two plans' runs mixed in runs/), oldest first, and folds them
+// - Verify Load finds only the runs of this plan (two plans' runs mixed in runs/), oldest first, and rebuilds the state from them
 // - Verify a run folder with no journal, or with a first line that isn't a manifest, is skipped; no runs = empty state
 func Test_Unit_Home_Load_OnlyThisPlansRuns(t *testing.T) {
 	h, _ := OpenHome(t.TempDir())

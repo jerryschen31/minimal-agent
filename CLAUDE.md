@@ -157,7 +157,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
 - **`state/`** is auto mode's durable record (stdlib + `golang.org/x/sys` only): one append-only journal per run in a
   private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, config.json}`, `traces/`, `locks/`), rebuilt
-  into state by reading a plan's runs oldest first (`Home.Load`, `Fold`). `Journal.Append` syncs each line before it
+  into state by reading a plan's runs oldest first (`Home.Load`, `Rebuild`). `Journal.Append` syncs each line before it
   returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
   OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
   (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
@@ -314,7 +314,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   while a worker runs (`DECISIONS.md § 2d`). The attempt's tokens go in `task_finished`, or `attempt_usage` when it ends
   without one. The time limit is a per-task context deadline (`taskContext`, cause `errRunTimeout`, told apart from
   Ctrl+C by `stopReasonOf`); gate waits are outside it. Budget and timeout stops leave the task interrupted and return
-  `ErrNeedsPerson` (exit 3). A continued run (resume) starts from `state.Fold`'s `Usage` and `Running`.
+  `ErrNeedsPerson` (exit 3). A continued run (resume) starts from `state.Rebuild`'s `Usage` and `Running`.
 
 ## Code map (root module only)
 

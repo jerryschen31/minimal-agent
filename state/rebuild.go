@@ -48,7 +48,7 @@ type State struct {
 	Latest RunState             // the last run; zero when there are no runs
 }
 
-// Fold rebuilds the state from runs' journals, applying their events in order (runs oldest first).
+// Rebuild rebuilds a plan's state from its runs' journals, applying their events in order (runs oldest first).
 //
 // Notes:
 //   - task_started → running (attempts +1); task_finished → its status, def hash, summary and verdict. Later events win,
@@ -60,7 +60,7 @@ type State struct {
 //   - task_finished and attempt_usage (an attempt that ended without task_finished) add to the run's and the task's Usage; RunState.Running is the run's running time (runningTime).
 //   - Unknown event types are skipped (a newer harness's journal). Known types with data that can't be decoded are an
 //     error naming the run and seq.
-func Fold(runs []RunEvents) (State, error) {
+func Rebuild(runs []RunEvents) (State, error) {
 	s := State{Tasks: map[string]TaskState{}}
 	for _, re := range runs {
 		rs := RunState{Run: re.Run, TornTail: re.TornTail}
@@ -161,7 +161,7 @@ func Fold(runs []RunEvents) (State, error) {
 //     time, is where the session began; events from StartedAt on belong to the new session.
 //   - The time between a session's last event and the crash that ended it is not known and not counted, nor is the time
 //     between the crash and the resume.
-//   - Gate waits are not taken off here (Fold does that).
+//   - Gate waits are not taken off here (Rebuild does that).
 func runningTime(events []Event) (time.Duration, error) {
 	var starts []time.Time
 	for _, e := range events {

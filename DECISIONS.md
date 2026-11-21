@@ -4881,7 +4881,7 @@ Shape agreed with Jerry; Claude wrote it.
 - **One lock per plan** in `locks/<16 hex of sha256(real plan path)>.lock`, a real OS lock: `flock` on Unix,
   `LockFileEx` on Windows (`golang.org/x/sys`, now a direct dependency; it was already indirect). The OS releases it
   when the process dies, so there are no stale locks. Different plans can run at once.
-- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and folds the runs whose
+- **A plan's identity is its real path.** `Load` reads the first line of every run's journal and rebuilds the state from the runs whose
   manifest names this plan, oldest first. Moving or renaming a plan starts it with no history (every task runs again):
   the safe side, since an ID inside the plan would let a copy inherit its original's history. *Downside:* one small
   read per run folder; an index can come later if there are thousands.
@@ -5055,7 +5055,7 @@ Shape agreed with Jerry; Claude wrote it (`agent/autoresume.go`).
   calls, `run_command`) → asked "Send it again? [y/N]" (n: `user_said_done`). A call that can't be re-sent (no kept
   arguments, a hash mismatch, the tool gone) asks "Carry on, treating it as done? [y/N]". No terminal (`-yes` never
   answers), Ctrl+D (Jerry), or n to that second question → `errResumeWaiting`: "Stopped: waiting", nothing done or
-  written, asked again next start. Outcomes go in the `resumed` event; `Fold` closes settled calls, so a second crash
+  written, asked again next start. Outcomes go in the `resumed` event; `Rebuild` closes settled calls, so a second crash
   doesn't settle them twice.
 - **Exact arguments are kept for re-sending** (Jerry): `tool_before.args` for MCP and `run_command` calls only, up to
   64 KB (larger: can't be re-sent, asked instead). *Downside:* they are unredacted in the journal; it is private (0600
@@ -5092,7 +5092,7 @@ Shape agreed with Jerry; Claude wrote it.
 
 Jerry's line for this review: be reasonable on guardrails; don't overfix obscure edge cases.
 - **A `tool_after` that can't be written now stops the run and leaves it open.** Before, `done` dropped the error: the
-  run went on and could write `run_ended`, after which `Fold` ignores the open call, losing the evidence resume needs.
+  run went on and could write `run_ended`, after which `Rebuild` ignores the open call, losing the evidence resume needs.
   Now `runToolJournal` keeps the first failed write (`err`); `executeToolCall` reports "the call ran, but its end could
   not be recorded" instead of the result; every later call is refused (not recorded = not run); `runTask` stops with
   `error` after the worker or director; `end` writes **no** `run_ended` and says the run was left open, so the next
@@ -5110,7 +5110,7 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   `write_file`/`edit_file` result (max 1 MB) with full hashes. Kept general rather than special-casing `move_file`:
   resume only asks "is it as before?", which presence plus size and mtime answer. *Accepted gap:* a same-size change
   within the same nanosecond to a file over 16 MB.
-- **`Fold` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
+- **`Rebuild` decodes `task_started`** like every other known event, so a damaged line (`{"attempt":"bad"}`) is an error
   naming the run and seq, not a counted attempt.
 - **`docs/plan-format.md` status** no longer says auto mode doesn't run tasks.
 
@@ -5222,9 +5222,18 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   `attempt_usage:t1` before `run_ended`. `state.Usage` mirrors `model.Usage` (state imports only the stdlib).
 - **Time**: `runTimeoutMinutes` is a context deadline per task (`taskContext`, cause `errRunTimeout`), so it also stops
   a long tool call; gates are asked outside it and their wait is recorded (`gate_answered.waited_ms`) and not counted
-  (Jerry). `Fold` computes `RunState.Running` from session starts (the manifest; `resumed.started_at`, new, because a
+  (Jerry). `Rebuild` computes `RunState.Running` from session starts (the manifest; `resumed.started_at`, new, because a
   resume re-sends cut-off calls *before* writing `resumed`) to each session's last event, minus gate waits. A continued
-  run starts its meter and clock from `Fold`'s `Usage` and `Running`. Accepted: an attempt cut off by a crash is
+  run starts its meter and clock from `Rebuild`'s `Usage` and `Running`. Accepted: an attempt cut off by a crash is
   missing from the totals (its tokens are only in the trace).
 - **Live check** (Ollama, `qwen2.5:0.5b`, `runTokenBudget` 5000): stopped with `budget`, exit 3, "6406 of 5000": over
   by about one call, as designed. About 1,600 input tokens per call are the tool definitions.
+
+### 2026-11-20 — `state.Fold` renamed `state.Rebuild` (Jerry)
+
+- **`Fold` → `Rebuild`, `state/fold.go` → `state/rebuild.go`** (tests: `Test_Unit_Rebuild*`), and the docs that named
+  it, earlier entries of this log included. *Why:* "rebuild" says what it does in plain words; "fold" is the
+  functional-programming name for the pattern (apply each event in order to a running result) and only helps readers
+  who already know it. "Folded into" is still fine in prose that describes that mechanism. Unrelated uses of the word
+  (case-folding, folding objective sections into Instructions) and Go's `strings.EqualFold` are unchanged; `mvp1`–`mvp4`
+  are not touched.
