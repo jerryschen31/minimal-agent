@@ -5237,3 +5237,21 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   who already know it. "Folded into" is still fine in prose that describes that mechanism. Unrelated uses of the word
   (case-folding, folding objective sections into Instructions) and Go's `strings.EqualFold` are unchanged; `mvp1`–`mvp4`
   are not touched.
+
+### 2026-11-20 — 2e built: token and time report, `/usage`
+
+- **The end-of-run report is read back from the journals** (`home.Load` → `state.Rebuild` after `run_ended`), not
+  from memory, so a resumed run's report includes its crashed sessions. One row per plan task covering all runs
+  (status, attempts, tokens, running time, and the run that did it when not this one), then "this run" and, after more
+  than one run, "all runs". The rows need not add up to "this run" (they span runs). A failed read prints a note and
+  changes nothing about the result.
+- **`Rebuild` gains** `TaskState.Running` (each ended attempt, `task_started` to `task_finished`/`attempt_usage`; an
+  attempt cut off by a crash counts for nothing, like its tokens) and `State.Total` / `TotalRunning` over every run.
+- **Token text leads with the total** ("6382 tokens: 6305 in (3115 cached), 77 out"), so it can be compared with the
+  budget line directly; the first live run printed the budget as a total and the report as in/out, which read as a
+  mismatch.
+- **`/usage`** (chat and plan mode): `NewChatSession` gives every session a counting-only `usageMeter` (auto mode's
+  workers replace it on their copies). The meter now has a mutex: chat's auto-compaction calls the model from a
+  background goroutine (in 2d the meter had no lock; auto mode's single-goroutine use was the only one then).
+- The `✓ done` line shows the attempt's tokens and time; the `not done` line is unchanged (its "(attempt N of M)" is
+  matched by tests and read by people; the table has the rest).

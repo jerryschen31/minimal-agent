@@ -125,6 +125,12 @@ budget by about one model call (the check is before a call). A budget stop leave
 limit and start again (a new run with a fresh budget; done tasks are skipped). A crash keeps the budget: the resumed
 run starts from what the journal recorded (an attempt cut off by the crash is missing from it).
 
+**The report.** At the end of every run, a table lists each task of the plan with its status, attempts, tokens and
+running time over all runs (a task done in an earlier run says which), then this run's total and, after more than one
+run, the plan's total. It is read back from the journals, so a resumed run includes its crashed sessions. Each `✓ done`
+line also shows the attempt's tokens and time. In chat and plan mode, `/usage` shows the session's model calls and
+tokens so far.
+
 ## Current limits
 
 - One task at a time (no parallel tasks yet).

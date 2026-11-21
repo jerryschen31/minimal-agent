@@ -185,3 +185,39 @@ func Test_Unit_Rebuild_RunningTime(t *testing.T) {
 		t.Errorf("older journal: running = %s, want %s", s.Latest.Running, want)
 	}
 }
+
+//   - Verify a task's Running adds up its ended attempts over runs (task_started to task_finished or attempt_usage), an
+//     attempt a crash cut off counts for nothing, and Total / TotalRunning add up every run
+func Test_Unit_Rebuild_TaskTimeAndTotals(t *testing.T) {
+	base := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	u := Usage{InputTokens: 10, OutputTokens: 1, Reported: true}
+	run1 := RunEvents{Run: Run{Number: 1}, Events: []Event{
+		at(ev(1, EventManifest, "", Manifest{PlanPath: "/p"}), base, 0),
+		at(ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}), base, time.Minute),
+		at(ev(3, EventTaskFinished, "t1", TaskFinished{Status: TaskFailed, Usage: u}), base, 3*time.Minute), // 2m
+		at(ev(4, EventTaskStarted, "t1", TaskStarted{Attempt: 2}), base, 4*time.Minute),                     // cut off by a crash
+		at(ev(5, EventTaskStarted, "t1", TaskStarted{Attempt: 3}), base, time.Hour),                         // (resumed)
+		at(ev(6, EventAttemptUsage, "t1", AttemptUsage{Attempt: 3, Usage: u}), base, time.Hour+time.Minute), // 1m
+		at(ev(7, EventRunEnded, "", RunEnded{Reason: StopBudget}), base, time.Hour+time.Minute),
+	}}
+	run2 := RunEvents{Run: Run{Number: 2}, Events: []Event{
+		at(ev(1, EventManifest, "", Manifest{PlanPath: "/p"}), base, 2*time.Hour),
+		at(ev(2, EventTaskStarted, "t1", TaskStarted{Attempt: 1}), base, 2*time.Hour),
+		at(ev(3, EventTaskFinished, "t1", TaskFinished{Status: TaskDone, Usage: u}), base, 2*time.Hour+30*time.Second), // 30s
+		at(ev(4, EventRunEnded, "", RunEnded{Reason: StopDone}), base, 2*time.Hour+30*time.Second),
+	}}
+	s, err := Rebuild([]RunEvents{run1, run2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 3*time.Minute + 30*time.Second; s.Tasks["t1"].Running != want {
+		t.Errorf("t1 running = %s, want %s (2m + 1m + 30s; the crashed attempt not counted)", s.Tasks["t1"].Running, want)
+	}
+	if s.Total.Total() != 33 || s.Latest.Usage.Total() != 11 {
+		t.Errorf("total %d, latest %d; want 33 over both runs and 11 for run 2", s.Total.Total(), s.Latest.Usage.Total())
+	}
+	// run 1 has no resumed event here, so it is one session: 0 to 1h01m; run 2 is 30s
+	if want := time.Hour + time.Minute + 30*time.Second; s.TotalRunning != want {
+		t.Errorf("total running = %s, want %s", s.TotalRunning, want)
+	}
+}

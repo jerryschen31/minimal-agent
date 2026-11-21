@@ -222,7 +222,8 @@ func Test_Unit_AutoResume_CarriesTheTokenBudgetOver(t *testing.T) {
 	if !errors.Is(err, ErrNeedsPerson) {
 		t.Fatalf("autoMode: %v, want ErrNeedsPerson\n%s", err, out)
 	}
-	for _, want := range []string{"Resuming run 0001", "Stopped: budget.", "Token budget: 1100 of 1000 tokens used"} {
+	// the report is read back from the journal, so it includes the crashed session's 900 tokens
+	for _, want := range []string{"Resuming run 0001", "Stopped: budget.", "Token budget: 1100 of 1000 tokens used", "this run: 1100 tokens: 950 in, 150 out"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}

@@ -15,6 +15,7 @@ minimal-agent/
 │   ├── autodirector.go
 │   ├── autojournal.go
 │   ├── automode.go
+│   ├── autoreport.go
 │   ├── autoresume.go
 │   ├── autorun.go
 │   ├── autoworker.go
@@ -192,6 +193,12 @@ automode.go
   func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
   func (o autoOutput) ToolCalled(name string)
 
+autoreport.go
+  func usageReport(st state.State, p plan.Plan, run int) string
+  func usageText(u model.Usage) string
+  func durationText(d time.Duration) string
+  func sessionUsageLine(m *usageMeter) string
+
 autoresume.go
   func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
   func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
@@ -281,6 +288,7 @@ manifest.go
 meter.go
   func (m *usageMeter) check() error
   func (m *usageMeter) add(u model.Usage)
+  func (m *usageMeter) snapshot() (used model.Usage, calls, unreported int)
   func (p meteredProvider) Chat(ctx context.Context, msgs []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
 
 output.go
@@ -758,6 +766,7 @@ lock_windows.go
 rebuild.go
   func Rebuild(runs []RunEvents) (State, error)
   func runningTime(events []Event) (time.Duration, error)
+  func attemptTime(starts map[string]time.Time, end Event) time.Duration
 ```
 
 ## textutils (package textutils)

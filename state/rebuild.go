@@ -20,8 +20,9 @@ type TaskState struct {
 	DefHash  string // the definition hash recorded when it last finished
 	Summary  string
 	Verdict  string
-	Run      int   // the run that last started or finished it
-	Usage    Usage // tokens over every attempt in every run (attempt_usage)
+	Run      int           // the run that last started or finished it
+	Usage    Usage         // tokens over every attempt in every run (task_finished, attempt_usage)
+	Running  time.Duration // time over every ended attempt in every run: task_started to its task_finished or attempt_usage
 }
 
 // OpenCall is a call a crash cut off: its tool_before and the task it belonged to.
@@ -46,6 +47,9 @@ type State struct {
 	Runs   []Run                // the plan's runs, oldest first
 	Tasks  map[string]TaskState // by task ID; a task never started has no entry
 	Latest RunState             // the last run; zero when there are no runs
+
+	Total        Usage         // tokens over every run
+	TotalRunning time.Duration // running time over every run
 }
 
 // Rebuild rebuilds a plan's state from its runs' journals, applying their events in order (runs oldest first).
@@ -57,11 +61,14 @@ type State struct {
 //     that is the task a crash cut off.
 //   - Open calls are counted per run; only the last run's are kept (Latest.OpenCalls). A resumed event closes the calls
 //     it settled, so a second crash doesn't settle them again.
-//   - task_finished and attempt_usage (an attempt that ended without task_finished) add to the run's and the task's Usage; RunState.Running is the run's running time (runningTime).
+//   - task_finished and attempt_usage (an attempt that ended without task_finished) add to the run's and the task's Usage,
+//     and the attempt's time (from its task_started) to the task's Running; an attempt a crash cut off has neither, so
+//     it counts for neither. State.Total and TotalRunning add up every run. RunState.Running is the run's running time (runningTime).
 //   - Unknown event types are skipped (a newer harness's journal). Known types with data that can't be decoded are an
 //     error naming the run and seq.
 func Rebuild(runs []RunEvents) (State, error) {
 	s := State{Tasks: map[string]TaskState{}}
+	attemptStart := map[string]time.Time{} // task ID → its current attempt's task_started time
 	for _, re := range runs {
 		rs := RunState{Run: re.Run, TornTail: re.TornTail}
 		open := map[string]OpenCall{}
@@ -73,6 +80,7 @@ func Rebuild(runs []RunEvents) (State, error) {
 			case EventTaskStarted:
 				var d TaskStarted
 				if err = decodeData(e, &d); err == nil { // decoded only to catch a damaged line, like the other types
+					attemptStart[e.Task] = e.At
 					ts := s.Tasks[e.Task]
 					ts.Status, ts.Run = TaskRunning, re.Run.Number
 					ts.Attempts++
@@ -84,6 +92,7 @@ func Rebuild(runs []RunEvents) (State, error) {
 					ts := s.Tasks[e.Task]
 					ts.Status, ts.DefHash, ts.Summary, ts.Verdict, ts.Run = d.Status, d.DefHash, d.Summary, d.Verdict, re.Run.Number
 					ts.Usage = ts.Usage.Add(d.Usage)
+					ts.Running += attemptTime(attemptStart, e)
 					s.Tasks[e.Task] = ts
 					rs.Usage = rs.Usage.Add(d.Usage)
 				}
@@ -95,6 +104,7 @@ func Rebuild(runs []RunEvents) (State, error) {
 					rs.Usage = rs.Usage.Add(d.Usage)
 					ts := s.Tasks[e.Task]
 					ts.Usage = ts.Usage.Add(d.Usage)
+					ts.Running += attemptTime(attemptStart, e)
 					s.Tasks[e.Task] = ts
 				}
 			case EventGateAnswered:
@@ -149,6 +159,8 @@ func Rebuild(runs []RunEvents) (State, error) {
 		rs.Running = max(running-waited, 0)
 		s.Runs = append(s.Runs, re.Run)
 		s.Latest = rs
+		s.Total = s.Total.Add(rs.Usage)
+		s.TotalRunning += rs.Running
 	}
 	return s, nil
 }
@@ -192,4 +204,18 @@ func runningTime(events []Event) (time.Duration, error) {
 		total += last.Sub(start)
 	}
 	return total, nil
+}
+
+// attemptTime returns the time from the task's current attempt start (its task_started) to end, the event that ended
+// the attempt, and forgets the start.
+//
+// Notes:
+//   - 0 when no start was seen (a damaged or partial journal), or when the clock went backwards.
+func attemptTime(starts map[string]time.Time, end Event) time.Duration {
+	start, ok := starts[end.Task]
+	if !ok {
+		return 0
+	}
+	delete(starts, end.Task)
+	return max(end.At.Sub(start), 0)
 }

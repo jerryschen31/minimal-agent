@@ -81,6 +81,7 @@ func NewChatSession(provider model.Provider, chatHistory memory.ChatHistory, cha
 		OutBuffer:  cfg.OutBuffer,
 		Recorder:   recorder,
 		Output:     chatOutput{w: cfg.OutBuffer, showProgress: shouldShowProgress(cfg)},
+		Meter:      &usageMeter{}, // counts only (no allowance), for /usage; auto mode gives each worker its own
 	}, nil
 }
 

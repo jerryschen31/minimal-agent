@@ -31,6 +31,9 @@ type autoRun struct {
 	before  state.State // what the plan's earlier runs left (state.Home.Load)
 	// crashNotes: after a resume, per task, what happened to the calls a crash cut off (for its next worker)
 	crashNotes map[string]string
+	home       state.Home    // the state folder, and
+	ref        state.PlanRef // the plan's identity in it: end reads the journals back for the report
+	plan       plan.Plan     // the plan being run (the report lists its tasks)
 
 	// [agent] Budgets (step 2). The run's totals are kept here, in the code that schedules tasks, and only this code
 	// changes them: each worker and director has its own meter and reports its total when it ends.
@@ -126,8 +129,9 @@ func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usag
 	unreported := 0
 	for _, m := range meters {
 		if m != nil {
-			u = u.Add(m.used)
-			unreported += m.unreported
+			mu, _, mn := m.snapshot()
+			u = u.Add(mu)
+			unreported += mn
 		}
 	}
 	ar.used = ar.used.Add(u)
@@ -226,7 +230,7 @@ func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask prom
 		notes = n
 		if cont != nil {
 			opened = true
-			cont.unlock, cont.before, cont.crashNotes = unlock, before, notes
+			cont.unlock, cont.before, cont.crashNotes, cont.home, cont.ref, cont.plan = unlock, before, notes, home, ref, ad.Plan
 			// [agent] the same run goes on: its budgets carry over (the crashed sessions' tokens and running time)
 			cont.used, cont.runningBefore = fromStateUsage(before.Latest.Usage), before.Latest.Running
 			return cont, nil
@@ -245,7 +249,8 @@ func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask prom
 	}
 	opened = true
 	cs.ToolJournal = rj
-	return &autoRun{run: r, journal: j, tools: rj, unlock: unlock, before: before, crashNotes: notes, sessionStart: sessionStart}, nil
+	return &autoRun{run: r, journal: j, tools: rj, unlock: unlock, before: before, crashNotes: notes, sessionStart: sessionStart,
+		home: home, ref: ref, plan: ad.Plan}, nil
 }
 
 // notePlanHistory prints what the plan's earlier runs say before a new run starts.
@@ -463,6 +468,7 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 		if err := ar.journal.Append(state.EventTaskStarted, t.ID, state.TaskStarted{Attempt: attempt}); err != nil {
 			return "", state.StopError, err
 		}
+		attemptStart := time.Now()
 		if attempt == 1 {
 			fmt.Fprintf(w, "▶ %s: %s\n", t.ID, t.Title)
 		} else {
@@ -531,7 +537,11 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 			return "", state.StopError, err
 		}
 		if v.Done {
-			fmt.Fprintf(w, "✓ %s done — %s\n", t.ID, v.Reason)
+			tokens := "tokens not reported"
+			if fin.Usage.Reported {
+				tokens = fmt.Sprintf("%d tokens", fin.Usage.Total())
+			}
+			fmt.Fprintf(w, "✓ %s done — %s (%s, %s)\n", t.ID, v.Reason, tokens, durationText(time.Since(attemptStart)))
 			return summary, "", nil
 		}
 		fmt.Fprintf(w, "  not done — %s (attempt %d of %d)\n", v.Reason, attempt, maxAttempts)
@@ -563,6 +573,8 @@ func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, used state.
 //   - A tool call whose record failed (ar.tools.err): no run_ended, so the run stays open and the next start settles
 //     that call; an error is returned.
 //   - budget and timeout print what was used against which limit and how to go on.
+//   - Then the token and time report (usageReport), read back from the journals after run_ended so it includes earlier
+//     sessions of a resumed run; if that read fails, a note says so and the run's result is unchanged.
 //   - done returns nil. waiting, declined, budget and timeout return ErrNeedsPerson (exit 3: raising a limit is a
 //     person's call), interrupted context.Canceled (wrapped), task_failed
 //     and error res.err: the caller (main) turns each into an exit code.
@@ -598,6 +610,11 @@ func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID stri
 	case state.StopTimeout:
 		fmt.Fprintf(w, "Time limit: running for %s of %dm (runTimeoutMinutes). Raise it to go on: a new run starts and the done tasks are skipped.\n",
 			ar.running().Round(time.Second), cs.Config.RunTimeoutMinutes)
+	}
+	if st, err := ar.home.Load(ar.ref); err == nil && jerr == nil {
+		fmt.Fprintf(w, "\n%s\n", usageReport(st, ar.plan, ar.run.Number))
+	} else if jerr == nil {
+		fmt.Fprintf(w, "(no token report: reading the journals back failed: %v)\n", err)
 	}
 	fmt.Fprintf(w, "Run folder: %s\n", ar.run.Dir)
 	if traceRunID != "" {

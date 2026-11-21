@@ -315,6 +315,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   without one. The time limit is a per-task context deadline (`taskContext`, cause `errRunTimeout`, told apart from
   Ctrl+C by `stopReasonOf`); gate waits are outside it. Budget and timeout stops leave the task interrupted and return
   `ErrNeedsPerson` (exit 3). A continued run (resume) starts from `state.Rebuild`'s `Usage` and `Running`.
+  The end-of-run report (`usageReport`, `agent/autoreport.go`) is read back from the journals after `run_ended`, never
+  from memory. Chat and plan mode sessions get a counting-only meter (`NewChatSession`), shown by `/usage`; the meter
+  has a mutex because chat's auto-compaction counts from a background goroutine.
 
 ## Code map (root module only)
 

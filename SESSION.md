@@ -1627,3 +1627,8 @@ the trace for `finish_reason` → `max_tokens` and the `prompt_tokens` of a seco
 `runTimeoutMinutes`, budget and timeout stops → exit 3, usage in `task_finished` / `attempt_usage`, running time from
 the journal (DECISIONS.md § 2d built). Live check against Ollama passed. Next: 2e (report: tokens and time per task and
 in total; chat `/usage`).
+
+**2e built** (not committed): end-of-run token/time report read from the journals, `✓ done` lines with tokens and
+time, chat/plan `/usage` (DECISIONS.md § 2e built). Live-checked against Ollama. **Step 2 is complete** (2a–2e). Next:
+step 3, orchestrator mode (O1–O8 above); the per-worker allowance design (§ 2d) is meant to carry over to child
+processes, which report their total when they end.

@@ -68,4 +68,5 @@
 //	rebuild.go
 //	  func Rebuild(runs []RunEvents) (State, error)
 //	  func runningTime(events []Event) (time.Duration, error)
+//	  func attemptTime(starts map[string]time.Time, end Event) time.Duration
 package state
