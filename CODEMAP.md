@@ -65,9 +65,6 @@ minimal-agent/
 │   ├── conn.go
 │   ├── doc.go
 │   └── tools.go
-├── mdscan/
-│   ├── doc.go
-│   └── mdscan.go
 ├── memory/
 │   ├── doc.go
 │   └── msghistory.go
@@ -88,10 +85,6 @@ minimal-agent/
 │   ├── objective.go
 │   ├── plan.go
 │   └── render.go
-├── procutils/
-│   ├── doc.go
-│   ├── procgroup_unix.go
-│   └── procgroup_windows.go
 ├── state/
 │   ├── doc.go
 │   ├── home.go
@@ -101,10 +94,6 @@ minimal-agent/
 │   ├── lock_unix.go
 │   ├── lock_windows.go
 │   └── rebuild.go
-├── textutils/
-│   ├── cut.go
-│   ├── doc.go
-│   └── plural.go
 ├── tools/
 │   ├── doc.go
 │   ├── tool.go
@@ -127,17 +116,29 @@ minimal-agent/
 │       ├── searchfiles.go
 │       ├── workspace.go
 │       └── writefile.go
-└── trace/
-    ├── digest.go
-    ├── digest_activity.go
-    ├── doc.go
-    ├── event.go
-    ├── provider.go
-    ├── recorder.go
-    ├── redact.go
-    ├── scope.go
-    ├── shorten.go
-    └── subscriber.go
+├── trace/
+│   ├── digest.go
+│   ├── digest_activity.go
+│   ├── doc.go
+│   ├── event.go
+│   ├── provider.go
+│   ├── recorder.go
+│   ├── redact.go
+│   ├── scope.go
+│   ├── shorten.go
+│   └── subscriber.go
+└── utils/
+    ├── mdscan/
+    │   ├── doc.go
+    │   └── mdscan.go
+    ├── procutils/
+    │   ├── doc.go
+    │   ├── procgroup_unix.go
+    │   └── procgroup_windows.go
+    └── textutils/
+        ├── cut.go
+        ├── doc.go
+        └── plural.go
 ```
 
 ## (root) package main
@@ -573,20 +574,6 @@ tools.go
   func SetupMCPTools(ctx context.Context, mcpConns []*McpConnection, maxResultBytes int) ([]tools.Tool, error)
 ```
 
-## mdscan (package mdscan)
-
-`github.com/jerryschen31/minimal-agent/mdscan`
-
-```text
-mdscan.go
-  func Lines(data []byte, what string) ([]Line, error)
-  func FirstTextLine(lines []Line) int
-  func LastTextLine(lines []Line) int
-  func IsCodeBlockFence(s string) bool
-  func ReadHeading(s string, known func(text string) bool) (level int, text string, ok bool)
-  func StripClosingHashes(s string) string
-```
-
 ## memory (package memory)
 
 `github.com/jerryschen31/minimal-agent/memory`
@@ -704,20 +691,6 @@ render.go
   func Summary(p Plan) string
 ```
 
-## procutils (package procutils)
-
-`github.com/jerryschen31/minimal-agent/procutils`
-
-```text
-procgroup_unix.go
-  func StartInOwnGroup(cmd *exec.Cmd)
-  func KillGroup(cmd *exec.Cmd)
-
-procgroup_windows.go
-  func StartInOwnGroup(cmd *exec.Cmd)
-  func KillGroup(cmd *exec.Cmd)
-```
-
 ## state (package state)
 
 `github.com/jerryschen31/minimal-agent/state`
@@ -769,20 +742,6 @@ rebuild.go
   func Rebuild(runs []RunEvents) (PlanState, error)
   func runningTime(events []Event) (time.Duration, error)
   func attemptTime(starts map[string]time.Time, end Event) time.Duration
-```
-
-## textutils (package textutils)
-
-`github.com/jerryschen31/minimal-agent/textutils`
-
-```text
-cut.go
-  func CutRunes(s string, n int) (string, bool)
-  func CutBytes(s string, limit int) (string, bool)
-  func TrimPartialRune(b []byte) []byte
-
-plural.go
-  func Plural(n int, one, many string) string
 ```
 
 ## tools (package tools)
@@ -1016,4 +975,46 @@ subscriber.go
   func NewJSONLSubscriber(dir, runID string) (Subscriber, error)
   func (s *jsonlSubscriber) Write(line []byte) error
   func (s *jsonlSubscriber) Close() error
+```
+
+## utils/mdscan (package mdscan)
+
+`github.com/jerryschen31/minimal-agent/utils/mdscan`
+
+```text
+mdscan.go
+  func Lines(data []byte, what string) ([]Line, error)
+  func FirstTextLine(lines []Line) int
+  func LastTextLine(lines []Line) int
+  func IsCodeBlockFence(s string) bool
+  func ReadHeading(s string, known func(text string) bool) (level int, text string, ok bool)
+  func StripClosingHashes(s string) string
+```
+
+## utils/procutils (package procutils)
+
+`github.com/jerryschen31/minimal-agent/utils/procutils`
+
+```text
+procgroup_unix.go
+  func StartInOwnGroup(cmd *exec.Cmd)
+  func KillGroup(cmd *exec.Cmd)
+
+procgroup_windows.go
+  func StartInOwnGroup(cmd *exec.Cmd)
+  func KillGroup(cmd *exec.Cmd)
+```
+
+## utils/textutils (package textutils)
+
+`github.com/jerryschen31/minimal-agent/utils/textutils`
+
+```text
+cut.go
+  func CutRunes(s string, n int) (string, bool)
+  func CutBytes(s string, limit int) (string, bool)
+  func TrimPartialRune(b []byte) []byte
+
+plural.go
+  func Plural(n int, one, many string) string
 ```

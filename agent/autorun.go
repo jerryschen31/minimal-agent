@@ -15,7 +15,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // ErrNeedsPerson is returned (wrapped) by auto mode when the run stopped because it needs a person: a gate or a resume

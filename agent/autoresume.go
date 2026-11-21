@@ -12,9 +12,9 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 	"github.com/jerryschen31/minimal-agent/trace"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // Resume (PLAN-auto-mode.md, 1h). A run whose journal has no run_ended was cut off (a crash, a kill, a power cut).

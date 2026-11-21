@@ -7,8 +7,8 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/trace"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // workerPrompt is the system prompt of auto mode's worker: the agent doing one task of a plan.

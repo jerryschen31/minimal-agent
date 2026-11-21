@@ -16,9 +16,9 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/objective"
 	"github.com/jerryschen31/minimal-agent/plan"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // Plan mode (-mode plan) runs through SetupAgent and RunAgent like chat. Two ways in:

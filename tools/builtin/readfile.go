@@ -10,7 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jerryschen31/minimal-agent/model"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // ReadFileTool reads text files only within the workspace (i.e., within rootDir, excluding deny-listed files and the trace directory if it's within rootDir's path)

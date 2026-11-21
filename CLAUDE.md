@@ -161,9 +161,9 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
   OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
   (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
-- **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
-  package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
-  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character; `Plural`). Each is named for
+- **Helper packages (all under `utils/`: `mdscan`, `procutils`, `textutils`) import only the standard library**, never a package of this module or a third-party module, so any
+  package may use them. `procutils` (start a command in its own process group, kill the group; Unix and Windows files)
+  and `textutils` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character; `Plural`). Each is named for
   what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
   `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
 - **`agent/planner/`** holds plan mode's prompts and its two tools (`update_objective`, `propose_plan`). It is imported
@@ -252,7 +252,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   exits and its deferred `ShutdownAgent` closes the servers that had connected. At the prompt, the line editor
   treats Ctrl+C as a key and clears the input. Each turn gets `createInterruptWatcher(ctx, interrupts)`: a child
   context cancelled by Ctrl+C; `stop()` cancels it and waits for the watcher to exit, so nothing that outlives the
-  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`procutils/procgroup_*.go`, called from `mcpconnect/conn.go`),
+  turn or setup may keep it. **Stdio MCP servers run in their own process groups** (`utils/procutils/procgroup_*.go`, called from `mcpconnect/conn.go`),
   so the terminal's Ctrl+C never reaches them; `McpConnection.Close` kills the group. `discardStrayInterrupts` runs *before* the watcher
   starts. A cancelled turn prints `[interrupted]` and adds nothing to memory. **Anything long-lived
   started from a turn (auto-compaction) must get the root context**, which is why `maybeStartAutoCompaction`

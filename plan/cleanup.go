@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jerryschen31/minimal-agent/mdscan"
+	"github.com/jerryschen31/minimal-agent/utils/mdscan"
 )
 
 // line is one line of the input with its 1-based line number, so fixes can point at it.

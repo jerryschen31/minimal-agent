@@ -9,7 +9,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // usageReport returns the end-of-run table of tokens and running time: one row per task of p (over all runs), then this

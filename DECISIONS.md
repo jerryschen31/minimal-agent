@@ -5283,3 +5283,12 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
 - **`.gitignore`** lines for the builds' binaries, `runs/` and `mvp2/learn/prompts/` now start with `mvps/`.
 - **`state.State` is now `state.PlanState`**, next to `TaskState` and `RunState`: one plan, all its runs. Entries above
   that say `State.Latest` / `State.Total` mean `PlanState.Latest` / `PlanState.Total`.
+
+### 2026-11-20 — The helper packages moved under `utils/`
+
+- `mdscan/`, `procutils/` and `textutils/` are now `utils/mdscan/`, `utils/procutils/` and `utils/textutils/`: a cosmetic
+  grouping. They stay three separate packages (package names unchanged, so call sites like `textutils.Plural` are the
+  same); only import paths gained `utils/`. A single `utils` package was rejected: it would break the "named for what it
+  does" rule and mix Unix/Windows process code with string helpers. `utilpackages_test.go` lists the new paths.
+  Earlier entries keep the old paths (`procutils/procgroup_windows.go` means `utils/procutils/…`). *Downside:* `utils/`
+  itself holds no Go code, so `go doc ./utils` shows nothing.

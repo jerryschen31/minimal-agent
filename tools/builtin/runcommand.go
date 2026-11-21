@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/model"
-	"github.com/jerryschen31/minimal-agent/procutils"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/procutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // ErrNoCommands is returned by NewRunCommandTool when none of the configured programs can be used, so there is nothing

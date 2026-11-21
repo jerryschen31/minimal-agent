@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/jerryschen31/minimal-agent/config"
-	"github.com/jerryschen31/minimal-agent/procutils"
+	"github.com/jerryschen31/minimal-agent/utils/procutils"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

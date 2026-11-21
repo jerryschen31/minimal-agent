@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
-	"github.com/jerryschen31/minimal-agent/textutils"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // ActivityDigest is the first Digester: "what did the agent do and change", for a quick human review (a PR review, an audit).
