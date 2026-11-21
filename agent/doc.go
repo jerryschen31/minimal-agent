@@ -26,7 +26,7 @@
 //	  func commandPreview(command string, args *[]string, dir *string) []string
 //
 //	autodirector.go
-//	  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+//	  func judgeTask(ctx context.Context, cs *ChatSession, meter *usageMeter, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 //
 //	autojournal.go
 //	  func withResend(ctx context.Context, orig state.ToolBefore) context.Context
@@ -47,6 +47,13 @@
 //	  func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
 //	  func (o autoOutput) ToolCalled(name string)
 //
+//	autoreport.go
+//	  func usageReport(st state.State, p plan.Plan, run int) string
+//	  func usageText(u model.Usage) string
+//	  func journalUsageText(u state.Usage) string
+//	  func durationText(d time.Duration) string
+//	  func sessionUsageLine(m *usageMeter) string
+//
 //	autoresume.go
 //	  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
 //	  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
@@ -57,6 +64,14 @@
 //	  func oneLine(s string, max int) string
 //
 //	autorun.go
+//	  func (ar *autoRun) running() time.Duration
+//	  func (ar *autoRun) taskContext(ctx context.Context, limitMinutes int) (context.Context, context.CancelFunc, bool)
+//	  func stopReasonOf(ctx context.Context) state.StopReason
+//	  func (ar *autoRun) allowance(runBudget, taskBudget int, pending model.Usage) (n int, runLimited, ok bool)
+//	  func (ar *autoRun) budgetError(runBudget int, pending model.Usage) error
+//	  func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usage
+//	  func toStateUsage(u model.Usage) state.Usage
+//	  func fromStateUsage(u state.Usage) model.Usage
 //	  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
 //	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
 //	  func hasPlanID(path, id string) bool
@@ -64,12 +79,12 @@
 //	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
 //	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
 //	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
-//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
+//	  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, used state.Usage, err error) error
 //	  func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 //
 //	autoworker.go
 //	  func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
-//	  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
+//	  func runWorker(ctx context.Context, cs *ChatSession, meter *usageMeter, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
 //
 //	chat.go
 //	  func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -80,7 +95,7 @@
 //	  func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
 //	  func discardStrayInterrupts(interrupts <-chan os.Signal)
 //	  func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
-//	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+//	  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 //	  func startProgressDots(out io.Writer, interval time.Duration) (stop func())
 //	  func shouldShowProgress(cfg config.Config) bool
 //
@@ -125,6 +140,12 @@
 //	  func configSnapshot(cfg config.Config) ([]byte, error)
 //	  func toolsDigest(defs []model.ToolDef) (names []string, hash string)
 //
+//	meter.go
+//	  func (m *usageMeter) check() error
+//	  func (m *usageMeter) add(u model.Usage)
+//	  func (m *usageMeter) snapshot() (used model.Usage, calls, unreported int)
+//	  func (p meteredProvider) Chat(ctx context.Context, msgs []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
+//
 //	output.go
 //	  func (o chatOutput) Assistant(text string)
 //	  func (o chatOutput) ToolCalled(name string)
@@ -166,9 +187,10 @@
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
+//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall, cutOff bool) (msg model.ChatMessage, endTurn bool)
 //	  func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
 //	  func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
+//	  func cutOffNotice(maxTokens int, empty bool) string
 //	  func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)
 //
 //	session.go

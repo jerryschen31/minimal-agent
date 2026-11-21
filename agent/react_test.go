@@ -47,7 +47,7 @@ func Test_RunToolCall_ToolPanics_RecoveredAsErrorMessage(t *testing.T) {
 			}
 			call := model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: "boom", Arguments: "{}"}}
 
-			got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call)
+			got, _ := runToolCall(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "t"), call, false)
 
 			if got.Role != "tool" {
 				t.Errorf("expected role %q, got %q", "tool", got.Role)
@@ -145,7 +145,7 @@ func Test_RunToolCall_RecordsRequestedAndFinished(t *testing.T) {
 			scope := trace.StartTask(spy, "t")
 			call := model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: tc.toolName, Arguments: tc.args}}
 
-			msg, _ := runToolCall(context.Background(), fx.Session, scope, call)
+			msg, _ := runToolCall(context.Background(), fx.Session, scope, call, false)
 
 			var evs []scopedEvent
 			for _, e := range spy.events() {
@@ -213,7 +213,7 @@ func Test_RunToolCall_EndTurn(t *testing.T) {
 			}
 			call := model.ToolCall{ID: "call_1", Function: model.ToolCallFunc{Name: "propose", Arguments: "{}"}}
 
-			msg, endTurn := runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), call)
+			msg, endTurn := runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), call, false)
 
 			if endTurn != tc.wantEnd {
 				t.Errorf("endTurn = %v, want %v", endTurn, tc.wantEnd)

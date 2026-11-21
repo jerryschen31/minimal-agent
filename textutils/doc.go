@@ -1,5 +1,5 @@
 // Package textutils cuts text to a size without leaving half a character behind: by characters (CutRunes), by bytes
-// (CutBytes), and the end of a byte slice (TrimPartialRune).
+// (CutBytes), and the end of a byte slice (TrimPartialRune). It also picks a word's singular or plural form (Plural).
 //
 // It imports only the standard library, never another package of this module, so any package can use it without an
 // import cycle. Each function only cuts (and says whether it did); the caller adds its own marker ("…",
@@ -14,4 +14,7 @@
 //	  func CutRunes(s string, n int) (string, bool)
 //	  func CutBytes(s string, limit int) (string, bool)
 //	  func TrimPartialRune(b []byte) []byte
+//
+//	plural.go
+//	  func Plural(n int, one, many string) string
 package textutils

@@ -15,6 +15,7 @@ minimal-agent/
 │   ├── autodirector.go
 │   ├── autojournal.go
 │   ├── automode.go
+│   ├── autoreport.go
 │   ├── autoresume.go
 │   ├── autorun.go
 │   ├── autoworker.go
@@ -24,6 +25,7 @@ minimal-agent/
 │   ├── info.go
 │   ├── input.go
 │   ├── manifest.go
+│   ├── meter.go
 │   ├── output.go
 │   ├── planmode.go
 │   ├── react.go
@@ -92,16 +94,17 @@ minimal-agent/
 │   └── procgroup_windows.go
 ├── state/
 │   ├── doc.go
-│   ├── fold.go
 │   ├── home.go
 │   ├── journal.go
 │   ├── lock.go
 │   ├── lock_other.go
 │   ├── lock_unix.go
-│   └── lock_windows.go
+│   ├── lock_windows.go
+│   └── rebuild.go
 ├── textutils/
 │   ├── cut.go
-│   └── doc.go
+│   ├── doc.go
+│   └── plural.go
 ├── tools/
 │   ├── doc.go
 │   ├── tool.go
@@ -170,7 +173,7 @@ approval_preview.go
   func commandPreview(command string, args *[]string, dir *string) []string
 
 autodirector.go
-  func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
+  func judgeTask(ctx context.Context, cs *ChatSession, meter *usageMeter, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error)
 
 autojournal.go
   func withResend(ctx context.Context, orig state.ToolBefore) context.Context
@@ -191,6 +194,13 @@ automode.go
   func loadRunnablePlan(path string, maxTasks int, w io.Writer) (plan.Plan, []byte, error)
   func (o autoOutput) ToolCalled(name string)
 
+autoreport.go
+  func usageReport(st state.State, p plan.Plan, run int) string
+  func usageText(u model.Usage) string
+  func journalUsageText(u state.Usage) string
+  func durationText(d time.Duration) string
+  func sessionUsageLine(m *usageMeter) string
+
 autoresume.go
   func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
   func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
@@ -201,6 +211,14 @@ autoresume.go
   func oneLine(s string, max int) string
 
 autorun.go
+  func (ar *autoRun) running() time.Duration
+  func (ar *autoRun) taskContext(ctx context.Context, limitMinutes int) (context.Context, context.CancelFunc, bool)
+  func stopReasonOf(ctx context.Context) state.StopReason
+  func (ar *autoRun) allowance(runBudget, taskBudget int, pending model.Usage) (n int, runLimited, ok bool)
+  func (ar *autoRun) budgetError(runBudget int, pending model.Usage) error
+  func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usage
+  func toStateUsage(u model.Usage) state.Usage
+  func fromStateUsage(u state.Usage) model.Usage
   func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
   func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
   func hasPlanID(path, id string) bool
@@ -208,12 +226,12 @@ autorun.go
   func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
   func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
   func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)
-  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, err error) error
+  func finishFailed(ar *autoRun, t plan.Task, summary, verdict string, used state.Usage, err error) error
   func (ar *autoRun) end(cs *ChatSession, res runResult, traceDir, traceRunID string, w io.Writer) error
 
 autoworker.go
   func taskMessage(p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) string
-  func runWorker(ctx context.Context, cs *ChatSession, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
+  func runWorker(ctx context.Context, cs *ChatSession, meter *usageMeter, p plan.Plan, t plan.Task, deps map[string]string, retry *retryNote, crash string) (string, []model.ChatMessage, error)
 
 chat.go
   func handleUserInput(ctx context.Context, cs *ChatSession, line string) bool
@@ -224,7 +242,7 @@ chat.go
   func nextChatLine(ctx context.Context, cs *ChatSession, reader promptReader) (string, error)
   func discardStrayInterrupts(interrupts <-chan os.Signal)
   func createInterruptWatcher(ctx context.Context, interrupts <-chan os.Signal) (context.Context, func())
-  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+  func chatWithProgress(ctx context.Context, cs *ChatSession, provider model.Provider, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
   func startProgressDots(out io.Writer, interval time.Duration) (stop func())
   func shouldShowProgress(cfg config.Config) bool
 
@@ -269,6 +287,12 @@ manifest.go
   func configSnapshot(cfg config.Config) ([]byte, error)
   func toolsDigest(defs []model.ToolDef) (names []string, hash string)
 
+meter.go
+  func (m *usageMeter) check() error
+  func (m *usageMeter) add(u model.Usage)
+  func (m *usageMeter) snapshot() (used model.Usage, calls, unreported int)
+  func (p meteredProvider) Chat(ctx context.Context, msgs []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
+
 output.go
   func (o chatOutput) Assistant(text string)
   func (o chatOutput) ToolCalled(name string)
@@ -310,9 +334,10 @@ planmode.go
 
 react.go
   func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
+  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall, cutOff bool) (msg model.ChatMessage, endTurn bool)
   func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
   func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
+  func cutOffNotice(maxTokens int, empty bool) string
   func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)
 
 session.go
@@ -580,9 +605,14 @@ msghistory.go
 
 ```text
 openai.go
-  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
+  func maxTokensFieldFor(baseURL, override string) string
+  func (u *openAIUsage) toUsage() Usage
+  func openAIStopReason(finishReason string) string
+  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)
 
 provider.go
+  func (u Usage) Add(other Usage) Usage
+  func (u Usage) Total() int
   func SetupProvider(cfg config.Config) (Provider, error)
   func CreateChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage
   func PrepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage
@@ -596,7 +626,7 @@ provider.go
 
 ```text
 fake_provider.go
-  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.ChatMessage, error)
+  func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error)
   func AssistantText(text string) model.ChatMessage
   func AssistantToolCall(callID, toolName, args string) model.ChatMessage
   func Msg(role, id, content string) model.ChatMessage
@@ -693,9 +723,6 @@ procgroup_windows.go
 `github.com/jerryschen31/minimal-agent/state`
 
 ```text
-fold.go
-  func Fold(runs []RunEvents) (State, error)
-
 home.go
   func OpenHome(dir string) (Home, error)
   func (h Home) Dir() string
@@ -712,6 +739,8 @@ home.go
   func trimZeros(s string) string
 
 journal.go
+  func (u Usage) Add(other Usage) Usage
+  func (u Usage) Total() int
   func (j *Journal) Append(typ EventType, task string, data any) error
   func (j *Journal) Seq() int
   func (j *Journal) Close() error
@@ -735,6 +764,11 @@ lock_unix.go
 lock_windows.go
   func tryLock(f *os.File) error
   func unlockFile(f *os.File) error
+
+rebuild.go
+  func Rebuild(runs []RunEvents) (State, error)
+  func runningTime(events []Event) (time.Duration, error)
+  func attemptTime(starts map[string]time.Time, end Event) time.Duration
 ```
 
 ## textutils (package textutils)
@@ -746,6 +780,9 @@ cut.go
   func CutRunes(s string, n int) (string, bool)
   func CutBytes(s string, limit int) (string, bool)
   func TrimPartialRune(b []byte) []byte
+
+plural.go
+  func Plural(n int, one, many string) string
 ```
 
 ## tools (package tools)
@@ -906,10 +943,11 @@ digest_activity.go
   func (a *ActivityDigest) Add(ev Event)
   func isMissingPayload(data json.RawMessage) bool
   func (a *ActivityDigest) Render(w io.Writer) error
+  func (u *usageTally) add(usage model.Usage)
+  func (u usageTally) line() string
   func describe(name, args, content string, failed bool) string
   func vetoNote(d ToolVetoedData) string
   func oneLine(s string, max int) string
-  func plural(n int, one, many string) string
 
 event.go
   func GetRunStartData(cfg config.Config) RunStartData
@@ -920,7 +958,7 @@ event.go
   func GetContextClearedData(dropped int) ContextClearedData
   func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData
   func messageRecord(m model.ChatMessage) MessageRecord
-  func GetModelResponseData(msg model.ChatMessage, elapsed time.Duration) ModelResponseData
+  func GetModelResponseData(resp model.Response, elapsed time.Duration) ModelResponseData
   func GetToolRequestedData(call model.ToolCall) ToolRequestedData
   func GetToolVetoedData(call model.ToolCall, reason error, decision string, wait time.Duration) ToolVetoedData
   func GetToolFinishedData(call model.ToolCall, content string, failed bool, elapsed time.Duration) ToolFinishedData
@@ -928,7 +966,7 @@ event.go
 
 provider.go
   func GetTracedProvider(p model.Provider, rec Recorder, scopeID string, cfg config.Config) *TracedProvider
-  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.ChatMessage, error)
+  func (t *TracedProvider) Chat(ctx context.Context, msgs []model.ChatMessage, toolDefs []model.ToolDef) (model.Response, error)
 
 recorder.go
   func Nop() Recorder

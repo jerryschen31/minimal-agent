@@ -1453,7 +1453,7 @@ implements and gives a commit message. Done: 1a (`-mode auto -plan`, summary, `R
 
 ### 2026-11-19 (later) — 1b built (see DECISIONS.md § 1b built)
 
-`state/` package (journal, home/runs, per-plan OS lock, fold), `stateDir` config key, the workspace refuses the state
+`state/` package (journal, home/runs, per-plan OS lock, rebuild), `stateDir` config key, the workspace refuses the state
 folder. Not committed. **Next: 1c** (the full manifest: model, config and prompt hashes, tools).
 
 ### 2026-11-20 — 1c built (see DECISIONS.md § 1c built)
@@ -1524,14 +1524,14 @@ tasks)`, `§ Slice E (worker types)`. The mvp4 plan files are in `prompts/` (git
 |---|---|---|
 | O1 | **Worker seam**: a `taskWorker` interface in `agent` (run one attempt: task message in → summary + tool log out); today's `runWorker` becomes its in-process implementation. No behaviour change. | The director needs the worker's tool calls (`director.ToolLog`), so the interface returns them, not just the summary. |
 | O2 | **`-mode worker`**: an MCP stdio server in the child (from mvp4's `workerserver.go`), running one attempt per `run_task` with the same tools, rules (ask = deny) and atomic writes; stdout carries only MCP; logs on stderr. Started with the parent's `-config`, `-workdir`, `-model`, `-maxsteps`. | Decide: does the child get its own trace file (`traces/<run>-w1.jsonl`), linked from the parent's journal? |
-| O3 | **Tool records across processes** (the hard part): every child tool call must be journaled before it runs. Options: (a) the child asks the parent to record (an MCP request/notification; the parent is the journal's only writer; one round trip per call), or (b) each child writes its own journal file in the run folder (`runs/0001/workers/w1.jsonl`) and `Load`/`Fold` merge them. | Decision needed. (b) keeps "not recorded = not run" local to the child; (a) keeps one file. Resume (1h) and idempotency keys must work either way. |
+| O3 | **Tool records across processes** (the hard part): every child tool call must be journaled before it runs. Options: (a) the child asks the parent to record (an MCP request/notification; the parent is the journal's only writer; one round trip per call), or (b) each child writes its own journal file in the run folder (`runs/0001/workers/w1.jsonl`) and `Load`/`Rebuild` merge them. | Decision needed. (b) keeps "not recorded = not run" local to the child; (a) keeps one file. Resume (1h) and idempotency keys must work either way. |
 | O4 | **Remote worker** (`-mode auto` with config `"workers"` or `-mode orchestrator`; decide): the `taskWorker` that starts a child (`procutils` process group, killed on Ctrl+C and at the end), talks MCP via `mcpconnect`, labels its stderr `[w1]`. A child that dies mid-attempt = a failed attempt, retried with a new child (not the end of the run); its open calls are settled as in 1h before the retry. | Serial still (one worker). Crash test: kill the child, not the parent. |
 | O5 | **Resume with children**: on start, no child of an earlier run may still be running (the plan lock covers the parent; children die with their process group); open calls from child journals settled as in 1h. | Mostly tests if O3/O4 are done right. |
 | O6 | **Parallel tasks**: one scheduler goroutine owns the state, a ready-list (tasks whose `depends` are done), up to N workers, results on one channel. A failed task: start nothing new, let running ones finish, stop. Output lines `[t3 w2]`. Shared `workDir`: tasks that touch the same files must be ordered by `depends` (tell the planner; maybe a per-path lock later). Budgets (step 2) shared across workers. | mvp4 slice D; there the director ran per task in parallel too: same here (one director conversation per attempt). |
 | O7 | **Worker types**: config `"workers"` (count, description, partial config over the top-level one, e.g. a tester prompt or another model); the plan says which type a task needs (a new task field, e.g. `worker: tester`, chosen by the planner; `docs/plan-format.md`, `CheckComplete` at run time). | mvp4 slice E; there the director assigned types, here the planner does. |
 | O8 | **Docs**: `docs/auto-mode.md`, CLAUDE.md, DECISIONS, SESSION. | |
 
-**What carries over unchanged** from step 1: the plan format and plan mode, `state/` (journal, manifest, lock, Load/Fold),
+**What carries over unchanged** from step 1: the plan format and plan mode, `state/` (journal, manifest, lock, Load/Rebuild),
 approvals with nobody to ask, the director and its verdict tools, gates, atomic writes, idempotency keys, exit codes. What
 gets revised: `runWorker` becomes one of two `taskWorker`s; the journal gains records from children (O3); resume learns
 that a dead worker is not a dead run; `runPlan` becomes the parallel scheduler (O6).
@@ -1567,7 +1567,7 @@ lock (`state/lock_windows.go`) and rename-over-existing (`tools/builtin/atomicwr
   (`cs.getSessionProvider` → `trace.TracedProvider`), so `reActLoop` doesn't change; worker, director and re-sends all
   count. Stop reasons `budget` / `timeout` already exist in `state.StopReason`; map them in `runTask`/`runPlan` and pick
   their exit code (1, or 3 "needs a person"?). Since 1h continues the same run after a crash, the totals carry over:
-  rebuild them in `Fold` from the journal.
+  rebuild them in `Rebuild` from the journal.
 - **2d usage in the journal and report.** A `usage` event (per model call or per task attempt: decide; the PLAN's event
   table lists it as step 2), folded into per-task and per-run totals; the report shows tokens and time per task and in
   total. Config docs: `config/doc.go` gets the two keys; `docs/auto-mode.md` "Current limits" loses the budget line.
@@ -1590,4 +1590,45 @@ has a header and `go run ./cmd/codemap` after signature changes; never edit mvp1
 
 Five comments: a failed `tool_after` now stops the run and leaves it open; resume asks before re-sending and starts a
 new run when tools or MCP servers changed (limited on purpose); files over 16 MB get a size+mtime fingerprint instead of
-a content hash; `Fold` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.
+a content hash; `Rebuild` decodes `task_started`; plan-format status fixed. Not committed. The handoff above still holds.
+
+### 2026-11-20 — Step 2 started (branch `feat/token-usage-tracking`): 2a built
+
+Step 2 is now five substeps (see DECISIONS.md § Step 2: response type, normalized usage, `max_tokens` field chosen by
+host; and § a run stopped by a budget exits 3):
+
+| # | Substep | Status |
+|---|---|---|
+| 2a | `Provider.Chat` returns `model.Response{Message, Usage, StopReason}`; `model.Usage` (+ `Add`, `Total`); OpenAI wire structs unexported in `openai.go` | built, not committed |
+| 2b | Parse `usage` and `finish_reason` in `openai.go`; `trace.Usage` → `model.Usage`; `GetModelResponseData` takes the Response | next |
+| 2c | Send `maxTokens` (`max_completion_tokens` for OpenAI/Azure hosts, else `max_tokens`; config `maxTokensField` overrides); a `max_tokens` stop gets a clear message | |
+| 2d | Usage meter under the tracer in `getSessionProvider`; `runTokenBudget`, `runTimeoutMinutes`; stop `budget`/`timeout` → exit 3 | |
+| 2e | `usage` event per task attempt, folded into totals by `Rebuild`; report shows tokens and time; chat `/usage` | |
+
+Working flow for each substep (Jerry): shape + critical tests + gotchas first; after his "okay" Claude writes the code
+and tests; end with a one-sentence commit message.
+
+**2b built** (not committed): `openai.go` reads `usage` and `finish_reason` (`toUsage`, `openAIStopReason`); the trace's
+`model_response` carries `model.Usage` and the stop reason; `digest.md` has a tokens line per task and a run total
+(see DECISIONS.md § 2b built). Next: 2c (`maxTokens`, host rule, `maxTokensField`; first real run against Ollama to
+check its `prompt_tokens` with a cached prompt prefix).
+
+**2c built** (not committed; 2a and 2b committed by Jerry): `maxTokens` sent under the host-chosen key
+(`maxTokensField` overrides), 0 = not sent; cut-off replies reported, failing calls hinted, cut-off summaries refused
+(DECISIONS.md § 2c built). **Still to do:** a real run against Ollama (it wasn't running): `ollama serve`, then
+`go run . -config config.local.json -maxtokens 20 -workdir /tmp/scratch` with tracing to a temp `traceDir`, and check
+the trace for `finish_reason` → `max_tokens` and the `prompt_tokens` of a second turn. Next: 2d (meter and budgets).
+
+**2c live check done** against Ollama 0.40.13 (DECISIONS.md § 2c live check): `max_tokens` honoured,
+`max_completion_tokens` ignored, usage matches `model.Usage`'s meaning, a cut-off tool call arrives as an empty reply
+(the notice now says so). Not committed. Next: 2d.
+
+**2d built** (not committed): per-attempt token allowances (`usageMeter`), `runTokenBudget` / `taskTokenBudget` /
+`runTimeoutMinutes`, budget and timeout stops → exit 3, usage in `task_finished` / `attempt_usage`, running time from
+the journal (DECISIONS.md § 2d built). Live check against Ollama passed. Next: 2e (report: tokens and time per task and
+in total; chat `/usage`).
+
+**2e built** (not committed): end-of-run token/time report read from the journals, `✓ done` lines with tokens and
+time, chat/plan `/usage` (DECISIONS.md § 2e built). Live-checked against Ollama. **Step 2 is complete** (2a–2e). Next:
+step 3, orchestrator mode (O1–O8 above); the per-worker allowance design (§ 2d) is meant to carry over to child
+processes, which report their total when they end.

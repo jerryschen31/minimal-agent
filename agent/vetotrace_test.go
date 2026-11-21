@@ -17,7 +17,7 @@ func runVetoed(t *testing.T, fx *chatSessionFixture) []scopedEvent {
 	t.Helper()
 	spy := &recorderSpy{}
 	fx.Session.Recorder = spy
-	runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), deleteCall())
+	runToolCall(context.Background(), fx.Session, trace.StartTask(spy, "t"), deleteCall(), false)
 	return spy.events()
 }
 

@@ -9,9 +9,14 @@
 // method signatures in source order.
 //
 //	openai.go
-//	  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (ChatMessage, error)
+//	  func maxTokensFieldFor(baseURL, override string) string
+//	  func (u *openAIUsage) toUsage() Usage
+//	  func openAIStopReason(finishReason string) string
+//	  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)
 //
 //	provider.go
+//	  func (u Usage) Add(other Usage) Usage
+//	  func (u Usage) Total() int
 //	  func SetupProvider(cfg config.Config) (Provider, error)
 //	  func CreateChatMessage(role string, msgType string, content string, toolCallID string, toolCalls []ToolCall) ChatMessage
 //	  func PrepareChatRequest(msgContext []ChatMessage, systemMsg ChatMessage, turnMsgs []ChatMessage) []ChatMessage

@@ -136,7 +136,8 @@ go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read
                                                  # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
                                                  # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
                                                  # the same command resumes: cut-off calls settled first (may ask).
-                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person, 130 Ctrl+C.
+                                                 # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person (incl. a
+                                                 # budget or time limit reached), 130 Ctrl+C.
                                                  # User guide: docs/auto-mode.md
 ```
 
@@ -156,13 +157,13 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   `hooks/` (the `Hook` interface, `BeforeTool(ctx, call) error`, and `DenyRules`; imports only `model`).
 - **`state/`** is auto mode's durable record (stdlib + `golang.org/x/sys` only): one append-only journal per run in a
   private folder (`stateDir`, default `~/.minagent`: `runs/NNNN/{journal.jsonl, plan.md, config.json}`, `traces/`, `locks/`), rebuilt
-  into state by reading a plan's runs oldest first (`Home.Load`, `Fold`). `Journal.Append` syncs each line before it
+  into state by reading a plan's runs oldest first (`Home.Load`, `Rebuild`). `Journal.Append` syncs each line before it
   returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
   OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
   (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
 - **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
   package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
-  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
+  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character; `Plural`). Each is named for
   what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
   `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
 - **`agent/planner/`** holds plan mode's prompts and its two tools (`update_objective`, `propose_plan`). It is imported
@@ -298,7 +299,25 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
-  **`MaxTokens` is parsed and merged but not yet read**; don't assume `-maxtokens` takes effect.
+- **`maxTokens` is the per-reply output limit, and 0 (the default) sends nothing**, so the server's own limit applies.
+  `SetupProvider` resolves the request key once (`maxTokensFieldFor`): `max_completion_tokens` for `api.openai.com` and
+  `*.openai.azure.com`, `max_tokens` elsewhere; config `maxTokensField` overrides it (a LiteLLM-style gateway). A reply
+  with `StopReason == model.StopMaxTokens` is still used but reported (`cutOffNotice`), a tool call in it whose
+  arguments don't parse (`errInvalidArgs`, never other failures) gets `cutOffCallHint`, and a cut-off summary fails compaction rather than replacing messages with half a summary.
+  **`StopReason` never decides whether a reply has tool calls** (some servers send `stop` with tool calls): check
+  `len(ToolCalls)`. Every provider returns `model.Response`; `model.Usage.InputTokens` is the whole input, cached
+  tokens included (`DECISIONS.md § Step 2`).
+- **Auto mode budgets** (`runTokenBudget`, `taskTokenBudget`, `runTimeoutMinutes`; 0 = no limit): each worker attempt
+  and each director gets its own `usageMeter` (`agent/meter.go`) on a shallow copy of the session (`cs.Meter`, wrapped
+  under the tracer by `getSessionProvider`), with an allowance from `autoRun.allowance` (never more than the run has
+  left). Only the scheduling code (`runTask`) adds an attempt's total to the run's (`autoRun.used`); nothing is shared
+  while a worker runs (`DECISIONS.md § 2d`). The attempt's tokens go in `task_finished`, or `attempt_usage` when it ends
+  without one. The time limit is a per-task context deadline (`taskContext`, cause `errRunTimeout`, told apart from
+  Ctrl+C by `stopReasonOf`); gate waits are outside it. Budget and timeout stops leave the task interrupted and return
+  `ErrNeedsPerson` (exit 3). A continued run (resume) starts from `state.Rebuild`'s `Usage` and `Running`.
+  The end-of-run report (`usageReport`, `agent/autoreport.go`) is read back from the journals after `run_ended`, never
+  from memory. Chat and plan mode sessions get a counting-only meter (`NewChatSession`), shown by `/usage`; the meter
+  has a mutex because chat's auto-compaction counts from a background goroutine.
 
 ## Code map (root module only)
 

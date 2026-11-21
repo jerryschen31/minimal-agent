@@ -30,7 +30,9 @@ const directorReminders = 1
 //     (Verdict.Given false) with the reason saying so: the attempt counts as failed.
 //   - Any other error (the provider, Ctrl+C) is returned: the caller stops the run.
 //   - Traced as its own task scope, "judge <id>".
-func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error) {
+//   - meter (may be nil) counts and limits the director's tokens; a used-up allowance is returned as an error wrapping
+//     errAllowanceUsed.
+func judgeTask(ctx context.Context, cs *ChatSession, meter *usageMeter, t plan.Task, attempt int, summary string, workerMsgs []model.ChatMessage) (director.Verdict, error) {
 	var v director.Verdict
 	toolList := []tools.Tool{director.NewTaskDone(&v), director.NewTaskFailed(&v)}
 	for _, name := range directorToolNames {
@@ -44,6 +46,7 @@ func judgeTask(ctx context.Context, cs *ChatSession, t plan.Task, attempt int, s
 	}
 	dcs := *cs // [agent] a shallow copy: same provider, recorder and hooks; its own system message, tools and output
 	dcs.Tools = registry
+	dcs.Meter = meter
 	dcs.SystemMsg = createSystemMessage(director.Prompt)
 	if o, ok := cs.Output.(autoOutput); ok {
 		o.label = "director: "

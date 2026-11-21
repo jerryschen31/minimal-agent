@@ -40,7 +40,25 @@
 //	                positive in plan and auto mode. plan, auto: [30]; other modes don't use it             [0]
 //	maxTaskAttempts auto mode: the most tries per task; a try the director judges not done is tried
 //	                again with its advice. Must be positive in auto mode. auto: [3]; others don't use it   [0]
-//	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
+//	maxTokens       most tokens one model reply may use, sent with every model call (worker, director,
+//	                planner, compaction); 0 = not sent, the server's own limit applies. A reply that hits
+//	                it is cut off and reported. Reasoning models count their hidden reasoning in it, so
+//	                leave headroom. Not negative; -maxtokens                                               [0]
+//	maxTokensField  the request key maxTokens is sent as: "" = by host (max_completion_tokens for
+//	                api.openai.com and *.openai.azure.com, max_tokens elsewhere), "max_tokens" or
+//	                "max_completion_tokens" to override it, e.g. for a LiteLLM gateway in front of OpenAI.
+//	                Ollama ignores max_completion_tokens (no limit at all), so don't force it there        [""]
+//	runTokenBudget  auto mode: most tokens (input + output, as the server reports them) one run may use, over
+//	                all its workers and directors. Checked before each model call, so a run can go over by
+//	                one call; a run that reaches it stops with "budget" (exit 3). Each call sends the tool
+//	                definitions (~1,600 tokens for the built-ins alone). Raising it starts a new run with a
+//	                fresh budget (done tasks are skipped). 0 = no limit; not negative                       [0]
+//	taskTokenBudget auto mode: most tokens one worker attempt may use; it is never given more than what is
+//	                left of runTokenBudget. A worker that uses it up is a failed attempt (retried, like
+//	                running out of steps). 0 = what is left of runTokenBudget; not negative                [0]
+//	runTimeoutMinutes  auto mode: most minutes a run may be running, summed over its sessions (a crash and
+//	                the wait before the resume don't count, nor does waiting at a gate). A run that reaches
+//	                it stops with "timeout" (exit 3), even inside a tool call. 0 = no limit; not negative  [0]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]
 //	toolTimeoutSeconds  most seconds one tool call (built-in or MCP) may take; the call is stopped and the
