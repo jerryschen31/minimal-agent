@@ -66,3 +66,36 @@ func Test_Unit_TracedProvider_Chat_RecordsUsageAndStopReason(t *testing.T) {
 	}
 	t.Fatalf("no model_response event recorded; got %d events", len(evs))
 }
+
+// - Verify the model_request event records the output limit from the config, and leaves it out when none is set
+func Test_Unit_TracedProvider_Chat_RecordsMaxTokens(t *testing.T) {
+	for _, maxTokens := range []int{512, 0} {
+		evs := scopeEvents(t, func(rec Recorder) {
+			tp := GetTracedProvider(usageProvider{}, rec, "task-1", config.Config{MaxTokens: maxTokens})
+			if _, err := tp.Chat(context.Background(), []model.ChatMessage{{Role: "user", Content: "hello"}}, nil); err != nil {
+				t.Fatalf("Chat() returned an unexpected error: %v", err)
+			}
+		})
+		found := false
+		for _, ev := range evs {
+			if ev.EventType != ModelRequest {
+				continue
+			}
+			found = true
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(ev.EventData, &raw); err != nil {
+				t.Fatalf("model_request payload does not decode: %v", err)
+			}
+			got, present := raw["max_tokens"]
+			if maxTokens > 0 && string(got) != "512" {
+				t.Errorf("expected max_tokens 512 in model_request, got %q", got)
+			}
+			if maxTokens == 0 && present {
+				t.Errorf("expected no max_tokens when none is set, got %s", got)
+			}
+		}
+		if !found {
+			t.Fatalf("no model_request event recorded")
+		}
+	}
+}

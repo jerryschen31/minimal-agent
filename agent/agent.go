@@ -229,6 +229,7 @@ func (agent *Agent) ShutdownAgent(ctx context.Context) {
 //
 // Notes:
 //   - Shared by SetupAgent and PrintInfo, so info mode doesn't report a config as fine that chat mode refuses.
+//   - maxTokens may be 0 (not sent) but not negative; maxTokensField must be empty (by host) or one of the two keys.
 //   - ResponseTimeoutSeconds of 0 would time out every model call at once.
 //   - toolTimeoutSeconds and turnTimeoutSeconds must be positive, and the turn's limit at least the tool's.
 //   - mcpConnectTimeoutSeconds must be positive: 0 would fail every MCP server at once.
@@ -247,6 +248,16 @@ func checkConfig(cfg config.Config) error {
 	// only auto mode reads it; 0 would fail every task without running it
 	if cfg.AgentMode == config.ModeAuto && cfg.MaxTaskAttempts <= 0 {
 		return fmt.Errorf("maxTaskAttempts must be a positive integer in auto mode, got %d", cfg.MaxTaskAttempts)
+	}
+	// 0 means "not sent"; a negative limit is a mistake the server would reject on every call
+	if cfg.MaxTokens < 0 {
+		return fmt.Errorf("maxTokens must not be negative (0 = not sent), got %d", cfg.MaxTokens)
+	}
+	switch cfg.MaxTokensField {
+	case "", config.MaxTokensFieldMaxTokens, config.MaxTokensFieldMaxCompletionTokens:
+	default:
+		return fmt.Errorf("maxTokensField must be %q, %q or empty (choose by host), got %q",
+			config.MaxTokensFieldMaxTokens, config.MaxTokensFieldMaxCompletionTokens, cfg.MaxTokensField)
 	}
 	// 0 would time out every model call at once
 	if cfg.ResponseTimeoutSeconds <= 0 {

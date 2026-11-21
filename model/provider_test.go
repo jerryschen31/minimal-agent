@@ -32,6 +32,27 @@ func Test_Unit_SetupProvider_OpenAI_ReturnsConfiguredProvider(t *testing.T) {
 	}
 }
 
+// - Verify SetupProvider passes MaxTokens on and resolves the key it is sent as once, by host or by the override
+func Test_Unit_SetupProvider_OpenAI_ResolvesMaxTokensField(t *testing.T) {
+	cases := []struct {
+		baseURL, override, want string
+	}{
+		{"https://api.openai.com/v1", "", "max_completion_tokens"},
+		{"http://localhost:11434/v1", "", "max_tokens"},
+		{"http://litellm.internal:4000", "max_completion_tokens", "max_completion_tokens"},
+	}
+	for _, c := range cases {
+		provider, err := SetupProvider(config.Config{Provider: "openai", BaseURL: c.baseURL, MaxTokens: 256, MaxTokensField: c.override})
+		if err != nil {
+			t.Fatalf("SetupProvider() returned an error: %v", err)
+		}
+		p := provider.(*OpenAICompat)
+		if p.MaxTokens != 256 || p.MaxTokensField != c.want {
+			t.Errorf("%s (override %q): MaxTokens %d, MaxTokensField %q; want 256 and %q", c.baseURL, c.override, p.MaxTokens, p.MaxTokensField, c.want)
+		}
+	}
+}
+
 // - Verify that SetupProvider returns an error for an unsupported provider.
 func Test_Unit_SetupProvider_UnsupportedProvider_ReturnsError(t *testing.T) {
 	provider, err := SetupProvider(config.Config{Provider: "not-a-real-provider"})

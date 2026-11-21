@@ -298,7 +298,14 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 - **`MaxSteps` is the ReAct step limit** (`cfg.MaxSteps`, default 10 from `GetDefaultConfig`, overridable
   by `-maxsteps`; read via `cs.Config.MaxSteps` in `reActLoop`, no constant). It must be positive:
   0 or a negative value from a config file makes every turn fail with `ErrMaxSteps (limit 0)`.
-  **`MaxTokens` is parsed and merged but not yet read**; don't assume `-maxtokens` takes effect.
+- **`maxTokens` is the per-reply output limit, and 0 (the default) sends nothing**, so the server's own limit applies.
+  `SetupProvider` resolves the request key once (`maxTokensFieldFor`): `max_completion_tokens` for `api.openai.com` and
+  `*.openai.azure.com`, `max_tokens` elsewhere; config `maxTokensField` overrides it (a LiteLLM-style gateway). A reply
+  with `StopReason == model.StopMaxTokens` is still used but reported (`cutOffNotice`), a failing tool call in it gets
+  `cutOffCallHint`, and a cut-off summary fails compaction rather than replacing messages with half a summary.
+  **`StopReason` never decides whether a reply has tool calls** (some servers send `stop` with tool calls): check
+  `len(ToolCalls)`. Every provider returns `model.Response`; `model.Usage.InputTokens` is the whole input, cached
+  tokens included (`DECISIONS.md § Step 2`).
 
 ## Code map (root module only)
 

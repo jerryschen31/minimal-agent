@@ -25,15 +25,17 @@ import (
 // also set, Chat sends on it once it starts blocking, so a test knows when the call is in progress.
 // The mutex is not held while blocked, so other calls (e.g. a background compaction) still work.
 type FakeProvider struct {
-	mu       sync.Mutex
-	Reply    string
-	Err      error
-	Script   []model.ChatMessage
-	next     int // index of the next Script entry to play
-	Calls    [][]model.ChatMessage
-	ToolDefs [][]model.ToolDef
-	Gate     chan struct{} // if set, Chat blocks until Gate is closed or ctx is cancelled
-	Waiting  chan struct{} // if set, Chat sends on it once it starts blocking on Gate
+	mu     sync.Mutex
+	Reply  string
+	Err    error
+	Script []model.ChatMessage
+	// StopReasons is parallel to Script: StopReasons[i] is the stop reason returned with Script[i]; missing = ""
+	StopReasons []string
+	next        int // index of the next Script entry to play
+	Calls       [][]model.ChatMessage
+	ToolDefs    [][]model.ToolDef
+	Gate        chan struct{} // if set, Chat blocks until Gate is closed or ctx is cancelled
+	Waiting     chan struct{} // if set, Chat sends on it once it starts blocking on Gate
 }
 
 // Chat records the call and returns the next scripted reply, Reply, or Err, as the FakeProvider's fields say.
@@ -44,7 +46,7 @@ type FakeProvider struct {
 //     mutex is not held while blocked, so a concurrent call is not blocked behind this one
 //   - precedence after the gate: a cancelled ctx, then Err, then Script (once set, running past its end is an error), then Reply
 //     as an assistant message
-//   - the reply is returned as a model.Response with only Message set: Usage and StopReason stay zero
+//   - the reply is returned as a model.Response: Script[i] comes with StopReasons[i] (if there is one); Usage stays zero
 func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage, tools []model.ToolDef) (model.Response, error) {
 	p.mu.Lock()
 	p.Calls = append(p.Calls, append([]model.ChatMessage(nil), chatHistory...))
@@ -80,9 +82,12 @@ func (p *FakeProvider) Chat(ctx context.Context, chatHistory []model.ChatMessage
 		if p.next >= len(p.Script) {
 			return model.Response{}, fmt.Errorf("FakeProvider: script exhausted after %d replies (Chat called %d times)", len(p.Script), len(p.Calls))
 		}
-		reply := p.Script[p.next]
+		resp := model.Response{Message: p.Script[p.next]}
+		if p.next < len(p.StopReasons) {
+			resp.StopReason = p.StopReasons[p.next]
+		}
 		p.next++
-		return model.Response{Message: reply}, nil
+		return resp, nil
 	}
 	return model.Response{Message: model.ChatMessage{Role: "assistant", Content: p.Reply}}, nil
 }

@@ -166,9 +166,10 @@
 //
 //	react.go
 //	  func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) (result string, err error)
-//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool)
+//	  func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall, cutOff bool) (msg model.ChatMessage, endTurn bool)
 //	  func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (string, error)
 //	  func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) error
+//	  func cutOffNotice(maxTokens int, empty bool) string
 //	  func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, priorMsgs []model.ChatMessage, initialMsg model.ChatMessage) ([]model.ChatMessage, error)
 //
 //	session.go

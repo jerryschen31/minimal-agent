@@ -9,6 +9,7 @@
 // method signatures in source order.
 //
 //	openai.go
+//	  func maxTokensFieldFor(baseURL, override string) string
 //	  func (u *openAIUsage) toUsage() Usage
 //	  func openAIStopReason(finishReason string) string
 //	  func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools []ToolDef) (Response, error)

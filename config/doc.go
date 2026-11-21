@@ -40,7 +40,14 @@
 //	                positive in plan and auto mode. plan, auto: [30]; other modes don't use it             [0]
 //	maxTaskAttempts auto mode: the most tries per task; a try the director judges not done is tried
 //	                again with its advice. Must be positive in auto mode. auto: [3]; others don't use it   [0]
-//	maxTokens       parsed but not yet used; -maxtokens                                                    [0]
+//	maxTokens       most tokens one model reply may use, sent with every model call (worker, director,
+//	                planner, compaction); 0 = not sent, the server's own limit applies. A reply that hits
+//	                it is cut off and reported. Reasoning models count their hidden reasoning in it, so
+//	                leave headroom. Not negative; -maxtokens                                               [0]
+//	maxTokensField  the request key maxTokens is sent as: "" = by host (max_completion_tokens for
+//	                api.openai.com and *.openai.azure.com, max_tokens elsewhere), "max_tokens" or
+//	                "max_completion_tokens" to override it, e.g. for a LiteLLM gateway in front of OpenAI.
+//	                Ollama ignores max_completion_tokens (no limit at all), so don't force it there        [""]
 //	responseTimeoutSeconds  most seconds one model call may take before it fails; positive. Raise it
 //	                for slow local models                                                                  [300]
 //	toolTimeoutSeconds  most seconds one tool call (built-in or MCP) may take; the call is stopped and the

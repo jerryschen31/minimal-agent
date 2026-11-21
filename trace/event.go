@@ -250,6 +250,7 @@ type ModelRequestData struct {
 	ContextMessages int             `json:"context_messages"` // how many messages at the front of the request are not repeated in Messages
 	Messages        []MessageRecord `json:"messages"`
 	ToolNames       []string        `json:"tool_names,omitempty"`
+	MaxTokens       int             `json:"max_tokens,omitempty"` // the output limit sent with the call; 0 (omitted) = none sent
 }
 
 // GetModelRequestData builds the model_request payload.
@@ -258,6 +259,7 @@ type ModelRequestData struct {
 //   - msgs are the messages to record; contextMessages is how many more were sent in front of them and are only
 //     counted.
 //   - ToolNames lists the names of the tool definitions sent.
+//   - MaxTokens is cfg.MaxTokens, so a cut-off reply (stop_reason max_tokens) can be read next to its limit.
 func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []model.ChatMessage, toolDefs []model.ToolDef) ModelRequestData {
 	d := ModelRequestData{
 		Provider:        cfg.Provider,
@@ -265,6 +267,7 @@ func GetModelRequestData(cfg config.Config, step, contextMessages int, msgs []mo
 		Step:            step,
 		ContextMessages: contextMessages,
 		Messages:        make([]MessageRecord, len(msgs)),
+		MaxTokens:       cfg.MaxTokens,
 	}
 	for i, m := range msgs {
 		d.Messages[i] = messageRecord(m)

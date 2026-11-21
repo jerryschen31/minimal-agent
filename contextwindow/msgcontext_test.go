@@ -614,3 +614,27 @@ func Test_Unit_SummarizeChatContext_UsesSystemPromptParameter(t *testing.T) {
 		})
 	}
 }
+
+// - Verify a summary cut off at the output limit is an error and compaction leaves the context as it was, instead of
+// replacing the messages with half a summary
+func Test_ContextCompaction_CutOffSummary_ReturnsErrorAndKeepsContext(t *testing.T) {
+	chatContext, err := NewChatContext(NewOffsetWindow(10), 100)
+	if err != nil {
+		t.Fatalf("NewChatContext() returned an error: %v", err)
+	}
+	chatContext.AddMessages(modeltest.Msgs(4))
+	before := idsOf(chatContext.GetMessages())
+	provider := &modeltest.FakeProvider{
+		Script:      []model.ChatMessage{modeltest.AssistantText("The user asked about")},
+		StopReasons: []string{model.StopMaxTokens},
+	}
+
+	_, err = CompactChatContext(context.Background(), chatContext, provider, fakeSummarizerPrompt, "")
+
+	if err == nil || !strings.Contains(err.Error(), "cut off at the output limit") {
+		t.Errorf("expected a cut-off error, got %v", err)
+	}
+	if after := idsOf(chatContext.GetMessages()); !slices.Equal(after, before) {
+		t.Errorf("expected the context unchanged %v, got %v", before, after)
+	}
+}

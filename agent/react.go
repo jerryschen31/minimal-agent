@@ -42,13 +42,18 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 //     still returned.
 //   - endTurn is true only when the tool returned tools.ErrEndTurn (wrapped or not). That is not a failure: the content
 //     is the tool's result, not "error: ...". Every other tool returns false.
-func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall) (msg model.ChatMessage, endTurn bool) {
+//   - cutOff says the model's reply stopped at the output limit (model.StopMaxTokens). A call that then fails gets
+//     cutOffCallHint added, because its arguments were most likely cut in half; a call that runs fine is not affected.
+func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall, cutOff bool) (msg model.ChatMessage, endTurn bool) {
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
 
 	content, err := executeToolCall(ctx, cs, taskTrace, call)
 	if errors.Is(err, tools.ErrEndTurn) { // the tool finished and asked to end the turn: its result is a normal result
 		endTurn, err = true, nil
+	}
+	if err != nil && cutOff {
+		err = fmt.Errorf("%w; %s", err, cutOffCallHint)
 	}
 	if err != nil {
 		content = fmt.Sprintf("error: %v", err) // every failure becomes an observation the model can recover from
@@ -168,6 +173,27 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 	return nil
 }
 
+// cutOffCallHint is added to the error of a failed tool call from a reply that hit the output limit: it tells the model
+// why the call broke and what to do instead of sending the same oversized call again.
+const cutOffCallHint = "your reply was cut off at the output limit before this call was complete; send it in smaller pieces (e.g. a long file as several smaller writes or edits)"
+
+// cutOffNotice is the warning shown to the user when a model reply stopped at the output limit.
+//
+// Notes:
+//   - maxTokens 0 means none was sent, so the limit was the server's own.
+//   - empty (no text and no tool calls) adds that the model was most likely writing a tool call: some servers (Ollama)
+//     drop a half-written tool call and send an empty reply, so there is no failed call to put cutOffCallHint on.
+func cutOffNotice(maxTokens int, empty bool) string {
+	notice := "the model's reply was cut off at the server's output limit (maxTokens is not set); ask it to continue or work in smaller pieces"
+	if maxTokens > 0 {
+		notice = fmt.Sprintf("the model's reply was cut off at the output limit (maxTokens %d); raise maxTokens, or ask it to continue or work in smaller pieces", maxTokens)
+	}
+	if empty {
+		notice += ". The reply was empty: the model was probably writing a tool call (e.g. a long file) that the server dropped"
+	}
+	return notice
+}
+
 // reActLoop runs the ReAct loop for one user turn, up to MaxSteps steps, and returns the turn's messages.
 //
 // Notes:
@@ -179,6 +205,9 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 //     task's scope ID; the trace records the turn's messages, while the system prompt and prior context are only
 //     counted.
 //   - A model error is returned as is: the caller reports it (cs.Output.Error), once.
+//   - A reply cut off at the output limit (model.StopMaxTokens) is reported with cs.Output.System and still used: a
+//     text reply is kept as the answer, and its tool calls run, a failing one with cutOffCallHint (see runToolCall).
+//     StopReason never decides whether there are tool calls: some servers send "stop" together with tool calls.
 //   - A tool that returns tools.ErrEndTurn ends the turn: the other tool calls in that response still run (every call
 //     needs a result), then the turn's messages are returned with no further model call.
 //   - Returns ErrMaxSteps (wrapped with the limit) when the model is still asking for tools after cfg.MaxSteps steps.
@@ -202,11 +231,15 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		}
 		// [agent] the loop only needs the message; resp.Usage is counted by the provider wrapper, not here
 		response := resp.Message
+		cutOff := resp.StopReason == model.StopMaxTokens
 
 		// append the response as a ChatMessage to the request messages for the next iteration
 		cs.Output.Assistant(response.Content)
 		responseMsg := model.CreateChatMessage("assistant", "assistant", response.Content, "", response.ToolCalls)
 		requestMsgs = append(requestMsgs, responseMsg)
+		if cutOff {
+			cs.Output.System(cutOffNotice(cs.Config.MaxTokens, response.Content == "" && len(response.ToolCalls) == 0))
+		}
 
 		// if there are no tool calls in the response, we are done
 		if len(response.ToolCalls) == 0 {
@@ -216,7 +249,7 @@ func reActLoop(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, pri
 		endTurn := false
 		for _, tc := range response.ToolCalls {
 			cs.Output.ToolCalled(tc.Function.Name)
-			toolResultMsg, end := runToolCall(ctx, cs, taskTrace, tc)
+			toolResultMsg, end := runToolCall(ctx, cs, taskTrace, tc, cutOff)
 			requestMsgs = append(requestMsgs, toolResultMsg)
 			endTurn = endTurn || end
 		}

@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
+
+	"github.com/jerryschen31/minimal-agent/config"
 )
 
 type OpenAICompat struct {
@@ -14,6 +18,11 @@ type OpenAICompat struct {
 	Model   string
 	ApiKey  string        // empty for Ollama
 	Timeout time.Duration // most one Chat call may take (config's responseTimeoutSeconds); 0 = no limit of its own
+	// MaxTokens is the most tokens one reply may use; 0 = not sent, the server's own limit applies
+	MaxTokens int
+	// MaxTokensField is the request key MaxTokens goes in (config.MaxTokensFieldMaxTokens or
+	// config.MaxTokensFieldMaxCompletionTokens); SetupProvider resolves it with maxTokensFieldFor
+	MaxTokensField string
 }
 
 // openAIRequest is the body of POST /chat/completions, in OpenAI's wire format. Only this adapter uses it.
@@ -21,6 +30,34 @@ type openAIRequest struct {
 	Model    string        `json:"model"`
 	Messages []ChatMessage `json:"messages"`
 	Tools    []ToolDef     `json:"tools,omitempty"`
+	// [agent] Go struct tags are fixed at compile time, so a key chosen at run time needs two fields: Chat sets one,
+	// and omitempty leaves the other (and both, when MaxTokens is 0) out of the JSON.
+	MaxTokens           int `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+}
+
+// maxTokensFieldFor returns the request key the output limit is sent as for a server at baseURL.
+//
+// Notes:
+//   - a non-empty override (config maxTokensField) wins
+//   - OpenAI (api.openai.com) and Azure OpenAI (*.openai.azure.com) get max_completion_tokens: their reasoning models
+//     reject max_tokens. Every other host gets max_tokens, which most OpenAI-compatible servers take
+//   - there is no way to ask a server which key it accepts, so the host is the signal; a gateway in front of OpenAI
+//     (e.g. LiteLLM) looks like "other" and needs the override
+//   - a baseURL that does not parse gets max_tokens
+func maxTokensFieldFor(baseURL, override string) string {
+	if override != "" {
+		return override
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return config.MaxTokensFieldMaxTokens
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com") {
+		return config.MaxTokensFieldMaxCompletionTokens
+	}
+	return config.MaxTokensFieldMaxTokens
 }
 
 // openAIResponse is the JSON an OpenAI-compatible server returns. Only this adapter uses it; Chat converts it into a
@@ -91,6 +128,7 @@ func openAIStopReason(finishReason string) string {
 //   - a Timeout above 0 wraps ctx in a deadline for this one call; 0 means no limit of its own
 //   - sends an Authorization Bearer header only when ApiKey is set (empty for Ollama)
 //   - nil tools send no "tools" key at all (omitempty)
+//   - MaxTokens above 0 is sent as MaxTokensField (max_completion_tokens, else max_tokens); 0 sends neither key
 //   - any status outside 200-299 is an error carrying only the status code, with the response body unread; a response with no
 //     choices is also an error
 //   - the returned message is exactly what the server sent: ID, Timestamp and Type are not filled in here
@@ -103,6 +141,13 @@ func (p OpenAICompat) Chat(ctx context.Context, chatContext []ChatMessage, tools
 		Model:    p.Model,
 		Messages: chatContext,
 		Tools:    tools, // omitempty: nil tools send no "tools" key at all
+	}
+	if p.MaxTokens > 0 {
+		if p.MaxTokensField == config.MaxTokensFieldMaxCompletionTokens {
+			reqRaw.MaxCompletionTokens = p.MaxTokens
+		} else {
+			reqRaw.MaxTokens = p.MaxTokens
+		}
 	}
 
 	// 2. json.Marshal it into a []byte body

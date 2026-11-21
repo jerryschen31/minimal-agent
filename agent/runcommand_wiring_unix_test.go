@@ -26,7 +26,7 @@ func Test_SetupAgent_RunCommand_ApprovalLevels(t *testing.T) {
 		cfgEdit(&cfg)
 		a, _ := setupDenyWiringAgent(t, cfg)
 		a.session.AllowAskRules = allowAll
-		msg, _ := runToolCall(t.Context(), a.session, trace.StartTask(a.session.Recorder, "t"), runCommandCall(args))
+		msg, _ := runToolCall(t.Context(), a.session, trace.StartTask(a.session.Recorder, "t"), runCommandCall(args), false)
 		return msg.Content
 	}
 	echo := `{"command":"echo","args":["hello","world"]}`

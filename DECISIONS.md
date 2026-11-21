@@ -5152,3 +5152,41 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   outside any task (auto compaction), plus replies cut off at max tokens. Unreported calls are never shown as zero:
   "not reported" when none reported, "(K reported no usage)" when some didn't. The digest is per trace file (one
   process run); the budget and the totals across a resume belong to the journal (2d/2e).
+
+### 2026-11-20 — 2c built: `maxTokens` sent, cut-off replies reported
+
+- **`maxTokens` 0 stays the default and sends nothing** (Jerry): the server's own limit applies, which is the most
+  generous choice and can't break a setup. A fixed default was rejected: OpenAI rejects a value above the model's
+  output limit, and vLLM rejects prompt + `max_tokens` above the context window. The Anthropic adapter, whose API
+  requires the field, will use its own generous fallback when `maxTokens` is 0.
+- **The key**: two `omitempty` fields on `openAIRequest` (`max_tokens`, `max_completion_tokens`), one set per call,
+  because a struct tag can't be chosen at run time. `maxTokensFieldFor` picks it by host; `maxTokensField` overrides.
+  `checkConfig` refuses a negative `maxTokens` and an unknown `maxTokensField`.
+- **A cut-off reply is used, not thrown away.** Text: kept as the answer, and `Output.System` says it was cut off
+  (with the limit, or "the server's output limit" when none was sent). Tool calls: they all run; one that fails (almost
+  always the last, its JSON cut in half) gets `cutOffCallHint` added to its error, so the model sends smaller pieces
+  instead of the same oversized call. `runToolCall` takes a `cutOff` flag rather than matching the error text.
+  Rejected: refusing every call of a cut-off reply (throws away complete calls), and retrying with a higher limit
+  (spends tokens, hides the setting).
+- **A cut-off summary fails compaction** (`SummarizeChatContext`), because compaction would otherwise replace the
+  messages with half a summary and the dropped messages can't be recovered.
+- `model_request` trace events record `max_tokens`; `FakeProvider.StopReasons` (parallel to `Script`) scripts stop
+  reasons. The real Ollama check (does it honour `max_tokens`, send `length`, and how does it count a cached prompt?)
+  is still to do.
+
+### 2026-11-20 — 2c live check against Ollama 0.40.13 (`qwen2.5:0.5b`)
+
+- **`max_tokens` is honoured**; a reply that hits it comes back with `finish_reason: "length"` → `StopMaxTokens`, and
+  the warning, the trace's `stop_reason`/`max_tokens` and the digest's "cut off" count all showed it.
+- **`max_completion_tokens` is ignored** (a 20-token limit gave a 434-token reply). The host rule's `max_tokens` for
+  non-OpenAI hosts is right; forcing `maxTokensField: "max_completion_tokens"` on Ollama means no limit, which
+  `config/doc.go` now says.
+- **Usage matches our meaning**: `prompt_tokens` is the whole input even when cached, and
+  `prompt_tokens_details.cached_tokens` is the cached part of it (33 in, 32 cached on a repeat). The 2b worry that Ollama
+  counts only uncached input does not hold for this version.
+- **Ollama drops a half-written tool call**: a reply cut off while writing `write_file` arguments came back with empty
+  content, no `tool_calls` and `finish_reason: "length"` (seen in the raw response too). So `cutOffCallHint` never fires
+  with Ollama; it is for servers that pass partial arguments through. **Change:** `cutOffNotice` takes `empty`, and for
+  an empty cut-off reply adds "the model was probably writing a tool call … that the server dropped".
+- **Tool definitions dominate small turns**: ~1,600 input tokens for a one-line question, nearly all of it the 8 built-in
+  tool definitions sent with every call. Worth remembering when setting `runTokenBudget` (2d).

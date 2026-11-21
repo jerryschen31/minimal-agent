@@ -115,6 +115,7 @@ type ToolCall struct {
 //   - the API key is read from the environment variable named by cfg.ApiKeyName; an unset variable gives an empty key, which is
 //     fine for Ollama
 //   - ResponseTimeoutSeconds becomes the provider's Timeout
+//   - MaxTokens is passed on (0 = not sent), and the key it is sent as is resolved here once (maxTokensFieldFor)
 func SetupProvider(cfg config.Config) (Provider, error) {
 	if cfg.Provider == "openai" {
 		return &OpenAICompat{
@@ -122,6 +123,9 @@ func SetupProvider(cfg config.Config) (Provider, error) {
 			BaseURL: cfg.BaseURL,
 			ApiKey:  os.Getenv(cfg.ApiKeyName),
 			Timeout: time.Duration(cfg.ResponseTimeoutSeconds) * time.Second,
+
+			MaxTokens:      cfg.MaxTokens,
+			MaxTokensField: maxTokensFieldFor(cfg.BaseURL, cfg.MaxTokensField),
 		}, nil
 	} else {
 		// provider not supported

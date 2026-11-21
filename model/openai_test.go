@@ -311,3 +311,75 @@ func Test_Unit_OpenAIStopReason_Mapping(t *testing.T) {
 		}
 	}
 }
+
+// requestKeys sends one Chat with p (its BaseURL set to a fake server) and returns the top-level keys of the request body.
+func requestKeys(t *testing.T, p OpenAICompat) map[string]json.RawMessage {
+	t.Helper()
+	var body map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("request body does not decode: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+	p.BaseURL = srv.URL
+	if _, err := p.Chat(context.Background(), []ChatMessage{{Role: "user", Content: "hi"}}, nil); err != nil {
+		t.Fatalf("Chat() returned an error: %v", err)
+	}
+	return body
+}
+
+// - Verify MaxTokens 0 sends neither limit key, and a positive MaxTokens is sent only under MaxTokensField
+func Test_ChatRequest_MaxTokens_SentUnderOneKey(t *testing.T) {
+	cases := []struct {
+		name      string
+		maxTokens int
+		field     string
+		wantKey   string // "" = neither key
+	}{
+		{"zero sends nothing", 0, "max_tokens", ""},
+		{"max_tokens", 512, "max_tokens", "max_tokens"},
+		{"max_completion_tokens", 512, "max_completion_tokens", "max_completion_tokens"},
+		{"unset field falls back to max_tokens", 512, "", "max_tokens"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			body := requestKeys(t, OpenAICompat{Model: "m", MaxTokens: c.maxTokens, MaxTokensField: c.field})
+			for _, key := range []string{"max_tokens", "max_completion_tokens"} {
+				raw, present := body[key]
+				switch {
+				case key == c.wantKey && (!present || string(raw) != "512"):
+					t.Errorf("expected %q: 512 in the request, got %q (present %v)", key, raw, present)
+				case key != c.wantKey && present:
+					t.Errorf("expected no %q in the request, got %s", key, raw)
+				}
+			}
+		})
+	}
+}
+
+// - Verify the host rule: OpenAI and Azure OpenAI get max_completion_tokens, every other host max_tokens, and a
+// configured override wins over the host
+func Test_Unit_MaxTokensFieldFor_ByHostAndOverride(t *testing.T) {
+	cases := []struct {
+		baseURL, override, want string
+	}{
+		{"https://api.openai.com/v1", "", "max_completion_tokens"},
+		{"https://API.OpenAI.com/v1", "", "max_completion_tokens"},
+		{"https://myres.openai.azure.com/openai/deployments/x", "", "max_completion_tokens"},
+		{"http://localhost:11434/v1", "", "max_tokens"},
+		{"https://openrouter.ai/api/v1", "", "max_tokens"},
+		{"http://litellm.internal:4000", "", "max_tokens"},
+		{"https://api.openai.com.evil.example/v1", "", "max_tokens"}, // only the real host, not a look-alike prefix
+		{"http://litellm.internal:4000", "max_completion_tokens", "max_completion_tokens"},
+		{"https://api.openai.com/v1", "max_tokens", "max_tokens"},
+		{"://not a url", "", "max_tokens"},
+	}
+	for _, c := range cases {
+		if got := maxTokensFieldFor(c.baseURL, c.override); got != c.want {
+			t.Errorf("maxTokensFieldFor(%q, %q) = %q, want %q", c.baseURL, c.override, got, c.want)
+		}
+	}
+}

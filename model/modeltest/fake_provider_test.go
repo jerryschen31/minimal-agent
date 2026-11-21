@@ -120,3 +120,19 @@ func Test_FakeProvider_Gate_ClosingReleasesWithReply(t *testing.T) {
 		t.Fatalf("expected (%q, nil) after the gate opened, got (%q, %v)", "released", r.msg, r.err)
 	}
 }
+
+// - Verify StopReasons pairs with Script by index, and a reply past its end gets no stop reason
+func Test_FakeProvider_StopReasons_PairWithScript(t *testing.T) {
+	p := &FakeProvider{
+		Script:      []model.ChatMessage{AssistantText("cut"), AssistantText("whole")},
+		StopReasons: []string{model.StopMaxTokens},
+	}
+	first, err := p.Chat(context.Background(), nil, nil)
+	if err != nil || first.Message.Content != "cut" || first.StopReason != model.StopMaxTokens {
+		t.Errorf("call 1: expected %q with stop %q, got %+v (%v)", "cut", model.StopMaxTokens, first, err)
+	}
+	second, err := p.Chat(context.Background(), nil, nil)
+	if err != nil || second.Message.Content != "whole" || second.StopReason != "" {
+		t.Errorf("call 2: expected %q with no stop reason, got %+v (%v)", "whole", second, err)
+	}
+}

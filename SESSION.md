@@ -1612,3 +1612,13 @@ and tests; end with a one-sentence commit message.
 `model_response` carries `model.Usage` and the stop reason; `digest.md` has a tokens line per task and a run total
 (see DECISIONS.md § 2b built). Next: 2c (`maxTokens`, host rule, `maxTokensField`; first real run against Ollama to
 check its `prompt_tokens` with a cached prompt prefix).
+
+**2c built** (not committed; 2a and 2b committed by Jerry): `maxTokens` sent under the host-chosen key
+(`maxTokensField` overrides), 0 = not sent; cut-off replies reported, failing calls hinted, cut-off summaries refused
+(DECISIONS.md § 2c built). **Still to do:** a real run against Ollama (it wasn't running): `ollama serve`, then
+`go run . -config config.local.json -maxtokens 20 -workdir /tmp/scratch` with tracing to a temp `traceDir`, and check
+the trace for `finish_reason` → `max_tokens` and the `prompt_tokens` of a second turn. Next: 2d (meter and budgets).
+
+**2c live check done** against Ollama 0.40.13 (DECISIONS.md § 2c live check): `max_tokens` honoured,
+`max_completion_tokens` ignored, usage matches `model.Usage`'s meaning, a cut-off tool call arrives as an empty reply
+(the notice now says so). Not committed. Next: 2d.

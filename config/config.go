@@ -26,6 +26,13 @@ const (
 	ApprovalAllowAll = "allow-all" // run it without asking (chat confirms this once at startup); deny rules still apply
 )
 
+// MaxTokensField values: which request key carries maxTokens on an OpenAI-compatible server. "" (the default) means
+// choose by host: max_completion_tokens for OpenAI and Azure OpenAI, max_tokens everywhere else.
+const (
+	MaxTokensFieldMaxTokens           = "max_tokens"            // most OpenAI-compatible servers (Ollama, vLLM, LM Studio, OpenRouter)
+	MaxTokensFieldMaxCompletionTokens = "max_completion_tokens" // OpenAI's own API; its reasoning models reject max_tokens
+)
+
 type Config struct {
 	// User configuration
 	UserID string `json:"userId"`
@@ -46,7 +53,10 @@ type Config struct {
 	MaxPlanTasks int    `json:"maxPlanTasks"` // plan mode: the most tasks a plan may have; must be positive there (default 30 in plan mode, 0 otherwise)
 	// MaxTaskAttempts is auto mode's most tries per task (worker + director); must be positive there (default 3, 0 otherwise)
 	MaxTaskAttempts int `json:"maxTaskAttempts"`
-	MaxTokens       int `json:"maxTokens"` // 0 = unspecified (TODO)
+	MaxTokens       int `json:"maxTokens"` // most tokens one model reply may use; 0 (default) = not sent, the server's own limit applies
+	// MaxTokensField is the request key maxTokens is sent as: "" = by host, or MaxTokensFieldMaxTokens /
+	// MaxTokensFieldMaxCompletionTokens, for a gateway (e.g. LiteLLM) the host rule can't recognize
+	MaxTokensField string `json:"maxTokensField"`
 
 	ResponseTimeoutSeconds   int  `json:"responseTimeoutSeconds"`   // most seconds one model call may take; must be positive (default 300)
 	ToolTimeoutSeconds       int  `json:"toolTimeoutSeconds"`       // most seconds one tool call (built-in or MCP) may take; must be positive (default 300)
@@ -392,6 +402,7 @@ func PrintConfig(cfg Config) {
 	fmt.Fprintf(w, "  maxPlanTasks:  %d\n", cfg.MaxPlanTasks)
 	fmt.Fprintf(w, "  maxTaskAttempts: %d\n", cfg.MaxTaskAttempts)
 	fmt.Fprintf(w, "  maxTokens:     %d\n", cfg.MaxTokens)
+	fmt.Fprintf(w, "  maxTokensField: %q\n", cfg.MaxTokensField)
 	fmt.Fprintf(w, "  responseTimeoutSeconds: %d\n", cfg.ResponseTimeoutSeconds)
 	fmt.Fprintf(w, "  toolTimeoutSeconds: %d\n", cfg.ToolTimeoutSeconds)
 	fmt.Fprintf(w, "  turnTimeoutSeconds: %d\n", cfg.TurnTimeoutSeconds)
