@@ -5271,3 +5271,15 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   the `✓ done` line add "(+K calls with no usage)". Changed: two expectations in `Test_Unit_AutoRun_PrintsTheUsageReport`
   (the scripted director reports no usage, so its totals now say so).
 - `plural` moved from `trace` to `textutils.Plural`, since `agent` needed it too (the helper-package rule).
+
+### 2026-11-20 — The reference builds moved to `mvps/`; `State` renamed `PlanState`
+
+- **`mvp1/`–`mvp4/` now live in `mvps/mvp1/`–`mvps/mvp4/`.** Nothing else depended on the old place: they are separate
+  modules, the root module imports none of them, and there is no `go.work`, `replace` or CI. Older entries in this log
+  and in `SESSION.md` keep the old paths (`mvp3/agent/…`); read them as `mvps/mvp3/agent/…`.
+- **Module names were left alone** (`mvp1`; `github.com/jerryschen31/minimal-agent/mvp3`, `.../mvp4`). A module path need
+  not match its folder for a local build, and renaming means editing every import in frozen code. *Downside:* the names
+  no longer match the folders, so `go get` on them would not work; nobody does that.
+- **`.gitignore`** lines for the builds' binaries, `runs/` and `mvp2/learn/prompts/` now start with `mvps/`.
+- **`state.State` is now `state.PlanState`**, next to `TaskState` and `RunState`: one plan, all its runs. Entries above
+  that say `State.Latest` / `State.Total` mean `PlanState.Latest` / `PlanState.Total`.

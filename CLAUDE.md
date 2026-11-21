@@ -7,33 +7,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A teaching repo. Jerry is learning how AI agents work from first principles by building a minimal,
 extensible ReAct agent in Go. Two generations live side by side:
 
-- `mvp1/` — a complete working reference agent (~1800 lines incl. tests, one third-party dep: the
-  Anthropic Go SDK). Written for Jerry to read. Treat it as a reference design for this first building phase. mvp1/README.md is a good summary of the agent implementation.
-- `mvp2/` — the in-progress second generation. `mvp2/learn/` contains standalone `package main`
+- `mvps/mvp1/` — a complete working reference agent (~1800 lines incl. tests, one third-party dep: the
+  Anthropic Go SDK). Written for Jerry to read. Treat it as a reference design for this first building phase. mvps/mvp1/README.md is a good summary of the agent implementation.
+- `mvps/mvp2/` — the in-progress second generation. `mvps/mvp2/learn/` contains standalone `package main`
   snapshots used to build the agent incrementally (kept as reference; its big test file is not edited).
   The code being migrated out of it is the **real mvp2 build, at the repo root** (`main.go`, `agent/`,
   `config/`, `model/`, `memory/`, `contextwindow/`, `tools/`, `mcpconnect/` — see "Architecture for
   mvp2" below). Jerry writes this code himself while being tutored step by step, so default behaviour
   is teach-then-let-him-type: explain the concept, show the smallest next slice, and wait for him to
   write/confirm it.
-- `mvp3/` — a reference build of **autonomous mode** (a director LLM works through `objective.md`'s
+- `mvps/mvp3/` — a reference build of **autonomous mode** (a director LLM works through `objective.md`'s
   tasks with the agent as worker), written by Claude on 2026-10-13 as a template for Jerry's own build
-  at the root, the way `mvp1/` preceded mvp2. A separate Go module copied from the root code; see
-  `mvp3/README.md`, `PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
+  at the root, the way `mvps/mvp1/` preceded mvp2. A separate Go module copied from the root code; see
+  `mvps/mvp3/README.md`, `PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
   is for reading; don't fold it into the root code unasked.
-- `mvp4/` — a copy of `mvp3/` with **orchestrator mode** added: `-mode orchestrator` runs the
+- `mvps/mvp4/` — a copy of `mvps/mvp3/` with **orchestrator mode** added: `-mode orchestrator` runs the
   director and starts each worker as a `-mode worker` child process over MCP stdio. Written by Claude on
   2026-10-15 (serial) and 2026-10-16 (parallel tasks, `director.maxParallel`; worker types, `"workers"`); see
-  `mvp4/README.md`, `PLAN-orchestrator-mode-serial.md`, `PLAN-orchestrator-mode-parallel.md`,
+  `mvps/mvp4/README.md`, `PLAN-orchestrator-mode-serial.md`, `PLAN-orchestrator-mode-parallel.md`,
   `PLAN-orchestrator-worker-types.md` and `DECISIONS.md § mvp4 reference build` / `§ Slice D` / `§ Slice E`. Also for reading; mvp3 stays the frozen autonomous-mode reference.
-- `mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
+- `mvps/mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
-- `prompts/`, `mvp1/prompts/`, `mvp1/output/` — transcripts of prior sessions and real run logs
+- `prompts/`, `mvps/mvp1/prompts/`, `mvps/mvp1/output/` — transcripts of prior sessions and real run logs
   (`prompts/` is gitignored). Useful for recovering earlier reasoning.
-- `SESSION.md` (repo root) — scratch handoff notes for `mvp2/`: current state, what's in
+- `SESSION.md` (repo root) — scratch handoff notes for `mvps/mvp2/`: current state, what's in
   progress, next steps, open TODOs. Read top-to-bottom at the start of a session. Written to be
   disposable/superseded as work moves — don't treat it as a historical record.
-- `DECISIONS.md` (repo root) — the durable design-decision log for `mvp2/`: what was decided,
+- `DECISIONS.md` (repo root) — the durable design-decision log for `mvps/mvp2/`: what was decided,
   why, when, which files it affects, and — importantly — decisions that were later reversed,
   with both the original and the revised reasoning kept. This is where "why does the code look
   like this" answers live long-term; `SESSION.md` should point into a `DECISIONS.md` section
@@ -48,10 +48,10 @@ extensible ReAct agent in Go. Two generations live side by side:
 
 ## Commands for Reference Agent
 
-`mvp1/` is the module root for the reference implementation.
+`mvps/mvp1/` is the module root for the reference implementation.
 
 ```sh
-cd mvp1
+cd mvps/mvp1
 go build -o minagent .            # binary name `minagent` is gitignored; `mvp1` is not
 go test ./...                     # unit tests; a scripted fake LLM drives the loop, no network
 go test ./agent -run TestReActLoop -v
@@ -117,7 +117,7 @@ Memory is the truth; context is a view over it — never trim inside `Memory`.
 ## Commands for mvp2 (repo root)
 
 ```sh
-go build ./... && go vet ./... && gofmt -l .     # mvp2/tool/builtin.go has two old syntax errors; ignore
+go build ./... && go vet ./... && gofmt -l .     # mvps/mvp2/tool/builtin.go has two old syntax errors; ignore
 go test -race ./...                              # every package has its own tests; no network (fake provider)
 go test ./contextwindow -run OrphanedTool -v     # one test family
 go test -run XXX -bench . ./contextwindow        # window-strategy benchmarks
@@ -141,7 +141,7 @@ go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read
                                                  # User guide: docs/auto-mode.md
 ```
 
-`mvp1/` and `mvp2/` are separate Go modules, so `./...` from the root does not touch them.
+`mvps/mvp1/` and `mvps/mvp2/` are separate Go modules, so `./...` from the root does not touch them.
 
 ## Architecture for mvp2 (repo-root code)
 
@@ -354,7 +354,7 @@ go run ./cmd/codemap -code-unchanged HEAD    # fail if anything but comments cha
 - State the trade-off, including the honest downside, whenever choosing a language, library, or design —
   a bare choice reads as arbitrary here (see `tradeoffs/language-scorecard.md` for the expected form).
 - New behaviour should arrive as a plug-in behind one of the five interfaces. If it can't, say why before
-  touching `agent/`. (In `mvp1/` that means the kernel stays untouched; in mvp2, `agent/` may wire in
+  touching `agent/`. (In `mvps/mvp1/` that means the kernel stays untouched; in mvp2, `agent/` may wire in
   new capability packages, but the loop itself should still not grow cross-cutting features.)
 - When Jerry asks for a block of code, keep it simple: the most direct version that meets the request, with
   no extra helpers, abstractions, options, or tests he didn't ask for. Prefer newer stdlib/language features

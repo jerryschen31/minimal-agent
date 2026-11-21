@@ -3,9 +3,9 @@
 A copy of the repo-root agent (mvp2, as of commit `2cddfad`) with **autonomous mode** fully
 implemented. A second LLM, the **director**, works through the task list in an `objective.md` with the
 existing agent as the **worker**. Built by Claude on 2026-10-13 as a run-through and template for Jerry's
-own build at the repo root, the same way `mvp1/` came before mvp2.
+own build at the repo root, the same way `mvps/mvp1/` came before mvp2.
 
-- Design: `../PLAN-autonomous-mode.md`. Decisions: `../DECISIONS.md § Autonomous, orchestrator and worker
+- Design: `../../PLAN-autonomous-mode.md`. Decisions: `../../DECISIONS.md § Autonomous, orchestrator and worker
   modes`, including `§ mvp3 reference build`, which lists where this build differs from the plan.
 - Separate Go module (`github.com/jerryschen31/minimal-agent/mvp3`), so `go test ./...` from the repo root
   does not touch it.
@@ -13,7 +13,7 @@ own build at the repo root, the same way `mvp1/` came before mvp2.
 ## Build and test
 
 ```sh
-cd mvp3
+cd mvps/mvp3
 go build -o minagent .
 go vet ./... && gofmt -l .
 go test -race ./...                       # no network: fake providers drive both director and worker

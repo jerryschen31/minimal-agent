@@ -1,10 +1,10 @@
 # mvp4: orchestrator mode, reference build
 
-A copy of `mvp3/` (autonomous mode) with **orchestrator mode** added: the director stays in this process,
+A copy of `mvps/mvp3/` (autonomous mode) with **orchestrator mode** added: the director stays in this process,
 and each worker runs as a separate `-mode worker` process reached over MCP on stdin/stdout. Built by Claude
-on 2026-10-15 from `../PLAN-orchestrator-mode-serial.md` (slices A–C, one task at a time); decisions in
-`../DECISIONS.md § Step 2 MVP` and `§ mvp4 reference build`. **Parallel tasks** (slice D, 2026-10-16,
-`../PLAN-orchestrator-mode-parallel.md`, `../DECISIONS.md § Slice D`): with `"maxParallel": N` in the
+on 2026-10-15 from `../../PLAN-orchestrator-mode-serial.md` (slices A–C, one task at a time); decisions in
+`../../DECISIONS.md § Step 2 MVP` and `§ mvp4 reference build`. **Parallel tasks** (slice D, 2026-10-16,
+`../../PLAN-orchestrator-mode-parallel.md`, `../../DECISIONS.md § Slice D`): with `"maxParallel": N` in the
 `"director"` block (or `-maxparallel N`), N worker processes run up to N ready tasks at once, each task with
 its own director conversation; the default 1 is the serial run. Everything about autonomous
 mode below still applies: orchestrator mode is "autonomous mode with the worker moved out of process".
@@ -14,7 +14,7 @@ mode below still applies: orchestrator mode is "autonomous mode with the worker 
 ## Build and test
 
 ```sh
-cd mvp4
+cd mvps/mvp4
 go build -o minagent .
 go vet ./... && gofmt -l .
 go test -race ./...                       # no network: fake providers drive both director and worker
@@ -37,7 +37,7 @@ Parallel tasks (orchestrator mode only):
 - Tasks given in `## Tasks` are chained (each depends on the one before) when N > 1, so they still run in order.
 - Output lines are labelled `[t3 w2]` (task, worker); each child's stderr lines `[w2]`.
 - A failed task drains the round: running tasks finish, nothing new starts, then the review.
-- **Worker types** (slice E, `../PLAN-orchestrator-worker-types.md`): a `"workers"` list in the main config
+- **Worker types** (slice E, `../../PLAN-orchestrator-worker-types.md`): a `"workers"` list in the main config
   gives each type a count, a description for the director, and an optional partial config file applied over
   the top-level config. A type that differs only by its prompt is a file with one key:
   `{"systemPrompt": "You are a tester..."}`. See `examples/config.worker-types.json`, `worker-engineer.json`

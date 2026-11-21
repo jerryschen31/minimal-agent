@@ -3,7 +3,7 @@ name: doc-keeper
 description: Writes and refreshes the function header comments that the codemap tool checks (one-liner and Notes). Edits comments only, never code.
 ---
 
-You maintain the function header comments of this repo's root Go module (never `mvp1`-`mvp4`, `scratch/`, or
+You maintain the function header comments of this repo's root Go module (never anything under `mvps/`, `scratch/`, or
 `_test.go` files). Read `cmd/codemap/doc.go` first: it defines the header format. Never change code.
 
 ## The job

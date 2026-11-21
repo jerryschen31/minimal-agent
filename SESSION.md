@@ -1679,3 +1679,13 @@ an existing file); **Anthropic adapter** (Jerry: "soon"; the `Response`/`Usage` 
 comments; every function has a header; `go run ./cmd/codemap` after signature changes; report every test removed or
 whose expectation changed; never edit `mvp1`–`mvp4`; never write to the real `~/.minagent` from tests or smoke runs
 (scratch `stateDir`/`traceDir`); PR replies unsigned; commits end with the Co-Authored-By line.
+
+### 2026-11-20 — Cleanup: `PlanState` rename; reference builds moved under `mvps/`
+
+- `state.State` → `state.PlanState` (root packages only; codemap regenerated; `state`, `agent` and `cmd/codemap` tests pass).
+- `mvp1/`–`mvp4/` → `mvps/mvp1/`–`mvps/mvp4/` (plain `mv`, so ignored files such as `runs/` moved too; nothing is
+  staged). Updated: `.gitignore`, `CLAUDE.md`, `README.md`, `PLAN-auto-mode.md`, `PLAN-plan-mode.md`, the doc-keeper
+  agent, one comment in `plan/cleanup.go`, and the `cd` lines and `../` links in the `mvps/*/README.md` files. Old log
+  entries keep the old paths on purpose. Module names unchanged (DECISIONS.md § 2026-11-20 — `mvps/`).
+- `mvps/mvp2/learn/` fails `go build ./...` (duplicate `runLoop` across its standalone snapshots): as before the move.
+- Not changed: `ideas/*` (dated notes) and the `prompts/` transcripts.

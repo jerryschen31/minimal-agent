@@ -67,7 +67,7 @@ Cross-cutting features map onto these seams:
 ## Run
 
 ```sh
-cd mvp1 && go build -o minagent .
+cd mvps/mvp1 && go build -o minagent .
 
 # local model (Ollama): ollama pull qwen2.5:7b
 ./minagent -q "List the Go files here and summarise what each does"     # uses config.json

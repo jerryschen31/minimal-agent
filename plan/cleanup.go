@@ -466,7 +466,7 @@ func parseFields(body []line, t *Task) (rest []line, fixes []Fix) {
 	return body[i:], fixes
 }
 
-// [agent] tedious pattern, from mvp3/director/objective.go: bulletRe matches a top-level bullet ("- x", "* x", "+ x",
+// [agent] tedious pattern, from mvps/mvp3/director/objective.go: bulletRe matches a top-level bullet ("- x", "* x", "+ x",
 // "1. x", "1) x") and checkboxRe a "[ ] " / "[x] " box at the start of a bullet's text.
 var (
 	bulletRe   = regexp.MustCompile(`^(?:[-*+]|\d+[.)])\s+(.*)$`)
