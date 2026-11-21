@@ -5255,3 +5255,19 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   background goroutine (in 2d the meter had no lock; auto mode's single-goroutine use was the only one then).
 - The `✓ done` line shows the attempt's tokens and time; the `not done` line is unchanged (its "(attempt N of M)" is
   matched by tests and read by people; the table has the rest).
+
+### 2026-11-20 — PR #46 review: three fixes
+
+- **A task the budget stops before it starts counts as "not started".** `runTask` refused the next attempt before
+  `task_started`, but `runPlan` stopped at `i+1`, so the report undercounted "not started" by one. `runPlan` now checks
+  the run's budget before each task (and before asking its gate) and stops at `i`; `runTask`'s own check stays for a
+  later attempt of a task that already started.
+- **The cut-off hint is only for arguments that don't parse.** It was added to every error of a cut-off reply (unknown
+  tool, a denial, the tool's own failure), telling the model to split a call whose problem was something else.
+  `executeToolCall` now wraps a new `errInvalidArgs`, and `runToolCall` adds the hint only for it (no text matching).
+- **A partly reported sum says so.** `Usage.Reported` is merged with OR, so a sum with some calls that reported no
+  usage looked exact in the report (the digest already counted them). `state.Usage` gains `UnreportedCalls`
+  (`unreported_calls` in the journal), filled from the meters in `endAttempt` and added up by `Rebuild`; the report and
+  the `✓ done` line add "(+K calls with no usage)". Changed: two expectations in `Test_Unit_AutoRun_PrintsTheUsageReport`
+  (the scripted director reports no usage, so its totals now say so).
+- `plural` moved from `trace` to `textutils.Plural`, since `agent` needed it too (the helper-package rule).

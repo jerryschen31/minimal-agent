@@ -144,3 +144,20 @@ func Test_Unit_CheckConfig_MaxTokens(t *testing.T) {
 		t.Errorf("maxTokensField typo: err = %v, want a maxTokensField error", err)
 	}
 }
+
+//   - Verify a failure in a cut-off reply that is not about broken arguments (here an unknown tool) gets no cut-off hint
+//     (PR #46 review): the hint is only for arguments that don't parse
+func Test_ReActLoop_CutOff_OtherFailureNoHint(t *testing.T) {
+	fx := newChatSessionFixture(t, 10, 100)
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantToolCall("c1", "no_such_tool", `{}`), modeltest.AssistantText("done")}
+	fx.Provider.StopReasons = []string{model.StopMaxTokens}
+
+	turn, err := reActLoop(context.Background(), fx.Session, trace.StartTask(fx.Session.Recorder, "hi"), nil, modeltest.Msg("user", "u1", "hi"))
+
+	if err != nil || len(turn) != 4 {
+		t.Fatalf("err %v, turn %+v", err, turn)
+	}
+	if got := turn[2].Content; !strings.Contains(got, "unknown tool") || strings.Contains(got, cutOffCallHint) {
+		t.Errorf("expected the unknown-tool error without the cut-off hint, got %q", got)
+	}
+}

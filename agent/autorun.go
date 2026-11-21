@@ -15,6 +15,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // ErrNeedsPerson is returned (wrapped) by auto mode when the run stopped because it needs a person: a gate or a resume
@@ -124,6 +125,8 @@ func (ar *autoRun) budgetError(runBudget int, pending model.Usage) error {
 //   - Called once per attempt however it ends. Not called when the journal already failed (ar.tools.err): nothing
 //     more is written then, and the run is left open.
 //   - With a budget set and a server that reported no usage, prints once that the budget can't be enforced.
+//   - The calls that reported no usage are counted in the result's UnreportedCalls, so the report can say its sum is a
+//     lower bound.
 func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usage {
 	var u model.Usage
 	unreported := 0
@@ -140,7 +143,9 @@ func (ar *autoRun) endAttempt(cs *ChatSession, meters ...*usageMeter) state.Usag
 		ar.warnedUnreported = true
 		fmt.Fprintln(cs.OutBuffer, "  warning: the server reports no token usage for some calls; they count as 0, so the token budget can't be fully enforced")
 	}
-	return toStateUsage(u)
+	su := toStateUsage(u)
+	su.UnreportedCalls = unreported
+	return su
 }
 
 // toStateUsage converts a model.Usage into the journal's state.Usage (the state package can't import model).
@@ -337,7 +342,8 @@ func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string
 //     → "waiting", no → "declined", yes → it runs. -yes never answers a gate.
 //   - The worker of a task is told the summaries of the tasks it depends on, from this run or an earlier one.
 //   - Each task runs under taskContext (the run's time limit; gates are asked outside it). No time left → "timeout"
-//     before the task starts. A task stopped by the budget or the time limit is not counted as failed.
+//     before the task starts; no tokens left → "budget" before its gate is asked. Either way the task counts as not
+//     started (PR #46 review). A task stopped by the budget or the time limit is not counted as failed.
 func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult {
 	w := cs.OutBuffer
 	steps, removed := tasksToRun(p, ar.before)
@@ -366,6 +372,11 @@ func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gat
 			fmt.Fprintf(w, "  skip %s: %s (done in run %04d, unchanged)\n", t.ID, t.Title, s.DoneRun)
 			res.skipped++
 			continue
+		}
+		// the run's budget is used up: this task never starts, so it counts as not started (stop at i, not i+1), and its
+		// gate is not asked
+		if _, _, ok := ar.allowance(cs.Config.RunTokenBudget, 0, model.Usage{}); !ok {
+			return stop(i, state.StopBudget, ar.budgetError(cs.Config.RunTokenBudget, model.Usage{}))
 		}
 		if t.Gate != "" {
 			if reason, err := askGate(ctx, ar, t, gates, w); reason != "" {
@@ -540,6 +551,9 @@ func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t p
 			tokens := "tokens not reported"
 			if fin.Usage.Reported {
 				tokens = fmt.Sprintf("%d tokens", fin.Usage.Total())
+				if n := fin.Usage.UnreportedCalls; n > 0 {
+					tokens += fmt.Sprintf(" (+%d %s with no usage)", n, textutils.Plural(n, "call", "calls"))
+				}
 			}
 			fmt.Fprintf(w, "✓ %s done — %s (%s, %s)\n", t.ID, v.Reason, tokens, durationText(time.Since(attemptStart)))
 			return summary, "", nil

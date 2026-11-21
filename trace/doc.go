@@ -143,7 +143,6 @@
 //	  func describe(name, args, content string, failed bool) string
 //	  func vetoNote(d ToolVetoedData) string
 //	  func oneLine(s string, max int) string
-//	  func plural(n int, one, many string) string
 //
 //	event.go
 //	  func GetRunStartData(cfg config.Config) RunStartData

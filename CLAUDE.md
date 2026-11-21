@@ -163,7 +163,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
 - **Helper packages import only the standard library**, never a package of this module or a third-party module, so any
   package may use them. `procutils/` (start a command in its own process group, kill the group; Unix and Windows files)
-  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character). Each is named for
+  and `textutils/` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character; `Plural`). Each is named for
   what it does, not `utils`/`helpers`. A function moves in when a second package needs it. The rule is checked by
   `Test_Unit_HelperPackages_ImportOnlyTheStandardLibrary` (`utilpackages_test.go`); a new helper package is added to its list.
 - **`agent/planner/`** holds plan mode's prompts and its two tools (`update_objective`, `propose_plan`). It is imported
@@ -302,8 +302,8 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
 - **`maxTokens` is the per-reply output limit, and 0 (the default) sends nothing**, so the server's own limit applies.
   `SetupProvider` resolves the request key once (`maxTokensFieldFor`): `max_completion_tokens` for `api.openai.com` and
   `*.openai.azure.com`, `max_tokens` elsewhere; config `maxTokensField` overrides it (a LiteLLM-style gateway). A reply
-  with `StopReason == model.StopMaxTokens` is still used but reported (`cutOffNotice`), a failing tool call in it gets
-  `cutOffCallHint`, and a cut-off summary fails compaction rather than replacing messages with half a summary.
+  with `StopReason == model.StopMaxTokens` is still used but reported (`cutOffNotice`), a tool call in it whose
+  arguments don't parse (`errInvalidArgs`, never other failures) gets `cutOffCallHint`, and a cut-off summary fails compaction rather than replacing messages with half a summary.
   **`StopReason` never decides whether a reply has tool calls** (some servers send `stop` with tool calls): check
   `len(ToolCalls)`. Every provider returns `model.Response`; `model.Usage.InputTokens` is the whole input, cached
   tokens included (`DECISIONS.md § Step 2`).

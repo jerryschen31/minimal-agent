@@ -9,6 +9,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/plan"
 	"github.com/jerryschen31/minimal-agent/state"
+	"github.com/jerryschen31/minimal-agent/textutils"
 )
 
 // usageReport returns the end-of-run table of tokens and running time: one row per task of p (over all runs), then this
@@ -20,7 +21,8 @@ import (
 //   - A task's row covers every run, so the rows need not add up to "this run" (a task done earlier is listed with the
 //     run that did it, and resume work outside tasks counts only in the totals).
 //   - A task with attempts but no reported usage shows "not reported" (a server that sends none, or a journal older
-//     than token tracking); a time of 0 (no ended attempt) shows "—".
+//     than token tracking); a sum that includes calls with no usage says how many (journalUsageText); a time of 0 (no
+//     ended attempt) shows "—".
 func usageReport(st state.State, p plan.Plan, run int) string {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
@@ -35,12 +37,12 @@ func usageReport(st state.State, p plan.Plan, run int) string {
 		if ts.Run != run {
 			note = fmt.Sprintf("(run %04d)", ts.Run)
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\t%s\t%s\n", t.ID, ts.Status, ts.Attempts, usageText(fromStateUsage(ts.Usage)), durationText(ts.Running), note)
+		fmt.Fprintf(tw, "  %s\t%s\t%d\t%s\t%s\t%s\n", t.ID, ts.Status, ts.Attempts, journalUsageText(ts.Usage), durationText(ts.Running), note)
 	}
 	tw.Flush()
-	fmt.Fprintf(&b, "  this run: %s, running %s\n", usageText(fromStateUsage(st.Latest.Usage)), durationText(st.Latest.Running))
+	fmt.Fprintf(&b, "  this run: %s, running %s\n", journalUsageText(st.Latest.Usage), durationText(st.Latest.Running))
 	if len(st.Runs) > 1 {
-		fmt.Fprintf(&b, "  all runs: %s, running %s (%d runs)\n", usageText(fromStateUsage(st.Total)), durationText(st.TotalRunning), len(st.Runs))
+		fmt.Fprintf(&b, "  all runs: %s, running %s (%d runs)\n", journalUsageText(st.Total), durationText(st.TotalRunning), len(st.Runs))
 	}
 	return b.String()
 }
@@ -67,6 +69,18 @@ func usageText(u model.Usage) string {
 		in += " (" + strings.Join(cache, ", ") + ")"
 	}
 	return fmt.Sprintf("%d tokens: %s, %d out", u.Total(), in, u.OutputTokens)
+}
+
+// journalUsageText is usageText for a sum read from the journal, adding how many of its calls reported no usage, so a
+// lower bound is never shown as exact: "4651 tokens: 4561 in, 90 out (+1 call with no usage)".
+//
+// Notes: none.
+func journalUsageText(u state.Usage) string {
+	text := usageText(fromStateUsage(u))
+	if u.Reported && u.UnreportedCalls > 0 {
+		text += fmt.Sprintf(" (+%d %s with no usage)", u.UnreportedCalls, textutils.Plural(u.UnreportedCalls, "call", "calls"))
+	}
+	return text
 }
 
 // durationText renders a running time to the second ("1m12s"), or "—" for none.

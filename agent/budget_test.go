@@ -253,3 +253,28 @@ func Test_Unit_CheckConfig_Budgets(t *testing.T) {
 		}
 	}
 }
+
+//   - Verify a task the run's budget stops before it starts counts as not started (PR #46 review): t1 uses the whole
+//     budget, so t2 and t3 are both "not started", t2 is never started in the journal, and t2's gate is not asked
+func Test_Unit_AutoRun_TokenBudget_UsedUpBeforeATask(t *testing.T) {
+	fx := newThreeTaskFixture(t)
+	fx.Session.Config.RunTokenBudget = 600
+	fx.Provider.Script = []model.ChatMessage{modeltest.AssistantText("made a")}
+	fx.Provider.Usages = []model.Usage{used(400, 100)}
+	directorOf(fx).director = &modeltest.FakeProvider{
+		Script: []model.ChatMessage{modeltest.AssistantToolCall("v1", "task_done", `{"reason":"checked"}`)},
+		Usages: []model.Usage{used(90, 10)}, // t1 ends at exactly 600
+	}
+
+	out, err := runAutoYes(t, fx)
+
+	if !errors.Is(err, ErrNeedsPerson) {
+		t.Fatalf("autoMode: %v, want ErrNeedsPerson\n%s", err, out)
+	}
+	if !strings.Contains(out, "Stopped: budget. 1 done, 0 skipped, 0 failed, 2 not started.") {
+		t.Errorf("expected t2 and t3 counted as not started:\n%s", out)
+	}
+	if got := eventTypes(withoutToolEvents(journal(t, fx, 1))); slices.Contains(got, "task_started:t2") {
+		t.Errorf("t2 was started: %v", got)
+	}
+}

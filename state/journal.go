@@ -102,9 +102,12 @@ type Usage struct {
 	CacheReadTokens  int  `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int  `json:"cache_write_tokens,omitempty"`
 	Reported         bool `json:"reported"` // false: no model call in it reported usage
+	// UnreportedCalls counts the model calls in it that reported no usage (counted as 0), so a sum with some of them is
+	// shown as a lower bound, not as exact (PR #46 review)
+	UnreportedCalls int `json:"unreported_calls,omitempty"`
 }
 
-// Add returns the sum of u and other; Reported is true if either was.
+// Add returns the sum of u and other; Reported is true if either was, and UnreportedCalls are added up.
 //
 // Notes: none.
 func (u Usage) Add(other Usage) Usage {
@@ -114,6 +117,7 @@ func (u Usage) Add(other Usage) Usage {
 		CacheReadTokens:  u.CacheReadTokens + other.CacheReadTokens,
 		CacheWriteTokens: u.CacheWriteTokens + other.CacheWriteTokens,
 		Reported:         u.Reported || other.Reported,
+		UnreportedCalls:  u.UnreportedCalls + other.UnreportedCalls,
 	}
 }
 

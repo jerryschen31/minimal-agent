@@ -42,8 +42,9 @@ func callToolSafely(ctx context.Context, tool tools.Tool, args json.RawMessage) 
 //     still returned.
 //   - endTurn is true only when the tool returned tools.ErrEndTurn (wrapped or not). That is not a failure: the content
 //     is the tool's result, not "error: ...". Every other tool returns false.
-//   - cutOff says the model's reply stopped at the output limit (model.StopMaxTokens). A call that then fails gets
-//     cutOffCallHint added, because its arguments were most likely cut in half; a call that runs fine is not affected.
+//   - cutOff says the model's reply stopped at the output limit (model.StopMaxTokens). A call whose arguments don't
+//     parse (errInvalidArgs) then gets cutOffCallHint added: they were most likely cut in half. Any other failure
+//     (unknown tool, a denial, the tool's own error) is not about the cut-off and gets no hint (PR #46 review).
 func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, call model.ToolCall, cutOff bool) (msg model.ChatMessage, endTurn bool) {
 	taskTrace.Record(trace.ToolRequested, trace.GetToolRequestedData(call))
 	start := time.Now()
@@ -52,7 +53,7 @@ func runToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scope, c
 	if errors.Is(err, tools.ErrEndTurn) { // the tool finished and asked to end the turn: its result is a normal result
 		endTurn, err = true, nil
 	}
-	if err != nil && cutOff {
+	if cutOff && errors.Is(err, errInvalidArgs) { // only a call whose arguments don't parse was cut in half
 		err = fmt.Errorf("%w; %s", err, cutOffCallHint)
 	}
 	if err != nil {
@@ -87,7 +88,7 @@ func executeToolCall(ctx context.Context, cs *ChatSession, taskTrace *trace.Scop
 	if call.Function.Arguments != "" {
 		var argsMap map[string]interface{}
 		if err := json.Unmarshal([]byte(call.Function.Arguments), &argsMap); err != nil {
-			return "", fmt.Errorf("invalid JSON arguments: %v", err)
+			return "", fmt.Errorf("%w: %v", errInvalidArgs, err)
 		}
 		if argsMap == nil {
 			return "", errors.New("arguments must be a JSON object")
@@ -173,8 +174,12 @@ func checkBeforeToolHooks(ctx context.Context, cs *ChatSession, taskTrace *trace
 	return nil
 }
 
-// cutOffCallHint is added to the error of a failed tool call from a reply that hit the output limit: it tells the model
-// why the call broke and what to do instead of sending the same oversized call again.
+// errInvalidArgs is the error (wrapped) for tool call arguments that are not valid JSON. runToolCall checks for it to
+// add cutOffCallHint, so the hint never depends on the message's wording.
+var errInvalidArgs = errors.New("invalid JSON arguments")
+
+// cutOffCallHint is added to the error of a tool call whose arguments don't parse, in a reply that hit the output
+// limit: it tells the model why the call broke and what to do instead of sending the same oversized call again.
 const cutOffCallHint = "your reply was cut off at the output limit before this call was complete; send it in smaller pieces (e.g. a long file as several smaller writes or edits)"
 
 // cutOffNotice is the warning shown to the user when a model reply stopped at the output limit.

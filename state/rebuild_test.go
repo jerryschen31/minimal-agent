@@ -221,3 +221,12 @@ func Test_Unit_Rebuild_TaskTimeAndTotals(t *testing.T) {
 		t.Errorf("total running = %s, want %s", s.TotalRunning, want)
 	}
 }
+
+// - Verify Usage.Add adds up UnreportedCalls, so a sum with some calls that reported no usage still says how many
+func Test_Unit_Usage_Add_KeepsUnreportedCalls(t *testing.T) {
+	a := Usage{InputTokens: 10, OutputTokens: 1, Reported: true, UnreportedCalls: 1}
+	b := Usage{UnreportedCalls: 2}
+	if got := a.Add(b); got.UnreportedCalls != 3 || !got.Reported || got.Total() != 11 {
+		t.Errorf("a + b = %+v, want 11 tokens, reported, 3 unreported calls", got)
+	}
+}

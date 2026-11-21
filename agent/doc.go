@@ -50,6 +50,7 @@
 //	autoreport.go
 //	  func usageReport(st state.State, p plan.Plan, run int) string
 //	  func usageText(u model.Usage) string
+//	  func journalUsageText(u state.Usage) string
 //	  func durationText(d time.Duration) string
 //	  func sessionUsageLine(m *usageMeter) string
 //

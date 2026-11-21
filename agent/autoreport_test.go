@@ -30,7 +30,7 @@ func reportRow(t *testing.T, report, id string) string {
 //     when not this one), "not started" for a task with no attempts, "tokens not reported" when none was reported, and
 //     this run's total; the all-runs line only when there was more than one run
 func Test_Unit_UsageReport(t *testing.T) {
-	p, _, err := plan.Cleanup([]byte("# Plan: x\n\n## Tasks\n\n### t1: a\n\n### t2: b\n\n### t3: c\n\n### t4: d\n"))
+	p, _, err := plan.Cleanup([]byte("# Plan: x\n\n## Tasks\n\n### t1: a\n\n### t2: b\n\n### t3: c\n\n### t4: d\n\n### t5: e\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,8 @@ func Test_Unit_UsageReport(t *testing.T) {
 			"t2": {Status: state.TaskDone, Attempts: 2, Run: 2, Running: 72 * time.Second,
 				Usage: state.Usage{InputTokens: 12340, OutputTokens: 410, Reported: true}},
 			"t3": {Status: state.TaskFailed, Attempts: 1, Run: 2}, // no usage reported, no ended attempt
+			"t5": {Status: state.TaskDone, Attempts: 1, Run: 2, Running: time.Second, // some calls reported none
+				Usage: state.Usage{InputTokens: 100, OutputTokens: 10, Reported: true, UnreportedCalls: 2}},
 		},
 		Latest:       state.RunState{Usage: state.Usage{InputTokens: 12340, OutputTokens: 410, Reported: true}, Running: 75 * time.Second},
 		Total:        state.Usage{InputTokens: 16811, OutputTokens: 500, CacheReadTokens: 1335, Reported: true},
@@ -54,6 +56,7 @@ func Test_Unit_UsageReport(t *testing.T) {
 		"t2": "t2 done 2 12750 tokens: 12340 in, 410 out 1m12s",
 		"t3": "t3 failed 1 tokens not reported —",
 		"t4": "t4 not started",
+		"t5": "t5 done 1 110 tokens: 100 in, 10 out (+2 calls with no usage) 1s",
 	} {
 		if got := reportRow(t, report, id); got != want {
 			t.Errorf("row %s = %q, want %q", id, got, want)
@@ -88,10 +91,11 @@ func Test_Unit_AutoRun_PrintsTheUsageReport(t *testing.T) {
 			t.Errorf("row %s = %q, want it to start %q", id, row, id+" done 1 "+want)
 		}
 	}
-	if !strings.Contains(out, "this run: 1175 tokens: 1000 in, 175 out, running") || strings.Contains(out, "all runs") {
+	// the scripted director reports no usage: the sums say so (PR #46 review), here 3 director calls
+	if !strings.Contains(out, "this run: 1175 tokens: 1000 in, 175 out (+3 calls with no usage), running") || strings.Contains(out, "all runs") {
 		t.Errorf("expected this run's total (and no all-runs line for one run):\n%s", out)
 	}
-	if !regexp.MustCompile(`✓ t1 done — checked \(600 tokens, [^)]+\)`).MatchString(out) {
+	if !regexp.MustCompile(`✓ t1 done — checked \(600 tokens \(\+1 call with no usage\), [^)]+\)`).MatchString(out) {
 		t.Errorf("expected the done line to carry the attempt's tokens and time:\n%s", out)
 	}
 }

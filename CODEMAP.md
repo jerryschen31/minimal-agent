@@ -103,7 +103,8 @@ minimal-agent/
 │   └── rebuild.go
 ├── textutils/
 │   ├── cut.go
-│   └── doc.go
+│   ├── doc.go
+│   └── plural.go
 ├── tools/
 │   ├── doc.go
 │   ├── tool.go
@@ -196,6 +197,7 @@ automode.go
 autoreport.go
   func usageReport(st state.State, p plan.Plan, run int) string
   func usageText(u model.Usage) string
+  func journalUsageText(u state.Usage) string
   func durationText(d time.Duration) string
   func sessionUsageLine(m *usageMeter) string
 
@@ -778,6 +780,9 @@ cut.go
   func CutRunes(s string, n int) (string, bool)
   func CutBytes(s string, limit int) (string, bool)
   func TrimPartialRune(b []byte) []byte
+
+plural.go
+  func Plural(n int, one, many string) string
 ```
 
 ## tools (package tools)
@@ -943,7 +948,6 @@ digest_activity.go
   func describe(name, args, content string, failed bool) string
   func vetoNote(d ToolVetoedData) string
   func oneLine(s string, max int) string
-  func plural(n int, one, many string) string
 
 event.go
   func GetRunStartData(cfg config.Config) RunStartData

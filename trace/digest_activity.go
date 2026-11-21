@@ -177,7 +177,7 @@ func (a *ActivityDigest) Add(ev Event) {
 	case ContextCleared:
 		var d ContextClearedData
 		if json.Unmarshal(ev.EventData, &d) == nil {
-			a.task(ev.ScopeID).effect = fmt.Sprintf("context cleared (%d %s)", d.MessagesDropped, plural(d.MessagesDropped, "message", "messages"))
+			a.task(ev.ScopeID).effect = fmt.Sprintf("context cleared (%d %s)", d.MessagesDropped, textutils.Plural(d.MessagesDropped, "message", "messages"))
 		}
 	case Compaction:
 		a.compacts++
@@ -240,7 +240,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	}
 	b.WriteString("\n")
 	if a.runIncomplete > 0 {
-		fmt.Fprintf(&b, "\n%d run-level %s had incomplete data (payload truncated or dropped); see the trace\n", a.runIncomplete, plural(a.runIncomplete, "event", "events"))
+		fmt.Fprintf(&b, "\n%d run-level %s had incomplete data (payload truncated or dropped); see the trace\n", a.runIncomplete, textutils.Plural(a.runIncomplete, "event", "events"))
 	}
 
 	for _, t := range a.tasks {
@@ -250,7 +250,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 		}
 		switch {
 		case len(t.calls) > 0 || t.pending > 0:
-			fmt.Fprintf(&b, "%d tool %s:\n", len(t.calls)+t.pending, plural(len(t.calls)+t.pending, "call", "calls"))
+			fmt.Fprintf(&b, "%d tool %s:\n", len(t.calls)+t.pending, textutils.Plural(len(t.calls)+t.pending, "call", "calls"))
 			for _, c := range t.calls {
 				fmt.Fprintf(&b, "- %s\n", c)
 			}
@@ -272,7 +272,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 			fmt.Fprintf(&b, "%s\n", line)
 		}
 		if t.incomplete > 0 {
-			fmt.Fprintf(&b, "%d %s had incomplete data (payload truncated or dropped): the list above may be missing activity; see the trace\n", t.incomplete, plural(t.incomplete, "event", "events"))
+			fmt.Fprintf(&b, "%d %s had incomplete data (payload truncated or dropped): the list above may be missing activity; see the trace\n", t.incomplete, textutils.Plural(t.incomplete, "event", "events"))
 		}
 		if t.status != "" && t.status != "ok" {
 			fmt.Fprintf(&b, "task %s", t.status)
@@ -287,7 +287,7 @@ func (a *ActivityDigest) Render(w io.Writer) error {
 	if line := a.tokens.line(); line != "" {
 		b.WriteString(line)
 		if a.cutOff > 0 {
-			fmt.Fprintf(&b, "; %d %s cut off at max tokens", a.cutOff, plural(a.cutOff, "reply", "replies"))
+			fmt.Fprintf(&b, "; %d %s cut off at max tokens", a.cutOff, textutils.Plural(a.cutOff, "reply", "replies"))
 		}
 		b.WriteString("\n")
 	}
@@ -334,7 +334,7 @@ func (u usageTally) line() string {
 	if u.calls == 0 {
 		return ""
 	}
-	calls := fmt.Sprintf("%d model %s", u.calls, plural(u.calls, "call", "calls"))
+	calls := fmt.Sprintf("%d model %s", u.calls, textutils.Plural(u.calls, "call", "calls"))
 	if u.unreported == u.calls {
 		return "tokens: not reported (" + calls + ")"
 	}
@@ -517,14 +517,4 @@ func oneLine(s string, max int) string {
 		return cut + "…"
 	}
 	return s
-}
-
-// plural returns one when n is 1, otherwise many.
-//
-// Notes: none.
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
