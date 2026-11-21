@@ -19,17 +19,19 @@ extensible ReAct agent in Go. Two generations live side by side:
 - `mvps/mvp3/` — a reference build of **autonomous mode** (a director LLM works through `objective.md`'s
   tasks with the agent as worker), written by Claude on 2026-10-13 as a template for Jerry's own build
   at the root, the way `mvps/mvp1/` preceded mvp2. A separate Go module copied from the root code; see
-  `mvps/mvp3/README.md`, `PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
+  `mvps/mvp3/README.md`, `docs/plans/PLAN-autonomous-mode.md` and `DECISIONS.md § mvp3 reference build`. Like mvp1, it
   is for reading; don't fold it into the root code unasked.
 - `mvps/mvp4/` — a copy of `mvps/mvp3/` with **orchestrator mode** added: `-mode orchestrator` runs the
   director and starts each worker as a `-mode worker` child process over MCP stdio. Written by Claude on
   2026-10-15 (serial) and 2026-10-16 (parallel tasks, `director.maxParallel`; worker types, `"workers"`); see
-  `mvps/mvp4/README.md`, `PLAN-orchestrator-mode-serial.md`, `PLAN-orchestrator-mode-parallel.md`,
-  `PLAN-orchestrator-worker-types.md` and `DECISIONS.md § mvp4 reference build` / `§ Slice D` / `§ Slice E`. Also for reading; mvp3 stays the frozen autonomous-mode reference.
+  `mvps/mvp4/README.md`, `docs/plans/PLAN-orchestrator-mode-serial.md`, `docs/plans/PLAN-orchestrator-mode-parallel.md`,
+  `docs/plans/PLAN-orchestrator-worker-types.md` and `DECISIONS.md § mvp4 reference build` / `§ Slice D` / `§ Slice E`. Also for reading; mvp3 stays the frozen autonomous-mode reference.
 - `mvps/mvp1/tradeoffs/language-scorecard.md` — the worked argument for Go over TS/Python/Rust. Extend this
   rather than re-arguing from scratch; it sets the expected depth for design justifications here.
 - `prompts/`, `mvps/mvp1/prompts/`, `mvps/mvp1/output/` — transcripts of prior sessions and real run logs
   (`prompts/` is gitignored). Useful for recovering earlier reasoning.
+- `docs/plans/` (the `PLAN-*.md` design plans) and `docs/ideas/` (dated ideas-and-landscape reports; a daily launchd job
+  writes them to the `ideas` branch, see `DECISIONS.md` § 2026-11-20 — `docs/plans/`).
 - `SESSION.md` (repo root) — scratch handoff notes for `mvps/mvp2/`: current state, what's in
   progress, next steps, open TODOs. Read top-to-bottom at the start of a session. Written to be
   disposable/superseded as work moves — don't treat it as a historical record.
@@ -134,7 +136,7 @@ go run . -mode plan -obj <file> -plan <file>     # write the plan to a file you 
                                                  # only after "Replace it? [y/N]"); the plan copies the objective in
 go run . -mode auto -plan <file> [-y]            # (alias -mode autonomous) read and check a plan (any name), summary,
                                                  # "Run? [Y/n]", then run its tasks one at a time, a fresh worker each;
-                                                 # state and traces in ~/.minagent (PLAN-auto-mode.md). After a crash,
+                                                 # state and traces in ~/.minagent (docs/plans/PLAN-auto-mode.md). After a crash,
                                                  # the same command resumes: cut-off calls settled first (may ask).
                                                  # Exit codes: 0 ok, 1 failed, 2 usage, 3 needs a person (incl. a
                                                  # budget or time limit reached), 130 Ctrl+C.
@@ -160,7 +162,7 @@ dependency direction** (see `DECISIONS.md § Package dependency direction` and `
   into state by reading a plan's runs oldest first (`Home.Load`, `Rebuild`). `Journal.Append` syncs each line before it
   returns; a torn last line is dropped by `Read` and cut by `ContinueRun`. One run per plan at a time (`Home.Lock`, an
   OS file lock the OS releases on a crash). The file tools refuse the state folder like `traceDir`
-  (`Workspace.SetStateDir`). See `PLAN-auto-mode.md`.
+  (`Workspace.SetStateDir`). See `docs/plans/PLAN-auto-mode.md`.
 - **Helper packages (all under `utils/`: `mdscan`, `procutils`, `textutils`) import only the standard library**, never a package of this module or a third-party module, so any
   package may use them. `procutils` (start a command in its own process group, kill the group; Unix and Windows files)
   and `textutils` (`CutRunes`, `CutBytes`, `TrimPartialRune`: cuts that never leave half a character; `Plural`). Each is named for

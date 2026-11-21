@@ -13,7 +13,7 @@
 // The journal is the only record: nothing else holds a run's state, so it can't disagree with anything. PlanState is
 // rebuilt by reading the journals of every earlier run of the same plan, oldest first (Home.Load, Rebuild). Append syncs
 // each line to disk before it returns; a crash can leave half a line at the end, which Read drops and ContinueRun cuts
-// off before appending. See PLAN-auto-mode.md and DECISIONS.md § 2026-11-19.
+// off before appending. See docs/plans/PLAN-auto-mode.md and DECISIONS.md § 2026-11-19.
 //
 // The package imports only the standard library and golang.org/x/sys (the file lock); it knows nothing about models,
 // tools or the agent.

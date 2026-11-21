@@ -5,7 +5,7 @@ implemented. A second LLM, the **director**, works through the task list in an `
 existing agent as the **worker**. Built by Claude on 2026-10-13 as a run-through and template for Jerry's
 own build at the repo root, the same way `mvps/mvp1/` came before mvp2.
 
-- Design: `../../PLAN-autonomous-mode.md`. Decisions: `../../DECISIONS.md § Autonomous, orchestrator and worker
+- Design: `../../docs/plans/PLAN-autonomous-mode.md`. Decisions: `../../DECISIONS.md § Autonomous, orchestrator and worker
   modes`, including `§ mvp3 reference build`, which lists where this build differs from the plan.
 - Separate Go module (`github.com/jerryschen31/minimal-agent/mvp3`), so `go test ./...` from the repo root
   does not touch it.

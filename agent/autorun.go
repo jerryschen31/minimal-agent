@@ -300,7 +300,7 @@ func hasPlanID(path, id string) bool {
 //     first ready task in file order" each time is a topological sort that keeps the order you wrote where it can.
 //   - Skip: done in an earlier run and its definition hash is unchanged. Everything else runs: new, changed, failed,
 //     interrupted, or cut off by a crash (still "running" in a run that never ended).
-//   - A done task whose dependency runs again is still skipped (no cascade in v1; PLAN-auto-mode.md "Which tasks run").
+//   - A done task whose dependency runs again is still skipped (no cascade in v1; docs/plans/PLAN-auto-mode.md "Which tasks run").
 //   - A cycle or an unknown dependency can't happen (CheckComplete refuses both); if one did, the rest keep file order.
 func tasksToRun(p plan.Plan, st state.PlanState) (steps []taskStep, removed []string) {
 	placed := map[string]bool{}

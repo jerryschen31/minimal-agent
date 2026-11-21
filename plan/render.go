@@ -102,7 +102,7 @@ func taskBlock(t Task) string {
 // assumptions.
 //
 // Notes:
-//   - This is the first-plan form, where every task is new ("+"). Plan updates (PLAN-plan-apply.md step 4) add the
+//   - This is the first-plan form, where every task is new ("+"). Plan updates (docs/plans/PLAN-plan-apply.md step 4) add the
 //     "~ ↻ - ?" markers.
 //   - Layout: a header ("Plan 1 (<title>): 4 to add"), then one line per task ("  + t2  Count words  (after t1)"),
 //     IDs padded to the same width. "(after …)" lists the task's depends, " [external]" marks effects: external and

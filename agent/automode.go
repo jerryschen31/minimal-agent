@@ -13,7 +13,7 @@ import (
 )
 
 // Auto mode (-mode auto -plan <file>, also -mode autonomous) runs a plan file's tasks without a person
-// (PLAN-auto-mode.md). The plan file is its only input, like Terraform's saved plan: auto mode never reads the objective
+// (docs/plans/PLAN-auto-mode.md). The plan file is its only input, like Terraform's saved plan: auto mode never reads the objective
 // file and doesn't check whether the plan is stale; the plan carries the objective in its "## Objective" section.
 // [agent] 1a: read and check the plan, show the summary, ask Run? [Y/n]. 1d: run the tasks one at a time
 // (autorun.go), each with a fresh worker (autoworker.go). 1e: the director judges each attempt (autodirector.go,

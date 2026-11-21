@@ -4,7 +4,7 @@
 // A plan file belongs to the machine: you write the objective file (package objective), the planner proposes tasks,
 // Go checks them and writes the plan. You may still tweak a plan by hand, so Cleanup reads it leniently and reports
 // each fix. When the objective changes, the plan is stale (IsStale) and is redone, keeping task IDs; each task's
-// DefinitionHash lets the run state tell which tasks changed. See PLAN-plan-apply.md.
+// DefinitionHash lets the run state tell which tasks changed. See docs/plans/PLAN-plan-apply.md.
 //
 // Reading and writing: Cleanup is the one reader. It fixes small mistakes and reports each fix; CheckComplete then
 // says whether the plan is ready to run. Markdown is the one writer, and Cleanup reads its output back unchanged with

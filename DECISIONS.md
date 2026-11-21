@@ -5292,3 +5292,21 @@ Jerry's line for this review: be reasonable on guardrails; don't overfix obscure
   does" rule and mix Unix/Windows process code with string helpers. `utilpackages_test.go` lists the new paths.
   Earlier entries keep the old paths (`procutils/procgroup_windows.go` means `utils/procutils/…`). *Downside:* `utils/`
   itself holds no Go code, so `go doc ./utils` shows nothing.
+
+### 2026-11-20 — `PLAN-*.md` moved to `docs/plans/`, `ideas/` to `docs/ideas/`
+
+- The five root `PLAN-*.md` files are now `docs/plans/PLAN-*.md` and `ideas/` is `docs/ideas/`. Live references were
+  updated (`CLAUDE.md`, `docs/*.md` links, Go comments and the `config/flags.go` mode comments). Older entries here and in
+  `SESSION.md` keep the bare names (`PLAN-auto-mode.md` means `docs/plans/PLAN-auto-mode.md`). No test or build step read
+  these files. `CLAUDE.md` and the `mvps/*/README.md` files still name plans that do not exist (`PLAN-autonomous-mode.md`,
+  `PLAN-orchestrator-*.md`); that was already so.
+- **The daily ideas job is still active** (`~/Library/LaunchAgents/com.jerry.minimal-agent-ideas.plist`, 16:50 daily;
+  script `~/.local/share/minimal-agent-ideas/run.sh`). It does not write into this checkout: it works in the worktree
+  `~/gh/public/minimal-agent-ideas` and pushes one report per day to the `ideas` branch under `ideas/`. Merging that branch
+  into `build` after this move will bring `ideas/` back at the top level unless the job's path (`run.sh`, `prompt.md`)
+  or the merge is adjusted. *Downside of leaving it:* a second, empty-looking `ideas/` folder after each merge.
+- **Update, same day:** the ideas job now writes `docs/ideas/<date>-ideas-and-landscape.md` (`run.sh` `FILE`, `prompt.md`
+  twice) and lists earlier reports from both `ideas/` and `docs/ideas/` on the `ideas` branch (the branch still holds the
+  old ones under `ideas/`; it was not rewritten). `CLAUDE.md` and `mvps/mvp3|4/README.md` now point at
+  `docs/plans/PLAN-autonomous-mode.md` and `docs/plans/PLAN-orchestrator-*.md`; those four files are not in the tree
+  (only in git history), so the links stay dangling until they are restored.

@@ -17,7 +17,7 @@ import (
 	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
-// Resume (PLAN-auto-mode.md, 1h). A run whose journal has no run_ended was cut off (a crash, a kill, a power cut).
+// Resume (docs/plans/PLAN-auto-mode.md, 1h). A run whose journal has no run_ended was cut off (a crash, a kill, a power cut).
 // Starting the same plan again settles each call the crash cut off (a tool_before with no tool_after) before any task
 // runs, then continues that run, or starts a new one if the plan or config changed. The cut-off task runs again from
 // the start with a fresh worker, told what happened to its calls; done tasks are skipped as always.

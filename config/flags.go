@@ -14,8 +14,8 @@ const (
 	ModeHeadless = "headless"
 	ModeOneshot  = "oneshot"
 	ModeInfo     = "info" // print what the agent would have (config, tools, MCP servers), it starts each MCP server to list its tools, then exits
-	ModePlan     = "plan" // write an objective with the user (or read one) and plan it (see PLAN-plan-apply.md)
-	ModeAuto     = "auto" // run a plan file's tasks without a person (see PLAN-auto-mode.md)
+	ModePlan     = "plan" // write an objective with the user (or read one) and plan it (see docs/plans/PLAN-plan-apply.md)
+	ModeAuto     = "auto" // run a plan file's tasks without a person (see docs/plans/PLAN-auto-mode.md)
 
 	ModeAutonomous = "autonomous" // another name for ModeAuto; normalizeMode turns it into ModeAuto
 )

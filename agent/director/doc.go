@@ -1,5 +1,5 @@
 // Package director holds auto mode's director: the prompt, the first message and the two verdict tools of the model
-// that judges each task after its worker finishes (PLAN-auto-mode.md, commit 1e).
+// that judges each task after its worker finishes (docs/plans/PLAN-auto-mode.md, commit 1e).
 //
 //   - Prompt and Message: the director's system prompt, and its first message for one attempt (the task with its
 //     "done when", the worker's summary, and ToolLog: what the worker's tool calls were and what they returned).

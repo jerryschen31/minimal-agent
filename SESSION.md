@@ -1695,3 +1695,9 @@ whose expectation changed; never edit `mvp1`–`mvp4`; never write to the real `
 - `mdscan`, `procutils`, `textutils` → `utils/mdscan`, `utils/procutils`, `utils/textutils` (imports in 18 files, `utilpackages_test.go`,
   codemap regenerated, `CLAUDE.md`, `PLAN-plan-apply.md`). `go build`, `go vet`, `go test -race ./...` pass. Old log entries
   keep the old paths (DECISIONS.md § 2026-11-20 — helper packages under `utils/`).
+
+### 2026-11-20 — Cleanup: docs layout
+
+- `PLAN-*.md` → `docs/plans/`; `ideas/` → `docs/ideas/`; references updated (see DECISIONS.md § 2026-11-20 — `PLAN-*.md` moved).
+  `go build`, `go vet`, `go test -race ./...` pass.
+- The launchd ideas job now writes to `docs/ideas/` (see DECISIONS.md § 2026-11-20 — `PLAN-*.md` moved, "Update, same day").
