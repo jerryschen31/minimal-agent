@@ -194,7 +194,7 @@ func (m McpServerConfig) TransportType() (string, error) {
 }
 
 // planSystemPrompt is plan mode's default system prompt: the chat that drafts an objective with the user.
-// [agent] update_objective, present_objective, /view, /save and /edit are added by plan mode (PLAN-plan-apply.md
+// [agent] update_objective, present_objective, /view, /save and /edit are added by plan mode (docs/plans/PLAN-plan-apply.md
 // step 2); a config file's "systemPrompt" replaces this text like any other default. The flow (three stages, a running
 // summary, one question at a time, the final draft shown once) follows Claude Code's plan mode.
 const planSystemPrompt = `You help the user write an objective for an autonomous agent run. You lead the conversation

@@ -37,7 +37,7 @@ const runCommandName = "run_command"
 // matches an ask rule; a call that matches neither runs.
 // [agent] Two lists rather than one list of {match, level} objects: the order of entries never matters (deny always
 // wins), and each list replaces its own default in a config file. Downside: no "ask for fs_* except fs_read" until an
-// allow list exists (PLAN-approval-gates.md, "Later").
+// allow list exists (docs/plans/PLAN-approval-gates.md, "Later").
 type ToolRules struct {
 	deny, ask []string // lowercased, checked at construction
 }

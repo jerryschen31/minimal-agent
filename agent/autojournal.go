@@ -16,9 +16,9 @@ import (
 	"github.com/jerryschen31/minimal-agent/mcpconnect"
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools"
 	"github.com/jerryschen31/minimal-agent/trace"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
 // maxArgsPreviewBytes caps a tool call's argument preview in the journal (tool_before's args_preview).

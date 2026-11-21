@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/jerryschen31/minimal-agent/model"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

@@ -34,7 +34,7 @@ func Test_Unit_UsageReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := state.State{
+	st := state.PlanState{
 		Runs: []state.Run{{Number: 1}, {Number: 2}},
 		Tasks: map[string]state.TaskState{
 			"t1": {Status: state.TaskDone, Attempts: 1, Run: 1, Running: 38 * time.Second,

@@ -5,7 +5,7 @@ an LLM's help in plan mode); the planner turns it into formal tasks in a separat
 mode runs that plan. When you change the objective, the plan is redone and only what changed is re-run.
 
 > **Status:** the reader (package `objective/`) and plan file (package `plan/`) are built, and plan mode can create a first
-> plan. Autonomous mode and plan updates are not built yet. The whole design: [`PLAN-plan-apply.md`](../PLAN-plan-apply.md).
+> plan. Autonomous mode and plan updates are not built yet. The whole design: [`docs/plans/PLAN-plan-apply.md`](plans/PLAN-plan-apply.md).
 
 A complete example: [`examples/objective-example.md`](../examples/objective-example.md), and the plan made from it:
 [`examples/objective-example.plan.md`](../examples/objective-example.plan.md).

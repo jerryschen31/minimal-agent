@@ -12,12 +12,12 @@ import (
 
 	"github.com/jerryschen31/minimal-agent/model"
 	"github.com/jerryschen31/minimal-agent/state"
-	"github.com/jerryschen31/minimal-agent/textutils"
 	"github.com/jerryschen31/minimal-agent/tools/builtin"
 	"github.com/jerryschen31/minimal-agent/trace"
+	"github.com/jerryschen31/minimal-agent/utils/textutils"
 )
 
-// Resume (PLAN-auto-mode.md, 1h). A run whose journal has no run_ended was cut off (a crash, a kill, a power cut).
+// Resume (docs/plans/PLAN-auto-mode.md, 1h). A run whose journal has no run_ended was cut off (a crash, a kill, a power cut).
 // Starting the same plan again settles each call the crash cut off (a tool_before with no tool_after) before any task
 // runs, then continues that run, or starts a new one if the plan or config changed. The cut-off task runs again from
 // the start with a fresh worker, told what happened to its calls; done tasks are skipped as always.
@@ -62,7 +62,7 @@ type settlePlan struct {
 //     run through Load.
 //   - Tools changed: no call is re-sent without asking (PR #44 review: a re-send must not go to a different server
 //     unseen). A server that changed behind an unchanged interface is not detected (accepted, Jerry).
-func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
+func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.PlanState, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
 	w := cs.OutBuffer
 	last := st.Latest
 	fmt.Fprintf(w, "Run %04d did not finish (a crash or a kill).\n", last.Run.Number)

@@ -3,7 +3,7 @@ package plan
 import (
 	"strings"
 
-	"github.com/jerryschen31/minimal-agent/mdscan"
+	"github.com/jerryschen31/minimal-agent/utils/mdscan"
 )
 
 // ObjectiveSection returns an objective's Markdown ready to go under the plan's "## Objective" heading: every heading
