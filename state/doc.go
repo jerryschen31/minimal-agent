@@ -10,7 +10,7 @@
 //	  runs/0001/config.json     the run's settings, secrets removed
 //	  traces/                   auto mode's traces (written by the agent's trace recorder, not this package)
 //
-// The journal is the only record: nothing else holds a run's state, so it can't disagree with anything. State is
+// The journal is the only record: nothing else holds a run's state, so it can't disagree with anything. PlanState is
 // rebuilt by reading the journals of every earlier run of the same plan, oldest first (Home.Load, Rebuild). Append syncs
 // each line to disk before it returns; a crash can leave half a line at the end, which Read drops and ContinueRun cuts
 // off before appending. See PLAN-auto-mode.md and DECISIONS.md § 2026-11-19.
@@ -32,7 +32,7 @@
 //	  func SHA256(data []byte) string
 //	  func (h Home) NewRun(m Manifest, plan, config []byte) (*Journal, Run, error)
 //	  func (h Home) ContinueRun(r Run) (*Journal, error)
-//	  func (h Home) Load(p PlanRef) (State, error)
+//	  func (h Home) Load(p PlanRef) (PlanState, error)
 //	  func readManifest(path string) (Manifest, bool)
 //	  func (h Home) runsDir() string
 //	  func (h Home) runs() ([]Run, error)
@@ -66,7 +66,7 @@
 //	  func unlockFile(f *os.File) error
 //
 //	rebuild.go
-//	  func Rebuild(runs []RunEvents) (State, error)
+//	  func Rebuild(runs []RunEvents) (PlanState, error)
 //	  func runningTime(events []Event) (time.Duration, error)
 //	  func attemptTime(starts map[string]time.Time, end Event) time.Duration
 package state

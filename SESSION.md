@@ -1632,3 +1632,50 @@ in total; chat `/usage`).
 time, chat/plan `/usage` (DECISIONS.md § 2e built). Live-checked against Ollama. **Step 2 is complete** (2a–2e). Next:
 step 3, orchestrator mode (O1–O8 above); the per-worker allowance design (§ 2d) is meant to carry over to child
 processes, which report their total when they end.
+
+### 2026-11-20 (end of session) — Handoff: step 2 done and merged; next is step 3, orchestrator mode
+
+**State.** Step 2 (token usage, budgets, report; 2a–2e) is built, reviewed (PR #46: three Copilot fixes) and merged
+into `build` (`f65d227`). Local branch: `build`, clean. Transcript: `prompts/20261120-session-token-usage.md`. What step 2
+added, in one place each: `model.Response{Message, Usage, StopReason}` and `model.Usage` (`model/provider.go`);
+`maxTokens` / `maxTokensField` (`model/openai.go`, `maxTokensFieldFor`); cut-off handling (`agent/react.go`:
+`cutOffNotice`, `errInvalidArgs`, `cutOffCallHint`); per-attempt meters and run budgets (`agent/meter.go`,
+`autoRun.allowance` / `endAttempt` / `taskContext` in `agent/autorun.go`); journal usage (`task_finished.usage`,
+`attempt_usage`, `unreported_calls`, `resumed.started_at`, `gate_answered.waited_ms`) rebuilt by `state.Rebuild`
+(renamed from `Fold`); the end-of-run report and `/usage` (`agent/autoreport.go`). Decisions: DECISIONS.md § Step 2,
+§ 2c built, § 2c live check, § 2d (allowance) and § 2d built, § 2e built, § PR #46 review, § `state.Fold` renamed.
+
+**Start here next session: step 3, orchestrator mode.** Read the roadmap entry above ("Roadmap: from auto mode to
+orchestrator mode", steps O1–O8, its "Read first" list: `mvp4/`, `DECISIONS.md § mvp4 reference build`, `§ Slice D`,
+`§ Slice E`; the mvp4 plan files are in `prompts/`). Same working style as step 2, confirmed by Jerry: for each step,
+(1) shape, critical tests and gotchas/things to consider; (2) after his "okay", Claude writes the code and tests;
+(3) a one-sentence commit message in plain technical English. If the shape was already given as a skeleton, "build it"
+means build. Ask once at the start whether he wants to type some of step 3 himself (he said earlier he might, for the
+autonomous port).
+
+**What step 2 decided that step 3 must keep** (DECISIONS.md § 2d: each worker gets a token allowance):
+- **A worker gets a token allowance when it starts and reports its total once, when it ends** (Jerry: no per-call
+  messages from worker to parent). For a child process: pass the allowance (`min(taskTokenBudget, run left)`, divided
+  among the workers running at once in O6) when the child starts or in `run_task`; the child runs its own `usageMeter`
+  and returns its `model.Usage` (and unreported-call count) in the `run_task` result; the parent's scheduling code is
+  the only one that adds it to `autoRun.used`. Unused tokens return to the pool on their own (the next allowance is
+  computed from what is left). Overshoot of about one call per worker is accepted.
+- **The run's time limit** (`runTimeoutMinutes`) is a context deadline per task today; a child needs the remaining time
+  too (passed in, and the parent cancels `run_task` at the deadline), and `stopReasonOf` must still tell timeout from
+  Ctrl+C.
+- **Journal**: today the parent writes `task_finished.usage` / `attempt_usage`; this fits O3 option (a) (the parent is
+  the only journal writer). If O3 picks (b) (a journal per child), `state.Rebuild` must add up usage from the child
+  journals too. A child that crashes loses its attempt's usage (accepted, as for a crash today).
+- Budget and timeout stops leave the task interrupted and exit 3 (`ErrNeedsPerson`), whichever worker hit them.
+
+**Still open (not blocking step 3):** a real run with a capable model to tune `workerPrompt` and `director.Prompt`
+(only `qwen2.5:0.5b` on Ollama was tried; it gives no director verdict); a real Windows machine (plan lock, rename over
+an existing file); **Anthropic adapter** (Jerry: "soon"; the `Response`/`Usage` types were built for it: sum
+`input_tokens + cache_read_input_tokens + cache_creation_input_tokens` into `InputTokens`, map `end_turn`/`tool_use`/
+`max_tokens`, give `max_tokens` its own fallback since Anthropic requires it, replay thinking blocks); a cost budget
+(needs a price table); Step U (small plan update). Tabled items from step 1 are listed in the handoff entry above.
+
+**Working rules that held:** append dated entries at the end of SESSION.md / DECISIONS.md only; `[agent]` teaching
+comments; every function has a header; `go run ./cmd/codemap` after signature changes; report every test removed or
+whose expectation changed; never edit `mvp1`–`mvp4`; never write to the real `~/.minagent` from tests or smoke runs
+(scratch `stateDir`/`traceDir`); PR replies unsigned; commits end with the Co-Authored-By line.

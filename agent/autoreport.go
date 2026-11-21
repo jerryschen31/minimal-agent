@@ -23,7 +23,7 @@ import (
 //   - A task with attempts but no reported usage shows "not reported" (a server that sends none, or a journal older
 //     than token tracking); a sum that includes calls with no usage says how many (journalUsageText); a time of 0 (no
 //     ended attempt) shows "—".
-func usageReport(st state.State, p plan.Plan, run int) string {
+func usageReport(st state.PlanState, p plan.Plan, run int) string {
 	var b strings.Builder
 	tw := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "  task\tstatus\tattempts\ttokens\ttime\t")

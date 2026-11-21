@@ -48,14 +48,14 @@
 //	  func (o autoOutput) ToolCalled(name string)
 //
 //	autoreport.go
-//	  func usageReport(st state.State, p plan.Plan, run int) string
+//	  func usageReport(st state.PlanState, p plan.Plan, run int) string
 //	  func usageText(u model.Usage) string
 //	  func journalUsageText(u state.Usage) string
 //	  func durationText(d time.Duration) string
 //	  func sessionUsageLine(m *usageMeter) string
 //
 //	autoresume.go
-//	  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
+//	  func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.PlanState, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error)
 //	  func decideSettlement(ctx context.Context, cs *ChatSession, open []state.OpenCall, toolsChanged bool, ask promptReader, w io.Writer) ([]settlePlan, error)
 //	  func toolsDiffer(was, now state.Manifest) bool
 //	  func resendable(cs *ChatSession, c state.ToolBefore) string
@@ -73,9 +73,9 @@
 //	  func toStateUsage(u model.Usage) state.Usage
 //	  func fromStateUsage(u state.Usage) model.Usage
 //	  func openRun(ctx context.Context, cs *ChatSession, ad *autoModeDetails, ask promptReader) (*autoRun, error)
-//	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.State)
+//	  func notePlanHistory(w io.Writer, ref state.PlanRef, st state.PlanState)
 //	  func hasPlanID(path, id string) bool
-//	  func tasksToRun(p plan.Plan, st state.State) (steps []taskStep, removed []string)
+//	  func tasksToRun(p plan.Plan, st state.PlanState) (steps []taskStep, removed []string)
 //	  func runPlan(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, gates promptReader) runResult
 //	  func askGate(ctx context.Context, ar *autoRun, t plan.Task, gates promptReader, w io.Writer) (state.StopReason, error)
 //	  func runTask(ctx context.Context, cs *ChatSession, ar *autoRun, p plan.Plan, t plan.Task, deps map[string]string, crash string) (string, state.StopReason, error)

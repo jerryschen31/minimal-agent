@@ -62,7 +62,7 @@ type settlePlan struct {
 //     run through Load.
 //   - Tools changed: no call is re-sent without asking (PR #44 review: a re-send must not go to a different server
 //     unseen). A server that changed behind an unchanged interface is not detected (accepted, Jerry).
-func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.State, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
+func resumeRun(ctx context.Context, cs *ChatSession, home state.Home, st state.PlanState, now state.Manifest, planData, config []byte, ask promptReader) (*autoRun, map[string]string, error) {
 	w := cs.OutBuffer
 	last := st.Latest
 	fmt.Fprintf(w, "Run %04d did not finish (a crash or a kill).\n", last.Run.Number)

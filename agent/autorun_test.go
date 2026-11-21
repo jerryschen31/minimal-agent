@@ -128,7 +128,7 @@ func Test_Unit_TasksToRun(t *testing.T) {
 	for _, task := range p.Tasks {
 		hash[task.ID] = task.DefinitionHash()
 	}
-	st := state.State{Tasks: map[string]state.TaskState{
+	st := state.PlanState{Tasks: map[string]state.TaskState{
 		"t1": {Status: state.TaskDone, DefHash: hash["t1"], Run: 2}, // unchanged → skip
 		"t2": {Status: state.TaskDone, DefHash: "sha256:old"},       // changed → run
 		"t3": {Status: state.TaskFailed, DefHash: hash["t3"]},       // failed → run
