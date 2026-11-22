@@ -26,6 +26,13 @@ If you want to use a remote-hosted model, make sure you configure API keys for y
 [MVP 2](mvps/mvp2/learn/): I designed and coded several iterations, with a coding agent as thinking partner and pair programmer (Sonnet 5.5)<br>
 [dea1a4f](https://github.com/jerryschen31/minimal-agent/tree/dea1a4f00121598ac380dc81eddb79a270b8620c): MVP 2 code refactored into main codebase<br>
 [e5ba43a](https://github.com/jerryschen31/minimal-agent/tree/e5ba43a6b77e8571d24dcd16df0ab085cbc87ab2): Added an interactive line editor for a better chat prompt UX and added a debug mode<br>
-[b6d73eb](https://github.com/jerryschen31/minimal-agent/tree/b6d73ebd7d312245717a2fcd13987dfe87ee275b): I planned and guided an agent to build an autonomous mode MVP - works well. I'll use this MVP code as a guide for the full build out.
+[b6d73eb](https://github.com/jerryschen31/minimal-agent/tree/b6d73ebd7d312245717a2fcd13987dfe87ee275b): I planned and guided an agent to build an autonomous mode MVP - works well. I'll use this MVP code as a guide for the full build out.<br>
+[993b075](https://github.com/jerryschen31/minimal-agent/tree/993b075794ea82d27fd2a97a28dfd05ae32f447d): Agent traces and session summary (digest)<br>
+[a2259f4](https://github.com/jerryschen31/minimal-agent/tree/a2259f4edfd830483313ce842f22c71e0fb7c3a9): Deny / ask approval gates<br>
+[f6db324](https://github.com/jerryschen31/minimal-agent/tree/f6db324228e6b6fe0021970b438fbd41fa6136c7): Built-in filesystem and run-command tools<br>
+[f18ab2a](https://github.com/jerryschen31/minimal-agent/tree/f18ab2a82613f8ad6bbfaddd2e391a5c395fe1b6): MCP server setup and error hardening<br>
+[173e50e](https://github.com/jerryschen31/minimal-agent/tree/173e50ea54b3ee02d7a6fdf96f7e860667f91a68): Plan mode<br>
+[da68363](https://github.com/jerryschen31/minimal-agent/tree/da683636e254627f46c2616043416a874b3c7844): Autonomous mode v1<br>
+[f65d227](https://github.com/jerryschen31/minimal-agent/tree/f65d22740e92b18b728dbc86d98acbd91ec8612a): Token usage tracking
 
-Chat mode is built, with built-in agent traces and trace summaries (digests). Plan mode and auto mode (one serial run of a plan: worker + director per task, a journal of every tool call, resume after a crash) are built. Next: small plan updates, then token and time budgets.
+Chat, plan and auto modes are built, with traces, digests, approval gates, built-in tools, and token and time budgets. Next: orchestrator mode.
